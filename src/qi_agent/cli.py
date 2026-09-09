@@ -45,7 +45,11 @@ def _env_catalog() -> tuple[ToolCatalog, list[str]]:
 
 
 def _load_registry(catalog: ToolCatalog) -> AgentRegistry:
-    units = load_all_agents(catalog_names=catalog.names)
+    try:
+        units = load_all_agents(catalog_names=catalog.names, ds_types=set())
+    except LoadError as exc:
+        console.print(f"[red]装载失败:[/red] {escape(str(exc))}")
+        raise typer.Exit(code=1) from exc
     reg = AgentRegistry()
     reg.register_all(units)
     return reg

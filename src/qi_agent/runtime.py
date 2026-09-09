@@ -48,7 +48,8 @@ class QiRuntime:
         self.plugins = discover_plugins(self.catalog, self.capabilities, self.cwd)
 
         units = load_all_agents(self.cwd, self.catalog.names,
-                                has_data_source_provider=self.capabilities.has_provider("data_sources"))
+                                has_data_source_provider=self.capabilities.has_provider("data_sources"),
+                                ds_types=self.capabilities.types("data_sources"))
         self.registry = AgentRegistry()
         self.registry.register_all(units)
 

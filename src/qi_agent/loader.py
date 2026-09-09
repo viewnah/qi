@@ -134,7 +134,8 @@ def scan_plaintext_secrets(agent_dir: Path) -> list[Path]:
 
 
 def load_agent_dir(agent_dir: Path, source: str, catalog_names: set[str],
-                   has_data_source_provider: bool = False) -> AgentUnit:
+                   has_data_source_provider: bool = False,
+                   ds_types: set[str] | None = None) -> AgentUnit:
     """解析单个 agent 目录(装载与 import 共用同一校验器)。"""
     entry = agent_dir / AGENT_FILE
     if not entry.is_file():
@@ -172,9 +173,9 @@ def load_agent_dir(agent_dir: Path, source: str, catalog_names: set[str],
 
     data_sources = load_data_sources(agent_dir) if has_data_source_provider else []
     if data_sources:
-        from .registry import provider_types
+        supported = ds_types or set()
         for ds in data_sources:
-            if ds.type not in provider_types("data_sources"):
+            if ds.type not in supported:
                 raise LoadError(f"{entry}: 数据源 {ds.id} 类型 {ds.type!r} 无插件支持")
 
     unit = AgentUnit(
@@ -191,11 +192,13 @@ def load_agent_dir(agent_dir: Path, source: str, catalog_names: set[str],
 
 
 def load_all_agents(cwd: Path | None = None, catalog_names: set[str] | None = None,
-                    has_data_source_provider: bool = False) -> dict[str, AgentUnit]:
+                    has_data_source_provider: bool = False,
+                    ds_types: set[str] | None = None) -> dict[str, AgentUnit]:
     """装载全部 agent(项目版已覆盖用户版)。坏 agent 抛 LoadError(启动报错)。"""
     if catalog_names is None:
         catalog_names = set()
     units: dict[str, AgentUnit] = {}
     for name, (agent_dir, source) in scan_agent_dirs(cwd).items():
-        units[name] = load_agent_dir(agent_dir, source, catalog_names, has_data_source_provider)
+        units[name] = load_agent_dir(agent_dir, source, catalog_names,
+                                     has_data_source_provider, ds_types)
     return units

@@ -139,3 +139,12 @@ packages = ["src/qi_agent"]
 - 开工前先收口 **N7(bash 安全)** 与 **会话 JSONL 格式**(P3/P4 前置)
 - 每定一项,同步回写 README 决策表与本清单
 - P1 动工前确认 **N10(仓库目录)**
+
+## 6. v1 实现状态(代码完成 ✅,2026-09)
+
+P1-P9 代码已落地并推送(master),tests 26 通过、wheel 构建通过。
+
+**待真环境验证**(需 key/终端/外部服务):
+- 真实 LLM 对话端到端(litellm + [models.default];回归集跑分)
+- MCP server 实连(stdio/http;当前完成解析与门控)
+- TUI 真终端交互(当前为冒烟级基础版)

@@ -1,0 +1,16 @@
+# 路由回归集(输入 → 期望 agent)
+# 用途:评估 Dispatcher 分派准确率;source 可标 sticky 场景
+- input: "帮我分析这个仓库的代码结构"
+  expect: code-analyst
+- input: "帮我找一下这段报错可能的原因"
+  expect: code-analyst
+- input: "写一份项目周报"
+  expect: writer
+- input: "把这段说明润色一下"
+  expect: writer
+- input: "随便聊聊今天的天气"      # 无专职命中 → general
+  expect: general
+- input: "继续"                    # sticky:沿用当前 active_agent
+  expect: "@sticky"
+- input: "@writer 写个 README"     # @ 点名直派
+  expect: writer

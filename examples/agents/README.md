@@ -28,3 +28,13 @@ code-analyst/
 ```
 
 > 注:`mcp.json` 中的 server 仅本 agent 可用(私有自动绑定);示例为 github MCP,不需要就删掉,或换成你自己的 server(凭证用 `{env:XXX}` 引用)。
+
+## 样例列表
+
+| agent | 用途 | 工具 |
+|---|---|---|
+| code-analyst | 代码分析(只读) | read, ls, grep, find, bash |
+| writer | 文档撰写 | read, write, edit, ls, grep |
+| general | 全能兜底(auto fallback) | 全部 |
+
+路由回归集:`tests/router_cases.yaml`(输入 → 期望 agent)。

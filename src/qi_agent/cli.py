@@ -433,5 +433,16 @@ def version() -> None:
     console.print(f"qi {__version__}")
 
 
+@app.command("tui")
+def tui() -> None:
+    """启动文本交互界面(TUI)。"""
+    try:
+        from .tui import run_tui
+    except Exception as exc:  # textual 依赖问题
+        console.print(f"[red]TUI 不可用: {escape(str(exc))}[/red]")
+        raise typer.Exit(code=1) from exc
+    run_tui()
+
+
 def main() -> None:
     app()

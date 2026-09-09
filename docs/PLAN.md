@@ -122,6 +122,7 @@ packages = ["src/qi_agent"]
 | B8 | L2 embedding | 可插拔模块,默认关(离线场景再开) |
 | B9 | agent.md icon | 不进 v1 |
 | B10 | 样例 | examples/ 加 writer + general(演示 auto 多角色) |
+| A7 | 凭证存储 | auth store `~/.qi/auth.json`(0600,git 不跟踪);解析顺序 api_key_env → store → 约定 env;`qi auth login/logout/list`、`qi init` 引导 |
 
 ### 仍待定(v2 + 实现期)
 

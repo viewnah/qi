@@ -25,6 +25,10 @@ qi agents export <name> [-o <path>]        # 导出目录/包,产物可直接 im
 qi install <source> [-l] | remove|uninstall <name> [-l] | list [-l] | update
 qi -p --plugin <path>            # 本次运行临时试用插件
 
+── 初始化 / 凭证 ──────────────────────
+qi init [-g]                    # 引导:目录/模型/示例 agents/凭证
+qi auth login|logout|list       # 管理 ~/.qi/auth.json(0600)
+
 ── 模型 / 诊断 ─────────────────────────
 qi models list | qi doctor
 
@@ -83,34 +87,42 @@ qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt
 
 `-l`:写入项目 `.qi/`(而非用户 `~/.qi/`),同 pi 的 project 语义。
 
-## 5. 模型与诊断
+## 5. 初始化与凭证
+
+| 命令 | 说明 | pi 对齐 |
+|---|---|---|
+| `qi init [-g] [-y]` | 引导:建目录 → 配 [models.default/router] → 可选拷示例 agents → 凭证选项(env / auth store);幂等,已有不覆盖 | qi 新增(生态惯例) |
+| `qi auth login <provider>` | 交互输 key,写入 `~/.qi/auth.json`(0600) | ✅ pi `/login` |
+| `qi auth logout <provider>` | 删除该 provider 凭证 | ✅ pi `/logout` |
+| `qi auth list` | 只列已存 provider 名(不回显 key) | 🟡 pi auth 命令 |
+
+## 6. 模型与诊断
 
 | 命令 | 说明 | pi 对齐 |
 |---|---|---|
 | `qi models list` | 列 `[models.*]` 命名模型 | 🟡 pi `--list-models` |
-| `qi doctor` | 诊断:env 密钥 / 配置 / 装载错误 | qi 新增(替代 pi auth) |
+| `qi doctor` | 诊断:配置/装载/凭证(按三源解析顺序验) | 🟡 替代 pi auth |
 
-## 6. 安全与信任
+## 7. 安全与信任
 
 | 命令 | 说明 | pi 对齐 |
 |---|---|---|
 | `-a, --approve` | 信任项目 `.qi`(本次运行) | ✅ |
 | `-na, --no-approve` | 忽略项目 `.qi` | ✅ |
 
-## 7. 通用
+## 8. 通用
 
 `-h/--help`、`-v/--version`、`--verbose`、`--offline`、`--`(结束参数解析)。
 
-## 8. 二期
+## 9. 二期
 
 - `qi web`:HTTP 宿主(web.md)
 - `--mode rpc`:headless JSONL-RPC,给外部客户端(IDE)
 
-## 9. 明确不保留(理由落档)
+## 10. 明确不保留(理由落档)
 
 | pi 命令/参数 | 不保留原因 |
 |---|---|
-| `pi auth` | 无密钥存储,全部 env 引用;诊断走 `qi doctor` |
 | `pi config`(TUI 面板) | 配置即文件,`agents/models show` 可查 |
 | theme / prompt-template / skill 加载开关 | 概念不存在;内容跟 agent 走 |
-| `--provider / --api-key / --thinking / --models` | 模型在 `[models.*]` 配置、密钥在 env |
+| `--provider / --api-key / --thinking / --models` | 模型在 `[models.*]` 配置 |

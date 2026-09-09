@@ -11,7 +11,7 @@
 | [docs/agent-config.md](docs/agent-config.md) | agent = 自包含目录(agent.md / skills / assets / mcp.json / data_sources.json)、装载校验、MCP、数据源、导入导出 |
 | [docs/tools.md](docs/tools.md) | ToolCatalog、内置 7 工具、tools 三态、bash 安全(v1 只读 allowlist) |
 | [dispatcher.md](docs/dispatcher.md) | auto 模式:信号分层、分派管线、Router 契约、优先级 |
-| [docs/model-config.md](docs/model-config.md) | `[models.*]` 命名模型(执行 default / 分派 router),凭证 env |
+| [docs/model-config.md](docs/model-config.md) | `[models.*]` 命名模型(执行 default / 分派 router);凭证三源(api_key_env / auth store / 约定 env) |
 | [docs/plugins.md](docs/plugins.md) | 插件机制:pip(entry point)+ 本地目录双通道、消费型配置动态装载 |
 | [docs/cli.md](docs/cli.md) | 命令面(参数尽量对齐 pi) |
 | [docs/tui.md](docs/tui.md) | TUI 交互:`/` 命令草案、布局、消息队列(与 cli.md 区分) |
@@ -73,7 +73,7 @@
 | 会话存储 | JSONL 每会话文件(不选 SQLite:追加写/可读/零迁移) | ✅ |
 | CLI | typer + rich(薄;**无独立 REPL**,交互 = TUI) | ✅ |
 | TUI | textual(事件驱动增量渲染,渲染器 = event → lines) | ✅ |
-| 配置 | tomllib + 分层深合并 + pydantic 校验;密钥只走 env | ✅ |
+| 配置 | tomllib + 分层深合并 + pydantic 校验;凭证不入配置文件(见凭证三源) | ✅ |
 
 ## 5. 目录布局(运行时)
 
@@ -93,5 +93,5 @@
 
 - 内容(技能/第三方 agent)是可执行指令:**先审后装/导入时提示**
 - 插件代码 = 全权限:仅可信源;项目级 `.qi`(plugins/agents)需 `-a` 信任
-- 凭证一律 env 引用,配置文件与导入包**不落明文**(导入时扫描)
+- 凭证三源:`api_key_env`(显式)→ `~/.qi/auth.json`(0600,按 provider)→ 约定环境变量;配置文件与导入包**零明文**(导入时扫描)
 - Web/远程暴露需显式开启 + 鉴权(默认回环)

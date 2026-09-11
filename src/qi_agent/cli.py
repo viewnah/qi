@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -15,6 +16,7 @@ import typer
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
+from typer.core import TyperGroup
 
 from . import __version__, prompt
 from .auth import AuthStore, DEFAULT_API_KEY_ENV, resolve_key
@@ -32,16 +34,44 @@ from .config import (
     save_models_file,
 )
 from .loader import LoadError, load_agent_dir, load_all_agents, scan_agent_dirs
+from .models import AgentUnit
 from .paths import MODELS_FILE_NAME, global_home, project_home
 from .registry import AgentRegistry, CapabilityRegistry, ToolCatalog, discover_plugins
 from .session import SessionStore
 from .tools import register_builtin_tools
 
 console = Console(highlight=False)
+# 诊断/进度(分派、工具调用)走 stderr:`qi -p "..." > out.txt` 只会得到答案本身,
+# 脚本不必过滤装饰行;终端里仍看得到。答案正文依旧走 stdout。
+err_console = Console(stderr=True, highlight=False)
+
+
+class QiGroup(TyperGroup):
+    """顶层群组:位置参数何时算“消息”、何时算“子命令”。
+
+    Click 的 Group 会把第一个位置参数无条件当子命令名解析,于是:
+      - `qi -p "你好"` → No such command '你好'(docs/cli.md §1)
+      - `qi -p "version"` → 消息恰好同名子命令时,跑去了 `qi version`
+    规则:`-p/--print` 已给出 —— 位置参数全是消息;否则首个位置参数不是已注册
+    子命令时,也当消息(交给顶层 callback 拼成 prompt)。
+    """
+
+    def parse_args(self, ctx, args: list[str]) -> list[str]:
+        super().parse_args(ctx, args)
+        # TyperGroup.parse_args 已把首个位置参数挪进 _protected_args(当子命令)。
+        if not ctx._protected_args:
+            return ctx.args
+        if ctx.params.get("print_mode") or self.get_command(ctx, ctx._protected_args[0]) is None:
+            ctx.args = [*ctx._protected_args, *ctx.args]
+            ctx._protected_args = []
+        return ctx.args
+
+
 app = typer.Typer(
     name="qi",
+    cls=QiGroup,
     help="多 agent 编码框架:专职角色 + auto 分派(参数尽量对齐 pi)",
-    no_args_is_help=True,
+    no_args_is_help=False,  # 无参 → 进 TUI(见 callback);帮助用 qi -h
     context_settings={"allow_extra_args": True, "help_option_names": ["-h", "--help"]},
 )
 
@@ -66,21 +96,54 @@ def _load_registry(catalog: ToolCatalog) -> AgentRegistry:
     return reg
 
 
+def _display_name(unit: AgentUnit) -> str:
+    """UI 显示名;未设 display_name 时回落为 "-"(`name` 已在单独一列)。"""
+    return (unit.config.display_name or "").strip() or "-"
+
+
+def _replay_names(entries: list[dict]) -> dict[str, str]:
+    """会话回放用映射:agent 名 → 记录时的展示名。
+
+    展示名在写入 dispatch entry 时一并落盘(而非回放时查 registry),因为:
+      - 历史会话应反映**当时**的展示名,不受之后改名/删 agent 影响;
+      - 回放不必装载 agent/插件(无副作用)。
+    旧会话没记录 display_name 时回落为 name。
+    """
+    names: dict[str, str] = {}
+    for e in entries:
+        if e.get("type") == "dispatch" and e.get("agent"):
+            names[str(e["agent"])] = str(e.get("display_name") or e["agent"])
+    return names
+
+
 def _print_agents_table(reg: AgentRegistry, catalog: ToolCatalog | None = None) -> None:
     table = Table(title=f"agents({len(reg.names)})")
-    table.add_column("name"); table.add_column("来源"); table.add_column("工具")
-    table.add_column("描述")
+    table.add_column("name"); table.add_column("显示名"); table.add_column("来源")
+    table.add_column("工具"); table.add_column("描述")
     for unit in reg.all():
         tools = ",".join(unit.tools) if unit.tools else "(全部)"
         desc = unit.config.description.splitlines()[0] if unit.config.description else ""
-        table.add_row(unit.name, unit.source, tools, desc[:60])
+        table.add_row(unit.name, _display_name(unit), unit.source, tools, desc[:60])
     console.print(table)
+
+
+def _tool_snippet(text: str, limit: int = 400) -> str:
+    """工具结果摘要:保留换行结构(便于看 ls/grep 这类多行输出),超长时附提示。
+
+    不把 `\n` 压成空格 —— 那样 ls 的“一行一条目”会糊成不可读的长串。
+    """
+    text = text.rstrip()
+    if len(text) <= limit:
+        return text
+    lines = text.splitlines()
+    head = text[:limit].rstrip()
+    return f"{head}\n  …(已截断,共 {len(lines)} 行 / {len(text)} 字)"
 
 
 # ── 顶层 callback:headless 运行 ─────────────────────────
 
 @app.callback(invoke_without_command=True)
-def main(
+def root_callback(
     ctx: typer.Context,
     print_mode: bool = typer.Option(False, "--print", "-p", help="无头一次执行(auto 分派)"),
     agent: str | None = typer.Option(None, "--agent", help="指定 agent(manual)"),
@@ -90,15 +153,20 @@ def main(
     no_session: bool = typer.Option(False, "--no-session", help="不落盘(临时)"),
     export_file: str | None = typer.Option(None, "--export", help="导出会话 JSONL 到文件后退出"),
     mode: str = typer.Option("text", "--mode", help="输出: text|json"),
+    verbose: bool = typer.Option(False, "--verbose", help="显示分派与工具调用进度(默认只输出答案,对齐 pi)"),
 ) -> None:
     if ctx.invoked_subcommand is not None:
         return
     if export_file:
         _cmd_export(session_id or "", Path(export_file))
         raise typer.Exit()
-    messages = [m for m in ctx.args if not m.startswith("@") or True]
+    messages = list(ctx.args)
     if not messages and not print_mode:
-        console.print("交互界面(TUI)开发中;无头用法: qi -p \"问题\" [--agent name]")
+        # 无参:进了。(docs/cli.md §1:无 -p = TUI);非 TTY(管道/CI)退化为提示。
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            tui()
+        else:
+            console.print("交互界面需要 TTY;无头用法: qi -p \"问题\" [--agent name]")
         raise typer.Exit(code=0)
     prompt = " ".join(messages).strip() or ""
     if not prompt and print_mode:
@@ -134,23 +202,25 @@ def main(
     assert session is not None
 
     async def _run() -> None:
+        # 对齐 pi 的 `-p`:默认只输出答案;分派行/工具进度仅在 --verbose 时显示
+        # (且走 stderr,不污染 stdout)。`--mode json` 本就输出全部事件,不受此开关影响。
         async for ev in runtime.stream(prompt, session, agent_override=agent):
             if mode == "json":
                 console.print_json(data={"kind": ev.kind, "agent": ev.agent,
                                          "tool": ev.tool, "text": ev.text, "data": ev.data})
-            elif ev.kind == "dispatch":
-                console.print(f"[cyan]→ {escape(ev.text)}[/cyan]")
-            elif ev.kind == "tool_start":
-                console.print(f"[dim]  ⚙ {ev.tool}({escape(str(ev.data.get('args', {})))[:120]})[/dim]")
-            elif ev.kind == "tool_end":
-                snippet = ev.text[:200].replace("\n", " ")
-                console.print(f"[dim]  ↳ {escape(snippet)}[/dim]")
             elif ev.kind == "text" and ev.text:
                 console.print(ev.text)
             elif ev.kind == "error":
-                console.print(f"[red]{escape(ev.text)}[/red]")
-            elif ev.kind == "opening":
-                console.print(f"[bold]{escape(ev.text)}[/bold]")
+                err_console.print(f"[red]{escape(ev.text)}[/red]")
+            elif verbose and ev.kind == "dispatch":
+                err_console.print(f"[cyan]→ {escape(ev.text)}[/cyan]")
+            elif verbose and ev.kind == "tool_start":
+                args = json.dumps(ev.data.get("args", {}), ensure_ascii=False)
+                err_console.print(f"[dim]  ⚙ {ev.tool} {escape(args[:200])}[/dim]")
+            elif verbose and ev.kind == "tool_end":
+                err_console.print(f"[dim]  ↳ {escape(_tool_snippet(ev.text))}[/dim]")
+            elif verbose and ev.kind == "opening":
+                err_console.print(f"[bold]{escape(ev.text)}[/bold]")
 
     asyncio.run(_run())
 
@@ -162,7 +232,11 @@ def _cmd_export(session_id: str, out: Path) -> None:
         console.print("[red]无可导出会话[/red]")
         raise typer.Exit(code=1)
     out.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy(session.path, out)
+    try:
+        shutil.copy(session.path, out)
+    except OSError as exc:
+        console.print(f"[red]导出失败: {escape(str(exc))}[/red]")
+        raise typer.Exit(code=1) from exc
     console.print(f"[green]已导出 {session.path} → {out}[/green]")
 
 
@@ -274,6 +348,7 @@ def agents_show(name: str = typer.Argument(...)) -> None:
         console.print(f"[red]agent {name} 不存在[/red]")
         raise typer.Exit(code=1)
     console.print(f"[bold]{unit.name}[/bold](来源: {unit.source}) 目录: {unit.path}")
+    console.print(f"显示名: {_display_name(unit)}")
     console.print(f"描述: {unit.config.description}")
     console.print(f"工具: {', '.join(unit.tools) if unit.tools else '(全部)'}")
     console.print(f"技能: {', '.join(s.name for s in unit.skills) or '(无)'}")
@@ -345,18 +420,27 @@ def sessions_list() -> None:
 
 @sessions_app.command("show")
 def sessions_show(session_id: str = typer.Argument(...)) -> None:
-    """查看会话内容。"""
+    """查看会话内容(分派与说话人用记录时的展示名,与 agents list 一致)。"""
     store = SessionStore()
     s = store.get(session_id)
     if s is None:
         console.print(f"[red]会话不存在: {session_id}[/red]")
         raise typer.Exit(code=1)
     console.print(f"[bold]{s.id}[/bold] {s.title}  {s.path}")
+    names = _replay_names(s.entries)
     for e in s.entries:
         if e.get("type") == "message":
-            console.print(f"[dim]{e.get('role')}[/dim] {e.get('agent_id', '')}: {escape(str(e.get('content','')))[:200]}")
+            role = e.get("role")
+            body = escape(str(e.get('content', '')))[:200]
+            if role == "user":
+                # 用户消息不拄说话人名(agent_id 只是"将处理它的 agent",不是发言者)
+                console.print(f"[dim]{role}[/dim] {body}")
+            else:
+                who = names.get(str(e.get("agent_id", "")), e.get("agent_id", ""))
+                console.print(f"[dim]{role}[/dim] {who}: {body}")
         elif e.get("type") == "dispatch":
-            console.print(f"[cyan]dispatch[/cyan] → {e.get('agent')} ({e.get('source')}, {e.get('confidence')}) {e.get('reasoning','')}")
+            who = e.get("display_name") or e.get("agent")
+            console.print(f"[cyan]dispatch[/cyan] → {who} ({e.get('source')}, {e.get('confidence')}) {e.get('reasoning','')}")
 
 
 @sessions_app.command("rm")
@@ -454,9 +538,10 @@ def _configure_provider(provider: str, entry: dict) -> None:
     if base:
         entry["baseUrl"] = base
 
-    api_default = entry.get("api") if entry.get("api") in SUPPORTED_APIS else DEFAULT_API
-    entry["api"] = SUPPORTED_APIS[prompt.select(
-        "API 类型", list(SUPPORTED_APIS), default=list(SUPPORTED_APIS).index(api_default))]
+    api_options: list[str] = list(SUPPORTED_APIS)
+    api_current = entry.get("api") if entry.get("api") in SUPPORTED_APIS else DEFAULT_API
+    api_index = next((i for i, a in enumerate(api_options) if a == api_current), 0)
+    entry["api"] = SUPPORTED_APIS[prompt.select("API 类型", api_options, default=api_index)]
 
     # 凭证:可见输入;已有则回车保留(QwenPaw 的 [set] 语义)
     suffix = f" [{'set' if current_key else 'not set'}, 回车保留]" if current_key else ""
@@ -489,7 +574,7 @@ def _add_models_interactive(provider: str, entry: dict) -> None:
         ctx = prompt.integer("contextWindow", DEFAULT_CONTEXT_WINDOW)
         mx = prompt.integer("maxTokens", DEFAULT_MAX_TOKENS)
         new = {"id": mid, "name": name, "reasoning": reasoning,
-               "contextWindow": int(ctx), "maxTokens": int(mx)}
+               "contextWindow": ctx, "maxTokens": mx}
         for i, m in enumerate(models):
             if isinstance(m, dict) and m.get("id") == mid:
                 models[i] = {**m, **new}
@@ -613,9 +698,9 @@ def _init_noninteractive(*, provider: str | None, model: str | None, base_url: s
         if isinstance(m, dict) and m.get("id") == model:
             merged = {**m, **new}
             merged["reasoning"] = bool(reasoning) if reasoning is not None else m.get("reasoning", False)
-            merged["contextWindow"] = (int(context_window) if context_window is not None
+            merged["contextWindow"] = (context_window if context_window is not None
                                        else m.get("contextWindow", DEFAULT_CONTEXT_WINDOW))
-            merged["maxTokens"] = (int(max_tokens) if max_tokens is not None
+            merged["maxTokens"] = (max_tokens if max_tokens is not None
                                    else m.get("maxTokens", DEFAULT_MAX_TOKENS))
             models[i] = merged
             break
@@ -623,8 +708,8 @@ def _init_noninteractive(*, provider: str | None, model: str | None, base_url: s
         models.append({
             "id": model,
             "reasoning": bool(reasoning) if reasoning is not None else False,
-            "contextWindow": int(context_window) if context_window is not None else DEFAULT_CONTEXT_WINDOW,
-            "maxTokens": int(max_tokens) if max_tokens is not None else DEFAULT_MAX_TOKENS,
+            "contextWindow": context_window if context_window is not None else DEFAULT_CONTEXT_WINDOW,
+            "maxTokens": max_tokens if max_tokens is not None else DEFAULT_MAX_TOKENS,
         })
 
     providers[provider] = entry

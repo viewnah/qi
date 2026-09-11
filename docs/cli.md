@@ -42,9 +42,9 @@ qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt
 ## 1. 启动与运行
 
 | 命令 | 说明 | pi 对齐 |
-|---|---|---|
+| --- | --- | --- |
 | `qi [options] [--] [@files...] [messages...]` | 无 `-p` = 进 TUI;`-p` = 无头执行后退出 | ✅ 形态同 pi |
-| `-p, --print` | 无头一次执行;**auto 分派**;给 `--agent` 即 manual | ✅ |
+| `-p, --print` | 无头一次执行;**auto 分派**;给 `--agent` 即 manual。**默认只输出答案**(对齐 pi 的 "Print response and exit");分派行/工具进度默认不显示,加 `--verbose` 才输出(走 stderr,不污染 stdout) | ✅ |
 | `--agent <name>` | 指定 agent(长参;不用 `-a`,pi 的 `-a`=approve) | qi 新增 |
 | `--mode <text\|json>` | 输出格式(`rpc` 二期) | ✅ |
 | `-t <tools>` / `-xt <tools>` | 工具 allowlist / denylist 临时覆盖(tools 三态) | ✅ |
@@ -54,14 +54,14 @@ qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt
 ## 2. 会话
 
 | 命令 | 说明 | pi 对齐 |
-|---|---|---|
+| --- | --- | --- |
 | `-c, --continue` | 续上次会话 | ✅ |
 | `-r, --resume` | 选择会话恢复 | ✅ |
 | `--session <path\|id>` / `--session-id <id>` | 指定会话 | ✅ |
 | `--fork <id>` | fork 出新会话 | ✅ |
 | `--session-dir <dir>` | 会话目录 | ✅ |
 | `--no-session` / `-n, --name` | 临时会话 / 显示名 | ✅ |
-| `qi sessions list \| show <id> \| rm <id>` | 列表 / 查看 / 删除 | qi 扩展 |
+| `qi sessions list \| show <id> \| rm <id>` | 列表 / 查看 / 删除。`show` 回放时用**记录时的展示名**(`display_name`,回落到 name);用户消息不标说话人 | qi 扩展 |
 | `--export <file>` | 会话导出 HTML | ✅ |
 
 `-c/-r/--session` 管"接着跑哪段",`qi sessions` 管"历史浏览/删除",互补。
@@ -69,7 +69,7 @@ qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt
 ## 3. Agent 与分派
 
 | 命令 | 说明 |
-|---|---|
+| --- | --- |
 | `--agent <name>` | 指定 agent(manual);省略 = auto 分派 |
 | `qi agents list` | 装载的 agent:来源/描述/工具/绑定 |
 | `qi agents show <name>` | 单 agent 解析诊断(skills/mcp/data_sources 是否生效) |
@@ -79,7 +79,7 @@ qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt
 ## 4. 插件(对齐 pi 命名与 `-l`,底层 pip 生态)
 
 | 命令 | 说明 | pi 对齐 |
-|---|---|---|
+| --- | --- | --- |
 | `qi install <source> [-l]` | 本地目录 → 插件目录通道;`pip:<pkg>` → 转 pip | ✅ `pi install` |
 | `qi remove\|uninstall <name> [-l]` | 移除本地目录插件 | ✅ |
 | `qi list [-l]` | 列出已安装插件 | ✅ |
@@ -90,7 +90,7 @@ qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt
 ## 5. 初始化与凭证
 
 | 命令 | 说明 | pi 对齐 |
-|---|---|---|
+| --- | --- | --- |
 | `qi init [-y] [-l] [--provider … --model …]` | 引导默认模型(复刻 QwenPaw `init`)。流程:`Provider Configuration`(选已有/新建 → Base URL → API 类型 → API Key,直接写 `auth.json`)→ `Add Models`(`Add a model?` 循环)→ `Activate LLM Model`(选 provider → 选 model,写 defaultProvider/defaultModel)。上下键选择 + 可见输入;已有凭证回车保留。**完整用法与示例见 [model-config.md §7](model-config.md#7-qi-init-用法)** | qi 新增(生态惯例) |
 | `qi auth login <provider>` | 交互输 key,写入 `~/.qi/auth.json`(0600);provider 可自定义 | ✅ pi `/login` |
 | `qi auth logout <provider>` | 删除该 provider 凭证 | ✅ pi `/logout` |
@@ -99,20 +99,31 @@ qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt
 ## 6. 模型与诊断
 
 | 命令 | 说明 | pi 对齐 |
-|---|---|---|
+| --- | --- | --- |
 | `qi models list` | 列 `models.json` 的 provider/模型(标记默认) | 🟡 pi `--list-models` |
 | `qi doctor` | 诊断:配置/provider/凭证(按 pi 凭证顺序验) | 🟡 替代 pi auth |
 
 ## 7. 安全与信任
 
 | 命令 | 说明 | pi 对齐 |
-|---|---|---|
+| --- | --- | --- |
 | `-a, --approve` | 信任项目 `.qi`(本次运行) | ✅ |
 | `-na, --no-approve` | 忽略项目 `.qi` | ✅ |
 
 ## 8. 通用
 
 `-h/--help`、`-v/--version`、`--verbose`、`--offline`、`--`(结束参数解析)。
+
+### 输出约定(无头)
+
+| 流 | 内容 |
+| --- | --- |
+| stdout | **仅答案正文**(`--mode json` 时为事件 JSON 行) |
+| stderr | 默认空;`--verbose` 时为分派行(`→ qi (router, 0.90)`)与工具进度(`⚙ ls {"path": "."}` / `↳ …`) |
+
+所以 `qi -p "问题" > out.txt` 拿到的就是纯答案,脚本无需过滤;对齐 pi 的
+`-p`(`Print response and exit`:pi 实测 stdout 只有回答、stderr 为空)。
+交互式 TUI 不受此限:仍实时显示分派与工具调用(pi 的 TUI 同样如此)。
 
 ## 9. 二期
 
@@ -122,7 +133,7 @@ qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt
 ## 10. 明确不保留(理由落档)
 
 | pi 命令/参数 | 不保留原因 |
-|---|---|
+| --- | --- |
 | `pi config`(TUI 面板) | 配置即文件,`agents/models show` 可查 |
 | theme / prompt-template / skill 加载开关 | 概念不存在;内容跟 agent 走 |
 | `--provider / --api-key / --thinking / --models` | 模型在 `models.json` 配置(`qi init` 引导) |

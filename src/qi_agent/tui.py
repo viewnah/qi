@@ -46,6 +46,7 @@ class QiTui(App):
         self._session = None
         self._agent: str | None = None      # manual 锁定
         self._auto = True
+        self._shown_name = "?"              # 当前 agent 的展示名(display_name 优先)
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -91,13 +92,15 @@ class QiTui(App):
         assert self._rt is not None and self._session is not None
         async for ev in self._rt.stream(text, self._session, agent_override=override):
             if ev.kind == "dispatch":
-                log.write(f"[cyan]→ {ev.agent} ({ev.data.get('source')}, {ev.data.get('confidence', 0):.2f}) {ev.data.get('reasoning', '')}[/cyan]")
+                # 事件 text 已含展示名与来源,如 "qi (router, 0.90)"
+                self._shown_name = str(ev.data.get("display_name") or ev.agent or "?")
+                log.write(f"[cyan]→ {ev.text} {ev.data.get('reasoning', '')}[/cyan]")
             elif ev.kind == "tool_start":
                 log.write(f"[dim]⚙ {ev.tool}[/dim]")
             elif ev.kind == "tool_end":
                 log.write(f"[dim]↳ {ev.text[:160]}[/dim]")
             elif ev.kind == "text" and ev.text:
-                log.write(f"[bold green]{ev.agent}:[/bold green] {ev.text}")
+                log.write(f"[bold green]{self._shown_name}:[/bold green] {ev.text}")
             elif ev.kind == "opening":
                 log.write(f"[bold]{ev.text}[/bold]")
             elif ev.kind == "error":
@@ -135,7 +138,8 @@ class QiTui(App):
             register_builtin_tools(catalog)
             reg = _load_registry(catalog)
             for u in reg.all():
-                log.write(f"[bold]{u.name}[/bold]({u.source}) tools={','.join(u.tools) or '全部'}")
+                shown = (u.config.display_name or "").strip() or u.name
+                log.write(f"[bold]{shown}[/bold]({u.name} · {u.source}) tools={','.join(u.tools) or '全部'}")
                 log.write(f"   {u.config.description.splitlines()[0]}")
         elif cmd == "/mode":
             mode = arg.strip().lower()
@@ -159,8 +163,8 @@ class QiTui(App):
     def action_clear_log(self) -> None:
         self.query_one("#log", RichLog).clear()
 
-    def action_quit(self) -> None:
-        self.exit()
+    # ctrl+c(见 BINDINGS)映射到 "quit",由 Textual 内置的
+    # `App.action_quit`(async,内部即 self.exit())处理 —— 不重复实现。
 
 
 def run_tui() -> None:

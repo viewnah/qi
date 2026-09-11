@@ -10,6 +10,7 @@ import fnmatch
 import os
 import re
 import shlex
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -18,13 +19,16 @@ from ..registry import Tool, ToolError
 MAX_RESULT = 200          # 截断行数
 MAX_FILE_CHARS = 50_000   # read 默认截断字符
 
+# clarify 回调签名:async (text) -> str | None
+AskFn = Callable[[str], Awaitable[str | None]]
+
 
 @dataclass
 class ToolContext:
     agent_name: str
     workdir: Path                        # 会话工作目录(路径边界)
     data_sources: list = field(default_factory=list)
-    ask: object = None                   # async (text)->str|None,供 clarify 用
+    ask: AskFn | None = None             # async (text)->str|None,供 clarify 用
 
     def guard(self, p: str | Path) -> Path:
         """路径必须落在 workdir 内(防越界,对齐 hikqin validate_path 思想)。"""
@@ -46,6 +50,17 @@ def _truncate(text: str, limit: int = MAX_RESULT) -> str:
     return "\n".join(lines[:limit]) + f"\n…(截断,共 {len(lines)} 行,前 {limit} 行)"
 
 
+def _num_arg(args: dict, key: str, cast, default):
+    """取数值型工具参数:缺失/空 → default;非法 → ToolError(模型可读,不裸抛 ValueError)。"""
+    raw = args.get(key)
+    if raw is None or raw == "":
+        return default
+    try:
+        return cast(raw)
+    except (TypeError, ValueError):
+        raise ToolError(f"{key} 需要{cast.__name__}类型,收到 {raw!r}") from None
+
+
 # ── read ─────────────────────────────────────────────
 
 async def _read(args: dict, ctx: ToolContext) -> str:
@@ -54,8 +69,8 @@ async def _read(args: dict, ctx: ToolContext) -> str:
         raise ToolError(f"{path} 是目录")
     if not path.is_file():
         raise ToolError(f"文件不存在: {path}")
-    start = int(args.get("start_line") or 1)
-    end = int(args.get("end_line") or 0)
+    start = _num_arg(args, "start_line", int, 1)
+    end = _num_arg(args, "end_line", int, 0)
     lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     total = len(lines)
     if end <= 0:
@@ -76,11 +91,17 @@ async def _ls(args: dict, ctx: ToolContext) -> str:
     path = ctx.guard(str(args.get("path", ".")))
     if not path.is_dir():
         raise ToolError(f"不是目录: {path}")
-    names = sorted(os.listdir(path))
+    try:
+        names = sorted(os.listdir(path))
+    except OSError as exc:
+        raise ToolError(f"无法列出目录: {exc}") from exc
     rows = []
     for n in names:
         full = path / n
-        kind = "d" if full.is_dir() else ("x" if os.access(full, os.X_OK) else "f")
+        try:
+            kind = "d" if full.is_dir() else ("x" if os.access(full, os.X_OK) else "f")
+        except OSError:  # 权限不足/坏软链:仍列出条目,退化为普通文件
+            kind = "f"
         rows.append(f"{kind} {n}")
     return _truncate(f"# {path} ({len(rows)} 项)\n" + "\n".join(rows))
 
@@ -111,8 +132,8 @@ async def _grep(args: dict, ctx: ToolContext) -> str:
     if not pattern:
         raise ToolError("需要 pattern")
     regex = re.compile(pattern, re.IGNORECASE if args.get("ignore_case") else 0)
-    context = int(args.get("context", 0))
-    max_count = int(args.get("max_count", 100))
+    context = _num_arg(args, "context", int, 0)
+    max_count = _num_arg(args, "max_count", int, 100)
     matches: list[str] = []
     files = [root] if root.is_file() else sorted(
         p for p in root.rglob("*") if p.is_file() and ".git" not in p.parts
@@ -203,7 +224,7 @@ async def _bash(args: dict, ctx: ToolContext) -> str:
     allowed, reason = _bash_allowed(command)
     if not allowed:
         raise ToolError(f"命令被安全策略拒绝: {reason}")
-    timeout = float(args.get("timeout", 120))
+    timeout = _num_arg(args, "timeout", float, 120.0)
     proc = await asyncio.create_subprocess_shell(
         command,
         cwd=ctx.workdir,

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from . import paths
 from .models import AgentUnit
@@ -13,13 +15,16 @@ from .models import AgentUnit
 # 插件本地目录通道:目录含 plugin.py,export register(api)
 PLUGIN_ENTRY_FILE = "plugin.py"
 
+# 工具执行函数签名:async def execute(args, ctx) -> str
+ToolExecutor = Callable[[dict, Any], Awaitable[str]]
+
 
 @dataclass
 class Tool:
     name: str
     description: str
     parameters: dict                        # JSON Schema
-    execute: object                         # async def execute(args, ctx) -> str
+    execute: ToolExecutor                   # async def execute(args, ctx) -> str
     keywords: list[str] = field(default_factory=list)
 
     def to_llm_schema(self) -> dict:

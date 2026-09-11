@@ -2,6 +2,10 @@
 
 位置:~/.qi/sessions/<ts>_<id>.jsonl(全局,PLAN B1)。
 entry 五类: message / tool / dispatch / state / custom(agent-config 决策)。
+
+dispatch entry 除 agent(name)外还落盘 display_name:展示名应反映**当时**的值,
+回放时无需再装载 agent/插件。
+用户消息的 agent_id 是“将处理它的 agent”,不是发言者。
 """
 
 from __future__ import annotations
@@ -67,10 +71,21 @@ class SessionStore:
         return Session(id=sid, path=path, title=title, created_at=now, entries=[header])
 
     def get(self, session_id: str) -> Session | None:
+        """按会话 id 或文件名 stem 前缀查找(docs/cli.md: `--session <path|id>`)。
+
+        id = 文件名 `<ts>_<id>.jsonl` 里的 `<id>`;同时接受完整 stem。
+        旧实现只比对 header id,而 `latest()` 传的是 stem(含 `<ts>_` 前缀),
+        startswith 永不成立 → `qi -c` 永远找不到会话、每次都新建。
+        """
+        if not session_id:
+            return None
         for p in self._files():
             entries = self._read(p)
-            if entries and str(entries[0].get("id", "")).startswith(session_id):
-                return Session(id=entries[0]["id"], path=p,
+            if not entries:
+                continue
+            hid = str(entries[0].get("id", ""))
+            if hid.startswith(session_id) or p.stem.startswith(session_id):
+                return Session(id=hid, path=p,
                                title=entries[0].get("title", ""),
                                created_at=entries[0].get("created_at", ""),
                                entries=entries)

@@ -1,6 +1,6 @@
 """LLM 客户端(llm.py):协议 + litellm 实现(A4)。
 
-一次 chat 返回:文本 或 工具调用列表。Router 与 Runner 共用(按 [models.router]/[models.default])。
+一次 chat 返回:文本 或 工具调用列表。Router 与 Runner 共用(按 models.json 的 default/router)。
 """
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Protocol
 
-from .config import ModelSpec
+from .config import ResolvedModel
 from .auth import AuthStore, resolve_key
 
 
@@ -53,16 +53,28 @@ class LLMClient(Protocol):
                    temperature: float | None = None) -> ChatResponse: ...
 
 
-class LiteLLMClient:
-    """基于 litellm 的实现。model 引用来自 [models.*](经 resolve_key 取 key)。"""
+# litellm 前缀按 api 类型推导(不预置 provider 名录)
+_API_PREFIX = {
+    "anthropic-messages": "anthropic",
+    "google-generative-ai": "gemini",
+    "openai-responses": "openai",
+    "openai-completions": "openai",
+}
 
-    def __init__(self, spec: ModelSpec, auth_store: AuthStore | None = None):
+
+def litellm_model_name(spec: ResolvedModel) -> str:
+    """把 provider + api 映射为 litellm 的 model 字符串(不依赖 provider 名录)。"""
+    prefix = _API_PREFIX.get(spec.api, "openai")
+    return f"{prefix}/{spec.model}"
+
+
+class LiteLLMClient:
+    """基于 litellm 的实现。spec 来自 resolve_model()(经 resolve_key 取 key)。"""
+
+    def __init__(self, spec: ResolvedModel, auth_store: AuthStore | None = None):
         self.spec = spec
-        self._resolved = resolve_key(spec, auth_store or AuthStore())
-        if spec.provider == "ollama" or spec.provider in ("openai", "anthropic", "deepseek"):
-            self.model_name = f"{spec.provider}/{spec.model}"
-        else:
-            self.model_name = spec.model
+        self._resolved = resolve_key(spec.provider, spec.api_key_ref, auth_store or AuthStore())
+        self.model_name = litellm_model_name(spec)
 
     @property
     def ready(self) -> bool:
@@ -82,8 +94,10 @@ class LiteLLMClient:
             kwargs["api_key"] = self._resolved.key
         if self.spec.base_url:
             kwargs["api_base"] = self.spec.base_url
-        if self.spec.temperature is not None or temperature is not None:
-            kwargs["temperature"] = temperature if temperature is not None else self.spec.temperature
+        if self.spec.max_tokens:
+            kwargs["max_tokens"] = self.spec.max_tokens
+        if temperature is not None:
+            kwargs["temperature"] = temperature
         resp = await litellm.acompletion(**kwargs)
         msg = resp.choices[0].message
         text = msg.content or ""

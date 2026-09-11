@@ -120,7 +120,7 @@ AgentUnit("code-analyst")
 ├── tools[]       ← 全局 ToolCatalog 解析(read, ls, grep, find, bash)— 只注入被引用的
 ├── skills[]      ← skills/ 下全部 SKILL.md(自动绑定,渐进披露)
 ├── mcp_tools[]   ← 私有 mcp.json 或全局 [mcp.servers] → tools/list 注入
-└── model         ← [models.default](执行统一用全局默认模型,见 model-config.md)
+└── model         ← defaultProvider/defaultModel(执行统一用全局默认模型,见 model-config.md)
 ```
 
 工具、技能、MCP 工具最终都以"工具"形态进入执行循环,对 AgentRunner 透明。
@@ -232,7 +232,7 @@ qi agents import skill:path/to/skill   # 包装成私有技能进目标 agent
 | 内置内容 | 无内置 agent/技能;示例放 `examples/agents/`,不自动加载 |
 | 无内置技能 | 撤销"内置技能覆盖"问题(H4 moot) |
 | opening 字段 | v1 补充:message(agent 开场白,进会话历史)+ suggestions(UI 层快捷提问,不进历史) |
-| 执行参数 | model / temperature / max_turns 不进 agent.md;统一归全局配置(模型/温度在 [models.*],轮次/超时在 [runtime]) |
+| 执行参数 | model / temperature / max_turns 不进 agent.md;统一归全局配置(模型在 models.json,轮次/超时在 runtime) |
 | MCP | **v1**:私有 mcp.json 仅本 agent 自动绑定;全局 [mcp.servers] 按 `mcp_servers` 声明绑定,**默认无、显式声明**(凭证敏感);凭证仅 env 引用 |
 | 数据源 | 实例在 agent 目录 data_sources.json(私有自动绑定,凭证 env);工具/type 能力由 db 插件提供,装载门控见 plugins.md |
 | 导入/导出 | agent 自包含目录;import = 拷贝 + 复用装载校验器预检 + 明文凭证扫描;export 产物可直接 import |
@@ -240,6 +240,6 @@ qi agents import skill:path/to/skill   # 包装成私有技能进目标 agent
 ## 13. 待定决策
 
 - frontmatter 语法最终确认(YAML,推荐,对齐 Claude/Agent Skills 生态)
-- 应用配置文件名与格式(`qi_agent.toml` 待定)
+- 应用配置文件名与格式(`models.json`,对齐 pi;已定稿)
 - sessions 存放位置(全局 `~/.qi/sessions` 还是项目内)
 - `mcp_servers` 省略默认 = 全部全局 server(与 tools 三态一致,推荐)还是默认无、必须显式声明

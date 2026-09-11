@@ -107,7 +107,7 @@ packages = ["src/qi_agent"]
 | # | 决策 | 结论 |
 |---|---|---|
 | A1/N10 | 仓库与包名 | `qi-agent` / `qi_agent`,hatchling + uv,`/workspace/qi` 为根,sdk/ 留参考(见 §1) |
-| A2/N2 | 应用配置 | `qi_agent.toml`,TOML + 分层(env→项目→用户→内置) |
+| A2/N2 | 应用配置 | `models.json`(格式对齐 pi)+ 分层(env→项目→用户)+ pydantic 校验 |
 | A3/N1 | frontmatter 语法 | YAML(对齐 Agent Skills/Claude) |
 | A4/N8 | LLM 接入 | litellm(统一多 provider) |
 | A5 | 会话 JSONL entry 类型 | 消息/工具结果/分派/状态/自定义 五类(P3 定格式) |
@@ -122,7 +122,7 @@ packages = ["src/qi_agent"]
 | B8 | L2 embedding | 可插拔模块,默认关(离线场景再开) |
 | B9 | agent.md icon | 不进 v1 |
 | B10 | 样例 | examples/ 加 writer + general(演示 auto 多角色) |
-| A7 | 凭证存储 | auth store `~/.qi/auth.json`(0600,git 不跟踪);解析顺序 api_key_env → store → 约定 env;`qi auth login/logout/list`、`qi init` 引导 |
+| A7 | 凭证存储 | auth store `~/.qi/auth.json`(0600,git 不跟踪);解析顺序 auth store → 约定 env → models.json `apiKey` 引用;`qi auth login/logout/list`、`qi init` 引导 |
 
 ### 仍待定(v2 + 实现期)
 
@@ -145,6 +145,6 @@ packages = ["src/qi_agent"]
 P1-P9 代码已落地并推送(master),tests 26 通过、wheel 构建通过。
 
 **待真环境验证**(需 key/终端/外部服务):
-- 真实 LLM 对话端到端(litellm + [models.default];回归集跑分)
+- 真实 LLM 对话端到端(litellm + defaultProvider/defaultModel;回归集跑分)
 - MCP server 实连(stdio/http;当前完成解析与门控)
 - TUI 真终端交互(当前为冒烟级基础版)

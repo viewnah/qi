@@ -64,7 +64,7 @@
 |---|---|
 | `/login` | 选 provider,写入 auth store(`~/.qi/auth.json`,0600) |
 | `/logout` | 清除某 provider 凭证 |
-| `/model /thinking /scoped-models /settings` | 配置化:改 `qi_agent.toml`,不进 TUI |
+| `/model /thinking /scoped-models /settings` | 配置化:改 `models.json`,不进 TUI |
 | `/llama /share /tree /clone /changelog` | 无对应能力(v2 按需,如 `/share` 随 web v2) |
 | `/hotkeys` | 并入 `/help` |
 | `/compact` | 等会话摘要设计(v2) |

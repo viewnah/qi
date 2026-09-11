@@ -26,8 +26,8 @@ qi install <source> [-l] | remove|uninstall <name> [-l] | list [-l] | update
 qi -p --plugin <path>            # 本次运行临时试用插件
 
 ── 初始化 / 凭证 ──────────────────────
-qi init [-g]                    # 引导:目录/模型/示例 agents/凭证
-qi auth login|logout|list       # 管理 ~/.qi/auth.json(0600)
+qi init                         # 引导默认模型(复刻 QwenPaw):Provider Config → Add Models → Activate LLM
+qi auth login|logout|list       # 管理 ~/.qi/auth.json(0600);qi init 交互默认保留已存凭证
 
 ── 模型 / 诊断 ─────────────────────────
 qi models list | qi doctor
@@ -91,8 +91,8 @@ qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt
 
 | 命令 | 说明 | pi 对齐 |
 |---|---|---|
-| `qi init [-g] [-y]` | 引导:建目录 → 配 [models.default/router] → 可选拷示例 agents → 凭证选项(env / auth store);幂等,已有不覆盖 | qi 新增(生态惯例) |
-| `qi auth login <provider>` | 交互输 key,写入 `~/.qi/auth.json`(0600) | ✅ pi `/login` |
+| `qi init [-y] [-l] [--provider … --model …]` | 引导默认模型(复刻 QwenPaw `init`)。流程:`Provider Configuration`(选已有/新建 → Base URL → API 类型 → API Key,直接写 `auth.json`)→ `Add Models`(`Add a model?` 循环)→ `Activate LLM Model`(选 provider → 选 model,写 defaultProvider/defaultModel)。上下键选择 + 可见输入;已有凭证回车保留。**完整用法与示例见 [model-config.md §7](model-config.md#7-qi-init-用法)** | qi 新增(生态惯例) |
+| `qi auth login <provider>` | 交互输 key,写入 `~/.qi/auth.json`(0600);provider 可自定义 | ✅ pi `/login` |
 | `qi auth logout <provider>` | 删除该 provider 凭证 | ✅ pi `/logout` |
 | `qi auth list` | 只列已存 provider 名(不回显 key) | 🟡 pi auth 命令 |
 
@@ -100,8 +100,8 @@ qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt
 
 | 命令 | 说明 | pi 对齐 |
 |---|---|---|
-| `qi models list` | 列 `[models.*]` 命名模型 | 🟡 pi `--list-models` |
-| `qi doctor` | 诊断:配置/装载/凭证(按三源解析顺序验) | 🟡 替代 pi auth |
+| `qi models list` | 列 `models.json` 的 provider/模型(标记默认) | 🟡 pi `--list-models` |
+| `qi doctor` | 诊断:配置/provider/凭证(按 pi 凭证顺序验) | 🟡 替代 pi auth |
 
 ## 7. 安全与信任
 
@@ -125,4 +125,4 @@ qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt
 |---|---|
 | `pi config`(TUI 面板) | 配置即文件,`agents/models show` 可查 |
 | theme / prompt-template / skill 加载开关 | 概念不存在;内容跟 agent 走 |
-| `--provider / --api-key / --thinking / --models` | 模型在 `[models.*]` 配置 |
+| `--provider / --api-key / --thinking / --models` | 模型在 `models.json` 配置(`qi init` 引导) |

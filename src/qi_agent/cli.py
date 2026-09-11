@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import asyncio
-import getpass
 import shutil
 import sys
 from pathlib import Path
@@ -17,16 +16,28 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 
-from . import __version__
-from .auth import AuthStore, resolve_key
-from .config import CONFIG_FILE_NAME, SUPPORTED_PROVIDERS, ConfigError, load_config, require_default_model
+from . import __version__, prompt
+from .auth import AuthStore, DEFAULT_API_KEY_ENV, resolve_key
+from .config import (
+    DEFAULT_API,
+    DEFAULT_CONTEXT_WINDOW,
+    DEFAULT_MAX_TOKENS,
+    SUPPORTED_APIS,
+    ConfigError,
+    load_config,
+    load_models_file,
+    require_default_model,
+    resolve_model,
+    resolve_router_model,
+    save_models_file,
+)
 from .loader import LoadError, load_agent_dir, load_all_agents, scan_agent_dirs
-from .paths import global_home, project_home
+from .paths import MODELS_FILE_NAME, global_home, project_home
 from .registry import AgentRegistry, CapabilityRegistry, ToolCatalog, discover_plugins
 from .session import SessionStore
 from .tools import register_builtin_tools
 
-console = Console()
+console = Console(highlight=False)
 app = typer.Typer(
     name="qi",
     help="多 agent 编码框架:专职角色 + auto 分派(参数尽量对齐 pi)",
@@ -171,27 +182,37 @@ def doctor() -> None:
         for f in files:
             console.print(f"  {f}")
     else:
-        console.print("[yellow]未找到任何 qi_agent.toml[/yellow](env 指定 / 项目 .qi / 用户 ~/.qi)")
+        console.print(f"[yellow]未找到任何 {MODELS_FILE_NAME}[/yellow](env 指定 / 项目 .qi / 用户 ~/.qi)")
+
+    store = AuthStore()
+    if cfg.providers:
+        table = Table(title="providers")
+        table.add_column("provider"); table.add_column("baseUrl")
+        table.add_column("api"); table.add_column("模型"); table.add_column("凭证")
+        for name_, prov in cfg.providers.items():
+            rk = resolve_key(name_, prov.apiKey, store)
+            table.add_row(name_, prov.baseUrl or "(内置)", prov.api or DEFAULT_API,
+                          str(len(prov.models)),
+                          f"{'[green]OK[/green]' if rk.ok else '[red]缺密钥[/red]'}  {rk.describe()}")
+        console.print(table)
+
     try:
         default = require_default_model(cfg)
     except ConfigError as exc:
         console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(code=2) from exc
-    store = AuthStore()
-    table = Table(title="模型")
-    table.add_column("用途"); table.add_column("模型"); table.add_column("凭证")
-    for name_, spec in (("default", default), ("router", cfg.models.router)):
-        if spec is None:
-            continue
-        rk = resolve_key(spec, store)
-        ok = rk.ok
-        table.add_row(f"[models.{name_}]", f"{spec.provider}/{spec.model}",
-                      f"{'[green]OK[/green]' if ok else '[red]缺密钥[/red]'}  {rk.describe()}")
-        if not ok:
-            exit_code = 3
-    console.print(table)
+    rk = resolve_key(default.provider, default.api_key_ref, store)
+    console.print(f"[bold]默认模型:[/bold] {default.label}  "
+                  f"api={default.api}  ctx={default.context_window}  max={default.max_tokens}  "
+                  f"reasoning={default.reasoning}  "
+                  f"{'[green]凭证 OK[/green]' if rk.ok else '[red]缺密钥[/red]'} {rk.describe()}")
+    if not rk.ok:
+        exit_code = 3
+    router = resolve_router_model(cfg)
+    if router.label != default.label:
+        console.print(f"[bold]分派模型:[/bold] {router.label}")
     if exit_code:
-        console.print("[yellow]提示:qi auth login <provider> 写入 auth store,或 export 对应环境变量。[/yellow]")
+        console.print(f"[yellow]提示:qi auth login <provider> 写入 auth store,或在 {MODELS_FILE_NAME} 的 provider 配 apiKey。[/yellow]")
     raise typer.Exit(code=exit_code)
 
 
@@ -203,21 +224,29 @@ app.add_typer(models_app, name="models")
 
 @models_app.command("list")
 def models_list() -> None:
-    """列出命名模型(models.default / models.router)与凭证状态。"""
+    """列出 models.json 中的 provider/模型与默认模型。"""
     try:
         cfg, _files = load_config()
-        default = require_default_model(cfg)
     except ConfigError as exc:
         console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(code=2) from exc
     store = AuthStore()
-    table = Table(title="命名模型")
-    table.add_column("名称"); table.add_column("provider"); table.add_column("model"); table.add_column("凭证")
-    for name_, spec in (("default", default), ("router", cfg.models.router)):
-        if spec is None:
-            continue
-        rk = resolve_key(spec, store)
-        table.add_row(name_, spec.provider, spec.model, rk.describe())
+    default_label = f"{cfg.defaultProvider}/{cfg.defaultModel}" if cfg.defaultProvider and cfg.defaultModel else None
+    table = Table(title="模型")
+    table.add_column("默认"); table.add_column("provider"); table.add_column("模型")
+    table.add_column("api"); table.add_column("ctx"); table.add_column("credential")
+    shown: set[str] = set()
+    for name_, prov in cfg.providers.items():
+        rk = resolve_key(name_, prov.apiKey, store)
+        for m in prov.models:
+            label = f"{name_}/{m.id}"
+            shown.add(label)
+            table.add_row("*" if label == default_label else "", name_, m.id,
+                          m.api or prov.api or DEFAULT_API, str(m.contextWindow), rk.describe())
+    if default_label and default_label not in shown:
+        spec = resolve_model(cfg, cfg.defaultProvider, cfg.defaultModel)  # type: ignore[arg-type]
+        rk = resolve_key(spec.provider, spec.api_key_ref, store)
+        table.add_row("*", spec.provider, spec.model, spec.api, str(spec.context_window), rk.describe())
     console.print(table)
 
 
@@ -349,17 +378,12 @@ app.add_typer(auth_app, name="auth")
 
 @auth_app.command("login")
 def auth_login(provider: str = typer.Argument(...)) -> None:
+    """输入 API key 写入 auth store(provider 可自定义;输入可见)。"""
     provider = provider.strip().lower()
-    if provider not in SUPPORTED_PROVIDERS:
-        console.print(f"[red]未知 provider {provider};支持: {', '.join(SUPPORTED_PROVIDERS)}[/red]")
-        raise typer.Exit(code=2)
-    key = getpass.getpass(f"输入 {provider} API key:")
-    if not key:
-        console.print("[red]未输入,取消。[/red]")
-        raise typer.Exit(code=1)
+    key = prompt.text(f"{provider} API key", required=True)
     store = AuthStore()
     store.set_key(provider, key)
-    console.print(f"[green]已保存 {provider} 到 {store.path}(0600)[/green]")
+    console.print(f"[green]已保存 {provider} 到 {store.path}(0600): [/green]{escape(_mask(key))}")
 
 
 @auth_app.command("logout")
@@ -382,49 +406,256 @@ def auth_list() -> None:
         console.print(p)
 
 
+# ── qi init ─────────────────────────────────────────────
+
+def _mask(key: str) -> str:
+    """部分遮蔽:首尾各留少量字符,便于确认写入成功。"""
+    if not key:
+        return "(未设置)"
+    if len(key) <= 8:
+        return "*" * len(key)
+    return f"{key[:4]}...{key[-2:]}"
+
+
+def _provider_configured(entry: dict) -> bool:
+    """已配置 = 有 baseUrl 且至少一个模型(QwenPaw 的 [✓]/[✗] 标记)。"""
+    models = [m for m in entry.get("models", []) or []
+              if isinstance(m, dict) and m.get("id")]
+    return bool(entry.get("baseUrl")) and bool(models)
+
+
+def _provider_labels(providers: dict) -> list[tuple[str, str]]:
+    """返回 (label, provider_name) 列表,label 带 [✓]/[✗]。"""
+    out: list[tuple[str, str]] = []
+    for name in sorted(providers):
+        entry = providers[name]
+        mark = "✓" if _provider_configured(entry) else "✗"
+        out.append((f"{name} [{mark}]", name))
+    return out
+
+
+def _select_existing_provider(providers: dict, default_provider: str | None) -> str | None:
+    """选已有 provider;返回 None 表示要新建。"""
+    pairs = _provider_labels(providers)
+    labels = [p[0] for p in pairs] + ["＋ 新建 provider"]
+    names = [p[1] for p in pairs]
+    default = names.index(default_provider) if default_provider in names else len(names)
+    idx = prompt.select("选择 provider", labels, default=default)
+    return names[idx] if idx < len(names) else None
+
+
+def _configure_provider(provider: str, entry: dict) -> None:
+    """按 QwenPaw 流程配置单个 provider:baseUrl → api → API key。"""
+    store = AuthStore()
+    current_key = store.get(provider) or ""
+
+    base_default = entry.get("baseUrl") or None
+    base = prompt.text("Base URL (OpenAI-compatible endpoint)", default=base_default, required=True)
+    if base:
+        entry["baseUrl"] = base
+
+    api_default = entry.get("api") if entry.get("api") in SUPPORTED_APIS else DEFAULT_API
+    entry["api"] = SUPPORTED_APIS[prompt.select(
+        "API 类型", list(SUPPORTED_APIS), default=list(SUPPORTED_APIS).index(api_default))]
+
+    # 凭证:可见输入;已有则回车保留(QwenPaw 的 [set] 语义)
+    suffix = f" [{'set' if current_key else 'not set'}, 回车保留]" if current_key else ""
+    key = prompt.text(f"{provider} API key", suffix=suffix, required=not current_key)
+    if key:
+        store.set_key(provider, key)
+        current_key = key
+    summary = f"[green]✓[/green] {provider} — API Key: {escape(_mask(current_key))}"
+    if entry.get("baseUrl"):
+        summary += f", Base URL: {escape(entry['baseUrl'])}"
+    console.print(summary)
+
+
+def _add_models_interactive(provider: str, entry: dict) -> None:
+    """QwenPaw 风格的 Add a model? 循环;每个模型含 qi 参数(有默认值)。"""
+    models: list = entry.setdefault("models", [])
+    console.print(f"\n[bold]--- Add Models ---[/bold]")
+    if models:
+        console.print(f"Current models for {provider}:")
+        for m in models:
+            if isinstance(m, dict) and m.get("id"):
+                console.print(f"  - {m.get('name') or m['id']} ({m['id']})")
+    else:
+        console.print(f"No models configured for {provider}.")
+
+    while prompt.confirm("Add a model?", default=not models):
+        mid = prompt.text("Model identifier", required=True)
+        name = prompt.text("Model display name", default=mid).strip() or mid
+        reasoning = prompt.confirm("Supports reasoning (扩展思考)?", default=False)
+        ctx = prompt.integer("contextWindow", DEFAULT_CONTEXT_WINDOW)
+        mx = prompt.integer("maxTokens", DEFAULT_MAX_TOKENS)
+        new = {"id": mid, "name": name, "reasoning": reasoning,
+               "contextWindow": int(ctx), "maxTokens": int(mx)}
+        for i, m in enumerate(models):
+            if isinstance(m, dict) and m.get("id") == mid:
+                models[i] = {**m, **new}
+                break
+        else:
+            models.append(new)
+        console.print(f"[green]✓[/green] Model '{escape(name)}' ({escape(mid)}) added.")
+
+
+def _activate_llm(data: dict, providers: dict) -> None:
+    """QwenPaw 的 --- Activate LLM Model ---:选 provider → 选 model。"""
+    console.print("\n[bold]--- Activate LLM Model ---[/bold]")
+    eligible = [n for n in sorted(providers)
+                if any(isinstance(m, dict) and m.get("id") for m in providers[n].get("models", []))]
+    if not eligible:
+        console.print("[red]没有可用模型,已取消。[/red]")
+        raise typer.Exit(code=1)
+
+    def _prov_label(n: str) -> str:
+        mark = "✓" if _provider_configured(providers[n]) else "✗"
+        return f"{n} [{mark}]"
+
+    cur_prov = data.get("defaultProvider")
+    pidx = eligible.index(cur_prov) if cur_prov in eligible else 0
+    p = eligible[prompt.select("Select provider for LLM", [_prov_label(n) for n in eligible], default=pidx)]
+
+    ids = [m["id"] for m in providers[p]["models"] if isinstance(m, dict) and m.get("id")]
+    cur_model = data.get("defaultModel")
+    midx = ids.index(cur_model) if cur_model in ids else 0
+    labels = [f"{m.get('name') or m['id']}" for m in providers[p]["models"]
+              if isinstance(m, dict) and m.get("id")]
+    m = ids[prompt.select("Select LLM model", labels, default=midx)]
+
+    data["defaultProvider"] = p
+    data["defaultModel"] = m
+    console.print(f"[green]✓[/green] LLM: {escape(p)} / {escape(m)}")
+
+
+def _write_models(target_dir: Path, target_file: Path, data: dict) -> None:
+    for sub in ("agents", "plugins", "sessions"):
+        (target_dir / sub).mkdir(parents=True, exist_ok=True)
+    save_models_file(target_file, data)
+    console.print(f"[green]✓[/green] Configuration saved to {target_file}")
+
+
+def _init_interactive(local: bool) -> None:
+    """QwenPaw 风格:Provider Configuration → Add Models → Activate LLM Model。"""
+    target_dir = project_home() if local else global_home()
+    target_file = target_dir / MODELS_FILE_NAME
+    data = load_models_file(target_file)
+    providers: dict = data.setdefault("providers", {})
+
+    console.print(f"Working dir: {target_dir}")
+    console.print("\n[bold]=== LLM Provider Configuration ===[/bold]")
+    console.print("[bold]--- Provider Configuration ---[/bold]")
+    while True:
+        provider = _select_existing_provider(providers, data.get("defaultProvider"))
+        if provider is None:
+            provider = prompt.text("Provider name", required=True)
+            entry = providers.setdefault(provider, {})
+        else:
+            entry = providers[provider]
+        _configure_provider(provider, entry)
+        _add_models_interactive(provider, entry)
+        if not prompt.confirm("Configure another provider?", default=False):
+            break
+
+    _activate_llm(data, providers)
+    _write_models(target_dir, target_file, data)
+    console.print("\n[green]✓ Initialization complete![/green]")
+
+
+def _init_noninteractive(*, provider: str | None, model: str | None, base_url: str | None,
+                         api: str | None, api_key: str | None, api_key_env: str | None,
+                         reasoning: bool | None, context_window: int | None,
+                         max_tokens: int | None, local: bool) -> None:
+    target_dir = project_home() if local else global_home()
+    target_file = target_dir / MODELS_FILE_NAME
+    data = load_models_file(target_file)
+    providers: dict = data.setdefault("providers", {})
+
+    if not provider:
+        provider = data.get("defaultProvider")
+    if not provider:
+        console.print("[red]-y 模式需要 --provider(或先用交互模式配置)。[/red]")
+        raise typer.Exit(code=2)
+    provider = provider.strip()
+
+    entry: dict = dict(providers.get(provider) or {})
+    if base_url:
+        entry["baseUrl"] = base_url
+    if api:
+        if api not in SUPPORTED_APIS:
+            console.print(f"[red]未知 api {api};支持: {', '.join(SUPPORTED_APIS)}[/red]")
+            raise typer.Exit(code=2)
+        entry["api"] = api
+    entry.setdefault("api", DEFAULT_API)
+
+    store = AuthStore()
+    if api_key:
+        store.set_key(provider, api_key)
+    elif api_key_env:
+        entry["apiKey"] = f"${api_key_env}"
+    elif not entry.get("apiKey") and not store.get(provider):
+        env_name = DEFAULT_API_KEY_ENV.get(provider)
+        if env_name:
+            entry["apiKey"] = f"${env_name}"
+
+    models: list = entry.setdefault("models", [])
+    if not model:
+        model = data.get("defaultModel") if data.get("defaultProvider") == provider else None
+        if not model and models:
+            model = models[0].get("id")
+    if not model:
+        console.print("[red]-y 模式需要 --model。[/red]")
+        raise typer.Exit(code=2)
+    model = model.strip()
+
+    new = {"id": model}
+    for i, m in enumerate(models):
+        if isinstance(m, dict) and m.get("id") == model:
+            merged = {**m, **new}
+            merged["reasoning"] = bool(reasoning) if reasoning is not None else m.get("reasoning", False)
+            merged["contextWindow"] = (int(context_window) if context_window is not None
+                                       else m.get("contextWindow", DEFAULT_CONTEXT_WINDOW))
+            merged["maxTokens"] = (int(max_tokens) if max_tokens is not None
+                                   else m.get("maxTokens", DEFAULT_MAX_TOKENS))
+            models[i] = merged
+            break
+    else:
+        models.append({
+            "id": model,
+            "reasoning": bool(reasoning) if reasoning is not None else False,
+            "contextWindow": int(context_window) if context_window is not None else DEFAULT_CONTEXT_WINDOW,
+            "maxTokens": int(max_tokens) if max_tokens is not None else DEFAULT_MAX_TOKENS,
+        })
+
+    providers[provider] = entry
+    data["defaultProvider"] = provider
+    data["defaultModel"] = model
+    _write_models(target_dir, target_file, data)
+    console.print(f"[bold]默认模型:[/bold] {provider}/{model}")
+    console.print("[yellow]下一步:qi doctor 校验。[/yellow]")
+
+
 @app.command("init")
 def init(
-    global_: bool = typer.Option(False, "--global", "-g", help="写全局 ~/.qi(默认当前项目 .qi)"),
-    force: bool = typer.Option(False, "--force", "-f", help="已存在时覆盖"),
-    yes: bool = typer.Option(False, "--yes", "-y", help="全默认,不交互"),
+    provider: str | None = typer.Option(None, "--provider", help="provider 名(已有或新建)"),
+    model: str | None = typer.Option(None, "--model", help="模型 id(已有或新建)"),
+    base_url: str | None = typer.Option(None, "--base-url", help="provider 的 API endpoint"),
+    api: str | None = typer.Option(None, "--api", help="api 类型: " + "/".join(SUPPORTED_APIS)),
+    api_key: str | None = typer.Option(None, "--api-key", help="API key(写入 auth.json)"),
+    api_key_env: str | None = typer.Option(None, "--api-key-env", help="在 models.json 引用该环境变量"),
+    reasoning: bool | None = typer.Option(None, "--reasoning/--no-reasoning", help="模型支持 reasoning"),
+    context_window: int | None = typer.Option(None, "--context-window", help="上下文窗口 token"),
+    max_tokens: int | None = typer.Option(None, "--max-tokens", help="最大输出 token"),
+    local: bool = typer.Option(False, "--local", "-l", help="写入项目 .qi/models.json"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="非交互:需配合 --provider/--model"),
 ) -> None:
-    target = global_home() if global_ else project_home()
-    config_path = target / CONFIG_FILE_NAME
-    if config_path.exists() and not force:
-        console.print(f"[yellow]已存在 {config_path};用 -f 覆盖。[/yellow]")
-        raise typer.Exit(code=1)
-    for sub in ("agents", "plugins", "sessions"):
-        (target / sub).mkdir(parents=True, exist_ok=True)
-    provider = "deepseek"
-    if not yes:
-        provider = typer.prompt(f"provider({', '.join(SUPPORTED_PROVIDERS)})", default="deepseek")
-    provider = provider.strip().lower()
-    if provider not in SUPPORTED_PROVIDERS:
-        console.print(f"[red]未知 provider {provider}[/red]")
-        raise typer.Exit(code=2)
-    model = "deepseek-chat" if provider in ("deepseek", "openai") else "qwen3:8b"
-    if not yes:
-        model = typer.prompt("model 名", default=model)
-    lines = ["# qi_agent.toml(由 qi init 生成)", "[models.default]",
-             f'provider = "{provider}"', f'model = "{model}"']
-    if provider != "ollama":
-        api_key_env = ""
-        if not yes:
-            api_key_env = typer.prompt("凭证方式:输入环境变量名(留空=存 auth store)", default="",
-                                       show_default=False)
-        if api_key_env:
-            lines.append(f'api_key_env = "{api_key_env}"')
-            console.print(f"[yellow]记得 export {api_key_env}=sk-…[/yellow]")
-        else:
-            key = getpass.getpass(f"输入 {provider} 的 API key(将写入 auth store):")
-            if key:
-                AuthStore().set_key(provider, key)
-                console.print("[green]已写入 auth store(0600)[/green]")
-    lines.append("")
-    target.mkdir(parents=True, exist_ok=True)
-    config_path.write_text("\n".join(lines), encoding="utf-8")
-    console.print(f"[green]已生成 {config_path}[/green]")
-    console.print("[yellow]下一步:qi doctor 校验。[/yellow]")
+    """引导默认模型:Provider Config → Add Models → Activate LLM,写 models.json + auth.json。"""
+    if yes:
+        _init_noninteractive(provider=provider, model=model, base_url=base_url, api=api,
+                             api_key=api_key, api_key_env=api_key_env, reasoning=reasoning,
+                             context_window=context_window, max_tokens=max_tokens, local=local)
+    else:
+        _init_interactive(local)
 
 
 @app.command("version")

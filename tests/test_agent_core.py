@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -63,8 +64,13 @@ def _yaml(m: dict) -> str:
 
 
 def write_config(tmp: Path, provider: str = "ollama") -> Path:
-    cfg = tmp / "qi_agent.toml"
-    cfg.write_text(f'[models.default]\nprovider="{provider}"\nmodel="x"\n', encoding="utf-8")
+    cfg = tmp / "models.json"
+    cfg.write_text(json.dumps({
+        "defaultProvider": provider,
+        "defaultModel": "x",
+        "providers": {provider: {"api": "openai-completions",
+                                "models": [{"id": "x"}]}},
+    }), encoding="utf-8")
     return cfg
 
 
@@ -229,10 +235,10 @@ async def test_router_low_confidence_falls_back(tmp_path):
 
 def _runtime_env(monkeypatch, base: Path) -> dict:
     home = base / "home"
-    write_config(base)
-    monkeypatch.setenv("QI_AGENT_CONFIG", str(base / "qi_agent.toml"))
+    models = write_config(base)
+    monkeypatch.setenv("QI_AGENT_CONFIG", str(models))
     monkeypatch.setenv("QI_AGENT_HOME", str(home))
-    return {"home": home, "cfg": base / "qi_agent.toml"}
+    return {"home": home, "cfg": models}
 
 
 @pytest.mark.asyncio

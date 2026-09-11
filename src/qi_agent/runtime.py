@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .auth import AuthStore
-from .config import ModelSpec, QiConfig, load_config, require_default_model
+from .config import ResolvedModel, load_config, require_default_model, resolve_router_model
 from .dispatcher import Decision, Dispatcher
 from .llm import LiteLLMClient, LLMClient, chat_message_from_dict
 from .loader import LoadError, load_all_agents
@@ -54,12 +54,12 @@ class QiRuntime:
         self.registry.register_all(units)
 
         auth = AuthStore()
-        default: ModelSpec = require_default_model(self.cfg)
+        default: ResolvedModel = require_default_model(self.cfg)
         self.llm_exec = llm or LiteLLMClient(default, auth)
         if disable_router:
             self.router_llm = None
         else:
-            router_spec = self.cfg.models.router or default
+            router_spec = resolve_router_model(self.cfg)
             self.router_llm = router_llm if router_llm is not None else LiteLLMClient(router_spec, auth)
         self.dispatcher = Dispatcher(self.registry, self.router_llm,
                                      confidence_min=self.runtime_cfg.confidence_min)

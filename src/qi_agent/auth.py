@@ -1,20 +1,27 @@
-"""凭证三源解析 + auth store(~/.qi/auth.json,0600)。
+"""凭证解析 + auth store(~/.qi/auth.json,0600,对齐 pi)。
 
-解析顺序:
-  1. 配置显式 api_key_env(该环境变量)
-  2. ~/.qi/auth.json 按 provider
-  3. 约定环境变量(如 DEEPSEEK_API_KEY)
+解析顺序(对齐 pi):
+  1. ~/.qi/auth.json 按 provider
+  2. 约定环境变量(如 DEEPSEEK_API_KEY)
+  3. provider 的 apiKey 引用(models.json 中字面量 / $ENV / !command)
 本地 provider(ollama)免 key。
+
+`apiKey` 值语法(与 pi 一致):
+  - `!command`           执行命令取 stdout
+  - `$ENV` / `${ENV}`    环境变量插值;缺失则视为未解析
+  - `$$` / `$!`          转义为字面量 `$` / `!`
+  - 其它                  字面量
 """
 
 from __future__ import annotations
 
 import json
 import os
+import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from .config import ModelSpec
 from .paths import global_home
 
 AUTH_FILE_NAME = "auth.json"
@@ -24,15 +31,59 @@ DEFAULT_API_KEY_ENV = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
+    "google": "GEMINI_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
+    "xai": "XAI_API_KEY",
 }
 
 KEYLESS_PROVIDERS = ("ollama",)
+
+_ENV_RE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+
+
+def resolve_value(raw: str, env: dict[str, str] | None = None) -> str | None:
+    """解析 apiKey / header 值;返回 None 表示未解析(环境变量缺失/命令失败)。"""
+    env = env if env is not None else os.environ
+    if raw.startswith("$$"):          # 转义:字面量 $
+        return raw[1:]
+    if raw.startswith("$!"):          # 转义:字面量 !
+        return raw[1:]
+    if raw.startswith("!"):           # 执行命令
+        try:
+            proc = subprocess.run(
+                raw[1:], shell=True, capture_output=True, text=True, timeout=30
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if proc.returncode != 0:
+            return None
+        out = proc.stdout.strip()
+        return out or None
+
+    missing = False
+
+    def _repl(match: re.Match[str]) -> str:
+        nonlocal missing
+        name = match.group(1) or match.group(2)
+        value = env.get(name)
+        if value is None:
+            missing = True
+            return ""
+        return value
+
+    result = _ENV_RE.sub(_repl, raw)
+    if missing:
+        return None
+    return result
 
 
 @dataclass
 class ResolvedKey:
     key: str | None        # None = 未找到
-    source: str            # "env:api_key_env" | "auth" | "env:default" | "none" | "missing"
+    source: str
     ok: bool
 
     def describe(self) -> str:
@@ -92,26 +143,28 @@ class AuthStore:
         )
 
 
-def resolve_key(spec: ModelSpec, store: AuthStore | None = None) -> ResolvedKey:
-    """按三源解析某模型配置的密钥。"""
-    if spec.provider in KEYLESS_PROVIDERS:
-        return ResolvedKey(key=None, source="none", ok=True)
+def resolve_key(provider: str, api_key_ref: str | None = None,
+                store: AuthStore | None = None) -> ResolvedKey:
+    """按 pi 顺序解析某 provider 的密钥。
+
+    1. auth store → 2. 约定环境变量 → 3. provider apiKey 引用。
+    """
     store = store or AuthStore()
-    # 1. 显式 api_key_env
-    if spec.api_key_env:
-        value = os.environ.get(spec.api_key_env)
-        if value:
-            return ResolvedKey(key=value, source=f"env:{spec.api_key_env}", ok=True)
-        return ResolvedKey(key=None, source=f"env:{spec.api_key_env}(未设置)", ok=False)
-    # 2. auth store
-    stored = store.get(spec.provider)
+    stored = store.get(provider)
     if stored:
         return ResolvedKey(key=stored, source="auth", ok=True)
-    # 3. 约定环境变量
-    default_env = DEFAULT_API_KEY_ENV.get(spec.provider)
+    default_env = DEFAULT_API_KEY_ENV.get(provider)
     if default_env:
         value = os.environ.get(default_env)
         if value:
-            return ResolvedKey(key=value, source="env:default", ok=True)
+            return ResolvedKey(key=value, source=f"env:{default_env}", ok=True)
+    if api_key_ref:
+        value = resolve_value(api_key_ref)
+        if value:
+            return ResolvedKey(key=value, source=f"config:{api_key_ref}", ok=True)
+        return ResolvedKey(key=None, source=f"config:{api_key_ref}(未解析)", ok=False)
+    if default_env:
         return ResolvedKey(key=None, source=f"env:{default_env}(未设置)", ok=False)
+    if provider in KEYLESS_PROVIDERS:
+        return ResolvedKey(key=None, source="none", ok=True)
     return ResolvedKey(key=None, source="无密钥来源", ok=False)

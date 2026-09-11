@@ -34,7 +34,7 @@ FastAPI/Starlette + uvicorn     # 复用 hikqin server.py 思路
 └── 静态托管:已安装 UI 插件的页面资源
 ```
 
-- 配置在 `qi_agent.toml`:`[web] host/port/password_env`(待定小节归入应用配置主题)
+- 应用级配置(host/port/password_env)属应用配置主题(v2 待定;模型/凭证已在 `models.json` + `auth.json`)
 - 安全默认:仅 `127.0.0.1`;远程需显式 hostname + 密码(参考 pi-web 的警告语义:暴露可执行高权限操作的 agent)
 - **API 契约版本化**:`/api` 形状是 UI 插件的依赖,语义版本化(v1/v2),宿主保证兼容,防止契约漂移
 - 不装 UI 插件:`qi web` 只提供 API/健康检查

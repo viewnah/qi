@@ -29,8 +29,11 @@ def test_router_cases_yaml_structure():
 async def test_tui_smoke_import(tmp_path, monkeypatch):
     from qi_agent import paths
 
-    (tmp_path / "qi_agent.toml").write_text('[models.default]\nprovider="ollama"\nmodel="x"\n')
-    monkeypatch.setenv(paths.QI_AGENT_CONFIG, str(tmp_path / "qi_agent.toml"))
+    (tmp_path / "models.json").write_text(
+        '{"defaultProvider": "ollama", "defaultModel": "x", '
+        '"providers": {"ollama": {"api": "openai-completions", '
+        '"models": [{"id": "x"}]}}}')
+    monkeypatch.setenv(paths.QI_AGENT_CONFIG, str(tmp_path / "models.json"))
     monkeypatch.setenv(paths.QI_AGENT_HOME, str(tmp_path / "home"))
     from qi_agent.tui import QiTui
 

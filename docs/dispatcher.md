@@ -28,7 +28,7 @@
   │     唯一命中 → 直派(source=rules)
   │     多命中/无 → 继续
   ├─ ③ sticky:有 active_agent 且无新任务信号 → 沿用(source=sticky),零 LLM 成本
-  ├─ ④ L3 Router-LLM([models.router],无工具)
+  ├─ ④ L3 Router-LLM(routerProvider/routerModel,无工具)
   │     tool-call 强约束输出 {agent, confidence, reasoning}(B5)
   │     解析失败 / agent 不在 registry → 重试 1 次
   └─ ⑤ L4 兜底:confidence < 0.6(B6,可配 [runtime])

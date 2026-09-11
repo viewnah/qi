@@ -3,6 +3,25 @@
 > 目标:用 Python 实现一个「类似 pi」的多 agent 编码框架——专职角色 agent + **auto 模式**(Dispatcher 自动分派)。参考 hikqin_sdk 的设计(不依赖它),独立实现。
 > **开发计划见 [docs/PLAN.md](docs/PLAN.md)**;本文是设计总入口:文档索引、架构总览、决策索引、技术选型与目录布局。
 
+## 快速开始
+
+```bash
+# 1. 引导配置默认模型(交互:上下键选择 provider/模型,写 models.json + auth.json)
+qi init
+
+# 非交互(CI / 脚本)
+qi init -y --provider deepseek --model deepseek-chat \
+    --base-url https://api.deepseek.com/v1 --api openai-completions --api-key sk-xxx
+
+# 2. 校验配置与凭证
+qi doctor
+
+# 3. 运行(无头一次执行,auto 分派)
+qi -p "分析这个仓库"
+```
+
+`qi init` 交互流程与样式复刻 QwenPaw `init`:**Provider Configuration**(选已有/新建 → Base URL → API 类型 → API Key)→ **Add Models**(`Add a model?` 循环,含 reasoning/contextWindow/maxTokens)→ **Activate LLM Model**(选 provider → 选 model)。完整用法、选项与示例见 [docs/model-config.md §7](docs/model-config.md#7-qi-init-用法)。
+
 ## 1. 文档索引
 
 | 文档 | 内容 |
@@ -11,7 +30,7 @@
 | [docs/agent-config.md](docs/agent-config.md) | agent = 自包含目录(agent.md / skills / assets / mcp.json / data_sources.json)、装载校验、MCP、数据源、导入导出 |
 | [docs/tools.md](docs/tools.md) | ToolCatalog、内置 7 工具、tools 三态、bash 安全(v1 只读 allowlist) |
 | [dispatcher.md](docs/dispatcher.md) | auto 模式:信号分层、分派管线、Router 契约、优先级 |
-| [docs/model-config.md](docs/model-config.md) | `[models.*]` 命名模型(执行 default / 分派 router);凭证三源(api_key_env / auth store / 约定 env) |
+| [docs/model-config.md](docs/model-config.md) | `models.json`(对齐 pi:`providers` / `baseUrl` / `api` / `models`);默认模型 default / 分派 router;凭证 auth store + 约定 env + apiKey 引用 |
 | [docs/plugins.md](docs/plugins.md) | 插件机制:pip(entry point)+ 本地目录双通道、消费型配置动态装载 |
 | [docs/cli.md](docs/cli.md) | 命令面(参数尽量对齐 pi) |
 | [docs/tui.md](docs/tui.md) | TUI 交互:`/` 命令草案、布局、消息队列(与 cli.md 区分) |
@@ -33,7 +52,7 @@
 ├──────────────────────────────────────────────────────────┤
 │ 内核                                                       │
 │   AgentRunner(tool-loop)· ToolCatalog · Session(JSONL)     │
-│   LLMClient([models.*])· 事件总线                           │
+│   LLMClient(models.json)· 事件总线                          │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -52,12 +71,12 @@
 | 导入导出 | import = 拷贝 + 复用装载校验器 + 明文凭证扫描;export 产物可直接 import | agent-config.md §10 |
 | 工具 | 代码全局注册 ToolCatalog;**tools 三态**:省略或 `*` = 全部,名单 = allowlist;未知名报错 | tools.md |
 | 内置工具(v1) | 7 个:read / ls / find / grep / write / edit(diff 精确)/ bash(对齐 pi,去 powershell) | tools.md §2 |
-| 模型 | 全局 `[models.default]`(执行)/ `[models.router]`(分派);agent 不声明模型 | model-config.md |
+| 模型 | 全局 `models.json`:`defaultProvider/defaultModel`(执行)/ `routerProvider/routerModel`(分派);agent 不声明模型 | model-config.md |
 | 插件 | pip 包(entry point `qi.plugins`)+ 本地目录双通道;register():add_tool / provides_config / provides_types | plugins.md |
 | 运行 | auto 默认(Dispatcher 分派);`--agent` manual;sticky 会话亲和 + `@` 点名 | cli.md |
 | 命令 | 参数尽量对齐 pi:`qi [-p\|-c\|-r\|…] [--] [@files…] [msg…]` + 子命令 | cli.md |
 | Web(v2) | HTTP 宿主在框架(`qi web`),UI 插件化;不做外置 RPC 桥 | web.md |
-| 配置形态 | agent 定义 = Markdown + frontmatter;应用设置 = TOML 分层(env → 项目 → 用户 → 内置) | agent-config.md |
+| 配置形态 | agent 定义 = Markdown + frontmatter;模型配置 = JSON `models.json`(对齐 pi,分层:env → 项目 → 用户) | model-config.md |
 | 会话 | JSONL 每会话文件(pi 风格,entry 带 type/agent_id);位置:**全局 `~/.qi/sessions/`** |
 | Dispatcher | auto:信号分层(L1 规则 / L2 embedding 默认关 / L3 Router 读 description / L4 兜底)+ sticky + @ 点名 |
 | bash 安全 | 默认只读 allowlist;破坏性命令需配置放开或审批(v2);路径限会话目录 |
@@ -73,19 +92,19 @@
 | 会话存储 | JSONL 每会话文件(不选 SQLite:追加写/可读/零迁移) | ✅ |
 | CLI | typer + rich(薄;**无独立 REPL**,交互 = TUI) | ✅ |
 | TUI | textual(事件驱动增量渲染,渲染器 = event → lines) | ✅ |
-| 配置 | tomllib + 分层深合并 + pydantic 校验;凭证不入配置文件(见凭证三源) | ✅ |
+| 配置 | JSON `models.json`(格式对齐 pi)+ 分层深合并 + pydantic 校验;凭证不入配置文件(auth store / env) | ✅ |
 
 ## 5. 目录布局(运行时)
 
 ```
 ~/.qi/                      # 全局(与项目 .qi 同构)
-├── qi_agent.toml           # [models.*] [mcp.servers] [runtime] [web](v2) …
+├── models.json             # providers / 模型 / default(格式对齐 pi)
 ├── agents/<name>/          # 全局 agent
 ├── plugins/<name>/         # 本地目录插件通道
 └── sessions/*.jsonl        # 会话(全局,对齐 pi)
 
 <项目>/.qi/                 # 项目级,需 -a 信任后加载
-├── qi_agent.toml
+├── models.json
 ├── agents/  plugins/       # 项目私有;项目版覆盖全局版(静默)
 ```
 
@@ -93,5 +112,5 @@
 
 - 内容(技能/第三方 agent)是可执行指令:**先审后装/导入时提示**
 - 插件代码 = 全权限:仅可信源;项目级 `.qi`(plugins/agents)需 `-a` 信任
-- 凭证三源:`api_key_env`(显式)→ `~/.qi/auth.json`(0600,按 provider)→ 约定环境变量;配置文件与导入包**零明文**(导入时扫描)
+- 凭证三源:auth store(`~/.qi/auth.json`,0600,按 provider)→ 约定环境变量 → `models.json` 的 `apiKey` 引用;配置文件与导入包**零明文**(导入时扫描)
 - Web/远程暴露需显式开启 + 鉴权(默认回环)

@@ -11,16 +11,18 @@
 ├── pyproject.toml              # name = "qi-agent",hatchling 构建
 ├── README.md                   # 总设计(项目根)
 ├── docs/                       # 设计文档 + 本 PLAN.md(不进 wheel)
-├── examples/agents/            # 样例 agent,不自动加载(不进 wheel)
+├── examples/agents/            # 样例 agent(教学样例;不自动加载,不进 wheel)
 ├── src/qi_agent/               # 包代码
 │   ├── __init__.py             # __version__
 │   ├── py.typed                # PEP 561
+│   ├── SYSTEM.md               # ⭐ 包内置基座系统提示词(进 wheel;可被 .qi/SYSTEM.md 覆盖)
+│   ├── builtin/agents/general/ # ⭐ 包内置兜底 agent(进 wheel;可被用户/项目同名覆盖)
 │   ├── cli.py                  # [project.scripts] qi → qi_agent.cli:main
 │   ├── config.py               # TOML 分层装载 + pydantic 校验
 │   ├── llm.py                  # LLMClient 协议 + 实现(N8 待定)
 │   ├── models.py               # AgentConfig/Tool/Message/事件类型
 │   ├── registry.py             # AgentRegistry / ToolCatalog / 插件能力注册表
-│   ├── loader.py               # agents 发现 + agent.md/技能解析 + 装载校验器
+│   ├── loader.py               # agents 发现(内置/用户/项目)+ agent.md/技能解析 + 校验 + 基座提示词解析
 │   ├── tools/                  # 内置 7 工具(read/ls/find/grep/write/edit/bash)
 │   ├── runner.py               # AgentRunner(tool-loop)
 │   ├── dispatcher.py           # Router-LLM 分派

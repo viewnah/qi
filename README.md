@@ -20,6 +20,18 @@ qi doctor
 qi -p "分析这个仓库"
 ```
 
+零配置即可跑:框架内置了一个 `general`(兜底角色)与一份**基座系统提示词**,不需要先装任何 agent。
+想定制角色就装自己的 agent;想定制基座提示词就写 `.qi/SYSTEM.md`(见第 4 步)。
+
+```bash
+# 4.(可选)装专职 agent 与自定义基座提示词
+qi agents import examples/agents/code-analyst   # 装专职角色(默认落在 ~/.qi)
+vim .qi/SYSTEM.md                              # 项目级基座提示词(可提交共享)
+```
+
+优先级:**项目 `.qi/agents/` > 用户 `~/.qi/agents/` > 包内置**;**项目 `.qi/SYSTEM.md` > `~/.qi/SYSTEM.md` > 包内置**。
+详见 [docs/system-prompt.md](docs/system-prompt.md) 与 [docs/agent-config.md](docs/agent-config.md)。
+
 `qi init` 交互流程与样式复刻 QwenPaw `init`:**Provider Configuration**(选已有/新建 → Base URL → API 类型 → API Key)→ **Add Models**(`Add a model?` 循环,含 reasoning/contextWindow/maxTokens)→ **Activate LLM Model**(选 provider → 选 model)。完整用法、选项与示例见 [docs/model-config.md §7](docs/model-config.md#7-qi-init-用法)。
 
 ## 1. 文档索引
@@ -28,6 +40,7 @@ qi -p "分析这个仓库"
 |---|---|
 | [PLAN.md](docs/PLAN.md) | 开发计划(v1/v2 阶段)与未决清单 |
 | [docs/agent-config.md](docs/agent-config.md) | agent = 自包含目录(agent.md / skills / assets / mcp.json / data_sources.json)、装载校验、MCP、数据源、导入导出 |
+| [docs/system-prompt.md](docs/system-prompt.md) | 系统提示词:基座层(内置 `SYSTEM.md` + 可选覆盖)+ 角色层(agent.md)分层与优先级 |
 | [docs/tools.md](docs/tools.md) | ToolCatalog、内置 7 工具、tools 三态、bash 安全(v1 只读 allowlist) |
 | [dispatcher.md](docs/dispatcher.md) | auto 模式:信号分层、分派管线、Router 契约、优先级 |
 | [docs/model-config.md](docs/model-config.md) | `models.json`(对齐 pi:`providers` / `baseUrl` / `api` / `models`);默认模型 default / 分派 router;凭证 auth store + 约定 env + apiKey 引用 |

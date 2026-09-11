@@ -1,7 +1,8 @@
 """内容装载器(P2):agent 目录发现(两层)、agent.md/技能解析、校验、import。
 
 对齐 agent-config.md §3/§6/§10:
-- 位置: ~/.qi/agents + <项目>/.qi/agents;项目静默覆盖全局;同层重复报错
+- 位置: ~/.qi/agents + <项目>/.qi/agents + 包内置 qi_agent/builtin/agents
+- 优先级: 项目 > 用户 > 内置(静默覆盖);同层重复报错
 - 校验: name==目录名 / description 非空 / tools 存在 / include 存在 / 技能同名冲突
 - import: 与装载共用同一校验器;明文凭证扫描
 """
@@ -23,6 +24,9 @@ ASSETS_DIR = "assets"
 SKILLS_DIR = "skills"
 MCP_FILE = "mcp.json"
 DATA_SOURCES_FILE = "data_sources.json"
+AGENTS_DIR = "agents"
+BUILTIN_DIR = "builtin"        # 包内置内容目录(qi_agent/builtin)
+SYSTEM_FILE_NAME = "SYSTEM.md"  # 基座提示词覆盖文件
 
 _PLAINTEXT_KEY_RE = re.compile(
     r'("?(?:api[_-]?key|password|secret|access_token|auth_config)"?\s*[:=]\s*["\'])([^"\']{6,})'
@@ -52,15 +56,35 @@ def split_frontmatter(text: str) -> tuple[dict, str]:
     return (meta if isinstance(meta, dict) else {}), body
 
 
+def builtin_agents_dir() -> Path | None:
+    """包内置 agent 目录(`qi_agent/builtin/agents`,随 wheel 发布)。
+
+    作为最低优先级来源,保证「零配置也能执行」:用户/项目同名 agent 会覆盖它。
+    包数据缺失(裁剪安装/打包故障)时返回 None,不影响其余来源。
+    """
+    import importlib.resources as resources
+
+    try:
+        path = Path(str(resources.files("qi_agent").joinpath(BUILTIN_DIR, AGENTS_DIR)))
+    except (ModuleNotFoundError, OSError, TypeError):
+        return None
+    return path if path.is_dir() else None
+
+
 def scan_agent_dirs(cwd: Path | None = None) -> dict[str, tuple[Path, str]]:
-    """收集 {name: (dir, source)}:项目版覆盖用户版(静默);同层重复由文件系统保证不存在。"""
+    """收集 {name: (dir, source)}。
+
+    优先级(低 → 高,后者覆盖前者):内置 builtin → 用户 `~/.qi/agents/` →
+    项目 `<git根>/.qi/agents/`。低优先级先写入,高优先级覆盖,所以项目版胜出。
+    """
     found: dict[str, tuple[Path, str]] = {}
-    for qi_home, source in (
-        (paths.project_home(cwd), "project"),
-        (paths.global_home(), "user"),
-    ):
-        agents_dir = qi_home / "agents"
-        if not agents_dir.is_dir():
+    roots: list[tuple[Path | None, str]] = [
+        (builtin_agents_dir(), "builtin"),
+        (paths.global_home() / AGENTS_DIR, "user"),
+        (paths.project_home(cwd) / AGENTS_DIR, "project"),
+    ]
+    for agents_dir, source in roots:
+        if agents_dir is None or not agents_dir.is_dir():
             continue
         for child in sorted(agents_dir.iterdir()):
             if not child.is_dir():
@@ -202,3 +226,59 @@ def load_all_agents(cwd: Path | None = None, catalog_names: set[str] | None = No
         units[name] = load_agent_dir(agent_dir, source, catalog_names,
                                      has_data_source_provider, ds_types)
     return units
+
+
+# ── 基座系统提示词(内置默认 + SYSTEM.md 覆盖) ─────────────────
+#
+# 层级(高 → 低):
+#     1. <项目>/.qi/SYSTEM.md      # 跟项目走,可提交共享
+#     2. ~/.qi/SYSTEM.md           # 全局
+#     3. src/qi_agent/SYSTEM.md    # 包内置默认(随 wheel 发布,永远存在)
+#
+# 语义(对齐 pi 的 SYSTEM.md,但分层不同):SYSTEM.md 替换的是**基座层**
+# (身份/环境/通用做法),不是整个 system prompt;**角色层**(agent.md 正文 +
+# 技能清单 + 数据源)始终追加在基座之后 —— 多 agent 语义不变:换 agent = 换角色层。
+# 基座层永远有内容,这是“零配置也能跑”的前提之一(另一个是内置 general)。
+
+# 包数据缺失时(裁剪安装/打包故障)的兜底文本,保证基座层不为空
+_FALLBACK_SYSTEM = (
+    "你是运行在 qi 框架中的 AI 助手。"
+    "完成任务优先使用工具;bash 只允许只读命令,需要落盘改动时用 write/edit;"
+    "需求不明确时用 clarify 提问,不要猜。"
+)
+
+
+def builtin_system_prompt() -> str:
+    """包内置基座提示词(`src/qi_agent/SYSTEM.md`);读取失败时返回兜底文本。"""
+    import importlib.resources as resources
+
+    try:
+        text = resources.files("qi_agent").joinpath(SYSTEM_FILE_NAME).read_text(encoding="utf-8")
+    except (FileNotFoundError, ModuleNotFoundError, OSError, UnicodeDecodeError):
+        return _FALLBACK_SYSTEM
+    return text.strip() or _FALLBACK_SYSTEM
+
+
+def system_file_candidates(cwd: Path | None = None) -> list[tuple[Path, str]]:
+    """可能的 SYSTEM.md 路径,按优先级从高到低返回 (文件, 来源)。"""
+    return [
+        (paths.project_home(cwd) / SYSTEM_FILE_NAME, "project"),
+        (paths.global_home() / SYSTEM_FILE_NAME, "user"),
+    ]
+
+
+def resolve_base_prompt(cwd: Path | None = None) -> tuple[str, str]:
+    """解析基座提示词,返回 `(文本, 来源说明)`;来源取值 `project|user|builtin`。
+
+    空文件/读取失败视为未配置,继续往下一层找(不静默降级为空提示词)。
+    """
+    for path, source in system_file_candidates(cwd):
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if text:
+            return text, f"{source}:{path}"
+    return builtin_system_prompt(), "builtin"

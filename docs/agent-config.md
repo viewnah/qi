@@ -9,7 +9,7 @@
 - **内容跟 agent 走**:人设、技能、资产是"内容",物理上属于某个 agent,可复制、可整体搬运。
 - **代码工具全局共享**:工具是代码,只能注册一次,agent 按名引用。
 - **基建集中配置**:模型、MCP server(含凭证引用)集中管理,agent 按名绑定可见性。
-- **无内置内容**:运行时没有任何自动加载的 agent / 技能;示例放仓库 `examples/`,想要就拷走。
+- **有内置兜底**:包内置一个 `general`(底座角色),保证零配置也能执行;用户/项目同名 agent 静默覆盖它。示例仍放仓库 `examples/`,不自动加载。
 
 ## 2. 一个 agent 是什么
 
@@ -32,16 +32,17 @@ agents/code-analyst/
 
 ## 3. 存放位置与覆盖规则
 
-agent 只可能出现在 **2 个位置**,目录名都用 `agents/`:
+agent 只可能出现在 **3 个位置**,目录名都用 `agents/`:
 
 | 位置 | 用途 | 优先级 |
 |---|---|---|
-| `~/.qi/agents/` | 全局(所有项目可用) | 低 |
+| 包内置 `qi_agent/builtin/agents/` | 框架自带兜底(仅 `general`),随 wheel 发布 | 最低 |
+| `~/.qi/agents/` | 全局(所有项目可用) | 中 |
 | `<项目>/.qi/agents/` | 项目私有(跟项目走,可提交共享) | **高** |
 
 同名规则:
 
-- 两边都有 `<name>` → **项目版生效**(静默覆盖,不警告)。
+- 多处都有 `<name>` → **项目 > 用户 > 内置**依次覆盖(静默,不警告)。
 - 同一层内出现重复 → 启动报错(配置错误,绝不静默取一)。
 - 都不存在 → 该名字不存在,引用方报 `unknown agent: <name>`。
 
@@ -226,10 +227,11 @@ qi agents import skill:path/to/skill   # 包装成私有技能进目标 agent
 | agent 形态 | 目录形式 `agents/<name>/`,入口固定 `agent.md` |
 | include 机制 | frontmatter `include: [...]` 拼入 system prompt(显式) |
 | 通用小能力 | 做成**全局代码工具**,不做成技能 |
-| 存放位置 | 仅 2 处:`~/.qi/agents/` + `<项目>/.qi/agents/`;无内置、无 env 层 |
-| 覆盖规则 | 项目版**静默覆盖**用户版(不警告);同层重复报错 |
+| 存放位置 | 3 处:包内置 `qi_agent/builtin/agents/` + `~/.qi/agents/` + `<项目>/.qi/agents/`;无 env 层 |
+| 覆盖规则 | 项目 > 用户 > 内置(静默覆盖,不警告);同层重复报错 |
 | 目录命名 | 隐藏目录 `.qi`(全局 `~/.qi`,项目 `.qi`),对齐 pi 的 `.pi` |
-| 内置内容 | 无内置 agent/技能;示例放 `examples/agents/`,不自动加载 |
+| 内置内容 | 内置 1 个 `general` 兜底 agent(零配置可执行的前提);**不内置技能**;示例放 `examples/agents/`,不自动加载 |
+| 基座提示词 | 内置 `src/qi_agent/SYSTEM.md` + 可选覆盖 `<项目>/.qi/SYSTEM.md` > `~/.qi/SYSTEM.md`;替换的是**基座层**,agent.md 正文作为**角色层**追加(见 [system-prompt.md](system-prompt.md)) |
 | 无内置技能 | 撤销"内置技能覆盖"问题(H4 moot) |
 | opening 字段 | v1 补充:message(agent 开场白,进会话历史)+ suggestions(UI 层快捷提问,不进历史) |
 | 执行参数 | model / temperature / max_turns 不进 agent.md;统一归全局配置(模型在 models.json,轮次/超时在 runtime) |

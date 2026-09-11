@@ -12,10 +12,10 @@ from .auth import AuthStore
 from .config import ResolvedModel, load_config, require_default_model, resolve_router_model
 from .dispatcher import Decision, Dispatcher
 from .llm import LiteLLMClient, LLMClient, chat_message_from_dict
-from .loader import LoadError, load_all_agents
+from .loader import LoadError, load_all_agents, resolve_base_prompt
 from .models import AgentEvent
 from .registry import AgentRegistry, CapabilityRegistry, ToolCatalog, discover_plugins
-from .runner import AgentRunner, RunnerSettings, build_system_prompt
+from .runner import AgentRunner, RunnerSettings
 from .session import Session, SessionStore
 from .tools import ToolContext, register_builtin_tools
 
@@ -40,6 +40,8 @@ class QiRuntime:
         self.cfg, self.config_files = load_config(self.cwd)
         self.runtime_cfg = runtime_cfg or RuntimeConfig(workdir=self.cwd)
         self.workdir = self.runtime_cfg.workdir
+        # 基座提示词:项目 .qi/SYSTEM.md > ~/.qi/SYSTEM.md > 包内置(见 system.py)
+        self.base_prompt, self.base_prompt_source = resolve_base_prompt(self.cwd)
         self.sessions = session_store or SessionStore()
 
         self.catalog = ToolCatalog()
@@ -84,6 +86,19 @@ class QiRuntime:
     def _set_active(self, session: Session, agent: str | None) -> None:
         self.sessions.append(session, {"type": "state", "key": "active_agent", "value": agent})
 
+    def _opening_shown(self, session: Session, agent: str) -> bool:
+        """该 agent 的开场白是否已在本会话展示过。
+
+        必须扫描**全部** entries:旧实现只看 `entries[-1]`,而首轮末尾已是 assistant
+        消息,.get("opening_shown") 恒为 None → 开场白每轮都重复显示。
+        按 agent 记(非按会话记),所以切换到另一个 agent 时会展示它自己的开场白。
+        """
+        return any(
+            e.get("type") == "custom" and e.get("custom_type") == "opening_shown"
+            and e.get("agent") == agent
+            for e in session.entries
+        )
+
     def _history(self, session: Session) -> list:
         """取最近会话消息(含 tool 往返),供上下文。"""
         out = []
@@ -110,11 +125,17 @@ class QiRuntime:
         if decision is None:
             decision = Decision(agent=None, confidence=0.0, source="fallback",
                                 reasoning="无匹配")
+        unit = self.registry.get(decision.agent) if decision.agent else None
+        # 展示用名:display_name 优先(如内置 general 显示为 "qi"),便于与 agents list 一致
+        shown = (unit.config.display_name.strip() if unit and unit.config.display_name
+                 else (decision.agent or "?"))
         yield AgentEvent(kind="dispatch", agent=decision.agent,
-                         text=f"{decision.agent or '?'} ({decision.source}, {decision.confidence:.2f})",
+                         text=f"{shown} ({decision.source}, {decision.confidence:.2f})",
                          data={"confidence": decision.confidence, "source": decision.source,
+                               "agent": decision.agent, "display_name": shown,
                                "reasoning": decision.reasoning})
         self.sessions.append(session, {"type": "dispatch", "agent": decision.agent,
+                                       "display_name": (shown if decision.agent else None),
                                        "confidence": decision.confidence,
                                        "source": decision.source,
                                        "reasoning": decision.reasoning})
@@ -122,7 +143,6 @@ class QiRuntime:
         if decision.agent is None:
             yield AgentEvent(kind="error", text="没有合适的 agent 且无 general,请装一个 general 或用 @ 点名")
             return
-        unit = self.registry.get(decision.agent)
         if unit is None:
             yield AgentEvent(kind="error", text=f"agent {decision.agent} 不存在")
             return
@@ -130,20 +150,20 @@ class QiRuntime:
         if active != unit.name:
             self._set_active(session, unit.name)
 
-        # opening:新会话首轮(历史为空时)
-        if unit.config.opening and not session.entries[-1:][0].get("opening_shown"):
-            # 简化:opening 消息由前端负责展示;此处仅标一次
+        # opening:每个 agent 在本会话内只展示一次(前端负责渲染)
+        if unit.config.opening and unit.config.opening.message \
+                and not self._opening_shown(session, unit.name):
             self.sessions.append(session, {"type": "custom", "custom_type": "opening_shown",
                                            "agent": unit.name})
-            if unit.config.opening.message:
-                yield AgentEvent(kind="opening", agent=unit.name,
-                                 text=unit.config.opening.message,
-                                 data={"suggestions": unit.config.opening.suggestions})
+            yield AgentEvent(kind="opening", agent=unit.name,
+                             text=unit.config.opening.message,
+                             data={"suggestions": unit.config.opening.suggestions})
 
         runner = AgentRunner(unit, self.catalog, self.llm_exec,
                              RunnerSettings(max_turns=self.runtime_cfg.max_turns,
                                             timeout_s=self.runtime_cfg.timeout_s),
-                             tool_ctx=self._tool_ctx(unit.name, unit))
+                             tool_ctx=self._tool_ctx(unit.name, unit),
+                             base_prompt=self.base_prompt)
         history = self._history(session)
         final_text = ""
         async for event in runner.run(text, history):

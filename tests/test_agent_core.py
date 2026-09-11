@@ -295,3 +295,68 @@ async def test_runtime_manual_override(tmp_path, monkeypatch):
     events = [e async for e in rt.stream("随便", session, agent_override="code-analyst")]
     d = next(e for e in events if e.kind == "dispatch")
     assert d.data["source"] == "manual"
+
+
+# ── opening:每个 agent 每会话只展示一次(回归:曾每轮重复) ──────────
+
+@pytest.mark.asyncio
+async def test_opening_shown_once_per_agent(tmp_path, monkeypatch):
+    """opening 只应在该 agent 的首轮展示;旧实现只看 entries[-1],导致每轮都重复。"""
+    from qi_agent.runtime import QiRuntime, RuntimeConfig
+
+    env = _runtime_env(monkeypatch, tmp_path)
+    write_agent(env["home"] / "agents", "writer",
+                extra={"opening": {"message": "开场白X", "suggestions": []}})
+    sessions = SessionStore(root=tmp_path / "sessions")
+    rt = QiRuntime(cwd=tmp_path, runtime_cfg=RuntimeConfig(workdir=tmp_path),
+                   session_store=sessions,
+                   llm=StubLLM([ChatResponse(text="a"), ChatResponse(text="b"),
+                                ChatResponse(text="c")]),
+                   disable_router=True)
+    session = sessions.create("t")
+    counts = []
+    for i in range(3):
+        evs = [e async for e in rt.stream(f"q{i}", session, agent_override="writer")]
+        counts.append(sum(1 for e in evs if e.kind == "opening"))
+    assert counts == [1, 0, 0], f"opening 展示次数应为 [1,0,0],实得 {counts}"
+
+
+@pytest.mark.asyncio
+async def test_opening_per_agent_not_per_session(tmp_path, monkeypatch):
+    """按 agent 记:切到另一个 agent 时,展示它自己的开场白。"""
+    from qi_agent.runtime import QiRuntime, RuntimeConfig
+
+    env = _runtime_env(monkeypatch, tmp_path)
+    write_agent(env["home"] / "agents", "writer",
+                extra={"opening": {"message": "writer 开场", "suggestions": []}})
+    write_agent(env["home"] / "agents", "analyst",
+                extra={"opening": {"message": "analyst 开场", "suggestions": []}})
+    sessions = SessionStore(root=tmp_path / "sessions")
+    rt = QiRuntime(cwd=tmp_path, runtime_cfg=RuntimeConfig(workdir=tmp_path),
+                   session_store=sessions,
+                   llm=StubLLM([ChatResponse(text="1"), ChatResponse(text="2"),
+                                ChatResponse(text="3")]),
+                   disable_router=True)
+    session = sessions.create("t")
+
+    async def openings(agent: str) -> list[str]:
+        evs = [e async for e in rt.stream("hi", session, agent_override=agent)]
+        return [e.text for e in evs if e.kind == "opening"]
+
+    assert await openings("writer") == ["writer 开场"]
+    assert await openings("writer") == []            # 同 agent 不再重复
+    assert await openings("analyst") == ["analyst 开场"]  # 换 agent → 它自己的
+
+
+def test_builtin_general_has_no_opening():
+    """内置 general 不带静态开场白:避免与模型自己的寒暄重复。"""
+    from qi_agent.loader import builtin_agents_dir, load_agent_dir
+    from qi_agent.registry import ToolCatalog
+    from qi_agent.tools import register_builtin_tools
+
+    catalog = ToolCatalog()
+    register_builtin_tools(catalog)
+    d = builtin_agents_dir()
+    assert d is not None
+    unit = load_agent_dir(d / "general", "builtin", catalog.names)
+    assert unit.config.opening is None

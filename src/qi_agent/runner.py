@@ -1,6 +1,7 @@
 """AgentRunner(P4):单 agent tool-loop,消费 ToolCatalog + LLMClient。
 
-system_prompt = 正文(+include)+ 技能清单(渐进披露)+ 数据源上下文。
+system_prompt = 基座层(SYSTEM.md / 包内置)+ 角色层(正文 + include)
+                + 技能清单(渐进披露)+ 数据源上下文。
 """
 
 from __future__ import annotations
@@ -8,8 +9,9 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 
-from .llm import ChatMessage, ChatResponse, LLMClient
-from .models import AgentEvent, AgentUnit, Message, ToolCall
+from .llm import ChatMessage, ChatResponse, LLMClient, ToolCallOut
+from .loader import builtin_system_prompt
+from .models import AgentEvent, AgentUnit
 from .registry import Tool, ToolCatalog, ToolError
 
 
@@ -19,8 +21,15 @@ class RunnerSettings:
     timeout_s: float = 600.0
 
 
-def build_system_prompt(unit: AgentUnit) -> str:
-    parts = [unit.system_prompt or f"你是 {unit.config.name}。"]
+def build_system_prompt(unit: AgentUnit, base_prompt: str | None = None) -> str:
+    """拼出完整 system prompt:基座层 → 角色层 → 技能 → 数据源。
+
+    `base_prompt=None` 时用包内置基座提示词(调用方通常传入 `resolve_base_prompt()`
+    的结果,以计入项目/用户 `SYSTEM.md` 覆盖)。
+    """
+    base = (builtin_system_prompt() if base_prompt is None else base_prompt).strip()
+    parts = [base] if base else []
+    parts.append(unit.system_prompt or f"你是 {unit.config.name}。")
     if unit.skills:
         lines = "\n".join(f"- {s.name}: {s.description}" for s in unit.skills)
         parts.append("可用技能(需要时用 read 读取其 SKILL.md 全文执行):\n" + lines)
@@ -33,12 +42,14 @@ def build_system_prompt(unit: AgentUnit) -> str:
 
 class AgentRunner:
     def __init__(self, unit: AgentUnit, catalog: ToolCatalog, llm: LLMClient,
-                 settings: RunnerSettings | None = None, tool_ctx=None):
+                 settings: RunnerSettings | None = None, tool_ctx=None,
+                 base_prompt: str | None = None):
         self.unit = unit
         self.catalog = catalog
         self.llm = llm
         self.settings = settings or RunnerSettings()
         self.tool_ctx = tool_ctx
+        self.base_prompt = base_prompt
 
     def _tools(self) -> list[Tool]:
         return self.catalog.resolve(self.unit.tools)
@@ -48,7 +59,8 @@ class AgentRunner:
         tools = self._tools()
         msgs: list[ChatMessage] = []
         if history is None or not any(m.role == "system" for m in history):
-            msgs.append(ChatMessage(role="system", content=build_system_prompt(self.unit)))
+            msgs.append(ChatMessage(role="system",
+                                    content=build_system_prompt(self.unit, self.base_prompt)))
         if history:
             msgs.extend(history)
         msgs.append(ChatMessage(role="user", content=user_input))
@@ -87,7 +99,7 @@ class AgentRunner:
         yield AgentEvent(kind="agent_end", agent=self.unit.name,
                          text=last_text, data={"messages": [m.to_dict() for m in msgs[1:]]})
 
-    async def _execute(self, tools: list[Tool], call: ToolCall) -> str:
+    async def _execute(self, tools: list[Tool], call: ToolCallOut) -> str:
         tool = self.catalog.get(call.name)
         if tool is None:
             return f"Error: 未知工具 {call.name}"

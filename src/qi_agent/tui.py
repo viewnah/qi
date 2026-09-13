@@ -60,9 +60,9 @@ class QiTui(App):
             if self._rt is None:
                 self._rt = QiRuntime()
             store = SessionStore()
-            self._session = store.create("tui") or store.latest()
+            self._session = store.create("tui", cwd=self._rt.cwd) or store.latest()
             if self._session is None:
-                self._session = store.create("tui")
+                self._session = store.create("tui", cwd=self._rt.cwd)
             log.write(f"[dim]qi {self._rt.registry.names or '(无 agent;请把样例拷进 ~/.qi/agents 或项目 .qi/agents)'}[/dim]")
             log.write(HELP_TEXT)
         except (LoadError, ConfigError) as exc:
@@ -83,7 +83,7 @@ class QiTui(App):
             log.write("[red]运行时不可用。[/red]")
             return
         if self._session is None:
-            self._session = SessionStore().create("tui")
+            self._session = SessionStore().create("tui", cwd=self._rt.cwd)
         override = None if self._auto else self._agent
         self.run_worker(self._run(text, override), exclusive=False)
 
@@ -118,7 +118,7 @@ class QiTui(App):
         elif cmd == "/clear":
             log.clear()
         elif cmd == "/new":
-            self._session = SessionStore().create("tui")
+            self._session = SessionStore().create("tui", cwd=self._rt.cwd)
             self._agent = None
             self._auto = True
             log.write("[dim]已开新会话(auto)[/dim]")

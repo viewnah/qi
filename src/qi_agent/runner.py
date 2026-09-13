@@ -7,11 +7,12 @@ system_prompt = 基座层(SYSTEM.md / 包内置)+ 角色层(正文 + include)
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass, field
 
-from .llm import ChatMessage, ChatResponse, LLMClient, ToolCallOut
+from .llm import ChatMessage, LLMClient, ToolCallOut, stream_llm
 from .loader import builtin_system_prompt
-from .models import AgentEvent, AgentUnit
+from .models import TOOL_ERROR, TOOL_OK, AgentEvent, AgentUnit, ToolOutcome
 from .registry import Tool, ToolCatalog, ToolError
 
 
@@ -19,6 +20,18 @@ from .registry import Tool, ToolCatalog, ToolError
 class RunnerSettings:
     max_turns: int = 60
     timeout_s: float = 600.0
+
+
+def _accumulate_usage(total: dict, usage: dict | None) -> None:
+    """把一次 LLM 调用的 usage 累加进总计。
+
+    按需累加所有**整数**字段:provider 差异大(有的给 `cached_tokens`,有的给
+    `cache_read_input_tokens`),不设白名单。非整数值忽略(bool 也是 int 的子类,单独排除)。
+    """
+    total["llm_calls"] = total.get("llm_calls", 0) + 1
+    for key, value in (usage or {}).items():
+        if isinstance(value, int) and not isinstance(value, bool):
+            total[key] = total.get(key, 0) + value
 
 
 def build_system_prompt(unit: AgentUnit, base_prompt: str | None = None) -> str:
@@ -67,24 +80,51 @@ class AgentRunner:
 
         yield AgentEvent(kind="agent_start", agent=self.unit.name)
         last_text = ""
+        usage_total: dict = {}
+        turns_used = 0
+        schemas = [t.to_llm_schema() for t in tools] or None
         try:
             for turn in range(self.settings.max_turns):
-                resp: ChatResponse = await asyncio.wait_for(
-                    self.llm.chat(msgs, tools=[t.to_llm_schema() for t in tools] or None),
-                    timeout=self.settings.timeout_s,
-                )
-                msgs.append(ChatMessage(role="assistant", content=resp.text,
-                                        tool_calls=resp.tool_calls))
-                last_text = resp.text
-                if not resp.tool_calls:
+                acc_text = ""
+                tool_calls: list[ToolCallOut] = []
+                usage: dict = {}
+                async with asyncio.timeout(self.settings.timeout_s):
+                    async for delta in stream_llm(self.llm, msgs, tools=schemas):
+                        if delta.text:
+                            acc_text += delta.text
+                            # 逐字流式:Web 端靠它打字。CLI/TUI 只读回合末尾的 text 事件,
+                            # 所以它们的输出不变——这是有意为之的向后兼容。
+                            yield AgentEvent(kind="text_delta", agent=self.unit.name,
+                                             text=delta.text)
+                        if delta.finished:
+                            tool_calls = delta.tool_calls
+                            usage = delta.usage
+                turns_used = turn + 1
+                _accumulate_usage(usage_total, usage)
+                msgs.append(ChatMessage(role="assistant", content=acc_text,
+                                        tool_calls=tool_calls))
+                last_text = acc_text
+                # 每轮 LLM 回复单独声明一次:让 runtime 能把"工具之间的叙述"落盘,
+                # 否则直播看得见、刷新后丢失(直播与回放不一致)。
+                yield AgentEvent(kind="assistant_message", agent=self.unit.name,
+                                 text=acc_text,
+                                 data={"step": turns_used,
+                                       "tool_calls": [c.name for c in tool_calls]})
+                if not tool_calls:
                     break
-                for call in resp.tool_calls:
+                for call in tool_calls:
                     yield AgentEvent(kind="tool_start", agent=self.unit.name,
                                      tool=call.name, data={"args": call.args})
-                    result = await self._execute(tools, call)
-                    yield AgentEvent(kind="tool_end", agent=self.unit.name,
-                                     tool=call.name, text=result)
-                    msgs.append(ChatMessage(role="tool", content=result,
+                    outcome = await self._execute(tools, call)
+                    # 结构化结果:前端工具卡片靠 status/duration_ms/exit_code 渲染,
+                    # 不再解析 text 前缀;text 仍是模型可见的原文(与旧版一致)。
+                    yield AgentEvent(kind="tool_end", agent=self.unit.name, tool=call.name,
+                                     text=outcome.result,
+                                     data={"status": outcome.status,
+                                           "duration_ms": outcome.duration_ms,
+                                           "exit_code": outcome.exit_code,
+                                           "error": outcome.error})
+                    msgs.append(ChatMessage(role="tool", content=outcome.result,
                                             tool_call_id=call.id))
                 if turn >= self.settings.max_turns - 1:
                     yield AgentEvent(kind="error", agent=self.unit.name,
@@ -96,17 +136,36 @@ class AgentRunner:
                              text=f"执行超时(>{self.settings.timeout_s:.0f}s)")
         if last_text:
             yield AgentEvent(kind="text", agent=self.unit.name, text=last_text)
-        yield AgentEvent(kind="agent_end", agent=self.unit.name,
-                         text=last_text, data={"messages": [m.to_dict() for m in msgs[1:]]})
+        yield AgentEvent(kind="agent_end", agent=self.unit.name, text=last_text,
+                         data={"messages": [m.to_dict() for m in msgs[1:]],
+                               "usage": {"turns": turns_used, **usage_total}})
 
-    async def _execute(self, tools: list[Tool], call: ToolCallOut) -> str:
+    async def _execute(self, tools: list[Tool], call: ToolCallOut) -> ToolOutcome:
+        """执行一次工具调用,返回**结构化**结果。
+
+        计时在统一入口做,所以所有工具(含插件工具)都自动带上 duration_ms,不必各自上报。
+        工具返回 `str`(旧约定)视为 `ok`;返回 `ToolOutcome` 则采用其 status/exit_code。
+        """
+        started = time.perf_counter_ns()
+
+        def elapsed_ms() -> int:
+            return (time.perf_counter_ns() - started) // 1_000_000
+
         tool = self.catalog.get(call.name)
         if tool is None:
-            return f"Error: 未知工具 {call.name}"
+            return ToolOutcome(status=TOOL_ERROR, error="unknown_tool",
+                               result=f"Error: 未知工具 {call.name}", duration_ms=elapsed_ms())
         try:
-            result = await tool.execute(call.args, self.tool_ctx)
-            return str(result)
+            raw = await tool.execute(call.args, self.tool_ctx)
         except ToolError as exc:
-            return f"Error: {exc}"
+            return ToolOutcome(status=TOOL_ERROR, error="tool_error",
+                               result=f"Error: {exc}", duration_ms=elapsed_ms())
         except Exception as exc:  # noqa: BLE001 工具异常 → 可读结果
-            return f"Error: 工具执行异常 {type(exc).__name__}: {exc}"
+            return ToolOutcome(status=TOOL_ERROR, error="exception",
+                               result=f"Error: 工具执行异常 {type(exc).__name__}: {exc}",
+                               duration_ms=elapsed_ms())
+        if isinstance(raw, ToolOutcome):
+            if not raw.duration_ms:      # 工具未自行上报 → 统一计时兜底
+                raw.duration_ms = elapsed_ms()
+            return raw
+        return ToolOutcome(status=TOOL_OK, result=str(raw), duration_ms=elapsed_ms())

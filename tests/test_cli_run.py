@@ -23,9 +23,12 @@ class FakeRuntime:
     """假运行时:记录 prompt,不读配置、不联网。"""
 
     def __init__(self, *args, **kwargs):
+        from pathlib import Path
+
         from qi_agent.session import SessionStore
 
         self.sessions = SessionStore()
+        self.cwd = Path.cwd()          # 真实 QiRuntime 必有:cli 用它写会话头
         self.prompts: list[str] = []
         self.overrides: list[str | None] = []
         CREATED.append(self)

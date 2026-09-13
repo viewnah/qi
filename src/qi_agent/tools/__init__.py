@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import fnmatch
 import os
 import re
@@ -14,6 +15,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..models import TOOL_ERROR, TOOL_OK, ToolOutcome
 from ..registry import Tool, ToolError
 
 MAX_RESULT = 200          # 截断行数
@@ -217,7 +219,12 @@ def _bash_allowed(command: str) -> tuple[bool, str]:
     return False, f"{first} 不在只读白名单;{WRITE_HINT}"
 
 
-async def _bash(args: dict, ctx: ToolContext) -> str:
+async def _bash(args: dict, ctx: ToolContext) -> ToolOutcome:
+    """bash 是唯一能上报退出码的工具。
+
+    `result` 文本与旧版**逐字一致**(失败时保留 `exit=N` 前缀),模型看到的内容不变;
+    `status` / `exit_code` 是给 UI 工具卡片用的结构化字段。
+    """
     command = str(args.get("command", "")).strip()
     if not command:
         raise ToolError("bash 需要 command")
@@ -235,9 +242,18 @@ async def _bash(args: dict, ctx: ToolContext) -> str:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
         proc.kill()
-        return f"命令超时(>{timeout:.0f}s),已终止"
+        # 必须回收:只 kill 不 wait 的话,transport 会拖到事件循环关闭后才被 GC,
+        # 触发 “Event loop is closed” 的 unraisable 异常(测试里会报资源警告)。
+        with contextlib.suppress(Exception):
+            await proc.wait()
+        # 超时拿不到退出码:用 error 字段给出机器可读原因
+        return ToolOutcome(status=TOOL_ERROR, error="timeout",
+                           result=f"命令超时(>{timeout:.0f}s),已终止")
     text = out.decode("utf-8", errors="replace")
-    return _truncate(text) if proc.returncode == 0 else f"exit={proc.returncode}\n{_truncate(text)}"
+    rc = proc.returncode
+    if rc == 0:
+        return ToolOutcome(status=TOOL_OK, result=_truncate(text), exit_code=0)
+    return ToolOutcome(status=TOOL_ERROR, result=f"exit={rc}\n{_truncate(text)}", exit_code=rc)
 
 
 # ── clarify(通用小工具,B4:v1 内置) ──────────────────

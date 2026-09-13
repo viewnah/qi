@@ -169,6 +169,22 @@ def _tool_snippet(text: str, limit: int = 400) -> str:
     return f"{head}\n  …(已截断,共 {len(lines)} 行 / {len(text)} 字)"
 
 
+def _short_cwd(cwd: str | None, limit: int = 48) -> str:
+    """会话 cwd 的终端友好形式。
+
+    家目录缩为 `~`;仍过长则只保留末两段(`…/parent/name`)——否则长路径会把
+    `sessions list` 的一行挤成三行。缺失时为“(未知)”(v0.1 旧会话)。
+    """
+    if not cwd:
+        return "(未知)"
+    home = str(Path.home())
+    text = "~" + cwd[len(home):] if cwd.startswith(home) else cwd
+    if len(text) <= limit:
+        return text
+    parts = Path(cwd).parts
+    return "…/" + "/".join(parts[-2:]) if len(parts) >= 2 else text
+
+
 # ── 顶层 callback:headless 运行 ─────────────────────────
 
 @app.callback(invoke_without_command=True)
@@ -218,7 +234,7 @@ def root_callback(
     store = runtime.sessions
     session = None
     if no_session:
-        session = store.create(name or "ephemeral")
+        session = store.create(name or "ephemeral", cwd=runtime.cwd)
     elif session_id:
         session = store.get(session_id)
         if session is None:
@@ -228,9 +244,9 @@ def root_callback(
         session = store.latest()
         if session is None:
             console.print("[yellow]无历史会话,新建。[/yellow]")
-            session = store.create(name or "")
+            session = store.create(name or "", cwd=runtime.cwd)
     else:
-        session = store.create(name or prompt[:30])
+        session = store.create(name or prompt[:30], cwd=runtime.cwd)
     assert session is not None
 
     async def _run() -> None:
@@ -250,7 +266,11 @@ def root_callback(
                 args = json.dumps(ev.data.get("args", {}), ensure_ascii=False)
                 err_console.print(f"[dim]  ⚙ {ev.tool} {escape(args[:200])}[/dim]")
             elif verbose and ev.kind == "tool_end":
-                err_console.print(f"[dim]  ↳ {escape(_tool_snippet(ev.text))}[/dim]")
+                data = ev.data or {}
+                mark = "✓" if data.get("status") == "ok" else "✗"
+                ms = data.get("duration_ms")
+                cost = f" {ms}ms" if isinstance(ms, int) else ""
+                err_console.print(f"[dim]  ↳ {mark}{cost} {escape(_tool_snippet(ev.text))}[/dim]")
             elif verbose and ev.kind == "opening":
                 err_console.print(f"[bold]{escape(ev.text)}[/bold]")
 
@@ -468,7 +488,8 @@ def sessions_list() -> None:
     """列出会话(最新在前)。"""
     store = SessionStore()
     for s in store.list():
-        console.print(f"{s.id}  {s.title or '(无标题)'}  消息{s.message_count}  {s.created_at}")
+        console.print(f"{s.id}  {s.title or '(无标题)'}  消息{s.message_count}  "
+                      f"{_short_cwd(s.cwd)}  {s.created_at}")
 
 
 @sessions_app.command("show")
@@ -479,7 +500,8 @@ def sessions_show(session_id: str = typer.Argument(...)) -> None:
     if s is None:
         console.print(f"[red]会话不存在: {session_id}[/red]")
         raise typer.Exit(code=1)
-    console.print(f"[bold]{s.id}[/bold] {s.title}  {s.path}")
+    console.print(f"[bold]{s.id}[/bold] {s.title}")
+    console.print(f"[dim]cwd: {escape(_short_cwd(s.cwd, limit=64))}  文件: {escape(str(s.path))}[/dim]")
     names = _replay_names(s.entries)
     for e in s.entries:
         if e.get("type") == "message":
@@ -494,6 +516,20 @@ def sessions_show(session_id: str = typer.Argument(...)) -> None:
         elif e.get("type") == "dispatch":
             who = e.get("display_name") or e.get("agent")
             console.print(f"[cyan]dispatch[/cyan] → {who} ({e.get('source')}, {e.get('confidence')}) {e.get('reasoning','')}")
+        elif e.get("type") == "tool":
+            mark = "✓" if e.get("status") == "ok" else "✗"
+            ms = e.get("duration_ms")
+            cost = f" {ms}ms" if isinstance(ms, int) else ""
+            code = e.get("exit_code")
+            tail = f" exit={code}" if isinstance(code, int) and code else ""
+            args = json.dumps(e.get("args") or {}, ensure_ascii=False)
+            console.print(f"[dim]tool[/dim] {mark} {e.get('tool')}{cost}{tail} "
+                          f"[dim]{escape(args[:120])}[/dim]")
+        elif e.get("type") == "custom" and e.get("custom_type") == "assistant_narration":
+            # 工具调用**之前**的叙述:直播时走 text_delta,回放时必须同位置重现,
+            # 否则 CLI 回放与实时看到的内容不一致(见 web.md §13 的顺序不变量)
+            who = names.get(str(e.get("agent", "")), e.get("agent", ""))
+            console.print(f"[dim]叙述[/dim] {who}: {escape(str(e.get('content', ''))[:200])}")
 
 
 @sessions_app.command("rm")
@@ -1052,6 +1088,87 @@ def tui() -> None:
         console.print(f"[red]TUI 不可用: {escape(str(exc))}[/red]")
         raise typer.Exit(code=1) from exc
     run_tui()
+
+
+def _port_free(host: str, port: int) -> bool:
+    """端口能不能绑定(启动前预检)。
+
+    为什么必须预检:uvicorn 的 bind 失败发生在 `console.print(URL)` **之后**,
+    于是“端口被占用”会表现成“启动成功但页面是旧的/坏的”——真发生过。
+    """
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+@app.command("web")
+def web_cmd(
+    port: int = typer.Option(30142, "--port", "-p", help="端口(默认 30142,与 pi-web 的 30141 错开)"),
+    hostname: str = typer.Option("127.0.0.1", "--hostname", "-H", help="绑定地址(默认只回环)"),
+    no_open: bool = typer.Option(False, "--no-open", help="不自动打开浏览器"),
+    cwd: str | None = typer.Option(None, "--cwd", help="默认工作目录(默认当前目录)"),
+    password: str | None = typer.Option(None, "--password", help="访问口令(也可用 QI_WEB_PASSWORD)"),
+) -> None:
+    """启动本地 Web UI(默认 http://127.0.0.1:30142)。"""
+    import contextlib
+    import os
+    import threading
+    import webbrowser
+
+    from .web.security import is_loopback, require_safe_config
+
+    try:
+        import uvicorn
+
+        from .web.app import create_app
+    except ImportError as exc:  # web 是可选 extra
+        console.print(f"[red]缺少 web 依赖:[/red] {escape(str(exc))}")
+        console.print("  安装: [bold]pip install 'qi-agent[web]'[/bold]")
+        raise typer.Exit(code=2) from exc
+
+    pw = password or os.environ.get("QI_WEB_PASSWORD") or None
+    # 不安全的组合直接拒启(跨回环 + 无口令),见 web/security.py
+    require_safe_config(hostname, pw)
+
+    workdir = Path(cwd).expanduser() if cwd else Path.cwd()
+    if not workdir.is_dir():
+        console.print(f"[red]工作目录不存在:[/red] {escape(str(workdir))}")
+        raise typer.Exit(code=2)
+
+    allowed = [h for h in os.environ.get("QI_WEB_ALLOWED_HOSTS", "").split(",") if h.strip()]
+    if not _port_free(hostname, port):
+        console.print(f"[red]端口已被占用:[/red] {hostname}:{port}")
+        console.print(f"  换个端口: [bold]qi web -p {port + 1}[/bold]")
+        raise typer.Exit(code=2)
+
+    app_obj = create_app(cwd=workdir.resolve(), password=pw, allowed_hosts=allowed,
+                         bind_host=hostname)
+
+    shown = "127.0.0.1" if is_loopback(hostname) else hostname
+    url = f"http://{shown}:{port}"
+    console.print(f"[green]qi web[/green] → [bold]{url}[/bold]")
+    console.print(f"[dim]默认工作目录: {escape(str(workdir))}[/dim]")
+    if pw:
+        console.print("[dim]已启用口令(Bearer 或 Basic,用户名任意)[/dim]")
+    if not is_loopback(hostname):
+        console.print("[yellow]警告:[/yellow] 已绑定到回环之外——它能执行高权限操作,请确认网络可信。")
+    if not (Path(__file__).parent / "web" / "static").is_dir():
+        console.print("[dim]未找到前端产物;先访问 API,或 cd web && npm install && npm run build[/dim]")
+
+    if not no_open:
+        def _open() -> None:
+            # 尽力而为:服务起来前打开可能白页,失败也不影响启动
+            with contextlib.suppress(Exception):
+                webbrowser.open(url)
+
+        threading.Timer(1.5, _open).start()
+
+    uvicorn.run(app_obj, host=hostname, port=port, log_level="warning")
 
 
 def main() -> None:

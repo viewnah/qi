@@ -4,6 +4,10 @@
 `sessionDir` 可覆盖。
 entry 五类: message / tool / dispatch / state / custom(agent-config 决策)。
 
+header(entries[0])当前字段:id / title / created_at / **cwd**。
+`cwd` 是会话的工作目录(对齐 pi):按项目分组会话、恢复时选对目录都靠它。
+v0.1 写的旧会话没有这个字段,首次被使用时由 `ensure_cwd()` 回填一次(不猜、不覆盖)。
+
 dispatch entry 除 agent(name)外还落盘 display_name:展示名应反映**当时**的值,
 回放时无需再装载 agent/插件。
 用户消息的 agent_id 是“将处理它的 agent”,不是发言者。
@@ -30,6 +34,7 @@ class Session:
     path: Path
     title: str = ""
     created_at: str = ""
+    cwd: str | None = None            # 会话工作目录(旧会话可能为 None,见 ensure_cwd)
     entries: list[dict] = field(default_factory=list)
 
     @property
@@ -63,13 +68,49 @@ class SessionStore:
                 continue
         return entries
 
-    def create(self, title: str = "") -> Session:
+    def create(self, title: str = "", cwd: Path | str | None = None) -> Session:
+        """新建会话文件。
+
+        `cwd` 写进 header:按项目分组与恢复时选对工作目录都靠它。
+        省略时为 None,后续由 `ensure_cwd()` 回填。
+        """
         sid = uuid.uuid4().hex[:12]
         path = self.root / f"{time.strftime('%Y%m%dT%H%M%S')}_{sid}.jsonl"
         now = _now()
-        header = {"type": "session", "id": sid, "title": title, "created_at": now}
+        header: dict = {"type": "session", "id": sid, "title": title, "created_at": now}
+        if cwd is not None:
+            header["cwd"] = str(Path(cwd).expanduser().resolve())
         path.write_text(json.dumps(header, ensure_ascii=False) + "\n", encoding="utf-8")
-        return Session(id=sid, path=path, title=title, created_at=now, entries=[header])
+        return Session(id=sid, path=path, title=title, created_at=now,
+                       cwd=header.get("cwd"), entries=[header])
+
+    @staticmethod
+    def _from_entries(path: Path, entries: list[dict]) -> Session:
+        """用已读到的 entries 造 Session(header = entries[0])。"""
+        header = entries[0] if entries else {}
+        cwd = header.get("cwd")
+        return Session(id=str(header.get("id", "?")), path=path,
+                       title=header.get("title", ""),
+                       created_at=header.get("created_at", ""),
+                       cwd=cwd if isinstance(cwd, str) else None,
+                       entries=entries)
+
+    def ensure_cwd(self, session: Session, cwd: Path | str) -> bool:
+        """给旧会话回填 `cwd`(已有值则不动)。返回是否发生了写入。
+
+        v0.1 的会话 header 没有 cwd;首次被使用时补上,这样历史会话也能按项目分组。
+        整文件重写一次,此后 `session.cwd` 有值,不再进本分支。
+        header 不合法(空文件/损坏)时**不猜**,直接返回 False。
+        """
+        if session.cwd or not session.entries:
+            return False
+        if session.entries[0].get("type") != "session":
+            return False
+        resolved = str(Path(cwd).expanduser().resolve())
+        session.entries[0]["cwd"] = resolved
+        session.cwd = resolved
+        self.save(session)
+        return True
 
     def get(self, session_id: str) -> Session | None:
         """按会话 id 或文件名 stem 前缀查找(docs/cli.md: `--session <path|id>`)。
@@ -86,10 +127,7 @@ class SessionStore:
                 continue
             hid = str(entries[0].get("id", ""))
             if hid.startswith(session_id) or p.stem.startswith(session_id):
-                return Session(id=hid, path=p,
-                               title=entries[0].get("title", ""),
-                               created_at=entries[0].get("created_at", ""),
-                               entries=entries)
+                return self._from_entries(p, entries)
         return None
 
     def latest(self) -> Session | None:
@@ -104,9 +142,7 @@ class SessionStore:
             entries = self._read(p)
             if not entries:
                 continue
-            h = entries[0]
-            out.append(Session(id=h.get("id", "?"), path=p, title=h.get("title", ""),
-                               created_at=h.get("created_at", ""), entries=entries))
+            out.append(self._from_entries(p, entries))
         return out
 
     def delete(self, session_id: str) -> bool:

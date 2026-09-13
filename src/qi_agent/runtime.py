@@ -31,6 +31,11 @@ class RuntimeConfig:
     confidence_min: float = 0.6
 
 
+# 落盘工具结果的字符上限。tools/ 内置工具已自行截断(200 行 / 50k 字符),
+# 但插件工具可能不截断——落盘前再过一道上限,避免单个工具撑破会话文件。
+MAX_TOOL_ENTRY_CHARS = 8000
+
+
 class QiRuntime:
     """装配好的一次性运行时(每进程一个):装载配置/插件/agents,提供 stream()。"""
 
@@ -131,6 +136,8 @@ class QiRuntime:
 
     async def stream(self, text: str, session: Session, agent_override: str | None = None):
         """处理一轮用户输入,产出事件。agent_override=manual(--agent / /agent)。"""
+        # 旧会话首次被使用时回填 cwd(只写一次);新会话在 create(cwd=…) 时已带
+        self.sessions.ensure_cwd(session, self.cwd)
         active = self._active_agent(session)
         decision: Decision | None = None
 
@@ -184,21 +191,62 @@ class QiRuntime:
                                             timeout_s=self.runtime_cfg.timeout_s),
                              tool_ctx=self._tool_ctx(unit.name, unit),
                              base_prompt=self.base_prompt)
+        # 顺序要紧:先取上下文(不含本轮),再把 user 消息立即落盘。
+        # 旧实现把 user 写在回合**结束后**,于是运行中刷新/断线就看不到自己说了什么;
+        # 而若先落盘再取 history,本轮输入会进上下文两次(prompt 里出现两条同样的 user)。
         history = self._history(session)
+        self.sessions.append(session, {"type": "message", "role": "user",
+                                       "content": text, "agent_id": unit.name})
         final_text = ""
+        pending_tool: dict | None = None
         async for event in runner.run(text, history):
             if event.kind == "agent_end":
                 final_text = event.text
+            elif event.kind == "tool_start":
+                pending_tool = {"tool": event.tool, "args": event.data.get("args") or {}}
+            elif event.kind == "tool_end":
+                self._persist_tool(session, unit.name, event, pending_tool)
+                pending_tool = None
+            elif event.kind == "assistant_message" and event.text and event.data.get("tool_calls"):
+                # 宣布了工具调用的助手消息是"过程"而非最终回答 → 立刻落成 custom entry。
+                # **立即**落盘而不缓冲到下一轮:否则它将被写在它触发的工具卡片**之后**,
+                # 回放顺序就变成"工具卡 → 叙述",与真实因果相反。
+                # 不带工具调用那条由回合末尾的 message entry 代表,所以不会重复。
+                self._persist_narration(session, unit.name, event.text)
             yield event
 
-        # 持久化消息(tool 往返省略,存 user/assistant 文本 + agent_id)
-        if final_text:
-            self.sessions.append(session, {"type": "message", "role": "user",
-                                           "content": text, "agent_id": unit.name})
-            self.sessions.append(session, {"type": "message", "role": "assistant",
-                                           "content": final_text, "agent_id": unit.name})
-        else:
-            self.sessions.append(session, {"type": "message", "role": "user",
-                                           "content": text, "agent_id": unit.name})
-            self.sessions.append(session, {"type": "message", "role": "assistant",
-                                           "content": "(无文本输出)", "agent_id": unit.name})
+        # 助手侧在回合结束后落盘(与旧版一致;tool 往返已在上方单独落盘)
+        self.sessions.append(session, {"type": "message", "role": "assistant",
+                                       "content": final_text or "(无文本输出)",
+                                       "agent_id": unit.name})
+
+    def _persist_narration(self, session: Session, agent: str, text: str) -> None:
+        """落盘"工具调用之前"的助手叙述(custom entry,**不进对话上下文**)。
+
+        直播时这些文字由 `text_delta` 送到前端;不落盘则刷新/回放就只剩工具卡片,
+        直播与回放不一致。做成 `custom` 而非 `message` 是**刻意的**:`_history()` 只读
+        `message`,所以模型跨轮上下文完全不变(零提示词回归风险)。
+        """
+        self.sessions.append(session, {"type": "custom",
+                                       "custom_type": "assistant_narration",
+                                       "agent": agent, "content": text})
+
+    def _persist_tool(self, session: Session, agent: str, event: AgentEvent,
+                      pending: dict | None) -> None:
+        """把一次工具往返落盘(entry `type=tool`)。
+
+        补齐 `session.py` 已声明的第五类 entry(PLAN A5):此前 tool 往返**从不落盘**,
+        于是历史回放里工具卡片无法重现。`status`/`duration_ms`/`exit_code` 来自
+        AgentRunner 的结构化结果,前端不必解析 `result` 字符串。
+        """
+        data = event.data or {}
+        result = event.text or ""
+        if len(result) > MAX_TOOL_ENTRY_CHARS:
+            result = result[:MAX_TOOL_ENTRY_CHARS] + "…(落盘已截断)"
+        self.sessions.append(session, {
+            "type": "tool", "agent": agent, "tool": event.tool,
+            "args": (pending or {}).get("args", {}),
+            "status": data.get("status"), "duration_ms": data.get("duration_ms"),
+            "exit_code": data.get("exit_code"), "error": data.get("error"),
+            "result": result,
+        })

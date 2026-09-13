@@ -61,7 +61,7 @@ qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt
 | `--fork <id>` | fork 出新会话 | ✅ |
 | `--session-dir <dir>` | 会话目录 | ✅ |
 | `--no-session` / `-n, --name` | 临时会话 / 显示名 | ✅ |
-| `qi sessions list \| show <id> \| rm <id>` | 列表 / 查看 / 删除。`show` 回放时用**记录时的展示名**(`display_name`,回落到 name);用户消息不标说话人 | qi 扩展 |
+| `qi sessions list \| show <id> \| rm <id>` | 列表 / 查看 / 删除。列表带会话 cwd;`show` 回放时用**记录时的展示名**(`display_name`,回落到 name)、用户消息不标说话人,并回放 `tool` entry(状态/耗时/退出码/参数) | qi 扩展 |
 | `--export <file>` | 会话导出 HTML | ✅ |
 
 `-c/-r/--session` 管"接着跑哪段",`qi sessions` 管"历史浏览/删除",互补。

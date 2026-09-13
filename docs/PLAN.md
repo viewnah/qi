@@ -94,13 +94,13 @@ packages = ["src/qi_agent"]
 
 ## 3. v2
 
-| 内容 | 详见 |
-| --- | --- |
-| HTTP 宿主 `qi web` + 官方 UI 插件(SSE) | web.md |
-| headless RPC(`--mode rpc`,给 IDE/外部客户端) | cli.md / web.md §5 |
-| bash 审批细化 / 路径防越界 / HITL | tools.md §4 |
-| 导入 adapter(Claude agent 卡 / SKILL.md) | agent-config.md §10 |
-| 打包导出 zip、registry/市场 | agent-config.md §10 |
+| 内容 | 详见 | 状态 |
+| --- | --- | --- |
+| HTTP 宿主 `qi web` + 官方 UI 插件(SSE) | web.md | 宿主与**参考 UI 已可运行**(web.md §14);UI 拆包未做 |
+| headless RPC(`--mode rpc`,给 IDE/外部客户端) | cli.md / web.md §5 | 未做(内置宿主让 web 不需要它) |
+| bash 审批细化 / 路径防越界 / HITL | tools.md §4 | 未做(SSE 已预留 `action.required` 位) |
+| 导入 adapter(Claude agent 卡 / SKILL.md) | agent-config.md §10 | 未做 |
+| 打包导出 zip、registry/市场 | agent-config.md §10 | 未做 |
 
 ## 4. 未决清单与决策状态
 
@@ -112,7 +112,7 @@ packages = ["src/qi_agent"]
 | A2/N2 | 应用配置 | `models.json`(格式对齐 pi)+ 分层(env→项目→用户)+ pydantic 校验 |
 | A3/N1 | frontmatter 语法 | YAML(对齐 Agent Skills/Claude) |
 | A4/N8 | LLM 接入 | litellm(统一多 provider) |
-| A5 | 会话 JSONL entry 类型 | 消息/工具结果/分派/状态/自定义 五类(P3 定格式) |
+| A5 | 会话 JSONL entry 类型 | 消息/工具结果/分派/状态/自定义 五类(P3 定格式);**`tool` 类与 header `cwd` 已于 P0 契约补丁落地**,见 [web.md §13](web.md#13-p0-契约改动记录2026-09) |
 | A6/N7 | bash 安全 | 默认只读 allowlist;破坏性命令需配置放开或审批;路径限会话目录 |
 | B1/N3 | sessions 位置 | 全局 `~/.qi/agent/sessions/`(对齐 pi) |
 | B2/N4 | mcp_servers 省略默认 | **默认无、必须显式声明**(凭证敏感);tools 仍"省略=全部" |
@@ -147,7 +147,16 @@ packages = ["src/qi_agent"]
 
 ## 6. v1 实现状态(代码完成 ✅,2026-09)
 
-P1-P9 代码已落地并推送(master),tests 26 通过、wheel 构建通过。
+P1-P9 代码已落地并推送(master),tests **180** 通过、wheel 构建通过。
+
+**P0 契约补丁(2026-09,为 web 铺路)**:工具结果结构化(`ToolOutcome` → `tool_end.data` 带
+`status/duration_ms/exit_code`)、`usage` 透出到 `agent_end`、会话 header 加 `cwd`(旧会话首次使用时回填)、
+补齐第五类 `tool` entry 落盘、user 消息改为**发起时**落盘、**逐字流式**(`text_delta`,新增
+`assistant_message` 并把"工具前的叙述"落成 custom entry 以保证回放顺序)。逐项契约与理由见
+[web.md §13](web.md#13-p0-契约改动记录2026-09),不变量由 `tests/test_contract_p0.py`
+与 `tests/test_streaming.py` 锁定。
+
+> CLI/TUI 输出**不变**:它们只读回合末尾的 `text` 事件,逐字增量只服务于 Web。
 
 **待真环境验证**(需 key/终端/外部服务):
 

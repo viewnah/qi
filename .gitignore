@@ -11,9 +11,23 @@ build/
 # 运行时配置/数据(不入库;agent 样例在 examples/agents/)
 .qi/
 
+# qi-web 前端构建产物(generated:先 `cd web && npm run build` 再打包)
+# 不纳入版本控制;缺失时 `qi web` 会提示去构建,而不是给一个坏页面
+src/qi_agent/web/static/
+
 # 已有忽略(参考组件)
 sdk/
 data/
 
+# pi 自身的运行期目录(tasks 输出等,非源码)
+.pi/
+
+# qi-web 前端依赖与构建中间产物
+web/node_modules/
+web/dist/
+
 # 编辑器配置
 .vscode/
+
+# vitest 缓存
+web/.vitest/

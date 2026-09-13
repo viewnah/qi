@@ -1,0 +1,8 @@
+{
+  "ignore": [
+    "src/qi_agent/web/static/**",
+    "web/node_modules/**",
+    "web/dist/**",
+    "**/*.min.js"
+  ]
+}

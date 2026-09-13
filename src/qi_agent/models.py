@@ -60,6 +60,7 @@ class Skill:
     name: str
     description: str          # 进 system prompt(渐进披露)
     path: Path                # SKILL.md 位置(用时 read 全文)
+    source: str = ""          # 来源标签(诊断用:qi-global / agents-project / agent …)
 
 
 @dataclass

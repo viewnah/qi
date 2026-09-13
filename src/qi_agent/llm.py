@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol, cast
 
 from .config import ResolvedModel
 from .auth import AuthStore, resolve_key
@@ -99,18 +99,23 @@ class LiteLLMClient:
         if temperature is not None:
             kwargs["temperature"] = temperature
         resp = await litellm.acompletion(**kwargs)
-        msg = resp.choices[0].message
+        # litellm 的返回类型是 "流式包装器 | 补全对象" 的联合,
+        # 这里只走非流式分支,按实际形状收窄。
+        msg = cast(Any, resp).choices[0].message
         text = msg.content or ""
         if isinstance(text, list):  # 多模态块:取文本
             text = "".join(p.get("text", "") for p in text if isinstance(p, dict))
         tool_calls = []
         for tc in msg.tool_calls or []:
+            fn = getattr(tc, "function", None)   # 自定义工具调用无 function,跳过
+            if fn is None:
+                continue
             try:
-                args = json.loads(tc.function.arguments or "{}")
+                args = json.loads(fn.arguments or "{}")
             except json.JSONDecodeError:
                 args = {}
             tool_calls.append(ToolCallOut(id=tc.id or f"call_{len(tool_calls)}",
-                                          name=tc.function.name, args=args))
+                                          name=fn.name, args=args))
         return ChatResponse(text=text or "", tool_calls=tool_calls,
                             usage=getattr(resp, "usage", None))
 

@@ -17,11 +17,20 @@ import yaml
 
 from . import paths
 from .models import AgentConfig, AgentUnit, DataSource, McpServerSpec, Skill
+from .settings import (
+    QiSettings,
+    load_settings_by_scope,
+    settings_exclude_paths,
+    settings_include_paths,
+)
 
 AGENT_FILE = "agent.md"
 SKILL_FILE = "SKILL.md"
 ASSETS_DIR = "assets"
 SKILLS_DIR = "skills"
+# Agent Skills 标准的跨工具目录(~/.agents/skills、.agents/skills);
+# 不对应单一工具,见 docs/agent-config.md。
+CROSS_TOOL_DIR = ".agents"
 MCP_FILE = "mcp.json"
 DATA_SOURCES_FILE = "data_sources.json"
 AGENTS_DIR = "agents"
@@ -94,21 +103,173 @@ def scan_agent_dirs(cwd: Path | None = None) -> dict[str, tuple[Path, str]]:
     return found
 
 
-def scan_skills(agent_dir: Path) -> list[Skill]:
+def _skill_from_file(skill_file: Path, *, fallback_name: str, source: str) -> Skill | None:
+    """从 SKILL.md(或根级 *.md)读出一个技能;frontmatter 无 description 时返回 None。"""
+    try:
+        meta, _body = split_frontmatter(skill_file.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return None
+    desc = str(meta.get("description") or "").strip()
+    if not desc:
+        return None
+    name = str(meta.get("name") or fallback_name)
+    return Skill(name=name, description=desc, path=skill_file, source=source)
+
+
+def scan_skills(agent_dir: Path, source: str = "") -> list[Skill]:
+    """agent 自带技能:`<agent_dir>/skills/<name>/SKILL.md`(单层,同名报错)。"""
     skills: dict[str, Skill] = {}
+    label = source or f"agent:{agent_dir.name}"
     skills_root = agent_dir / SKILLS_DIR
     if skills_root.is_dir():
         for skill_dir in sorted(skills_root.iterdir()):
             skill_file = skill_dir / SKILL_FILE
             if not skill_file.is_file():
                 continue
-            meta, body = split_frontmatter(skill_file.read_text(encoding="utf-8"))
+            meta, _body = split_frontmatter(skill_file.read_text(encoding="utf-8"))
             name = meta.get("name") or skill_dir.name
             desc = str(meta.get("description", "")).strip()
             if name in skills:
                 raise LoadError(f"{skill_file}:技能 {name!r} 在 {agent_dir} 内重复")
-            skills[name] = Skill(name=name, description=desc or "(无描述)", path=skill_file)
+            skills[name] = Skill(name=name, description=desc or "(无描述)",
+                                 path=skill_file, source=label)
     return list(skills.values())
+
+
+def scan_skill_root(root: Path, *, label: str, out: list[Skill],
+                    allow_root_md: bool = True) -> None:
+    """递归扫描一个技能根(对齐 pi):
+
+      - 含 SKILL.md 的目录即技能,**不再向内递归**
+      - 无 SKILL.md 的子目录继续向内找(支持分组目录)
+      - `allow_root_md` 时,根下带 description 的 `*.md` 也算独立技能
+    """
+    if root.is_file():
+        if root.suffix == ".md":
+            skill = _skill_from_file(root, fallback_name=root.stem, source=label)
+            if skill:
+                out.append(skill)
+        return
+    if not root.is_dir():
+        return
+
+    def walk(directory: Path, *, is_root: bool) -> None:
+        try:
+            children = sorted(directory.iterdir())
+        except OSError:
+            return
+        for child in children:
+            if child.is_dir():
+                nested = child / SKILL_FILE
+                if nested.is_file():
+                    skill = _skill_from_file(nested, fallback_name=child.name, source=label)
+                    if skill:
+                        out.append(skill)
+                    continue          # 已是技能,不再向内递归
+                walk(child, is_root=False)
+            elif is_root and allow_root_md and child.suffix == ".md":
+                skill = _skill_from_file(child, fallback_name=child.stem, source=label)
+                if skill:
+                    out.append(skill)
+
+    walk(root, is_root=True)
+
+
+def _skill_layer_entries(cwd: Path,
+                         scopes: dict[str, QiSettings],
+                         ) -> list[tuple[Path, str, bool]]:
+    """构造技能层列表(低 → 高);`scopes` 必须是各作用域**各自**的设置。"""
+    entries: list[tuple[Path, str, bool]] = [
+        (Path.home() / CROSS_TOOL_DIR / SKILLS_DIR, "agents-global", False),
+        (paths.global_home() / SKILLS_DIR, "qi-global", True),
+    ]
+    entries += [(p, "settings-global", True)
+                for p in settings_include_paths(scopes.get("user"), "user", "skills", cwd)]
+    for ancestor in reversed(paths.project_context_ancestors(cwd)):   # 远 → 近
+        entries.append((ancestor / CROSS_TOOL_DIR / SKILLS_DIR, "agents-project", False))
+    entries.append((paths.project_home(cwd) / SKILLS_DIR, "qi-project", True))
+    entries += [(p, "settings-project", True)
+                for p in settings_include_paths(scopes.get("project"), "project", "skills", cwd)]
+    return entries
+
+
+def top_level_skill_dirs(cwd: Path | None = None,
+                         settings: QiSettings | None = None,
+                         ) -> list[tuple[Path, str, bool]]:
+    """顶层技能根的完整优先级顺序(低 → 高),返回 (目录, 层标签, 允许根级 md)。
+
+    对齐 pi 的发现规则,并叠上 qi 的私有层:
+
+      1. `~/.agents/skills`            跨工具共享(全局,永远视为已信任)
+      2. `~/.qi/agent/skills`          qi 全局私有
+      3. user settings 的 `skills[]`    追加路径(相对 `~/.qi/agent`)
+      4. `.agents/skills`(cwd→git 根,远→近)  跨工具共享(项目,需信任)
+      5. `<git根>/.qi/skills`          qi 项目私有
+      6. project settings 的 `skills[]` 追加路径(相对 `<git根>/.qi`)
+
+    同一标签内的同名技能视为冲突(报错);跨标签同名则高优先级静默覆盖。
+    `settings` 参数只为兼容旧调用保留 —— 两个作用域的 `skills[]` 一律从各自的
+    原始文件读取,因为相对路径必须按各自所在目录解析。
+    """
+    del settings           # 保留参数以兼容调用方;实际按作用域各读各的
+    root = Path(cwd) if cwd else Path.cwd()
+    return _skill_layer_entries(root, load_settings_by_scope(root))
+
+
+def load_top_level_skills(cwd: Path | None = None,
+                          settings: QiSettings | None = None,
+                          extra_paths: list[Path] | None = None,
+                          enabled: bool = True) -> list[Skill]:
+    """装载顶层技能(低 → 高覆盖);`extra_paths`(CLI `--skill`)最高优先。
+
+    `enabled=False` 时跳过目录发现,但仍装载 extra_paths —— 对齐 pi 的
+    `--no-skills`:`--skill <path>` 在禁用发现时依然生效。
+
+    来源取值见 `top_level_skill_dirs`;返回值按优先级从低到高,可见项在后。
+
+    `settings` 只为兼容旧调用保留(实际按作用域各读各的)。
+    """
+    merged: dict[str, Skill] = {}
+    labels: dict[str, str] = {}          # 技能名 → 已占用的层标签
+    root = Path(cwd) if cwd else Path.cwd()
+    scopes = load_settings_by_scope(root)
+    # 排除项(`!pat` / `-pat`)作用于**整个发现集**,不只是数组里纳入的根
+    excludes: list[Path] = []
+    for scope in ("user", "project"):
+        for path in settings_exclude_paths(scopes.get(scope), scope, "skills", root):
+            if path not in excludes:
+                excludes.append(path)
+
+    def excluded(skill: Skill) -> bool:
+        return any(skill.path == ex or ex in skill.path.parents for ex in excludes)
+
+    def add(skill: Skill) -> None:
+        if excluded(skill):
+            return
+        owner = labels.get(skill.name)
+        if owner is not None and owner == skill.source:
+            raise LoadError(
+                f"技能名 {skill.name!r} 在 {skill.source} 层重复(冲突文件:{skill.path})"
+            )
+        if owner is not None:
+            merged.pop(skill.name, None)      # 高优先级覆盖低优先级
+        labels[skill.name] = skill.source
+        merged[skill.name] = skill
+
+    if enabled:
+        for layer_root, label, allow_root_md in _skill_layer_entries(root, scopes):
+            found: list[Skill] = []
+            scan_skill_root(layer_root, label=label, out=found, allow_root_md=allow_root_md)
+            for skill in found:
+                add(skill)
+
+    for raw in (extra_paths or []):
+        found = []
+        scan_skill_root(Path(raw).expanduser(), label="cli", out=found, allow_root_md=True)
+        for skill in found:
+            add(skill)
+
+    return list(merged.values())
 
 
 def load_data_sources(agent_dir: Path) -> list[DataSource]:
@@ -159,8 +320,12 @@ def scan_plaintext_secrets(agent_dir: Path) -> list[Path]:
 
 def load_agent_dir(agent_dir: Path, source: str, catalog_names: set[str],
                    has_data_source_provider: bool = False,
-                   ds_types: set[str] | None = None) -> AgentUnit:
-    """解析单个 agent 目录(装载与 import 共用同一校验器)。"""
+                   ds_types: set[str] | None = None,
+                   extra_skills: list[Skill] | None = None) -> AgentUnit:
+    """解析单个 agent 目录(装载与 import 共用同一校验器)。
+
+    `extra_skills` 是顶层技能(低优先级):agent 自带技能同名时胜出 —— 越具体越优先。
+    """
     entry = agent_dir / AGENT_FILE
     if not entry.is_file():
         raise LoadError(f"{agent_dir}: 缺少 {AGENT_FILE}")
@@ -207,7 +372,7 @@ def load_agent_dir(agent_dir: Path, source: str, catalog_names: set[str],
         source=source,
         path=agent_dir,
         system_prompt=system_prompt,
-        skills=scan_skills(agent_dir),
+        skills=_merge_skills(extra_skills, scan_skills(agent_dir)),
         data_sources=data_sources,
         mcp_private=load_private_mcp(agent_dir),
         tools=tools,
@@ -215,16 +380,26 @@ def load_agent_dir(agent_dir: Path, source: str, catalog_names: set[str],
     return unit
 
 
+def _merge_skills(extra: list[Skill] | None, own: list[Skill]) -> list[Skill]:
+    """合并技能:顶层技能(低)打底,agent 自带(高)覆盖同名。"""
+    merged: dict[str, Skill] = {s.name: s for s in (extra or [])}
+    for skill in own:
+        merged[skill.name] = skill
+    return list(merged.values())
+
+
 def load_all_agents(cwd: Path | None = None, catalog_names: set[str] | None = None,
                     has_data_source_provider: bool = False,
-                    ds_types: set[str] | None = None) -> dict[str, AgentUnit]:
+                    ds_types: set[str] | None = None,
+                    extra_skills: list[Skill] | None = None) -> dict[str, AgentUnit]:
     """装载全部 agent(项目版已覆盖用户版)。坏 agent 抛 LoadError(启动报错)。"""
     if catalog_names is None:
         catalog_names = set()
     units: dict[str, AgentUnit] = {}
     for name, (agent_dir, source) in scan_agent_dirs(cwd).items():
         units[name] = load_agent_dir(agent_dir, source, catalog_names,
-                                     has_data_source_provider, ds_types)
+                                     has_data_source_provider, ds_types,
+                                     extra_skills=extra_skills)
     return units
 
 

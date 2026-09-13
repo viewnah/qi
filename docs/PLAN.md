@@ -6,7 +6,7 @@
 
 仓库根 = 框架项目(`/workspace/qi`),标准 **src 布局**:源码在 `src/` 下,wheel 只打显式声明的包,`sdk/`、`docs/`、`examples/` 天然进不了包(无需黑名单)。
 
-```
+```text
 /workspace/qi/                  ← 仓库根(uv build / pip install . 从这里打)
 ├── pyproject.toml              # name = "qi-agent",hatchling 构建
 ├── README.md                   # 总设计(项目根)
@@ -71,7 +71,7 @@ packages = ["src/qi_agent"]
 ### wheel 内容边界
 
 | 进 wheel | 不进 wheel |
-|---|---|
+| --- | --- |
 | `qi_agent/*` 代码、py.typed | docs/、examples/(仓库内容) |
 | 内置 7 工具、CLI/TUI/MCP 代码 | sdk/(独立产品) |
 | 无任何 agent/技能数据(零内置) | 运行时 ~/.qi 数据(永不打包) |
@@ -81,7 +81,7 @@ packages = ["src/qi_agent"]
 ## 2. v1(核心库 + CLI + TUI + MCP + 数据源)
 
 | 阶段 | 内容 | 验收 |
-|---|---|---|
+| --- | --- | --- |
 | P1 骨架 | pyproject、包结构、配置装载(TOML 分层 + pydantic)、models 解析 | `qi doctor` 能读配置/模型并报错 |
 | P2 内容装载 | agents 目录发现(2 层)、agent.md/技能解析、**装载校验器**(import 复用同款) | `qi agents list/show` 输出正确;坏包报错 |
 | P3 会话 | JSONL 格式、sessions 读写与命令 | `-c/--session` 续聊;`sessions list/show/rm` 可用 |
@@ -95,7 +95,7 @@ packages = ["src/qi_agent"]
 ## 3. v2
 
 | 内容 | 详见 |
-|---|---|
+| --- | --- |
 | HTTP 宿主 `qi web` + 官方 UI 插件(SSE) | web.md |
 | headless RPC(`--mode rpc`,给 IDE/外部客户端) | cli.md / web.md §5 |
 | bash 审批细化 / 路径防越界 / HITL | tools.md §4 |
@@ -107,14 +107,14 @@ packages = ["src/qi_agent"]
 ### 已收口(A/B 全按推荐 ✅)
 
 | # | 决策 | 结论 |
-|---|---|---|
+| --- | --- | --- |
 | A1/N10 | 仓库与包名 | `qi-agent` / `qi_agent`,hatchling + uv,`/workspace/qi` 为根,sdk/ 留参考(见 §1) |
 | A2/N2 | 应用配置 | `models.json`(格式对齐 pi)+ 分层(env→项目→用户)+ pydantic 校验 |
 | A3/N1 | frontmatter 语法 | YAML(对齐 Agent Skills/Claude) |
 | A4/N8 | LLM 接入 | litellm(统一多 provider) |
 | A5 | 会话 JSONL entry 类型 | 消息/工具结果/分派/状态/自定义 五类(P3 定格式) |
 | A6/N7 | bash 安全 | 默认只读 allowlist;破坏性命令需配置放开或审批;路径限会话目录 |
-| B1/N3 | sessions 位置 | 全局 `~/.qi/sessions/`(对齐 pi) |
+| B1/N3 | sessions 位置 | 全局 `~/.qi/agent/sessions/`(对齐 pi) |
 | B2/N4 | mcp_servers 省略默认 | **默认无、必须显式声明**(凭证敏感);tools 仍"省略=全部" |
 | B3/N5 | disallowed_tools | v1 做(denylist,Claude 同款) |
 | B4/N6 | clarify 工具 | v1 加(全局通用工具) |
@@ -124,7 +124,10 @@ packages = ["src/qi_agent"]
 | B8 | L2 embedding | 可插拔模块,默认关(离线场景再开) |
 | B9 | agent.md icon | 不进 v1 |
 | B10 | 样例 | examples/ 加 writer + general(演示 auto 多角色) |
-| A7 | 凭证存储 | auth store `~/.qi/auth.json`(0600,git 不跟踪);解析顺序 auth store → 约定 env → models.json `apiKey` 引用;`qi auth login/logout/list`、`qi init` 引导 |
+| A7 | 凭证存储 | auth store `~/.qi/agent/auth.json`(0600,git 不跟踪);解析顺序 auth store → 约定 env → models.json `apiKey` 引用;`qi auth login/logout/list` + 只读三件套 `print-api-key` / `print-bearer-token` / `check`(退出码对齐 pi:0/1/2)、`qi init` 引导 |
+| A8 | 全局目录层级 | `~/.qi/agent/` ↔ `<项目>/.qi` 配对(对齐 pi 的 `~/.pi/agent` ↔ `.pi`);旧扁平布局启动时自动迁移(不覆盖);`QI_AGENT_HOME` = agent 目录、`QI_CONFIG_DIR` = 名字空间根 |
+| A9 | 设置文件 | `settings.json` 两级深合并、数组整体替换;默认模型只属于 settings(`models.json` 里已不读取);字段清单与“仅存储未生效”清单见 [settings.md](settings.md);`qi config` 读写 |
+| A10 | 顶层技能 | 六级来源(低→高):`~/.agents/skills` → `~/.qi/agent/skills` → user `settings.skills` → 项目 `.agents/skills` 祖先链 → `<git根>/.qi/skills` → project `settings.skills`;agent 自带者最高;同层同名报错、跳层覆盖;排除项作用于整个发现集 |
 
 ### 仍待定(v2 + 实现期)
 
@@ -147,6 +150,7 @@ packages = ["src/qi_agent"]
 P1-P9 代码已落地并推送(master),tests 26 通过、wheel 构建通过。
 
 **待真环境验证**(需 key/终端/外部服务):
+
 - 真实 LLM 对话端到端(litellm + defaultProvider/defaultModel;回归集跑分)
 - MCP server 实连(stdio/http;当前完成解析与门控)
 - TUI 真终端交互(当前为冒烟级基础版)

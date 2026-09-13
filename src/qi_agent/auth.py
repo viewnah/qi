@@ -1,24 +1,38 @@
-"""凭证解析 + auth store(~/.qi/auth.json,0600,对齐 pi)。
+"""凭证解析 + auth store(`~/.qi/agent/auth.json`,0600,对齐 pi)。
 
 解析顺序(对齐 pi):
-  1. ~/.qi/auth.json 按 provider
+  1. `~/.qi/agent/auth.json` 按 provider
   2. 约定环境变量(如 DEEPSEEK_API_KEY)
   3. provider 的 apiKey 引用(models.json 中字面量 / $ENV / !command)
 本地 provider(ollama)免 key。
 
 `apiKey` 值语法(与 pi 一致):
-  - `!command`           执行命令取 stdout
+  - `!command`           执行命令取 stdout(不经 shell,见下)
   - `$ENV` / `${ENV}`    环境变量插值;缺失则视为未解析
   - `$$` / `$!`          转义为字面量 `$` / `!`
   - 其它                  字面量
+
+安全边界:`!command` 的内容来自**用户自己的配置文件**(与 auth.json 同一信任域),
+不会被 agent 或模型内容触发 —— 只在解析用户写的 `apiKey` 时求值。它按
+`shlex` 拆成参数后以 `shell=False` 执行,所以没有 shell 注入面:
+
+    apiKey: "!security find-generic-password -ws 'anthropic'"   # ✅ 引号由 shlex 处理
+    apiKey: "!op read 'op://vault/item/credential'"             # ✅
+    apiKey: "!bash -lc 'cat /tmp/k | tr -d \\n'"                # ✅ 需要管道时显式起 shell
+
+代价:不能直接写 `!cat a | jq -r .key`(管道会被当成普通参数)。这是有意的 ——
+要 shell 就把它写出来。
 """
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
+import shlex
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -44,18 +58,25 @@ KEYLESS_PROVIDERS = ("ollama",)
 _ENV_RE = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
 
 
-def resolve_value(raw: str, env: dict[str, str] | None = None) -> str | None:
+def resolve_value(raw: str, env: Mapping[str, str] | None = None) -> str | None:
     """解析 apiKey / header 值;返回 None 表示未解析(环境变量缺失/命令失败)。"""
-    env = env if env is not None else os.environ
+    env_vars: Mapping[str, str] = env if env is not None else os.environ
     if raw.startswith("$$"):          # 转义:字面量 $
         return raw[1:]
     if raw.startswith("$!"):          # 转义:字面量 !
         return raw[1:]
     if raw.startswith("!"):           # 执行命令
+        # 不走 shell:凭证命令是「单条命令 + 参数」形态,`shlex` 负责引号,
+        # `shell=False` 从根上消掉注入面。需要管道/重定向时显式写
+        # `!bash -lc "…"` —— 把 shell 变成一个看得见的选择,而不是默认。
         try:
-            proc = subprocess.run(
-                raw[1:], shell=True, capture_output=True, text=True, timeout=30
-            )
+            argv = shlex.split(raw[1:])
+        except ValueError:            # 引号不配对
+            return None
+        if not argv:
+            return None
+        try:
+            proc = subprocess.run(argv, capture_output=True, text=True, timeout=30)
         except (OSError, subprocess.SubprocessError):
             return None
         if proc.returncode != 0:
@@ -68,7 +89,7 @@ def resolve_value(raw: str, env: dict[str, str] | None = None) -> str | None:
     def _repl(match: re.Match[str]) -> str:
         nonlocal missing
         name = match.group(1) or match.group(2)
-        value = env.get(name)
+        value = env_vars.get(name)
         if value is None:
             missing = True
             return ""
@@ -95,7 +116,7 @@ class ResolvedKey:
 
 
 class AuthStore:
-    """~/.qi/auth.json:按 provider 存 {type:api_key, key:…},权限 0600。"""
+    """`~/.qi/agent/auth.json`:按 provider 存 {type:api_key, key:…},权限 0600。"""
 
     def __init__(self, path: Path | None = None):
         self.path = path or (global_home() / AUTH_FILE_NAME)
@@ -118,10 +139,8 @@ class AuthStore:
     def save(self, data: dict) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        try:
+        with contextlib.suppress(OSError):   # Windows 无 posix chmod
             os.chmod(self.path, 0o600)
-        except OSError:  # Windows 无 posix chmod
-            pass
 
     def set_key(self, provider: str, key: str) -> None:
         data = self.load()

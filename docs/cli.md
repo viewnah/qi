@@ -27,7 +27,7 @@ qi -p --plugin <path>            # 本次运行临时试用插件
 
 ── 初始化 / 凭证 ──────────────────────
 qi init                         # 引导默认模型(复刻 QwenPaw):Provider Config → Add Models → Activate LLM
-qi auth login|logout|list       # 管理 ~/.qi/auth.json(0600);qi init 交互默认保留已存凭证
+qi auth login|logout|list       # 管理 ~/.qi/agent/auth.json(0600);qi init 交互默认保留已存凭证
 
 ── 模型 / 诊断 ─────────────────────────
 qi models list | qi doctor
@@ -87,14 +87,36 @@ qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt
 
 `-l`:写入项目 `.qi/`(而非用户 `~/.qi/`),同 pi 的 project 语义。
 
-## 5. 初始化与凭证
+## 5. 设置、初始化与凭证
 
 | 命令 | 说明 | pi 对齐 |
 | --- | --- | --- |
-| `qi init [-y] [-l] [--provider … --model …]` | 引导默认模型(复刻 QwenPaw `init`)。流程:`Provider Configuration`(选已有/新建 → Base URL → API 类型 → API Key,直接写 `auth.json`)→ `Add Models`(`Add a model?` 循环)→ `Activate LLM Model`(选 provider → 选 model,写 defaultProvider/defaultModel)。上下键选择 + 可见输入;已有凭证回车保留。**完整用法与示例见 [model-config.md §7](model-config.md#7-qi-init-用法)** | qi 新增(生态惯例) |
-| `qi auth login <provider>` | 交互输 key,写入 `~/.qi/auth.json`(0600);provider 可自定义 | ✅ pi `/login` |
-| `qi auth logout <provider>` | 删除该 provider 凭证 | ✅ pi `/logout` |
-| `qi auth list` | 只列已存 provider 名(不回显 key) | 🟡 pi auth 命令 |
+| `qi config [-l] [--set K=V] [--unset K] [--json]` | 查看/编辑 `settings.json`;`-l` 作用于项目 `.qi/settings.json` | ✅ `pi config` |
+| `qi init [-y] [-l] [--provider … --model …]` | 引导默认模型(写 `settings.json`);凭证写 `auth.json` | qi 新增(生态惯例) |
+| `qi auth login\|logout <provider>` | 存/删该 provider 凭证 | ✅ pi `/login` `/logout` |
+| `qi auth list` | 只列已存 provider 名(不回显 key) | ✅ |
+| `qi auth print-api-key [--provider P] [--model M]` | 解析出的 key 打到 stdout(可管道) | ✅ `pi auth print-api-key` |
+| `qi auth print-bearer-token [--provider P] [--model M] [--min-expiry 30m]` | 打印 Bearer 凭证 | ✅ `pi auth print-bearer-token` |
+| `qi auth check [--provider P] [--model M] [--json] [--credentials]` | 就绪检查(带退出码) | ✅ `pi auth check` |
+
+**`qi config`** —— 字段清单、合并规则与资源路径解析见 [settings.md](settings.md);
+`--set` 的值先按 JSON 解析、失败则当字符串;`--unset` 支持点号路径(`compaction.enabled`)。
+
+**`qi init`** —— 流程:`Provider Configuration`(选已有/新建 → Base URL → API 类型 → API Key,
+直接写 `auth.json`)→ `Add Models`(`Add a model?` 循环)→ `Activate LLM Model`(选 provider →
+选 model,写默认模型)。上下键选择 + 可见输入;已有凭证回车保留。
+完整用法与示例见 [model-config.md §7](model-config.md#7-qi-init-用法)。
+
+**`qi auth`** —— 解析顺序一律为 **auth store(`~/.qi/agent/auth.json`,0600) → 约定环境变量 →
+`models.json` 的 `apiKey` 引用**(与 pi 一致)。三个只读子命令的细节:
+
+- 必须给 `--provider` 或 `--model` 之一(只给 `--model` 时反查 provider;多个 provider 都含该模型时报错)。
+- `check` 退出码对齐 pi:`ready`=0,`not_ready`=1,`invalid`=2(含参数错误);
+  `--credentials` 在输出里带上凭证,`--no-refresh` 接受但不做任何事(qi 无 OAuth)。
+- `print-bearer-token` 的 `--min-expiry` **只校验格式**(如 `30m` / `1h`)——qi 的凭证没有
+  过期时间,该值不参与判断。
+- `apiKey` 的 `!command` 形式按 `shlex` 拆参数、`shell=False` 执行(见
+  [model-config.md §3](model-config.md#3-apikey-值语法与-pi-一致))。
 
 ## 6. 模型与诊断
 
@@ -134,6 +156,6 @@ qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt
 
 | pi 命令/参数 | 不保留原因 |
 | --- | --- |
-| `pi config`(TUI 面板) | 配置即文件,`agents/models show` 可查 |
+| `pi config` 的 TUI 资源启停面板 | `qi config` 只做「查看 + 写键」(见 §5);资源启停随 packages 落地再补 |
 | theme / prompt-template / skill 加载开关 | 概念不存在;内容跟 agent 走 |
 | `--provider / --api-key / --thinking / --models` | 模型在 `models.json` 配置(`qi init` 引导) |

@@ -7,16 +7,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Iterable
 
+from . import paths
 from .auth import AuthStore
-from .config import ResolvedModel, load_config, require_default_model, resolve_router_model
+from .config import ResolvedModel, load_config, resolve_default_model, resolve_router_model
 from .dispatcher import Decision, Dispatcher
 from .llm import LiteLLMClient, LLMClient, chat_message_from_dict
-from .loader import LoadError, load_all_agents, resolve_base_prompt
+from .loader import LoadError, load_all_agents, load_top_level_skills, resolve_base_prompt
 from .models import AgentEvent
 from .registry import AgentRegistry, CapabilityRegistry, ToolCatalog, discover_plugins
 from .runner import AgentRunner, RunnerSettings
 from .session import Session, SessionStore
+from .settings import load_settings, session_dir
 from .tools import ToolContext, register_builtin_tools
 
 
@@ -35,33 +38,50 @@ class QiRuntime:
                  session_store: SessionStore | None = None,
                  llm: LLMClient | None = None,
                  router_llm: LLMClient | None = None,
-                 disable_router: bool = False):
+                 disable_router: bool = False,
+                 skills_enabled: bool = True,
+                 extra_skill_paths: Iterable[Path] | None = None):
         self.cwd = Path(cwd) if cwd else Path.cwd()
+        # 旧版扁平布局 → ~/.qi/agent/(幂等;显式设了 QI_AGENT_HOME 时不动)
+        paths.ensure_layout()
         self.cfg, self.config_files = load_config(self.cwd)
+        self.settings, self.settings_files = load_settings(self.cwd)
         self.runtime_cfg = runtime_cfg or RuntimeConfig(workdir=self.cwd)
         self.workdir = self.runtime_cfg.workdir
-        # 基座提示词:项目 .qi/SYSTEM.md > ~/.qi/SYSTEM.md > 包内置(见 system.py)
+        # 基座提示词:项目 .qi/SYSTEM.md > ~/.qi/agent/SYSTEM.md > 包内置(见 system.py)
         self.base_prompt, self.base_prompt_source = resolve_base_prompt(self.cwd)
-        self.sessions = session_store or SessionStore()
+        if session_store is not None:
+            self.sessions = session_store
+        else:
+            # sessionDir(settings.json)覆盖默认会话目录;对齐 pi 的优先级链
+            override_dir = session_dir(self.settings, self.cwd)
+            self.sessions = SessionStore(root=override_dir) if override_dir else SessionStore()
 
         self.catalog = ToolCatalog()
         register_builtin_tools(self.catalog)
         self.capabilities = CapabilityRegistry()
         self.plugins = discover_plugins(self.catalog, self.capabilities, self.cwd)
 
+        # 顶层技能(~/ .agents > qi 全局 > .agents 项目 > qi 项目 > settings),agent 自带者优先
+        self.top_skills = load_top_level_skills(
+            self.cwd, self.settings,
+            list(extra_skill_paths or ()),
+            enabled=skills_enabled and self.settings.skillsEnabled,
+        )
         units = load_all_agents(self.cwd, self.catalog.names,
                                 has_data_source_provider=self.capabilities.has_provider("data_sources"),
-                                ds_types=self.capabilities.types("data_sources"))
+                                ds_types=self.capabilities.types("data_sources"),
+                                extra_skills=self.top_skills)
         self.registry = AgentRegistry()
         self.registry.register_all(units)
 
         auth = AuthStore()
-        default: ResolvedModel = require_default_model(self.cfg)
+        default: ResolvedModel = resolve_default_model(self.cfg, self.cwd)
         self.llm_exec = llm or LiteLLMClient(default, auth)
         if disable_router:
             self.router_llm = None
         else:
-            router_spec = resolve_router_model(self.cfg)
+            router_spec = resolve_router_model(self.cfg, self.cwd)
             self.router_llm = router_llm if router_llm is not None else LiteLLMClient(router_spec, auth)
         self.dispatcher = Dispatcher(self.registry, self.router_llm,
                                      confidence_min=self.runtime_cfg.confidence_min)

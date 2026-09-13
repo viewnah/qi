@@ -10,10 +10,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 _MODELS = (
-    '{"defaultProvider": "ollama", "defaultModel": "x", '
-    '"providers": {"ollama": {"api": "openai-completions", '
+    '{"providers": {"ollama": {"api": "openai-completions", '
     '"models": [{"id": "x"}]}}}'
 )
+# 默认模型属于 settings.json(对齐 pi)
+_SETTINGS = '{"defaultProvider": "ollama", "defaultModel": "x"}'
 
 
 def test_router_cases_yaml_structure():
@@ -36,8 +37,11 @@ def _tui_env(tmp_path, monkeypatch) -> None:
     from qi_agent import paths
 
     (tmp_path / "models.json").write_text(_MODELS, encoding="utf-8")
+    home = tmp_path / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "settings.json").write_text(_SETTINGS, encoding="utf-8")
     monkeypatch.setenv(paths.QI_AGENT_CONFIG, str(tmp_path / "models.json"))
-    monkeypatch.setenv(paths.QI_AGENT_HOME, str(tmp_path / "home"))
+    monkeypatch.setenv(paths.QI_AGENT_HOME, str(home))
 
 
 @pytest.mark.asyncio

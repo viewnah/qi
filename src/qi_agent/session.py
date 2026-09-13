@@ -1,6 +1,7 @@
 """会话(P3):JSONL 每会话文件(pi 风格,entry 带 type)。
 
-位置:~/.qi/sessions/<ts>_<id>.jsonl(全局,PLAN B1)。
+位置:`~/.qi/agent/sessions/<ts>_<id>.jsonl`(全局,PLAN B1);settings.json 的
+`sessionDir` 可覆盖。
 entry 五类: message / tool / dispatch / state / custom(agent-config 决策)。
 
 dispatch entry 除 agent(name)外还落盘 display_name:展示名应反映**当时**的值,

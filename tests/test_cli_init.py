@@ -23,14 +23,21 @@ def _models(tmp_path: Path) -> dict:
     return json.loads((tmp_path / "home" / "models.json").read_text(encoding="utf-8"))
 
 
+def _settings(tmp_path: Path) -> dict:
+    """默认模型属于 settings.json(对齐 pi),不再写进 models.json。"""
+    path = tmp_path / "home" / "settings.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+
+
 def test_init_creates_provider_and_model(tmp_path, monkeypatch):
     res = _run(tmp_path, monkeypatch, "-y", "--provider", "my-llm", "--model", "my-model",
                "--base-url", "http://localhost:1234/v1", "--api", "openai-completions",
                "--context-window", "64000", "--max-tokens", "8000", "--reasoning")
     assert res.exit_code == 0, res.output
     data = _models(tmp_path)
-    assert data["defaultProvider"] == "my-llm"
-    assert data["defaultModel"] == "my-model"
+    assert "defaultProvider" not in data          # 已不再写进 models.json
+    assert "defaultModel" not in data
+    assert _settings(tmp_path) == {"defaultProvider": "my-llm", "defaultModel": "my-model"}
     prov = data["providers"]["my-llm"]
     assert prov["baseUrl"] == "http://localhost:1234/v1"
     assert prov["api"] == "openai-completions"
@@ -110,8 +117,8 @@ def test_init_interactive_creates_default(tmp_path, monkeypatch):
     res = runner.invoke(app, ["init"], input=INTERACTIVE_INPUT)
     assert res.exit_code == 0, res.output
     data = _models(tmp_path)
-    assert data["defaultProvider"] == "my-llm"
-    assert data["defaultModel"] == "my-model"
+    assert ("defaultProvider" not in data) and ("defaultModel" not in data)
+    assert _settings(tmp_path) == {"defaultProvider": "my-llm", "defaultModel": "my-model"}
     assert data["providers"]["my-llm"]["baseUrl"] == "http://localhost:1234/v1"
     assert data["providers"]["my-llm"]["api"] == "openai-completions"
     entry = data["providers"]["my-llm"]["models"][0]
@@ -147,8 +154,7 @@ def test_init_interactive_continue_second_provider(tmp_path, monkeypatch):
     assert res.exit_code == 0, res.output
     data = _models(tmp_path)
     assert set(data["providers"]) == {"p1", "p2"}
-    assert data["defaultProvider"] == "p2"
-    assert data["defaultModel"] == "m2"
+    assert _settings(tmp_path) == {"defaultProvider": "p2", "defaultModel": "m2"}
 
 
 def _first_run_input() -> str:

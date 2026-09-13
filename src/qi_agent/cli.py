@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -18,7 +19,7 @@ from rich.markup import escape
 from rich.table import Table
 from typer.core import TyperGroup
 
-from . import __version__, prompt
+from . import __version__, paths, prompt
 from .auth import AuthStore, DEFAULT_API_KEY_ENV, resolve_key
 from .config import (
     DEFAULT_API,
@@ -26,18 +27,39 @@ from .config import (
     DEFAULT_MAX_TOKENS,
     SUPPORTED_APIS,
     ConfigError,
+    default_model_spec,
+    legacy_default_keys,
     load_config,
     load_models_file,
-    require_default_model,
+    resolve_default_model,
     resolve_model,
     resolve_router_model,
     save_models_file,
 )
-from .loader import LoadError, load_agent_dir, load_all_agents, scan_agent_dirs
+from .loader import (
+    LoadError,
+    load_agent_dir,
+    load_all_agents,
+    load_top_level_skills,
+    scan_agent_dirs,
+)
 from .models import AgentUnit
-from .paths import MODELS_FILE_NAME, global_home, project_home
+from .paths import MODELS_FILE_NAME, SETTINGS_FILE_NAME, global_home, project_home
 from .registry import AgentRegistry, CapabilityRegistry, ToolCatalog, discover_plugins
 from .session import SessionStore
+from .settings import (
+    SCOPES,
+    QiSettings,
+    SettingsError,
+    load_settings,
+    load_settings_by_scope,
+    load_settings_raw,
+    parse_value,
+    save_settings,
+    set_value,
+    settings_scope_path,
+    unset_value,
+)
 from .tools import register_builtin_tools
 
 console = Console(highlight=False)
@@ -85,9 +107,16 @@ def _env_catalog() -> tuple[ToolCatalog, list[str]]:
     return catalog, plugins
 
 
-def _load_registry(catalog: ToolCatalog) -> AgentRegistry:
+def _load_registry(catalog: ToolCatalog, cwd: Path | None = None) -> AgentRegistry:
+    """装载 agent(含顶层技能);`qi agents list/show` 与 TUI 共用。"""
     try:
-        units = load_all_agents(catalog_names=catalog.names, ds_types=set())
+        settings, _files = load_settings(cwd)
+        top_skills = load_top_level_skills(cwd, settings, enabled=settings.skillsEnabled)
+    except SettingsError:
+        top_skills = None      # settings 坏了不阻止列出 agent;`qi config` / doctor 会报细节
+    try:
+        units = load_all_agents(cwd, catalog_names=catalog.names, ds_types=set(),
+                                extra_skills=top_skills)
     except LoadError as exc:
         console.print(f"[red]装载失败:[/red] {escape(str(exc))}")
         raise typer.Exit(code=1) from exc
@@ -154,6 +183,8 @@ def root_callback(
     export_file: str | None = typer.Option(None, "--export", help="导出会话 JSONL 到文件后退出"),
     mode: str = typer.Option("text", "--mode", help="输出: text|json"),
     verbose: bool = typer.Option(False, "--verbose", help="显示分派与工具调用进度(默认只输出答案,对齐 pi)"),
+    skill: list[str] = typer.Option(None, "--skill", help="额外技能文件/目录(可重复;叠加)"),
+    no_skills: bool = typer.Option(False, "--no-skills", "-ns", help="关闭技能自动发现(--skill 仍生效)"),
 ) -> None:
     if ctx.invoked_subcommand is not None:
         return
@@ -176,7 +207,8 @@ def root_callback(
     from .config import ConfigError as _CfgErr
     from .loader import LoadError as _LoadErr
     try:
-        runtime = QiRuntime()
+        runtime = QiRuntime(skills_enabled=not no_skills,
+                            extra_skill_paths=[Path(p) for p in (skill or [])])
     except _LoadErr as exc:
         console.print(f"[red]装载失败:[/red] {escape(str(exc))}")
         raise typer.Exit(code=1) from exc
@@ -256,7 +288,19 @@ def doctor() -> None:
         for f in files:
             console.print(f"  {f}")
     else:
-        console.print(f"[yellow]未找到任何 {MODELS_FILE_NAME}[/yellow](env 指定 / 项目 .qi / 用户 ~/.qi)")
+        console.print(f"[yellow]未找到任何 {MODELS_FILE_NAME}[/yellow](env 指定 / 项目 .qi / 用户 ~/.qi/agent)")
+
+    try:
+        _settings, settings_files = load_settings()
+    except SettingsError as exc:
+        err_console.print(f"[red]{escape(str(exc))}[/red]")
+        settings_files = []
+    if settings_files:
+        console.print(f"[green]已装载 {SETTINGS_FILE_NAME}:[/green]")
+        for f in settings_files:
+            console.print(f"  {f}")
+    else:
+        console.print(f"[dim]无 {SETTINGS_FILE_NAME}(可选;默认模型可写在里面)[/dim]")
 
     store = AuthStore()
     if cfg.providers:
@@ -271,11 +315,19 @@ def doctor() -> None:
         console.print(table)
 
     try:
-        default = require_default_model(cfg)
+        default = resolve_default_model(cfg)
     except ConfigError as exc:
         console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(code=2) from exc
     rk = resolve_key(default.provider, default.api_key_ref, store)
+    _provider, _model, model_source = default_model_spec()
+    console.print(f"[dim]默认模型来源: {model_source}[/dim]")
+    for path, legacy_provider, legacy_model in legacy_default_keys():
+        err_console.print(
+            f"[yellow]警告:[/yellow] {path} 里的 defaultProvider/defaultModel 已不再读取。\n"
+            f"  迁移: qi config --set defaultProvider={legacy_provider or '<name>'} "
+            f"--set defaultModel={legacy_model or '<id>'},然后删掉该文件里的这两行。"
+        )
     console.print(f"[bold]默认模型:[/bold] {default.label}  "
                   f"api={default.api}  ctx={default.context_window}  max={default.max_tokens}  "
                   f"reasoning={default.reasoning}  "
@@ -305,7 +357,8 @@ def models_list() -> None:
         console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(code=2) from exc
     store = AuthStore()
-    default_label = f"{cfg.defaultProvider}/{cfg.defaultModel}" if cfg.defaultProvider and cfg.defaultModel else None
+    provider, model, _source = default_model_spec()
+    default_label = f"{provider}/{model}" if provider and model else None
     table = Table(title="模型")
     table.add_column("默认"); table.add_column("provider"); table.add_column("模型")
     table.add_column("api"); table.add_column("ctx"); table.add_column("credential")
@@ -317,8 +370,8 @@ def models_list() -> None:
             shown.add(label)
             table.add_row("*" if label == default_label else "", name_, m.id,
                           m.api or prov.api or DEFAULT_API, str(m.contextWindow), rk.describe())
-    if default_label and default_label not in shown:
-        spec = resolve_model(cfg, cfg.defaultProvider, cfg.defaultModel)  # type: ignore[arg-type]
+    if default_label and default_label not in shown and provider and model:
+        spec = resolve_model(cfg, provider, model)
         rk = resolve_key(spec.provider, spec.api_key_ref, store)
         table.add_row("*", spec.provider, spec.model, spec.api, str(spec.context_window), rk.describe())
     console.print(table)
@@ -456,8 +509,129 @@ def sessions_rm(session_id: str = typer.Argument(...)) -> None:
 
 # ── auth / init / version ───────────────────────────────
 
-auth_app = typer.Typer(help="管理 ~/.qi/auth.json 凭证")
+auth_app = typer.Typer(help="管理 ~/.qi/agent/auth.json 凭证")
 app.add_typer(auth_app, name="auth")
+
+
+class _AuthError(Exception):
+    """对齐 pi 的 AuthCommandError:消息直接讲原因,退出码由调用处定。"""
+
+
+def _auth_target(provider: str | None, model: str | None) -> tuple[str, str | None]:
+    """解析 --provider/--model(至少给一个);只给 --model 时反查 provider。"""
+    cfg, _files = load_config()
+    if provider:
+        return provider.strip().lower(), ((model or "").strip() or None)
+    name = (model or "").strip()
+    if not name:
+        raise _AuthError("需给 --provider <provider> 或 --model <model>")
+    matches = [p for p, prov in cfg.providers.items()
+               if any(entry.id == name for entry in prov.models)]
+    if len(matches) == 1:
+        return matches[0], name
+    if not matches:
+        raise _AuthError(f"未知模型 {name!r}(用 `qi models list` 看已配置的模型)")
+    raise _AuthError(
+        f"模型 {name!r} 在多个 provider 中出现({', '.join(matches)});请加 --provider"
+    )
+
+
+def _auth_resolve(provider: str | None, model: str | None) -> tuple[str, str | None, str | None]:
+    """解析出 (provider, model, key);解析顺序同 resolve_key。"""
+    name, found_model = _auth_target(provider, model)
+    cfg, _files = load_config()
+    prov = cfg.providers.get(name)
+    rk = resolve_key(name, prov.apiKey if prov else None, AuthStore())
+    return name, found_model, (rk.key if rk.ok else None)
+
+
+def _auth_fail(message: str, code: int) -> None:
+    err_console.print(f"[red]Error: {escape(message)}[/red]")
+    raise typer.Exit(code=code)
+
+
+@auth_app.command("print-api-key")
+def auth_print_api_key(
+    provider: str | None = typer.Option(None, "--provider", help="provider 名"),
+    model: str | None = typer.Option(None, "--model", help="用模型反查 provider"),
+) -> None:
+    """打印某 provider 的 API key 到 stdout(对齐 pi:`pi auth print-api-key`)。"""
+    try:
+        name, _mdl, key = _auth_resolve(provider, model)
+    except (_AuthError, ConfigError) as exc:
+        _auth_fail(str(exc), 1)
+        return
+    if not key:
+        _auth_fail(f"provider {name!r} 无可用 API key(auth store / 环境变量 / models.json 均未提供)", 1)
+        return
+    sys.stdout.write(f"{key}\n")          # 裸 stdout:可管道,不加 rich 装饰
+
+
+@auth_app.command("print-bearer-token")
+def auth_print_bearer_token(
+    provider: str | None = typer.Option(None, "--provider", help="provider 名"),
+    model: str | None = typer.Option(None, "--model", help="用模型反查 provider"),
+    min_expiry: str | None = typer.Option(
+        None, "--min-expiry",
+        help="有效期下限(如 30m/1h);qi 凭证无过期时间,只校验格式"),
+) -> None:
+    """打印可作 Bearer token 的凭证(对齐 pi:`pi auth print-bearer-token`)。
+
+    qi 的 auth store 只存 api_key(无 OAuth),故这里的“bearer token”即 API key ——
+    对配了 `authHeader: true` 的 provider 就是 `Authorization: Bearer <key>` 的值。
+    """
+    if min_expiry is not None and not re.fullmatch(r"\d+(ms|s|m|h)", min_expiry.strip()):
+        _auth_fail("--min-expiry 需为时长,例如 30m 或 1h", 1)
+        return
+    try:
+        name, _mdl, key = _auth_resolve(provider, model)
+    except (_AuthError, ConfigError) as exc:
+        _auth_fail(str(exc), 1)
+        return
+    if not key:
+        _auth_fail(f"provider {name!r} 未配置可用的 bearer 凭证", 1)
+        return
+    sys.stdout.write(f"{key}\n")
+
+
+@auth_app.command("check")
+def auth_check(
+    provider: str | None = typer.Option(None, "--provider", help="provider 名"),
+    model: str | None = typer.Option(None, "--model", help="用模型反查 provider"),
+    json_out: bool = typer.Option(False, "--json", help="以 JSON 输出结果"),
+    credentials: bool = typer.Option(False, "--credentials", help="输出里带上凭证"),
+    no_refresh: bool = typer.Option(False, "--no-refresh", help="不刷新凭证(qi 无 OAuth,接受即无操作)"),
+) -> None:
+    """检查某 provider 的凭证是否就绪。
+
+    退出码对齐 pi:`ready`=0,`not_ready`=1,`invalid`=2。
+    """
+    del no_refresh          # 语义与 pi 一致地接受,但 qi 没有 OAuth 需要刷新
+    requested = (provider or model or "").strip()
+    result: dict[str, str]
+    try:
+        name, _mdl, key = _auth_resolve(provider, model)
+        cfg, _files = load_config()
+        known = name in cfg.providers or name in DEFAULT_API_KEY_ENV
+        if not known:
+            result = {"status": "not_ready", "provider": name,
+                      "reason": "provider_not_found"}
+        elif not key:
+            result = {"status": "not_ready", "provider": name,
+                      "reason": "credentials_not_configured"}
+        else:
+            result = {"status": "ready", "provider": name, "authType": "api_key"}
+            if credentials:
+                result["credentials"] = key
+    except (_AuthError, ConfigError):
+        result = {"status": "invalid", "provider": requested, "reason": "invalid_state"}
+
+    if json_out:
+        sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
+    else:
+        sys.stdout.write(result.get("credentials") or result["status"] + "\n")
+    status = result["status"]
+    raise typer.Exit(code=0 if status == "ready" else 1 if status == "not_ready" else 2)
 
 
 @auth_app.command("login")
@@ -488,6 +662,91 @@ def auth_list() -> None:
         return
     for p in providers:
         console.print(p)
+
+
+# ── qi config:settings.json(对齐 pi 的键与分层) ───────
+
+@app.command("config")
+def config_cmd(
+    local: bool = typer.Option(False, "--local", "-l",
+                               help=f"操作项目 {'.qi'}/{SETTINGS_FILE_NAME}(默认全局 agent 目录)"),
+    set_: list[str] = typer.Option(None, "--set", help="写键:--set skills='[\"~/x\"]'(可重复)"),
+    unset: list[str] = typer.Option(None, "--unset", help="删键(可重复)"),
+    json_out: bool = typer.Option(False, "--json", help="以 JSON 输出合并后的设置"),
+) -> None:
+    """查看/编辑 settings.json:全局 `~/.qi/agent/` > 项目 `<git根>/.qi/`。"""
+    scope = "project" if local else "user"
+    cwd = Path.cwd()
+
+    if set_ or unset:
+        for item in set_ or []:
+            if "=" not in item:
+                console.print(f"[red]--set 需要 K=V 形式:[/red] {escape(item)}")
+                raise typer.Exit(code=2)
+            key, _, raw_value = item.partition("=")
+            try:
+                path = set_value(scope, key.strip(), parse_value(raw_value), cwd)
+            except SettingsError as exc:
+                console.print(f"[red]写入失败:[/red] {escape(str(exc))}")
+                raise typer.Exit(code=2) from exc
+            console.print(f"[green]已写[/green] {path}: {key.strip()} = {escape(raw_value)}")
+        for key in unset or []:
+            try:
+                path, removed = unset_value(scope, key.strip(), cwd)
+            except SettingsError as exc:
+                console.print(f"[red]删除失败:[/red] {escape(str(exc))}")
+                raise typer.Exit(code=2) from exc
+            tag = "[green]已删[/green]" if removed else "[yellow]无此键[/yellow]"
+            console.print(f"{tag} {path}: {key.strip()}")
+        return
+
+    try:
+        merged, files = load_settings_raw(cwd)
+        settings, _ = load_settings(cwd)
+    except SettingsError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(code=2) from exc
+
+    if json_out:
+        console.print_json(data={"files": [str(p) for p in files], "settings": merged})
+        return
+
+    console.print(f"[bold]{SETTINGS_FILE_NAME}[/bold](高 → 低):")
+    if files:
+        for path in files:
+            console.print(f"  {path}")
+    else:
+        console.print("  (无;均为默认值)")
+    for name in SCOPES:
+        console.print(f"  {name:8} → {settings_scope_path(name, cwd)}")
+
+    if merged:
+        table = Table(title="合并后设置")
+        table.add_column("键")
+        table.add_column("值")
+        for key in sorted(merged):
+            table.add_row(key, json.dumps(merged[key], ensure_ascii=False))
+        console.print(table)
+
+    provider, model, source = default_model_spec(cwd)
+    console.print(f"[bold]默认模型:[/bold] {provider or '-'}/{model or '-'}  (来源:{source})")
+    console.print(f"[bold]技能发现:[/bold] {'开' if settings.skillsEnabled else '关'}")
+
+    try:
+        skills = load_top_level_skills(cwd, settings, enabled=settings.skillsEnabled)
+    except LoadError as exc:
+        console.print(f"[red]技能装载失败:[/red] {escape(str(exc))}")
+        raise typer.Exit(code=1) from exc
+    if skills:
+        table = Table(title=f"顶层技能({len(skills)})")
+        table.add_column("name")
+        table.add_column("来源")
+        table.add_column("description")
+        for skill in skills:
+            table.add_row(skill.name, skill.source or "-", skill.description[:60])
+        console.print(table)
+    else:
+        console.print("[dim]顶层技能:无(把 SKILL.md 放进 ~/.qi/agent/skills/<name>/)[/dim]")
 
 
 # ── qi init ─────────────────────────────────────────────
@@ -584,8 +843,11 @@ def _add_models_interactive(provider: str, entry: dict) -> None:
         console.print(f"[green]✓[/green] Model '{escape(name)}' ({escape(mid)}) added.")
 
 
-def _activate_llm(data: dict, providers: dict) -> None:
-    """QwenPaw 的 --- Activate LLM Model ---:选 provider → 选 model。"""
+def _activate_llm(providers: dict, current: tuple[str | None, str | None]) -> tuple[str, str]:
+    """QwenPaw 的 --- Activate LLM Model ---:选 provider → 选 model。
+
+    返回 `(provider, model)` —— 默认模型写进 settings.json,不再进 models.json。
+    """
     console.print("\n[bold]--- Activate LLM Model ---[/bold]")
     eligible = [n for n in sorted(providers)
                 if any(isinstance(m, dict) and m.get("id") for m in providers[n].get("models", []))]
@@ -597,20 +859,48 @@ def _activate_llm(data: dict, providers: dict) -> None:
         mark = "✓" if _provider_configured(providers[n]) else "✗"
         return f"{n} [{mark}]"
 
-    cur_prov = data.get("defaultProvider")
+    cur_prov, cur_model = current
     pidx = eligible.index(cur_prov) if cur_prov in eligible else 0
     p = eligible[prompt.select("Select provider for LLM", [_prov_label(n) for n in eligible], default=pidx)]
 
     ids = [m["id"] for m in providers[p]["models"] if isinstance(m, dict) and m.get("id")]
-    cur_model = data.get("defaultModel")
-    midx = ids.index(cur_model) if cur_model in ids else 0
+    midx = ids.index(cur_model) if cur_model in ids and cur_prov == p else 0
     labels = [f"{m.get('name') or m['id']}" for m in providers[p]["models"]
               if isinstance(m, dict) and m.get("id")]
     m = ids[prompt.select("Select LLM model", labels, default=midx)]
-
-    data["defaultProvider"] = p
-    data["defaultModel"] = m
     console.print(f"[green]✓[/green] LLM: {escape(p)} / {escape(m)}")
+    return p, m
+
+
+def _strip_legacy_defaults(data: dict) -> None:
+    """models.json 里的 defaultProvider/defaultModel 已不生效 —— 顺手剔掉(init 本来就在重写该文件)。"""
+    dropped = [k for k in ("defaultProvider", "defaultModel") if k in data]
+    for key in dropped:
+        data.pop(key, None)
+    if dropped:
+        console.print(f"[dim]已从 {MODELS_FILE_NAME} 移除旧键: {', '.join(dropped)}"
+                      f"(现在只写在 {SETTINGS_FILE_NAME})[/dim]")
+
+
+def _write_default_model(provider: str, model: str, local: bool) -> Path:
+    """把默认模型写进 settings.json(全局或项目),返回文件路径。"""
+    scope = "project" if local else "user"
+    set_value(scope, "defaultProvider", provider)
+    path = set_value(scope, "defaultModel", model)
+    console.print(f"[green]✓[/green] 默认模型已写入 {path}")
+    return path
+
+
+def _current_default(local: bool) -> tuple[str | None, str | None]:
+    """读当前默认模型(settings.json),供 init 交互预选。"""
+    scope = "project" if local else "user"
+    try:
+        settings = load_settings_by_scope().get(scope)
+    except SettingsError:
+        return None, None
+    if settings is None:
+        return None, None
+    return settings.defaultProvider, settings.defaultModel
 
 
 def _write_models(target_dir: Path, target_file: Path, data: dict) -> None:
@@ -626,12 +916,13 @@ def _init_interactive(local: bool) -> None:
     target_file = target_dir / MODELS_FILE_NAME
     data = load_models_file(target_file)
     providers: dict = data.setdefault("providers", {})
+    current = _current_default(local)
 
     console.print(f"Working dir: {target_dir}")
     console.print("\n[bold]=== LLM Provider Configuration ===[/bold]")
     console.print("[bold]--- Provider Configuration ---[/bold]")
     while True:
-        provider = _select_existing_provider(providers, data.get("defaultProvider"))
+        provider = _select_existing_provider(providers, current[0])
         if provider is None:
             provider = prompt.text("Provider name", required=True)
             entry = providers.setdefault(provider, {})
@@ -642,8 +933,10 @@ def _init_interactive(local: bool) -> None:
         if not prompt.confirm("Configure another provider?", default=False):
             break
 
-    _activate_llm(data, providers)
+    provider, model = _activate_llm(providers, current)
+    _strip_legacy_defaults(data)
     _write_models(target_dir, target_file, data)
+    _write_default_model(provider, model, local)
     console.print("\n[green]✓ Initialization complete![/green]")
 
 
@@ -657,7 +950,7 @@ def _init_noninteractive(*, provider: str | None, model: str | None, base_url: s
     providers: dict = data.setdefault("providers", {})
 
     if not provider:
-        provider = data.get("defaultProvider")
+        provider = _current_default(local)[0]
     if not provider:
         console.print("[red]-y 模式需要 --provider(或先用交互模式配置)。[/red]")
         raise typer.Exit(code=2)
@@ -685,7 +978,8 @@ def _init_noninteractive(*, provider: str | None, model: str | None, base_url: s
 
     models: list = entry.setdefault("models", [])
     if not model:
-        model = data.get("defaultModel") if data.get("defaultProvider") == provider else None
+        cur_provider, cur_model = _current_default(local)
+        model = cur_model if cur_provider == provider else None
         if not model and models:
             model = models[0].get("id")
     if not model:
@@ -713,9 +1007,9 @@ def _init_noninteractive(*, provider: str | None, model: str | None, base_url: s
         })
 
     providers[provider] = entry
-    data["defaultProvider"] = provider
-    data["defaultModel"] = model
+    _strip_legacy_defaults(data)
     _write_models(target_dir, target_file, data)
+    _write_default_model(provider, model, local)
     console.print(f"[bold]默认模型:[/bold] {provider}/{model}")
     console.print("[yellow]下一步:qi doctor 校验。[/yellow]")
 
@@ -761,4 +1055,14 @@ def tui() -> None:
 
 
 def main() -> None:
+    """CLI 入口:先确保目录布局(旧扁平布局 → `~/.qi/agent/`),再交给 typer。"""
+    try:
+        moved = paths.ensure_layout()
+    except OSError as exc:
+        err_console.print(f"[yellow]目录初始化失败(继续): {escape(str(exc))}[/yellow]")
+        moved = []
+    if moved:
+        console.print("[green]已迁移到 agent 目录(对齐 pi):[/green]")
+        for src, dst in moved:
+            console.print(f"  {src} → {dst}")
     app()

@@ -64,10 +64,13 @@ def _yaml(m: dict) -> str:
 
 
 def write_config(tmp: Path, provider: str = "ollama") -> Path:
+    """providers 写 models.json;默认模型写 settings.json(对齐 pi)。"""
+    home = tmp / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "settings.json").write_text(
+        json.dumps({"defaultProvider": provider, "defaultModel": "x"}), encoding="utf-8")
     cfg = tmp / "models.json"
     cfg.write_text(json.dumps({
-        "defaultProvider": provider,
-        "defaultModel": "x",
         "providers": {provider: {"api": "openai-completions",
                                 "models": [{"id": "x"}]}},
     }), encoding="utf-8")

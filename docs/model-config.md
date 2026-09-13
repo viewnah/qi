@@ -8,11 +8,12 @@
 - 执行与分派各用一个**默认模型**,集中定义、按名使用:
   - `defaultProvider` / `defaultModel`:执行默认,**所有 agent 共用**
   - `routerProvider` / `routerModel`:Dispatcher 分派用(小而快);缺省回退 default
-- 文件与格式对齐 pi:
-  - `~/.qi/models.json`:provider + 模型定义(`baseUrl` / `api` / `apiKey` / `models`)
-  - `~/.qi/auth.json`:凭证(0600,按 provider),与 pi 同格式
+- 文件与格式对齐 pi,两级布局(`~/.qi/agent/` ↔ `<项目>/.qi/`,后者配对的是全局的 agent 目录):
+  - `~/.qi/agent/models.json`:provider + 模型定义(`baseUrl` / `api` / `apiKey` / `models`)
+  - `~/.qi/agent/settings.json`:默认模型 + 其它应用设置(见 [settings.md](settings.md))
+  - `~/.qi/agent/auth.json`:凭证(0600,按 provider),与 pi 同格式
 - 凭证解析顺序(对齐 pi):
-  1. `~/.qi/auth.json` 按 provider
+  1. `~/.qi/agent/auth.json` 按 provider
   2. 约定环境变量(`DEEPSEEK_API_KEY` 等)
   3. provider 的 `apiKey` 引用(字面量 / `$ENV` / `!command`)
 - 本地 provider(ollama)免 key。
@@ -23,8 +24,6 @@
 
 ```json
 {
-  "defaultProvider": "deepseek",
-  "defaultModel": "deepseek-chat",
   "providers": {
     "deepseek": {
       "baseUrl": "https://api.deepseek.com/v1",
@@ -47,8 +46,7 @@
 ```
 
 | 字段 | 必填 | 默认 | 说明 |
-|---|---|---|---|
-| `defaultProvider` / `defaultModel` | ✅ | — | 执行默认模型(pi 放在 settings.json,qi 放在本文件) |
+| --- | --- | --- | --- |
 | `routerProvider` / `routerModel` | | 回退 default | Dispatcher 分派模型 |
 | `providers.<name>.baseUrl` | | | API endpoint |
 | `providers.<name>.api` | | `openai-completions` | `openai-completions` / `openai-responses` / `anthropic-messages` / `google-generative-ai` |
@@ -81,27 +79,32 @@
 
 ## 5. 查找层级
 
-```
-$QI_AGENT_CONFIG(env 指定文件,最高)
-→ <项目>/.qi/models.json
-→ ~/.qi/models.json
-→ 内置默认(无)
+```text
+models.json:  $QI_AGENT_CONFIG(env 指定文件,最高)
+              → <项目>/.qi/models.json
+              → ~/.qi/agent/models.json
+
+默认模型:     <项目>/.qi/settings.json > ~/.qi/agent/settings.json(唯一来源;models.json 不参与)
 ```
 
 键级深合并,内层覆盖外层;文件不存在则跳过。provider 按名覆盖,`models` 数组整体替换。
 
+> **默认模型只属于 `settings.json`**(pi 语义)。`models.json` 里的 `defaultProvider` /
+> `defaultModel` **完全不参与**(不是优先级更低),写了会被忽略并在 `qi doctor` 里报出来;
+> 缺默认模型时的报错会直接给出可照抄的迁移命令。
+
 ## 6. 启动解析流程
 
-```
+```text
 启动 → 分层装载 models.json → pydantic 校验
-  ├─ defaultProvider/defaultModel 必须存在,否则启动失败 + 打印配置指引样例
+  ├─ 默认模型从 settings.json 取;缺失则启动失败 + 打印可照抄的迁移命令
   ├─ 校验 api 已知(openai-completions/openai-responses/anthropic-messages/google-generative-ai)
   ├─ 按 pi 顺序解析密钥(auth store → 约定 env → apiKey 引用;ollama 免 key)
   └─ router* 缺省 → Router 回退 default(L1/sticky 也不依赖模型)
 ```
 
 | 用途 | 模型 |
-|---|---|
+| --- | --- |
 | 执行 agent(tool-loop) | `defaultProvider/defaultModel`(必须) |
 | Dispatcher Router(分类) | `routerProvider/routerModel`,缺省回退 default |
 | 密钥/连通检查 | `qi doctor` |
@@ -114,7 +117,7 @@ $QI_AGENT_CONFIG(env 指定文件,最高)
 
 ### 交互流程
 
-```
+```text
 Working dir: ~/.qi
 
 === LLM Provider Configuration ===
@@ -152,7 +155,8 @@ maxTokens [16384]:
 ? Select LLM model                   # 上下键
   ❯ DeepSeek Chat
 ✓ LLM: deepseek / deepseek-chat
-✓ Configuration saved to ~/.qi/models.json
+✓ Configuration saved to ~/.qi/agent/models.json
+✓ 默认模型已写入 ~/.qi/agent/settings.json
 
 ✓ Initialization complete!
 ```
@@ -163,8 +167,8 @@ maxTokens [16384]:
 - `Base URL` 必填;已有 provider 的 `Base URL` / `API 类型` 直接回车保留。
 - `API Key` **可见输入**(不隐藏),方便确认复制成功;已有凭证回车保留。
 - `Add a model?` 循环逐个添加模型,含 `name` / `reasoning` / `contextWindow` / `maxTokens`,后三者有默认值回车即接受(已有模型默认「否」)。
-- 最后 `Activate LLM Model` 写入 `defaultProvider` / `defaultModel`。
-- 写盘:`models.json`(provider + 模型 + 默认模型)+ `auth.json`(API key,0600)。
+- 最后 `Activate LLM Model` 把 `defaultProvider` / `defaultModel` 写进 `settings.json`(不再进 `models.json`)。
+- 写盘:`models.json`(provider + 模型)、`settings.json`(默认模型)、`auth.json`(API key,0600)。
 - `-l` 写入项目 `<项目>/.qi/models.json`(否则全局 `~/.qi/`)。
 
 ### 非交互(`-y`)
@@ -189,7 +193,7 @@ qi init -y -l ...   # 写项目 .qi/
 `-y` 模式必须提供 `--provider`(否则报错并提示先用交互模式)。
 
 | 选项 | 说明 |
-|---|---|
+| --- | --- |
 | `--provider <name>` | provider 名(已有或新建) |
 | `--model <id>` | 模型 id |
 | `--base-url <url>` | provider 的 API endpoint |

@@ -13,14 +13,14 @@ qi 的 system prompt 由**两层**拼成:**基座层**(框架级,永远存在)+ 
 对齐 pi 时容易忽略一点:pi 里其实是**两个正交概念**:
 
 | pi | 作用 | 语义 |
-|---|---|---|
+| --- | --- | --- |
 | 内置默认 system prompt(编译进 dist) | 底座指令 | **永远存在**,不可缺失 |
 | `SYSTEM.md` / `APPEND_SYSTEM.md` | 替换 / 追加底座 | 可选覆盖 |
 
 qi 早期把"角色"完全外包给了 `agents/<name>/agent.md`,等于丢掉了"内置默认"那一档 ——
-结果 `~/.qi/agents/` 为空时没有任何提示词可用,只能硬失败。分层就是把这个坑补上:
+结果 `~/.qi/agent/agents/` 为空时没有任何提示词可用,只能硬失败。分层就是把这个坑补上:
 
-```
+```text
 ┌─ 基座层 ────────────────────────────────────────────┐
 │ 身份(运行在 qi 中)/ 环境(会话目录、工具、bash 只读)     │
 │ 通用做法(先看再做、小步验证、不编造)/ 输出风格          │
@@ -38,9 +38,9 @@ qi 早期把"角色"完全外包给了 `agents/<name>/agent.md`,等于丢掉了"
 ## 2. 基座层来源与优先级
 
 | 优先级 | 位置 | 说明 |
-|---|---|---|
+| --- | --- | --- |
 | 高 | `<项目>/.qi/SYSTEM.md` | 跟项目走,可提交共享 |
-| 中 | `~/.qi/SYSTEM.md` | 全局,所有项目可用 |
+| 中 | `~/.qi/agent/SYSTEM.md` | 全局,所有项目可用 |
 | 低 | `src/qi_agent/SYSTEM.md` | **包内置默认**,随 wheel 发布,永远存在 |
 
 规则:
@@ -58,7 +58,7 @@ qi 早期把"角色"完全外包给了 `agents/<name>/agent.md`,等于丢掉了"
 ### 3.2 全局覆盖
 
 ```bash
-$EDITOR ~/.qi/SYSTEM.md
+$EDITOR ~/.qi/agent/SYSTEM.md
 ```
 
 ```markdown
@@ -112,9 +112,9 @@ text, source = resolve_base_prompt()      # source: "project:<path>" | "user:<pa
 ## 5. 决策记录
 
 | 决策 | 结论 |
-|---|---|
+| --- | --- |
 | 基座层形态 | 包数据 Markdown(`src/qi_agent/SYSTEM.md`),非代码内联字符串;便于阅读/评审/改文案 |
-| 覆盖文件位置 | `<项目>/.qi/SYSTEM.md` + `~/.qi/SYSTEM.md`(与 agents/plugins/sessions 的 `.qi` 约定一致) |
+| 覆盖文件位置 | `<项目>/.qi/SYSTEM.md` + `~/.qi/agent/SYSTEM.md`(与 agents/plugins/sessions 的 `.qi` 约定一致) |
 | 语义 | 替换**基座层**(非整个 system prompt);角色层始终追加 |
 | 空文件 | 视为未配置,继续向下找;不产生空基座 |
 | `APPEND_SYSTEM.md` | **v1 不实现**(pi 有);需要时叠加在基座层之后 |

@@ -33,6 +33,25 @@ def _catalog() -> ToolCatalog:
     return catalog
 
 
+def _minimal_config(base: Path, monkeypatch) -> Path:
+    """最小可运行配置:providers 在 models.json,默认模型在 settings.json。
+
+    默认模型属于 settings.json(对齐 pi),models.json 不再提供该字段。
+    """
+    import json
+
+    (base / "models.json").write_text(
+        '{"providers": {"ollama": {"api": "openai-completions", '
+        '"models": [{"id": "x"}]}}}', encoding="utf-8")
+    home = base / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "settings.json").write_text(
+        json.dumps({"defaultProvider": "ollama", "defaultModel": "x"}), encoding="utf-8")
+    monkeypatch.setenv(paths.QI_AGENT_CONFIG, str(base / "models.json"))
+    monkeypatch.setenv(paths.QI_AGENT_HOME, str(home))
+    return home
+
+
 def _write_agent(agents_root: Path, name: str, description: str, body: str = "角色正文") -> Path:
     d = agents_root / name
     d.mkdir(parents=True, exist_ok=True)
@@ -164,18 +183,11 @@ def test_builtin_general_is_dispatch_fallback(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_zero_config_runtime_executes(tmp_path, monkeypatch):
-    """端到端:只有 models.json,没有任何 agent 目录 → 仍能执行并回话。"""
+    """端到端:只有最小配置(models.json + settings.json),无任何 agent 目录 → 仍能执行并回话。"""
     from qi_agent.runtime import QiRuntime, RuntimeConfig
     from qi_agent.session import SessionStore
 
-    (tmp_path / "models.json").write_text(
-        '{"defaultProvider": "ollama", "defaultModel": "x", '
-        '"providers": {"ollama": {"api": "openai-completions", '
-        '"models": [{"id": "x"}]}}}',
-        encoding="utf-8",
-    )
-    monkeypatch.setenv(paths.QI_AGENT_CONFIG, str(tmp_path / "models.json"))
-    monkeypatch.setenv(paths.QI_AGENT_HOME, str(tmp_path / "home"))
+    _minimal_config(tmp_path, monkeypatch)
 
     class StubLLM:
         async def chat(self, messages, tools=None, temperature=None):
@@ -218,12 +230,7 @@ async def test_dispatch_event_uses_display_name(tmp_path, monkeypatch):
     from qi_agent.runtime import QiRuntime, RuntimeConfig
     from qi_agent.session import SessionStore
 
-    (tmp_path / "models.json").write_text(
-        '{"defaultProvider": "ollama", "defaultModel": "x", '
-        '"providers": {"ollama": {"api": "openai-completions", '
-        '"models": [{"id": "x"}]}}}', encoding="utf-8")
-    monkeypatch.setenv(paths.QI_AGENT_CONFIG, str(tmp_path / "models.json"))
-    monkeypatch.setenv(paths.QI_AGENT_HOME, str(tmp_path / "home"))
+    _minimal_config(tmp_path, monkeypatch)
 
     class StubLLM:
         async def chat(self, messages, tools=None, temperature=None):
@@ -248,12 +255,7 @@ async def test_dispatch_entry_persists_display_name(tmp_path, monkeypatch):
     from qi_agent.runtime import QiRuntime, RuntimeConfig
     from qi_agent.session import SessionStore
 
-    (tmp_path / "models.json").write_text(
-        '{"defaultProvider": "ollama", "defaultModel": "x", '
-        '"providers": {"ollama": {"api": "openai-completions", '
-        '"models": [{"id": "x"}]}}}', encoding="utf-8")
-    monkeypatch.setenv(paths.QI_AGENT_CONFIG, str(tmp_path / "models.json"))
-    monkeypatch.setenv(paths.QI_AGENT_HOME, str(tmp_path / "home"))
+    _minimal_config(tmp_path, monkeypatch)
 
     class StubLLM:
         async def chat(self, messages, tools=None, temperature=None):

@@ -5,7 +5,7 @@
 
 ## 1. 布局(草案,参考 pi)
 
-```
+```text
 ┌──────────────────────────────────────────────┐
 │ header: qi · session名 · [AUTO|MANUAL] · agent │
 ├──────────────────────────────────────────────┤
@@ -28,7 +28,7 @@
 ### 会话与恢复(对齐 pi)
 
 | 命令 | 说明 |
-|---|---|
+| --- | --- |
 | `/resume` | 选历史会话恢复 |
 | `/new` | 新会话 |
 | `/name <name>` | 会话显示名 |
@@ -42,7 +42,7 @@
 ### Agent 与分派(qi 特色)
 
 | 命令 | 说明 |
-|---|---|
+| --- | --- |
 | `/agents` | 列出 agent(可 `@name` 直派) |
 | `/mode auto\|manual` | 切换分派模式 |
 | `/agent <name>` | manual 下锁定执行 agent |
@@ -51,7 +51,7 @@
 ### 检查与维护
 
 | 命令 | 说明 |
-|---|---|
+| --- | --- |
 | `/help` | 命令帮助(含快捷键) |
 | `/tools` | 当前 agent 的工具清单 |
 | `/skills` | 当前 agent 绑定的技能 |
@@ -61,8 +61,8 @@
 ### 对齐 pi 但砍掉/改造的
 
 | pi 命令 | qi 处理 |
-|---|---|
-| `/login` | 选 provider,写入 auth store(`~/.qi/auth.json`,0600) |
+| --- | --- |
+| `/login` | 选 provider,写入 auth store(`~/.qi/agent/auth.json`,0600) |
 | `/logout` | 清除某 provider 凭证 |
 | `/model /thinking /scoped-models /settings` | 配置化:改 `models.json`,不进 TUI |
 | `/llama /share /tree /clone /changelog` | 无对应能力(v2 按需,如 `/share` 随 web v2) |

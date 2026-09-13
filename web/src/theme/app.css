@@ -1,0 +1,1361 @@
+/**
+ * qi-web 样式 —— 几何与观感照搬 DeepSeek Harness。
+ *
+ * 数值来源(不是猜的):
+ *   · `--dsh-sidebar-width: 280px`、`PANEL_GAP = 8`(dsh-client-ui-layout 的常量)
+ *   · 侧栏列规则 `.sidebarCol{background:var(--dsw-specific-sidebar-fill);border-right:.5px solid var(--dsw-alias-border-l3)}`
+ *   · composer 吸底 + 渐变遮罩、`--dsh-composer-*` 系列(uV2eYG_/wSkVaW_ 规则)
+ *   · 间距以 8px 为主(gap:{2,4,6,8,12,16})、圆角 4/6/8/12/16 + 胶囊 999
+ *   · 全局 `corner-shape: superellipse(1.5)`(dsh 的视觉签名,不支持的浏览器自动忽略)
+ *
+ * 纪律:本文件不允许出现具体色值(只有 tokens.css 可以);`node scripts/check-design.mjs` 会拦。
+ */
+
+*,
+*::before,
+*::after {
+ box-sizing: border-box;
+}
+
+/* dsh: `*,:before,:after{corner-shape:var(--dsw-corner-shape)}` —— 超椭圆圆角 */
+@supports (corner-shape: superellipse(1.5)) {
+ *,
+ *::before,
+ *::after {
+  corner-shape: var(--dsw-corner-shape);
+ }
+}
+
+html,
+body,
+#root {
+ height: 100%;
+ margin: 0;
+}
+
+body {
+ background: var(--dsw-alias-bg-module-platform);
+ color: var(--dsw-alias-label-primary);
+ font: var(--dsw-font-base-16);
+ -webkit-font-smoothing: antialiased;
+}
+
+/* 隐式滚动条:dsh 把宽度固定为 8px 并给了专用滑块色 */
+* {
+ scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+ width: var(--dsh-scrollbar-width);
+ height: var(--dsh-scrollbar-width);
+}
+
+*::-webkit-scrollbar-thumb {
+ background: var(--dsw-alias-scrollbar-bg-l1);
+ border-radius: 999px;
+}
+
+*::-webkit-scrollbar-track {
+ background: transparent;
+}
+
+button {
+ font: inherit;
+ color: inherit;
+ background: none;
+ border: none;
+ cursor: pointer;
+}
+
+input,
+textarea {
+ font: inherit;
+ color: var(--dsw-alias-label-primary);
+}
+
+input:focus-visible,
+textarea:focus-visible,
+button:focus-visible {
+ outline: 2px solid var(--dsw-alias-state-business-primary);
+ outline-offset: 1px;
+}
+
+code,
+pre,
+.mono {
+ font-family: var(--dsw-font-mono);
+ font-size: 12px;
+}
+
+/* ── 外壳(照 dsh `AppFrame.module.css`)────────────────────────── */
+
+.shell {
+ display: grid;
+ grid-template-columns: var(--dsh-sidebar-width) 1fr;
+ grid-template-rows: 100%;
+ height: 100%;
+ /* dsh 的 frame 底色是 **bg-base**,不是平台色(平台色只出现在设置那层面板后) */
+ background: var(--dsw-alias-bg-base);
+ overflow: hidden;
+}
+
+@media (max-width: 1024px) {
+ /* dsh 的 SIDEBAR_AUTO_COLLAPSE = 1024 */
+ .shell {
+  grid-template-columns: 64px 1fr;
+ }
+}
+
+/* ── 侧栏(照 dsh `SidebarRoot.module.css`)─────────────────────── */
+
+.sidebar {
+ box-sizing: border-box;
+ display: flex;
+ flex-direction: column;
+ height: 100%;
+ min-width: 0;
+ padding: 6px var(--dsh-sidebar-inline-padding);
+ background: var(--dsw-specific-sidebar-fill);
+ color: var(--dsw-alias-label-primary);
+ border-right: 0.5px solid var(--dsw-alias-border-l3);
+ font-size: 14px;
+ overflow: hidden;
+}
+
+/* dsh logoRow:高 60px;品牌占满左侧(flex:1),按钮靠右 */
+.sidebar__head {
+ display: flex;
+ flex: none;
+ align-items: center;
+ justify-content: flex-end;
+ gap: 8px;
+ height: 60px;
+ margin-bottom: 8px;
+ padding: 8px 0 8px 4px;
+ overflow: hidden;
+}
+
+.brand {
+ display: inline-flex;
+ flex: 1;
+ align-items: center;
+ min-width: 0;
+ color: inherit;
+ font-size: 18px;
+ font-weight: 600;
+ line-height: 24px;
+ letter-spacing: 0.04em;
+}
+
+/* 新会话:dsh 是**独立一行**(38px 高 / 半径 12 / 0.5px 边 / elevated 底) */
+.sidebar__new {
+ box-sizing: border-box;
+ display: flex;
+ flex: none;
+ align-items: center;
+ justify-content: center;
+ gap: 6px;
+ height: 38px;
+ margin: 0 2px 8px;
+ padding: 8px 16px;
+ border: 0.5px solid var(--dsw-alias-border-l3);
+ border-radius: var(--dsw-radius-lg);
+ background: var(--dsw-alias-button-elevated-fill);
+ color: var(--dsw-alias-label-primary);
+ font-size: 14px;
+ font-weight: 500;
+ line-height: 22px;
+ overflow: hidden;
+}
+
+.sidebar__new:hover:not(:disabled) {
+ background: var(--dsw-alias-button-floating-hover);
+}
+
+.sidebar__new:disabled {
+ opacity: 0.5;
+ cursor: default;
+}
+
+/* 圆钮 28×28(dsh iconButton) */
+.sidebar__icon {
+ display: inline-flex;
+ flex: none;
+ align-items: center;
+ justify-content: center;
+ width: 28px;
+ height: 28px;
+ padding: 0;
+ border: none;
+ border-radius: 50%;
+ background: none;
+ color: var(--dsw-alias-label-secondary);
+}
+
+.sidebar__icon:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.sidebar__list {
+ flex: 1;
+ min-height: 0;
+ overflow-y: auto;
+ padding: 0 0 8px;
+}
+
+.sidebar__group {
+ padding: 12px 8px 4px;
+ font-size: 12px;
+ line-height: 18px;
+ color: var(--dsw-alias-label-caption);
+}
+
+/* 会话行(照 dsh panelRow:min-height 36 / radius 8 / padding 7px 8px) */
+.session {
+ box-sizing: border-box;
+ display: flex;
+ align-items: center;
+ gap: 8px;
+ width: 100%;
+ min-height: 36px;
+ padding: 7px 8px;
+ border-radius: var(--dsw-radius-md);
+ color: var(--dsw-alias-label-secondary);
+ font: inherit;
+ line-height: 22px;
+ text-align: left;
+}
+
+.session:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* dsh 的选中态用 interactive-bg-active,不是 sidebar-nav-item-active */
+.session[aria-current="true"] {
+ background: var(--dsw-alias-interactive-bg-active);
+ color: var(--dsw-alias-label-primary);
+ font-weight: 500;
+}
+
+/* ── 主区(照 dsh `ConversationRoot.module.css`)─────────────────── */
+
+.main {
+ display: flex;
+ flex-direction: column;
+ min-width: 0;
+ height: 100%;
+ overflow: hidden;
+ background: var(--dsw-alias-bg-base);
+}
+
+/* dsh header:min-height **76px** + 0.5px 下边线 + padding 10px 28px 0 20px */
+.topbar {
+ box-sizing: border-box;
+ flex: none;
+ display: flex;
+ flex-direction: column;
+ justify-content: flex-start;
+ min-height: 76px;
+ padding: 10px 28px 0 20px;
+ border-bottom: 0.5px solid var(--dsw-alias-border-l3);
+}
+
+/* dsh `.titleRow`:min-height 30px 的一行(面包屑在左,操作在右) */
+.topbar__row {
+ display: flex;
+ align-items: center;
+ gap: 10px;
+ min-height: 30px;
+}
+
+/* dsh crumb:14px、radius 12、padding 4px 8px */
+.topbar__title {
+ display: inline-flex;
+ align-items: center;
+ min-width: 0;
+ max-width: 320px;
+ padding: 4px 8px;
+ border-radius: var(--dsw-radius-lg);
+ color: var(--dsw-alias-label-primary);
+ font-size: 14px;
+ font-weight: 500;
+ line-height: 20px;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+
+.topbar__cwd {
+ flex: none;
+ color: var(--dsw-alias-label-tertiary);
+ font-size: 12px;
+ line-height: 18px;
+}
+
+.ghost {
+ display: inline-flex;
+ align-items: center;
+ gap: 4px;
+ padding: 4px 8px;
+ border-radius: var(--dsw-radius-md);
+ font-size: 13px;
+ line-height: 20px;
+ color: var(--dsw-alias-label-secondary);
+}
+
+.ghost:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+ color: var(--dsw-alias-label-primary);
+}
+
+.ghost[aria-pressed="true"] {
+ background: var(--dsw-alias-interactive-bg-active);
+ color: var(--dsw-alias-label-primary);
+}
+
+.ghost:disabled {
+ color: var(--dsw-alias-label-caption);
+ cursor: not-allowed;
+}
+
+/* ── 首页 hero(照 dsh `HeroShell.module.css` 逐条端口)──────────── */
+
+.hero {
+ flex: 1;
+ display: flex;
+ flex-direction: column;
+ align-items: center;
+ justify-content: center;
+ min-width: 0;
+ height: 100%;
+ padding: 0 24px;
+}
+
+/* 与输入卡片**同宽同间距**:首页的 hero 与输入框是一个居中块 */
+.hero__stack {
+ width: 100%;
+ max-width: var(--dsh-composer-card-max-width);
+ display: flex;
+ flex-direction: column;
+ align-items: stretch;
+ gap: 12px;
+ overflow: visible;
+}
+
+/* dsh: 26px / 500 / 32px,gap 12px 10px,内部是 flex 行 */
+.hero__headline {
+ display: flex;
+ flex-wrap: wrap;
+ justify-content: center;
+ align-items: center;
+ gap: 12px 10px;
+ font-size: 26px;
+ font-weight: 500;
+ line-height: 32px;
+ color: var(--dsw-alias-label-primary);
+}
+
+.hero__titleGroup {
+ display: flex;
+ flex-wrap: wrap;
+ justify-content: center;
+ align-items: center;
+ gap: 4px 7px;
+ min-width: 0;
+}
+
+/* 「预览版」徽章:0.5px 边 + 品牌浅底 + 代码字体 */
+.hero__badge {
+ align-self: flex-start;
+ margin-top: 2px;
+ padding: 1px 7px 0;
+ border: 0.5px solid var(--dsw-alias-interactive-bg-hover);
+ border-radius: 24px;
+ background: var(--dsw-alias-state-business-tertiary);
+ color: var(--dsw-alias-label-primary-bluish);
+ font-family: var(--dsw-font-mono);
+ font-size: 12px;
+ font-weight: 500;
+ line-height: 18px;
+ white-space: nowrap;
+}
+
+.hero__body {
+ position: relative;
+ display: flex;
+ flex-direction: column;
+ gap: 12px;
+ min-width: 0;
+}
+
+/* ── 消息流(照 dsh `ConversationRoot.scrollBody` + `MessageItem`)── */
+
+.stream {
+ flex: 1;
+ min-height: 0;
+ overflow-y: auto;
+ /* dsh:scrollbar-gutter:stable + margin-right:2px */
+ scrollbar-gutter: stable;
+ margin-right: 2px;
+ padding: 8px var(--dsh-composer-side-clearance) 0;
+}
+
+.stream__inner {
+ max-width: var(--dsh-chat-content-width);
+ margin: 0 auto;
+ display: flex;
+ flex-direction: column;
+ gap: 16px;
+}
+
+.empty {
+ margin: auto;
+ max-width: var(--dsh-chat-content-width);
+ color: var(--dsw-alias-label-tertiary);
+ font-size: 14px;
+ line-height: 22px;
+ text-align: center;
+}
+
+.msg {
+ display: flex;
+ flex-direction: column;
+ gap: 6px;
+}
+
+.msg__who {
+ font-size: 12px;
+ line-height: 18px;
+ color: var(--dsw-alias-label-caption);
+}
+
+.msg__body {
+ font-size: var(--dsh-content-font-size);
+ line-height: 22px;
+ white-space: pre-wrap;
+ word-break: break-word;
+ color: var(--dsw-alias-label-primary);
+}
+
+/* 用户气泡(dsh `.bubble`:radius 22 / padding 10px 16px / 宽 min(内容宽*.702, 82%)) */
+.msg--user {
+ align-items: flex-end;
+}
+
+.msg--user .msg__body {
+ max-width: min(calc(var(--dsh-chat-content-width) * 0.702), 82%);
+ background: var(--dsw-specific-bubble);
+ border-radius: 22px;
+ padding: 10px 16px;
+}
+
+.msg--narration .msg__body,
+.msg--opening .msg__body {
+ color: var(--dsw-alias-label-secondary);
+}
+
+/* 错误行(dsh `.turnErrorRow`:13px,标题用 state-error-primary) */
+.msg--error .msg__who {
+ color: var(--dsw-alias-state-error-primary);
+ font-weight: 600;
+}
+
+.msg--error .msg__body {
+ color: var(--dsw-alias-label-secondary);
+ font-size: 13px;
+ line-height: 20px;
+}
+
+.msg__caret {
+ display: inline-block;
+ width: 7px;
+ height: 15px;
+ margin-left: 2px;
+ vertical-align: -2px;
+ background: var(--dsw-alias-label-primary);
+ animation: caret 1s steps(2, start) infinite;
+}
+
+@keyframes caret {
+ 50% {
+  opacity: 0;
+ }
+}
+
+@media (prefers-reduced-motion: reduce) {
+ .msg__caret {
+  animation: none;
+ }
+}
+
+.suggestions {
+ display: flex;
+ flex-wrap: wrap;
+ gap: 8px;
+ margin-top: 4px;
+}
+
+.chip {
+ padding: 4px 12px;
+ border-radius: var(--dsw-radius-pill);
+ border: 1px solid var(--dsw-alias-border-l2);
+ font-size: 13px;
+ line-height: 20px;
+ color: var(--dsw-alias-label-secondary);
+}
+
+.chip:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+ color: var(--dsw-alias-label-primary);
+}
+
+/* ── 分派卡(qi 独有) ────────────────────────────────────── */
+
+.dispatch {
+ border-left: 2px solid var(--dsw-alias-state-business-primary);
+ padding: 2px 0 2px 10px;
+ font: var(--dsw-font-xs-13);
+ color: var(--dsw-alias-label-secondary);
+}
+
+.dispatch--soft {
+ border-left-color: var(--dsw-alias-state-warning);
+}
+
+.dispatch--manual {
+ border-left-color: var(--dsw-alias-state-success);
+}
+
+.dispatch__head {
+ color: var(--dsw-alias-label-primary);
+ font-weight: 500;
+}
+
+.dispatch__conf,
+.dispatch__reason {
+ font: var(--dsw-font-xxs-12);
+ color: var(--dsw-alias-label-caption);
+}
+
+/* ── 工具行:折叠态恰好一行 ──────────────────────────────── */
+
+.tool {
+ width: 100%;
+ text-align: left;
+}
+
+.tool__head {
+ display: flex;
+ align-items: center;
+ gap: 8px;
+ min-height: 28px;
+ font: var(--dsw-font-xs-13);
+ color: var(--dsw-alias-label-secondary);
+ overflow: hidden;
+ white-space: nowrap;
+}
+
+.tool__head:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+ border-radius: var(--dsw-radius-sm);
+}
+
+.tool__dot {
+ flex: none;
+ width: 7px;
+ height: 7px;
+ border-radius: 999px;
+ background: var(--dsw-alias-label-caption);
+}
+
+.tool__dot--read {
+ background: var(--dsw-static-deepseek-400);
+}
+
+.tool__dot--write {
+ background: var(--dsw-alias-state-warning);
+}
+
+.tool__dot--exec {
+ background: var(--dsw-static-blue-400);
+}
+
+.tool__dot--web {
+ background: var(--dsw-static-deepseek-500);
+}
+
+.tool__dot--task {
+ background: var(--dsw-alias-state-success);
+}
+
+.tool__dot--running {
+ animation: breathe 1.2s ease-in-out infinite;
+}
+
+@keyframes breathe {
+ 50% {
+  opacity: 0.3;
+ }
+}
+
+@media (prefers-reduced-motion: reduce) {
+ .tool__dot--running {
+  animation: none;
+ }
+}
+
+.tool__name {
+ flex: none;
+ font-family: var(--dsw-font-mono);
+ color: var(--dsw-alias-label-primary);
+}
+
+.tool__args {
+ flex: 1;
+ min-width: 0;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ font-family: var(--dsw-font-mono);
+ font-size: 12px;
+ color: var(--dsw-alias-label-caption);
+}
+
+.tool__cost {
+ flex: none;
+ font: var(--dsw-font-xxs-12);
+ color: var(--dsw-alias-label-caption);
+}
+
+.tool__mark--ok {
+ color: var(--dsw-alias-state-success);
+}
+
+.tool__mark--error {
+ color: var(--dsw-alias-state-error);
+}
+
+.tool__body {
+ margin: 4px 0 8px;
+ padding: 8px 12px;
+ background: var(--dsw-alias-bg-layer-2);
+ border: 1px solid var(--dsw-alias-border-l1);
+ border-radius: var(--dsw-radius-md);
+ font-family: var(--dsw-font-mono);
+ font-size: 12px;
+ line-height: 1.6;
+ white-space: pre-wrap;
+ word-break: break-word;
+ max-height: 22rem;
+ overflow: auto;
+ color: var(--dsw-alias-label-secondary);
+}
+
+.tool__body--error {
+ background: var(--dsw-alias-state-error-bg);
+ border-color: var(--dsw-alias-state-error);
+ color: var(--dsw-alias-state-error);
+}
+
+/* ── 输入卡片(照 dsh `InputBar.module.css` 逐条端口)────────────── */
+
+.composer {
+ display: flex;
+ flex-direction: column;
+ align-items: center;
+ padding: 0 var(--dsh-composer-side-clearance) 8px;
+}
+
+/* 会话态:吸底 + 向上渐隐(dsh 的 composerSeat) */
+.composer--session {
+ position: sticky;
+ bottom: 0;
+ z-index: 7;
+ background: linear-gradient(
+  180deg,
+  color-mix(in srgb, var(--dsw-alias-bg-base) 0%, transparent) 0px,
+  var(--dsw-alias-bg-base) 36px
+ );
+}
+
+/* 首页态:间距归 hero__stack 的 gap,这里不再自己加 padding */
+.composer--hero {
+ padding: 0;
+}
+
+/* dsh: border-radius 22px、**无 border**(细边交给 0.5px 的 box-shadow 环)、
+   gap 12px、padding-top 8px、字号跟随 content-font */
+.composer__card {
+ box-sizing: border-box;
+ position: relative;
+ display: flex;
+ flex-direction: column;
+ gap: 12px;
+ width: 100%;
+ max-width: var(--dsh-composer-card-max-width);
+ padding-top: 8px;
+ --dsw-elevation-stroke-color: var(--dsw-alias-border-l2);
+ background: var(--dsw-specific-input-major);
+ box-shadow: var(--dsw-elevation-soft);
+ border: 0;
+ border-radius: 22px;
+ font-size: var(--dsh-content-font-size);
+ line-height: 24px;
+}
+
+/* workspace chip 行(dsh accessory:padding 10px 12px 0) */
+.composer__accessory {
+ display: flex;
+ align-items: center;
+ gap: 8px;
+ padding: 10px 12px 0;
+}
+
+/* workspace chip 本体:min-height 28、radius 16、13px/500 */
+.workspace-chip {
+ display: inline-flex;
+ align-items: center;
+ gap: 4px;
+ max-width: min(100%, 360px);
+ min-height: 28px;
+ padding: 0 8px;
+ border: none;
+ border-radius: 16px;
+ background: none;
+ color: var(--dsw-alias-label-primary);
+ font-size: 13px;
+ font-weight: 500;
+ line-height: 20px;
+}
+
+.workspace-chip:hover,
+.workspace-chip[aria-expanded="true"] {
+ background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.workspace-chip__label {
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+ min-width: 0;
+}
+
+.workspace-chip__chevron {
+ flex: none;
+ color: var(--dsw-alias-label-caption);
+}
+
+/* 工作区弹层(dsh `.modalInput`:44px 高、radius 22、0.5px 边) */
+.composer__menu {
+ display: flex;
+ flex-wrap: wrap;
+ align-items: center;
+ gap: 8px;
+ padding: 8px 12px 0;
+}
+
+.composer__pathInput {
+ box-sizing: border-box;
+ flex: 1;
+ min-width: 12rem;
+ height: 44px;
+ padding: 7px 14px;
+ border: 0.5px solid var(--dsw-alias-border-l4);
+ border-radius: 22px;
+ background: none;
+ color: var(--dsw-alias-label-primary);
+ font-size: 14px;
+ font-weight: 400;
+ line-height: 22px;
+ outline: none;
+}
+
+.composer__pathInput::placeholder {
+ color: var(--dsw-alias-label-caption);
+}
+
+/* 输入框:dsh padding 4px 8px 0 14px,光标用品牌蓝 */
+.composer__inner {
+ display: flex;
+ align-items: flex-end;
+ gap: 8px;
+ padding: 0;
+}
+
+.composer__input {
+ box-sizing: border-box;
+ flex: 1;
+ min-height: 36px;
+ max-height: var(--dsh-composer-text-max-height);
+ padding: 4px 8px 0 14px;
+ border: 0;
+ background: transparent;
+ color: var(--dsw-alias-label-primary);
+ caret-color: var(--dsw-alias-state-business-primary);
+ font-family: var(--dsw-font-family);
+ font-size: inherit;
+ line-height: inherit;
+ white-space: pre-wrap;
+ word-break: break-word;
+ overflow-wrap: anywhere;
+ resize: none;
+ outline: none;
+}
+
+.composer__input::placeholder {
+ color: var(--dsw-alias-label-caption);
+}
+
+.composer__input:focus-visible {
+ outline: none;
+}
+
+.composer--hero .composer__input {
+ min-height: var(--dsh-hero-input-min-height);
+}
+
+/* 底部工具栏:tools / modes / trailing */
+.composer__row {
+ display: flex;
+ flex-wrap: wrap;
+ justify-content: space-between;
+ align-items: center;
+ gap: 12px;
+ min-width: 0;
+ padding: 2px 8px 6px;
+}
+
+.composer__tools,
+.composer__modes {
+ display: flex;
+ align-items: center;
+ gap: 12px;
+ min-width: 0;
+}
+
+.composer__trailing {
+ flex: none;
+ display: flex;
+ align-items: center;
+ gap: 12px;
+ margin-left: auto;
+}
+
+/* 「＋」圆钮(28×28) */
+.composer__add {
+ display: grid;
+ place-items: center;
+ flex: none;
+ width: 28px;
+ height: 28px;
+ border: none;
+ border-radius: var(--dsw-radius-pill);
+ background: var(--dsw-specific-selector);
+ color: var(--dsw-alias-label-primary);
+}
+
+.composer__add:hover:not(:disabled) {
+ background: var(--dsw-alias-interactive-bg-hover-solid);
+}
+
+.composer__add:disabled {
+ opacity: 0.5;
+ cursor: default;
+}
+
+/* 模型位:dsh 是可选 select;qi 的模型来自 settings.json、无 per-session 切换,
+   所以这里**只展示**——不做"看起来能选但改了没用"的假下拉 */
+.composer__mode {
+ display: inline-flex;
+ align-items: center;
+ max-width: 220px;
+ height: 28px;
+ padding: 0 8px;
+ border-radius: var(--dsw-radius-md);
+ color: var(--dsw-alias-label-secondary);
+ font-size: 13px;
+ font-weight: 500;
+ line-height: 20px;
+ white-space: nowrap;
+ overflow: hidden;
+ text-overflow: ellipsis;
+}
+
+/* 发送:34×34 品牌蓝圆钮,上移 2px(dsh 原样) */
+.composer__send {
+ display: grid;
+ place-items: center;
+ flex: none;
+ width: 34px;
+ height: 34px;
+ border-radius: var(--dsw-radius-pill);
+ background: var(--dsw-alias-button-info-fill);
+ color: var(--dsw-static-neutral-00);
+ transform: translateY(-2px);
+ transition: background-color 0.1s;
+}
+
+.composer__send:hover:not(:disabled) {
+ background: var(--dsw-alias-button-info-hover);
+}
+
+.composer__send:disabled {
+ opacity: 0.4;
+ cursor: default;
+}
+
+.composer__hint {
+ padding: 0 4px 6px;
+ font-size: 11px;
+ line-height: 16px;
+ color: var(--dsw-alias-label-caption);
+}
+
+/* ── 状态条 ───────────────────────────────────────────────── */
+
+.statusbar {
+ display: flex;
+ align-items: center;
+ gap: 12px;
+ min-height: 32px;
+ padding: 0 var(--dsh-composer-side-clearance) 4px;
+ font: var(--dsw-font-xxs-12);
+ color: var(--dsw-alias-label-caption);
+}
+
+.statusbar__inner {
+ display: flex;
+ align-items: center;
+ gap: 12px;
+ width: min(var(--dsh-composer-card-max-width), 100%);
+ margin: 0 auto;
+}
+
+.statusbar__spacer {
+ flex: 1;
+}
+
+.mode {
+ color: var(--dsw-alias-label-secondary);
+}
+
+.mode--manual {
+ color: var(--dsw-alias-state-business-primary);
+}
+
+/* ── 弹层与按钮 ───────────────────────────────────────────── */
+
+.overlay {
+ position: fixed;
+ inset: 0;
+ background: var(--dsw-alias-bg-mask-1);
+ display: flex;
+ align-items: center;
+ justify-content: center;
+ padding: 24px;
+}
+
+.dialog {
+ width: min(34rem, 100%);
+ max-height: 90vh;
+ overflow: auto;
+ display: flex;
+ flex-direction: column;
+ gap: 12px;
+ padding: 20px;
+ background: var(--dsw-specific-menu);
+ border: 1px solid var(--dsw-alias-border-l2);
+ border-radius: var(--dsw-radius-xl);
+ box-shadow: var(--dsw-shadow-lv3);
+}
+
+.dialog__title {
+ font: var(--dsw-font-base-strong-16);
+}
+
+.dialog__rows {
+ display: grid;
+ grid-template-columns: max-content 1fr;
+ gap: 8px 16px;
+ margin: 0;
+ font: var(--dsw-font-xs-13);
+}
+
+.dialog__rows dt {
+ color: var(--dsw-alias-label-caption);
+}
+
+.dialog__rows dd {
+ margin: 0;
+ font-family: var(--dsw-font-mono);
+ font-size: 12px;
+ word-break: break-all;
+}
+
+.dialog__warn {
+ font: var(--dsw-font-xs-13);
+ color: var(--dsw-alias-state-warning);
+}
+
+.dialog__actions {
+ display: flex;
+ justify-content: flex-end;
+ gap: 8px;
+}
+
+.btn {
+ padding: 6px 14px;
+ border-radius: var(--dsw-radius-md);
+ border: 1px solid var(--dsw-alias-border-l2);
+ background: var(--dsw-alias-bg-layer-1);
+ font: var(--dsw-font-xs-13);
+ color: var(--dsw-alias-label-primary);
+}
+
+.btn:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.btn--primary {
+ background: var(--dsw-alias-button-primary-fill);
+ border-color: transparent;
+ color: var(--dsw-alias-label-primary-foreground);
+}
+
+.btn--primary:hover {
+ background: var(--dsw-alias-button-primary-hover);
+ color: var(--dsw-alias-label-primary);
+}
+
+.btn--danger {
+ color: var(--dsw-alias-state-error);
+ border-color: var(--dsw-alias-state-error);
+}
+
+/* ── 设置页(照 dsh:平台底 + 居中面板 + 左分区导航 + 行式表单) ── */
+
+.settings {
+ flex: 1;
+ display: grid;
+ grid-template-columns: 200px minmax(0, 1fr);
+ gap: var(--dsh-panel-gap);
+ min-height: 0;
+ padding: var(--dsh-panel-gap);
+ background: var(--dsw-alias-bg-module-platform);
+}
+
+.settings__nav {
+ display: flex;
+ flex-direction: column;
+ gap: 2px;
+ padding: 8px;
+ background: var(--dsw-alias-bg-layer-1);
+ border-radius: var(--dsw-radius-lg);
+ height: fit-content;
+}
+
+.settings__nav-item {
+ padding: 6px 10px;
+ border-radius: var(--dsw-radius-md);
+ text-align: left;
+ font: var(--dsw-font-s-14);
+ color: var(--dsw-alias-label-secondary);
+}
+
+.settings__nav-item:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+ color: var(--dsw-alias-label-primary);
+}
+
+.settings__nav-item[aria-current="true"] {
+ background: var(--dsw-specific-sidebar-nav-item-active);
+ color: var(--dsw-alias-label-primary);
+}
+
+.settings__body {
+ min-width: 0;
+ overflow-y: auto;
+ display: flex;
+ flex-direction: column;
+ gap: var(--dsh-panel-gap);
+}
+
+.card {
+ background: var(--dsw-alias-bg-layer-1);
+ border: 1px solid var(--dsw-alias-border-l1);
+ border-radius: var(--dsw-radius-lg);
+ padding: 16px;
+ display: flex;
+ flex-direction: column;
+ gap: 12px;
+}
+
+.card__title {
+ font: var(--dsw-font-base-strong-16);
+}
+
+.card__desc {
+ font: var(--dsw-font-xs-13);
+ color: var(--dsw-alias-label-caption);
+}
+
+/* 行式表单:dsh 的设置项是一行「标签 + 控件」 */
+.row {
+ display: flex;
+ align-items: center;
+ justify-content: space-between;
+ gap: 16px;
+ min-height: 32px;
+ font: var(--dsw-font-xs-13);
+}
+
+.row__label {
+ color: var(--dsw-alias-label-secondary);
+}
+
+.row__value {
+ font-family: var(--dsw-font-mono);
+ font-size: 12px;
+ color: var(--dsw-alias-label-primary);
+ text-align: right;
+ word-break: break-all;
+}
+
+.table {
+ width: 100%;
+ border-collapse: collapse;
+ font: var(--dsw-font-xs-13);
+}
+
+.table th {
+ text-align: left;
+ font-weight: 500;
+ color: var(--dsw-alias-label-caption);
+ padding: 6px 8px;
+ border-bottom: 1px solid var(--dsw-alias-border-l1);
+}
+
+.table td {
+ padding: 8px;
+ border-bottom: 1px solid var(--dsw-alias-border-l1);
+ vertical-align: top;
+ color: var(--dsw-alias-label-secondary);
+}
+
+.check--ok {
+ color: var(--dsw-alias-state-success);
+}
+
+.check--bad {
+ color: var(--dsw-alias-state-warning);
+}
+
+.notice {
+ padding: 8px 12px;
+ border-radius: var(--dsw-radius-md);
+ background: var(--dsw-specific-tip);
+ border-left: 2px solid var(--dsw-alias-state-warning);
+ font: var(--dsw-font-xs-13);
+ color: var(--dsw-alias-label-secondary);
+}
+
+.notice--error {
+ border-left-color: var(--dsw-alias-state-error);
+ color: var(--dsw-alias-state-error);
+}
+
+/* 兼容旧类名(逐步淘汰) */
+.panel {
+ flex: 1;
+ overflow-y: auto;
+ padding: var(--dsh-panel-gap);
+}
+
+.panel__inner {
+ max-width: 56rem;
+ margin: 0 auto;
+ display: flex;
+ flex-direction: column;
+ gap: var(--dsh-panel-gap);
+}
+
+/* ── 顶栏 tab(照 dsh `ConversationRoot` 的 .tabs/.tab)──────────── */
+
+.tabs {
+ display: flex;
+ gap: 36px;
+ margin-top: 10px;
+ padding-left: 8px;
+ position: relative;
+ z-index: 1;
+}
+
+.tab {
+ position: relative;
+ padding: 0 0 9px;
+ border: none;
+ background: none;
+ color: var(--dsw-alias-label-tertiary);
+ font-size: 13px;
+ font-weight: 500;
+ line-height: 16px;
+ cursor: pointer;
+}
+
+.tab:after {
+ content: "";
+ position: absolute;
+ left: 0;
+ right: 0;
+ bottom: -1px;
+ height: 2px;
+ border-radius: 2px;
+ background: transparent;
+}
+
+.tab[aria-current="true"] {
+ color: var(--dsw-alias-state-business-primary);
+}
+
+.tab[aria-current="true"]:after {
+ background: var(--dsw-alias-state-business-primary);
+}
+
+/* ── 轨迹视图 ──────────────────────────────────────────────────────
+ * dsh 的 TrajectoryTimeline 是**甘特式时间轴**(50px 高 plot + 彩条 + 拖拽/缩放/框选),
+ * 那要求每个 span 都有自己的耗时与首字延迟。qi 目前只有:工具的 duration_ms、
+ * 轮次级 usage、以及事件的 seq —— **做不出真实甘特**。所以 qi 的轨迹是
+ * **纵向审计线**(逐条列出会话事实),但沿用 dsh 的视觉语言:
+ * 10px 序号、bg-layer-2 徽章、按类型着色的 2px 色条、.5px 发丝分隔。
+ * (dsh 的色条映射照抄:user=品牌蓝、context=绿混灰、tool=琥珀、error=红) */
+
+.trajectory {
+ flex: 1;
+ min-height: 0;
+ display: flex;
+ flex-direction: column;
+}
+
+.trajectory__toolbar {
+ box-sizing: border-box;
+ position: sticky;
+ top: 0;
+ z-index: 4;
+ display: flex;
+ align-items: center;
+ gap: 12px;
+ width: 100%;
+ min-height: 32px;
+ padding: 0 16px;
+ border-bottom: 0.5px solid var(--dsw-alias-border-l2);
+ background: var(--dsw-alias-bg-layer-1);
+ font-size: 12px;
+ line-height: 18px;
+ color: var(--dsw-alias-label-tertiary);
+}
+
+.trajectory__count {
+ color: var(--dsw-alias-label-secondary);
+}
+
+.trajectory__spacer {
+ flex: 1;
+}
+
+.trajectory__scroll {
+ flex: 1;
+ min-height: 0;
+ overflow-y: auto;
+ padding: 8px 16px 16px;
+}
+
+.trajectory__list {
+ max-width: var(--dsh-chat-content-width);
+ margin: 0 auto;
+ padding: 0;
+ list-style: none;
+ display: flex;
+ flex-direction: column;
+ gap: 2px;
+}
+
+.trajectory__row {
+ display: grid;
+ grid-template-columns: 44px minmax(0, 1fr);
+ gap: 12px;
+ padding: 6px 0;
+ border-bottom: 0.5px solid var(--dsw-alias-border-l1);
+}
+
+.trajectory__index {
+ text-align: right;
+ color: var(--dsw-alias-label-caption);
+ font-size: 10px;
+ line-height: 18px;
+}
+
+.trajectory__body {
+ min-width: 0;
+ display: flex;
+ flex-direction: column;
+ gap: 2px;
+ padding-left: 8px;
+ border-left: 2px solid var(--dsw-alias-label-secondary);
+}
+
+.trajectory__row[data-tone="user"] .trajectory__body {
+ border-left-color: var(--dsw-alias-state-business-primary);
+}
+
+.trajectory__row[data-tone="context"] .trajectory__body {
+ border-left-color: color-mix(
+  in srgb,
+  var(--dsw-alias-state-success) 68%,
+  var(--dsw-alias-label-secondary)
+ );
+}
+
+.trajectory__row[data-tone="tool"] .trajectory__body {
+ border-left-color: var(--dsw-alias-state-warning);
+}
+
+.trajectory__row[data-tone="error"] .trajectory__body {
+ border-left-color: var(--dsw-alias-state-error);
+}
+
+.trajectory__head {
+ display: flex;
+ align-items: center;
+ gap: 8px;
+ font-size: 13px;
+ line-height: 20px;
+ color: var(--dsw-alias-label-primary);
+}
+
+.trajectory__badge {
+ flex: none;
+ padding: 0 6px;
+ border-radius: var(--dsw-radius-xs);
+ background: var(--dsw-alias-bg-layer-2);
+ color: var(--dsw-alias-label-secondary);
+ font-size: 11px;
+ line-height: 16px;
+}
+
+.trajectory__detail {
+ font-size: 12px;
+ line-height: 18px;
+ color: var(--dsw-alias-label-secondary);
+ white-space: pre-wrap;
+ word-break: break-word;
+}
+
+.trajectory__mono {
+ font-family: var(--dsw-font-mono);
+ font-size: 12px;
+}
+
+.trajectory__empty {
+ margin: auto;
+ color: var(--dsw-alias-label-caption);
+ font-size: 13px;
+}

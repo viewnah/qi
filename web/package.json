@@ -1,0 +1,27 @@
+{
+  "name": "qi-web-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "qi-web 前端(React + Vite + TS)。构建产物进 src/qi_agent/web/static/。",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "test": "vitest run",
+    "check:design": "node scripts/check-design.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.5.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0",
+    "vitest": "^5.0.0"
+  }
+}

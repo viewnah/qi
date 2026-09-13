@@ -1,0 +1,369 @@
+/**
+ * qi-web 设计令牌 —— **照搬 DeepSeek Harness 的真实设计系统**
+ * ────────────────────────────────────────────────────────────────────────
+ * 来源:本机安装的 dsh 客户端包(不是截图猜的、也不是我自己调的):
+ *   `~/.npm/_npx/<hash>/node_modules/@deepseek-ai/dsh-client-ui-theme/lib/client.js`
+ *   (CSS 注释里不能出现星号加斜杠,所以这里写 <hash>——它就是 npx 缓存的目录名)
+ *   `dsh-client-ui-layout`(`SIDEBAR_AUTO_COLLAPSE`/`PANEL_GAP`)、`dsh-client-ui-conversation`
+ *
+ * 分层与 dsh 完全一致:
+ *   ① `--dsw-static-*`   原始色板(**主题无关**,纯值)
+ *   ② `--dsw-alias-*`    语义别名,浅/深各自指向不同的静态色
+ *   ③ `--dsw-specific-*` 场景令牌(侧栏底色、气泡、选择器…)
+ *   ④ `--dsh-*`          应用级布局常量(宽度/间距/composer 尺寸)
+ *
+ * 主题机制与 dsh 的差别(**刻意的**):dsh 用 `body[data-ds-dark-theme]` 打标记,
+ * qi 用 `color-scheme` + `light-dark()`,于是三态(auto/light/dark)零重复,
+ * 且 `scripts/check-design.mjs` 能把两套值解析出来做**保真校验**。
+ * 色值本身逐条等于 dsh——包括它自己的取值(不再做我原先那套 AA 校准)。
+ *
+ * 纪律:本文件是**唯一**允许出现具体色值的地方;组件里出现 `#rrggbb` 即回归失败。
+ */
+
+:root,
+[data-theme="auto"] {
+  color-scheme: light dark;
+}
+
+[data-theme="light"] {
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+:root {
+  /* ── ① 原始色板(dsh `--dsw-static-*`,主题无关)────────────────── */
+  --dsw-static-neutral-bluish-00: #ffffff;
+  --dsw-static-neutral-bluish-50: #f9fafb;
+  --dsw-static-neutral-bluish-60: #f5f6f7;
+  --dsw-static-neutral-bluish-75: #f1f3f5;
+  --dsw-static-neutral-bluish-100: #ebeef2;
+  --dsw-static-neutral-bluish-150: #e9ecf2;
+  --dsw-static-neutral-bluish-200: #e1e5ee;
+  --dsw-static-neutral-bluish-300: #cfd3d6;
+  --dsw-static-neutral-bluish-400: #adb2b8;
+  --dsw-static-neutral-bluish-500: #979da6;
+  --dsw-static-neutral-bluish-600: #81858c;
+  --dsw-static-neutral-bluish-700: #61666b;
+  --dsw-static-neutral-bluish-750: #43454a;
+  --dsw-static-neutral-bluish-800: #353638;
+  --dsw-static-neutral-bluish-850: #2c2c2e;
+  --dsw-static-neutral-bluish-875: #232324;
+  --dsw-static-neutral-bluish-900: #1b1b1c;
+  --dsw-static-neutral-bluish-950: #151517;
+  --dsw-static-neutral-bluish-1000: #0f1115;
+
+  --dsw-static-neutral-200: #e5e5e5;
+  --dsw-static-neutral-300: #d4d4d4;
+  --dsw-static-neutral-550: #65676b;
+  --dsw-static-neutral-600: #545557;
+  --dsw-static-neutral-700: #3c3c3d;
+
+  --dsw-static-deepseek-50: #edf3fe;
+  --dsw-static-deepseek-100: #e4edfd;
+  --dsw-static-deepseek-200: #d3e2ff;
+  --dsw-static-deepseek-400: #679efe;
+  --dsw-static-deepseek-500: #4176e6;
+  --dsw-static-deepseek-800: #34415b;
+
+  --dsw-static-blue-400: #60a5fa;
+  --dsw-static-green-100: #e6faed;
+  --dsw-static-green-400: #4ed17e;
+  --dsw-static-green-500: #22c55e;
+  --dsw-static-green-900: #233c2c;
+  --dsw-static-amber-100: #fef5e7;
+  --dsw-static-amber-400: #f7ad31;
+  --dsw-static-amber-500: #f59e0b;
+  --dsw-static-amber-900: #27241f;
+  --dsw-static-red-100: #fbe9e9;
+  --dsw-static-red-500: #ec1313;
+  --dsw-static-red-400: #f25a5a;
+  --dsw-static-red-600: #ec1313;
+  --dsw-static-red-900: #3a2222;
+
+  /* ── ② 语义别名(dsh `--dsw-alias-*`;浅色 / 深色)───────────────── */
+  --dsw-alias-bg-base: light-dark(
+    var(--dsw-static-neutral-bluish-00),
+    var(--dsw-static-neutral-bluish-950)
+  );
+  --dsw-alias-bg-layer-1: light-dark(
+    var(--dsw-static-neutral-bluish-00),
+    var(--dsw-static-neutral-bluish-875)
+  );
+  --dsw-alias-bg-layer-2: light-dark(
+    var(--dsw-static-neutral-bluish-00),
+    var(--dsw-static-neutral-bluish-850)
+  );
+  --dsw-alias-bg-layer-3: light-dark(
+    var(--dsw-static-neutral-bluish-00),
+    var(--dsw-static-neutral-bluish-800)
+  );
+  --dsw-alias-bg-module-platform: light-dark(
+    var(--dsw-static-neutral-bluish-60),
+    var(--dsw-static-neutral-bluish-800)
+  );
+  --dsw-alias-bg-skeleton: light-dark(#0000000a, #ffffff14);
+  --dsw-alias-bg-mask-1: light-dark(#0000003d, #00000080);
+  --dsw-alias-bg-mask-2: light-dark(#0000001f, #00000033);
+
+  --dsw-alias-border-l1: light-dark(#0000000a, #ffffff0f);
+  --dsw-alias-border-l2: light-dark(#0000001a, #ffffff1f);
+  --dsw-alias-border-l3: light-dark(#0000001f, #ffffff29);
+  --dsw-alias-border-l4: light-dark(#00000029, #ffffff33);
+  --dsw-alias-border-inverted: light-dark(#00000000, #ffffff0f);
+
+  --dsw-alias-label-primary: light-dark(
+    var(--dsw-static-neutral-bluish-1000),
+    var(--dsw-static-neutral-bluish-50)
+  );
+  --dsw-alias-label-secondary: light-dark(
+    var(--dsw-static-neutral-bluish-700),
+    var(--dsw-static-neutral-bluish-300)
+  );
+  --dsw-alias-label-tertiary: light-dark(
+    var(--dsw-static-neutral-bluish-600),
+    var(--dsw-static-neutral-bluish-400)
+  );
+  --dsw-alias-label-caption: light-dark(
+    var(--dsw-static-neutral-bluish-400),
+    var(--dsw-static-neutral-bluish-600)
+  );
+  --dsw-alias-label-dimmed: light-dark(
+    var(--dsw-static-neutral-bluish-200),
+    var(--dsw-static-neutral-bluish-750)
+  );
+  --dsw-alias-label-primary-foreground: light-dark(
+    var(--dsw-static-neutral-bluish-00),
+    var(--dsw-static-neutral-bluish-1000)
+  );
+  --dsw-alias-label-primary-bluish: light-dark(#0e3074, #f9fafb);
+
+  --dsw-alias-brand-primary: light-dark(
+    var(--dsw-static-neutral-bluish-1000),
+    var(--dsw-static-neutral-bluish-50)
+  );
+  --dsw-alias-brand-text: light-dark(
+    var(--dsw-static-neutral-bluish-1000),
+    var(--dsw-static-neutral-bluish-50)
+  );
+  --dsw-alias-brand-primary-invert: light-dark(
+    var(--dsw-static-neutral-bluish-1000),
+    var(--dsw-static-neutral-bluish-50)
+  );
+
+  --dsw-alias-state-business-primary: light-dark(
+    var(--dsw-static-deepseek-500),
+    var(--dsw-static-deepseek-400)
+  );
+  --dsw-alias-state-success: light-dark(
+    var(--dsw-static-green-500),
+    var(--dsw-static-green-400)
+  );
+  --dsw-alias-state-warning: light-dark(
+    var(--dsw-static-amber-500),
+    var(--dsw-static-amber-400)
+  );
+  --dsw-alias-state-error: light-dark(
+    var(--dsw-static-red-500),
+    var(--dsw-static-red-400)
+  );
+  --dsw-alias-state-business-tertiary: light-dark(
+    var(--dsw-static-deepseek-100),
+    var(--dsw-static-deepseek-800)
+  );
+  --dsw-alias-state-error-primary: light-dark(
+    var(--dsw-static-red-400),
+    var(--dsw-static-red-600)
+  );
+  --dsw-alias-state-success-bg: light-dark(
+    var(--dsw-static-green-100),
+    var(--dsw-static-green-900)
+  );
+  --dsw-alias-state-warning-bg: light-dark(
+    var(--dsw-static-amber-100),
+    var(--dsw-static-amber-900)
+  );
+  --dsw-alias-state-error-bg: light-dark(
+    var(--dsw-static-red-100),
+    var(--dsw-static-red-900)
+  );
+
+  --dsw-alias-interactive-bg-hover: light-dark(#2631480f, #ffffff14);
+  --dsw-alias-interactive-bg-hover-accent: light-dark(#26314824, #ffffff3d);
+  --dsw-alias-interactive-bg-hover-danger: light-dark(#ec13130d, #f25a5a26);
+  --dsw-alias-interactive-bg-hover-solid: light-dark(
+    var(--dsw-static-neutral-bluish-75),
+    var(--dsw-static-neutral-bluish-850)
+  );
+  --dsw-alias-interactive-bg-active: light-dark(#2631481a, #ffffff24);
+
+  --dsw-alias-button-primary-fill: light-dark(
+    var(--dsw-static-neutral-bluish-1000),
+    var(--dsw-static-neutral-bluish-50)
+  );
+  --dsw-alias-button-primary-hover: light-dark(
+    var(--dsw-static-neutral-bluish-100),
+    var(--dsw-static-neutral-bluish-750)
+  );
+  --dsw-alias-button-primary-dimmed: light-dark(
+    var(--dsw-static-neutral-bluish-100),
+    var(--dsw-static-neutral-bluish-750)
+  );
+  --dsw-alias-button-contrast-fill: light-dark(
+    var(--dsw-static-neutral-bluish-50),
+    var(--dsw-static-neutral-bluish-700)
+  );
+  --dsw-alias-button-elevated-fill: light-dark(
+    var(--dsw-static-neutral-bluish-00),
+    var(--dsw-static-neutral-bluish-750)
+  );
+  --dsw-alias-button-floating-fill: light-dark(
+    var(--dsw-static-neutral-bluish-00),
+    var(--dsw-static-neutral-bluish-850)
+  );
+  --dsw-alias-button-floating-hover: light-dark(
+    var(--dsw-static-neutral-bluish-75),
+    var(--dsw-static-neutral-bluish-800)
+  );
+  --dsw-alias-button-ghost-active-fill: light-dark(
+    var(--dsw-static-neutral-bluish-100),
+    var(--dsw-static-neutral-bluish-750)
+  );
+  --dsw-alias-button-ghost-active-hover: light-dark(
+    var(--dsw-static-neutral-bluish-150),
+    var(--dsw-static-neutral-bluish-700)
+  );
+  --dsw-alias-button-ghost-active-border: light-dark(
+    var(--dsw-static-neutral-bluish-500),
+    var(--dsw-static-neutral-bluish-600)
+  );
+  --dsw-alias-button-info-fill: light-dark(
+    var(--dsw-static-deepseek-400),
+    var(--dsw-static-deepseek-500)
+  );
+  --dsw-alias-button-info-hover: light-dark(
+    var(--dsw-static-deepseek-400),
+    var(--dsw-static-deepseek-500)
+  );
+
+  --dsw-alias-scrollbar-bg-l1: light-dark(
+    var(--dsw-static-neutral-200),
+    var(--dsw-static-neutral-700)
+  );
+  --dsw-alias-scrollbar-bg-l2: light-dark(
+    var(--dsw-static-neutral-200),
+    var(--dsw-static-neutral-600)
+  );
+  --dsw-alias-scrollbar-hover-l2: light-dark(
+    var(--dsw-static-neutral-300),
+    var(--dsw-static-neutral-550)
+  );
+
+  /* ── ③ 场景令牌(dsh `--dsw-specific-*`)───────────────────────── */
+  --dsw-specific-sidebar-fill: light-dark(
+    var(--dsw-static-neutral-bluish-50),
+    var(--dsw-static-neutral-bluish-900)
+  );
+  --dsw-specific-selector: light-dark(
+    var(--dsw-static-neutral-bluish-60),
+    var(--dsw-static-neutral-bluish-800)
+  );
+  --dsw-specific-input-major: light-dark(
+    var(--dsw-static-neutral-bluish-00),
+    var(--dsw-static-neutral-bluish-850)
+  );
+  --dsw-specific-menu: light-dark(
+    var(--dsw-static-neutral-bluish-00),
+    var(--dsw-static-neutral-bluish-800)
+  );
+  --dsw-specific-tip: light-dark(
+    var(--dsw-static-neutral-bluish-60),
+    var(--dsw-static-neutral-bluish-800)
+  );
+  --dsw-specific-sidebar-nav-item-hover: light-dark(
+    var(--dsw-static-neutral-bluish-75),
+    var(--dsw-static-neutral-bluish-850)
+  );
+  --dsw-specific-sidebar-nav-item-active: light-dark(
+    var(--dsw-static-neutral-bluish-100),
+    var(--dsw-static-neutral-bluish-750)
+  );
+  --dsw-specific-sidebar-nav-item-active-accent: light-dark(
+    var(--dsw-static-deepseek-100),
+    var(--dsw-static-neutral-bluish-800)
+  );
+  --dsw-specific-bubble: light-dark(
+    var(--dsw-static-deepseek-50),
+    var(--dsw-static-neutral-bluish-850)
+  );
+  --dsw-specific-bubble-highlight: light-dark(
+    var(--dsw-static-deepseek-200),
+    var(--dsw-static-neutral-bluish-750)
+  );
+
+  /* ── 形状与阴影(dsh 全局 corner-shape + 三档阴影)─────────────── */
+  --dsw-corner-shape: superellipse(1.5);
+  --dsw-radius-xs: 4px;
+  --dsw-radius-sm: 6px;
+  --dsw-radius-md: 8px;
+  --dsw-radius-lg: 12px;
+  --dsw-radius-xl: 16px;
+  --dsw-radius-pill: 999px;
+  --dsw-shadow-lv1: 0 2px 4px 0 #0000000d;
+  --dsw-shadow-lv2: 0 4px 12px 0 #00000005, 0 2px 8px 0 #0000000a;
+  --dsw-shadow-lv3:
+    0 0 1px 0 #00000033, 0 0 4px 0 #00000005, 0 12px 32px 0 #00000014;
+  /* dsh 的卡片细边**不是 border**,而是用 box-shadow 画的 0.5px 环(Retina 上才真是半像素):
+     `--dsw-elevation-stroke: 0 0 0 .5px var(--dsw-elevation-stroke-color)` */
+  --dsw-elevation-stroke: 0 0 0 0.5px var(--dsw-elevation-stroke-color);
+  --dsw-elevation-soft:
+    var(--dsw-elevation-stroke), 0 4px 16px 0 #00000008, 0 0 24px 0 #00000008;
+  --dsw-elevation-stroke-color: var(--dsw-alias-border-l4);
+
+  /* ── 字体阶梯(dsh `--dsw-font-*`)────────────────────────────── */
+  --dsw-font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --dsw-font-mono:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  --dsw-font-base-16: 400 16px / 24px var(--dsw-font-family);
+  --dsw-font-base-strong-16: 500 16px / 24px var(--dsw-font-family);
+  --dsw-font-l-20: 500 20px / 28px var(--dsw-font-family);
+  --dsw-font-xl-24: 500 24px / 32px var(--dsw-font-family);
+  --dsw-font-s-14: 400 14px / 22px var(--dsw-font-family);
+  --dsw-font-s-strong-14: 500 14px / 22px var(--dsw-font-family);
+  --dsw-font-xs-13: 400 13px / 20px var(--dsw-font-family);
+  --dsw-font-xxs-12: 400 12px / 18px var(--dsw-font-family);
+  --dsw-font-xxxs-11: 400 11px / 16px var(--dsw-font-family);
+
+  /* ── ④ 应用级布局(dsh `--dsh-*` 与组件常量)──────────────────── */
+  --dsh-sidebar-width: 280px;
+  --dsh-sidebar-auto-collapse: 1024px;
+  --dsh-sidebar-inline-padding: 12px;
+  --dsh-panel-gap: 8px;
+
+  /* dsh 原式:clamp(680px, 列宽 * .64, 920px) */
+  --dsh-conversation-column-width: calc(
+    100vw -
+    var(--dsh-sidebar-width) -
+    var(--dsh-panel-gap) *
+    2
+  );
+  --dsh-chat-content-width: clamp(
+    680px,
+    calc(var(--dsh-conversation-column-width) * 0.64),
+    920px
+  );
+  --dsh-composer-card-max-width: calc(var(--dsh-chat-content-width) + 32px);
+  --dsh-composer-side-clearance: 16px;
+  --dsh-composer-stack-gap: 6px;
+  --dsh-composer-text-max-height: 336px;
+  --dsh-composer-dock-inset: 8px;
+  --dsh-composer-hero-padding-bottom: 32px;
+  --dsh-hero-input-min-height: 52px;
+  --dsh-scrollbar-width: 8px;
+  --dsh-content-font-size: 14px;
+}

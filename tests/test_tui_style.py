@@ -18,6 +18,7 @@ from qi_agent.models import AgentEvent
 from qi_agent.llm import LiteLLMClient
 from qi_agent.session import SessionStore
 from qi_agent.theme import load_palette
+from textual.widgets import Static
 from qi_agent.tui import (
     MAX_EDITOR_ROWS,
     SPINNER_FRAMES,
@@ -170,6 +171,12 @@ class FakeRuntime:
         self.thinking_level = "off"
         self.llm_exec = SimpleNamespace(thinking_level="off", reasoning_dropped=False)
 
+    async def compact_session(self, session, instructions=None):
+        return None                    # 测试默认:没什么可压
+
+    async def summarize_branch_for_jump(self, session, source_branch, from_id, target_id):
+        return None
+
     async def stream(self, prompt, session, agent_override=None):
         PROMPTS.append(prompt)
         yield AgentEvent(kind="dispatch", agent="general", text="qi (router, 0.90)",
@@ -300,7 +307,7 @@ async def test_tui_command_surface(tmp_path, monkeypatch):
         app._command("/thinking")            # 已实现:列出当前级别 + 可选值
         assert "当前: off" in notes[-1][0] and "xhigh" in notes[-1][0]
 
-        app._command("/compact")             # pi 有、qi 未实现 → “计划中”
+        app._command("/scoped-models")       # pi 有、qi 未实现 → “计划中”
         assert "计划中" in notes[-1][0]
 
         app._command("/changelog")
@@ -1171,3 +1178,50 @@ async def test_tui_session_selection_flags(tmp_path, monkeypatch):
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause(0.1)
         assert app._session is not None and app._session.title == "ephemeral"
+
+
+# ── 压缩(pi 的 /compact)────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_compact_command_and_block(tmp_path, monkeypatch):
+    """`/compact` 走 worker 并渲染成 pi 同款底色块;ctrl+o 可展开。"""
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        assert app._rt is not None
+
+        app._command("/compact")                       # FakeRuntime 返回 None
+        await app.workers.wait_for_complete()
+        await pilot.pause(0.1)
+        assert "没有可压缩的内容" in app._status
+
+        # 真的压一次(直接塞 entry,验证渲染与 ctrl+o)
+        entry = {"type": "compaction", "summary": "## Goal\n做完某件事",
+                 "firstKeptEntryId": None, "tokensBefore": 12345,
+                 "usage": {"prompt_tokens": 7, "completion_tokens": 3}}
+        app._append_compaction(entry)
+        await pilot.pause(0.05)
+        blocks = app._compaction_blocks
+        assert len(blocks) == 1
+        assert "12,345" in blocks[0].body_plain and "ctrl+o" in blocks[0].body_plain
+        assert blocks[0].styles.background.hex.lower() == PALETTE.hex("customMessageBg")
+        assert "7" in app.footer_text.plain or "↑" in app.footer_text.plain
+
+        app.action_toggle_expand()                     # ctrl+o → 展开摘要正文
+        await pilot.pause(0.05)
+        assert blocks[0]._expanded is True
+        assert "Goal" in blocks[0].body_plain
+
+        # 真正落盘后回放分支时,压缩块也要从 entry 重建出来
+        assert app._session is not None
+        app._session_store().append(app._session, dict(entry))
+        app._replay_branch(app._session)
+        await pilot.pause(0.05)
+        assert len(app._compaction_blocks) == 1
+        assert "Goal" in app._compaction_blocks[0].body_plain or             "Goal" in app._compaction_blocks[0].summary

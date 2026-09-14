@@ -54,7 +54,7 @@
 | `quietStartup` | 隐藏启动头 | 未接 |
 | `defaultProjectTrust` | `ask`/`always`/`never` | 项目信任尚未实现(`-a` 未落地) |
 | `defaultTools` | 初始内置工具集 | 工具集由 agent.md 的 `tools` 决定 |
-| `compaction` | 上下文压缩参数 | 压缩机制在 v2 |
+| `compaction` | `{enabled, reserveTokens(默认 16384), keepRecentTokens(默认 20000)}` | 已接:超 `contextWindow - reserveTokens` 自动压缩;`/compact` 手动压缩。见 [tui.md](tui.md) §2
 | `retry` | 重试参数 | 未接 |
 | `packages` | npm/git 资源包 | qi 走 pip entry point,无 npm 包概念 |
 | `extensions` / `prompts` / `themes` | 其它资源路径 | 仅 `skills` 已接 |

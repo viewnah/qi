@@ -11,9 +11,27 @@ from typing import Iterable
 
 from . import paths
 from .auth import AuthStore
+from .compaction import (
+    DEFAULT_KEEP_RECENT_TOKENS,
+    DEFAULT_RESERVE_TOKENS,
+    branch_to_summarize,
+    compact,
+    estimate_tokens,
+    messages_tokens,
+    prepare_compaction,
+    should_compact,
+    summarize_branch,
+    summary_context_message,
+)
 from .config import ResolvedModel, load_config, resolve_default_model, resolve_router_model
 from .dispatcher import Decision, Dispatcher
-from .llm import LiteLLMClient, LLMClient, chat_message_from_dict, normalize_thinking_level
+from .llm import (
+    ChatMessage,
+    LiteLLMClient,
+    LLMClient,
+    chat_message_from_dict,
+    normalize_thinking_level,
+)
 from .loader import LoadError, load_all_agents, load_top_level_skills, resolve_base_prompt
 from .models import AgentEvent
 from .registry import AgentRegistry, CapabilityRegistry, ToolCatalog, discover_plugins
@@ -130,19 +148,112 @@ class QiRuntime:
         )
 
     def _history(self, session: Session) -> list:
-        """取当前分支的最近会话消息(含 tool 往返),供上下文。"""
-        out = []
-        for e in session.branch():
-            if e.get("type") == "message" and e.get("role") != "system":
+        """当前分支的上下文 = 最近一次压缩摘要 + 压缩点之后的消息(+ 分支摘要)。
+
+        pi 的语义:压缩后模型看到的是 `system | summary | firstKeptEntryId 起头的消息`。
+        没压过时退回旧的「最近 40 条」简易窗口 —— 那时压缩还没接管窗口。
+        """
+        branch = session.branch()
+        last_compaction = next((e for e in reversed(branch)
+                                if e.get("type") == "compaction"), None)
+        out: list[ChatMessage] = []
+        keep_from = 0
+        if last_compaction is not None:
+            out.append(summary_context_message(str(last_compaction.get("summary") or "")))
+            first_kept = str(last_compaction.get("firstKeptEntryId") or "")
+            keep_from = next((i for i, x in enumerate(branch)
+                              if str(x.get("id")) == first_kept), len(branch))
+        for e in branch[keep_from:]:
+            kind = e.get("type")
+            if kind == "branch_summary":
+                out.append(summary_context_message(str(e.get("summary") or ""), kind="branch"))
+            elif kind == "message" and e.get("role") != "system":
                 d = dict(e)
                 d.pop("type", None); d.pop("ts", None); d.pop("agent_id", None)
                 out.append(chat_message_from_dict(d))
-        return out[-40:]  # 简易窗口:最近 40 条(摘要机制 v2)
+        return out if last_compaction is not None else out[-40:]
+
+    # ── 上下文压缩(pi 的 /compact + 自动压缩)──
+    def _compaction_options(self) -> tuple[bool, int, int]:
+        """读取 `settings.compaction`:`(enabled, reserveTokens, keepRecentTokens)`。"""
+        raw = self.settings.compaction or {}
+        enabled = bool(raw.get("enabled", True))
+        reserve = raw.get("reserveTokens")
+        keep = raw.get("keepRecentTokens")
+        return (enabled,
+                reserve if isinstance(reserve, int) and reserve > 0 else DEFAULT_RESERVE_TOKENS,
+                keep if isinstance(keep, int) and keep > 0 else DEFAULT_KEEP_RECENT_TOKENS)
+
+    def _context_window(self) -> int:
+        spec = getattr(self.llm_exec, "spec", None)
+        window = getattr(spec, "context_window", 0)
+        return window if isinstance(window, int) else 0
+
+    async def _maybe_auto_compact(self, session: Session):
+        """开新一回合前检查上下文体积:超了就先自动压一次(pi 的 auto-compaction)。
+
+        预算口径:分支上会进上下文的内容 + 基座提示词;阈值 = `contextWindow - reserveTokens`。
+        压缩失败不应该把整轮卡死 —— 只报错,继续跑。
+        """
+        enabled, reserve, _keep = self._compaction_options()
+        window = self._context_window()
+        if not enabled or window <= 0:
+            return
+        # 用**重建后的上下文**估算,不是原始 entry 之和 —— 压缩过的内容不该再计入
+        tokens = messages_tokens(self._history(session)) + estimate_tokens(self.base_prompt)
+        if not should_compact(tokens, window, enabled=enabled, reserve_tokens=reserve):
+            return
+        yield AgentEvent(kind="compaction_start", text="正在自动压缩上下文…",
+                         data={"auto": True, "tokens": tokens, "contextWindow": window})
+        try:
+            entry = await self.compact_session(session)
+        except Exception as exc:  # noqa: BLE001 压缩失败不能拖垮这一轮
+            yield AgentEvent(kind="error", text=f"自动压缩失败(继续本轮): {exc}")
+            return
+        if entry is not None:
+            yield AgentEvent(kind="compaction_end", text=str(entry.get("summary") or ""),
+                             data={"auto": True, "tokensBefore": entry.get("tokensBefore"),
+                                   "entry": entry})
+
+    async def compact_session(self, session: Session,
+                              instructions: str | None = None) -> dict | None:
+        """执行一次压缩并落盘;没什么可压时返回 None(调用方据此提示用户)。"""
+        _enabled, _reserve, keep = self._compaction_options()
+        prep = prepare_compaction(session.branch(), keep_recent_tokens=keep)
+        if prep is None:
+            return None
+        entry = await compact(self.llm_exec, prep, instructions=instructions)
+        self.sessions.append(session, entry)
+        return entry
+
+    async def summarize_branch_for_jump(self, session: Session, source_branch: list[dict],
+                                        from_id: str | None, target_id: str | None
+                                        ) -> dict | None:
+        """`/tree` 跳到别的分支时,把「被放弃的那段」压成摘要挂到新位置。
+
+        `source_branch` 必须由调用方在**移动 position 之前**取好:`/tree` 一移动 current,
+        再调 `session.branch()` 拿到的就是目标分支了(摘要会静默变成空)。
+        """
+        target_branch = session.branch(target_id)
+        entries = branch_to_summarize(source_branch, from_id, target_branch)
+        if not entries:
+            return None
+        summary, usage = await summarize_branch(self.llm_exec, entries)
+        if not summary:
+            return None
+        entry = {"type": "branch_summary", "summary": summary,
+                 "fromId": from_id, "usage": usage}
+        # 挂到跳过去的位置下(所以新 leaf 就是这条摘要)
+        self.sessions.set_position(session, target_id)
+        self.sessions.append(session, entry)
+        return entry
 
     async def stream(self, text: str, session: Session, agent_override: str | None = None):
         """处理一轮用户输入,产出事件。agent_override=manual(--agent / /agent)。"""
         # 旧会话首次被使用时回填 cwd(只写一次);新会话在 create(cwd=…) 时已带
         self.sessions.ensure_cwd(session, self.cwd)
+        async for event in self._maybe_auto_compact(session):
+            yield event
         active = self._active_agent(session)
         decision: Decision | None = None
 

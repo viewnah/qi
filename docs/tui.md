@@ -73,6 +73,7 @@ qi · auto                                 ← footer 3:状态行
 | `/tree` | 会话树:跳到本会话任意节点继续(同文件内分支,见下节) |
 | `/fork [序号\|id]` | 从某条用户消息**之前**分叉出新会话,并把那条消息放回编辑器(对齐 pi) |
 | `/clone [名字]` | 把当前分支复制成新会话 |
+| `/compact [提示]` | 压缩上下文:把旧消息压成结构化摘要(可给一句关注点) |
 | `/model [p/m]` | 当前模型 / 切换模型(等同 ctrl+l / ctrl+p) |
 | `/export [file]` | 导出会话 JSONL(默认 `./qi-<id>.jsonl`;**pi 默认导出 HTML** —— qi 无 HTML 导出器) |
 | `/import <file>` | 从 JSONL 导入并切换会话(重名给提示,不静默覆盖) |
@@ -103,11 +104,33 @@ qi · auto                                 ← footer 3:状态行
 `--fork <id>` / `-n <名>` / `--no-session` 都生效,有历史就把当前分支回放到 transcript
 (以前 TUI 无视这些参数、每次都新建一个叫 `tui` 的会话)。
 
-ki 与 pi 的差异(已落档):
+qi 与 pi 的差异(已落档):
 
-- qi 没有 pi 的 `branch_summary` entry(那是 `/compact` 的机制),也不支持树内标签/过滤;
+- 树里只显示块,不支持 pi 树选择器内的过滤键(它的 ctrl+t/ctrl+u/ctrl+l/ctrl+a);
+- `/tree` 跳转时 pi 会**先问**要不要摘要被放弃的分支,qi 直接做并提示;
 - `qi sessions show` 与 web `/messages` 只展示**当前分支**(web 契约仍把 header 放在 `entries[0]`);
 - `--export` / `qi sessions show` 之外的导出仍拷**整个文件**(含其它分支)。
+
+### 上下文压缩(对齐 pi 的 `core/compaction`)
+
+| 机制 | 触发 | 行为 |
+| --- | --- | --- |
+| 压缩 compaction | 上下文超过 `contextWindow - reserveTokens`,或 `/compact` | 把旧消息压成结构化摘要(`## Goal` / `## Progress` / `## Next Steps` / `## Critical Context`…),落成 `type=compaction` entry,带 `firstKeptEntryId` |
+| 分支摘要 branch summary | `/tree` 跳到别的分支 | 把**被放弃的那段**压成摘要(`type=branch_summary`)挂到跳转点,切回来时上下文不断 |
+
+细节(逐条对齐 pi):
+
+- 压缩后模型看到的是 `system | 摘要 | firstKeptEntryId 起的消息`;摘要本身作为一条
+  user 消息注入(provider 对多个 system 支持不一)。
+- 切点走「从最新往回累加 token(chars/4),累到 `keepRecentTokens`」,只落在 turn 边界或
+  assistant 上(**绝不在工具结果上** —— qi 的工具结果虽不进跨轮上下文,但也不是元数据);
+  单个 turn 超预算时做 **split turn**:前缀单独摘要后与历史摘要拼接。
+- 重复压缩:从上一次的 `firstKeptEntryId` 起重新摘要(老消息会被重新纳入),并把旧摘要
+  作为迭代上下文(`UPDATE` 提示词);`/compact <提示>` 会追加 `Additional focus:`。
+- 触发估算用**重建后的上下文**(摘要 + 保留段),不是原始 entry 之和 —— 否则每轮都会重复压。
+- TUI 里压缩显示成 pi 同款底色块(`[compaction]` / `[branch]`,`ctrl+o` 展开看摘要)。
+- qi 与 pi 的差异:pi 在 `/tree` 跳转前**先问**要不要摘要,qi 直接做并提示;pi 还有
+  `branch_summary` 的树内过滤/标签渲染,qi 只显示块。
 
 ### qi 独有
 
@@ -125,7 +148,6 @@ ki 与 pi 的差异(已落档):
 | pi 命令 | 缺什么 |
 | --- | --- |
 | `/scoped-models` | Ctrl+P 轮换清单(qi 现在轮完 models.json 里全部) |
-| `/compact` | 上下文压缩/摘要 |
 | `/settings` | TUI 内设置面板 |
 | `/share` | GitHub gist 分享 |
 | `/trust` | 项目信任门控(qi 只有 `defaultProjectTrust` 字段,没有信任判定) |

@@ -79,6 +79,7 @@ qi TUI 命令(实现状态以本表为准)
   /thinking [级别]   思考级别(off|minimal|low|medium|high|xhigh|max;等同 shift+tab)
   /model [p/m]       当前模型 / 切换模型(等同 ctrl+l)
   /export [文件]     导出会话 JSONL(默认 ./qi-<id>.jsonl)
+  /compact [提示]    压缩上下文:把旧消息压成摘要(可给一句关注点)
   /import <文件>     从 JSONL 导入并切换会话
   /reload            重载 agents / plugins / 配置
 
@@ -102,11 +103,11 @@ qi TUI 命令(实现状态以本表为准)
   /quit              退出
 
  计划中(对齐 pi,需先给后端加能力)
-  /compact /scoped-models /settings /share /trust
+  /scoped-models /settings /share /trust
 """
 
 PLANNED_COMMANDS = frozenset({
-    "/compact", "/scoped-models", "/settings", "/share", "/trust",
+    "/scoped-models", "/settings", "/share", "/trust",
 })
 """pi 有、qi 暂未实现的命令 —— 单独提示“计划中”,不冒充“未知命令”。"""
 
@@ -131,6 +132,7 @@ TUI_COMMANDS: dict[str, str] = {
     "/login": "登录指引(密钥不进会话)",
     "/logout": "删除已存凭证",
     "/changelog": "显示 CHANGELOG.md",
+    "/compact": "压缩上下文(摘要旧消息)",
     "/agents": "列出 agent",
     "/mode": "切换分派模式",
     "/agent": "manual 锁定执行 agent",
@@ -512,6 +514,54 @@ class BashBlock(Static):
         self.update(block)
 
 
+class CompactionBlock(Vertical):
+    """压缩 / 分支摘要块(对齐 pi 的 compaction-summary-message)。
+
+    `customMessageBg` 底色块:`[compaction]` / `[branch]` 标签 + 一行折叠提示,
+    ctrl+o 展开后显示摘要正文(markdown)。
+    """
+
+    def __init__(self, summary: str, tokens_before: int, palette: Palette,
+                 kind: str = "compaction") -> None:
+        super().__init__(classes="msg compaction-msg")
+        self.summary = summary
+        self.tokens_before = tokens_before
+        self.kind = kind
+        self._palette = palette
+        self._expanded = False
+        self.body_plain = ""
+        self.styles.background = palette.hex("customMessageBg")
+        self.styles.padding = (1, 1)
+
+    def compose(self) -> ComposeResult:
+        p = self._palette
+        label = "[compaction]" if self.kind == "compaction" else "[branch]"
+        yield Static(Text(label, style=Style(color=p.hex("customMessageLabel"), bold=True)),
+                     classes="compaction-label")
+        yield Static("", classes="compaction-body")
+
+    def on_mount(self) -> None:
+        self.set_expanded(self._expanded)
+
+    def set_expanded(self, expanded: bool) -> None:
+        self._expanded = expanded
+        p = self._palette
+        if not expanded:
+            self.body_plain = f"Compacted from {self.tokens_before:,} tokens (ctrl+o to expand)"
+        else:
+            prefix = (f"**Compacted from {self.tokens_before:,} tokens**\n\n"
+                      if self.kind == "compaction" else "")
+            self.body_plain = prefix + self.summary
+        try:
+            body = self.query_one(".compaction-body", Static)
+        except NoMatches:      # pragma: no cover - 挂载前调用
+            return
+        if not expanded:
+            body.update(Text(self.body_plain, style=Style(color=p.hex("customMessageText"))))
+            return
+        body.update(RichMarkdown(self.body_plain, code_theme=cast(Any, syntax_theme(p))))
+
+
 # ── App ─────────────────────────────────────────────────
 
 
@@ -701,6 +751,7 @@ class QiTui(App):
     .blank { height: 1; background: transparent; }
     .msg { width: 1fr; height: auto; }
     #border-top, #border-bottom { height: 1; background: transparent; }
+    .compaction-label, .compaction-body { background: transparent; height: auto; }
     #editor { border: none; height: auto; max-height: 8; padding: 0 1; background: transparent; }
     #editor .text-area--cursor-line { background: transparent; }
     /* `/` 与 `@` 补全面板(pi 的 autocomplete):默认隐藏,有候选才显示 */
@@ -784,6 +835,8 @@ class QiTui(App):
         self._completions: list[tuple[str, str]] = []
         self._completions_open = False
         self._bash_blocks: list[BashBlock] = []
+        self._compaction_blocks: list[CompactionBlock] = []
+        self._compacting = False
         # 思考(pi 的 thinking):级别 + 是否展示思考块
         self._thinking_level = "off"
         self._show_thinking = True
@@ -845,8 +898,8 @@ class QiTui(App):
     def _scroll_end(self) -> None:
         try:
             self.query_one("#log", VerticalScroll).scroll_end(animate=False)
-        except Exception:  # pragma: no cover - 卸载竞态
-            pass
+        except (NoMatches, ScreenStackError):  # 卸载竞态:没什么可滚的
+            return
 
     def _sync_log_height(self) -> None:
         """transcript 最多占 终端高 - (编辑器实际行数 + 上下边框 + footer),超出内部滚动。"""
@@ -1075,18 +1128,29 @@ class QiTui(App):
 
     # -- 事件循环 -------------------------------------------------------
     async def _run(self, text: str, override: str | None) -> None:
-        assert self._rt is not None and self._session is not None
+        if self._rt is None or self._session is None:      # 防御:worker 可能在切换会话后跑
+            return
+        runtime, session = self._rt, self._session
         self._live = None
         renderer = self._renderer
         self._set_working(True)
         try:
-            async for ev in self._rt.stream(text, self._session, agent_override=override):
+            async for ev in runtime.stream(text, session, agent_override=override):
                 if ev.kind == "dispatch":
                     self._shown_name = str(ev.data.get("display_name") or ev.agent or "?")
                     self._append(Static(renderer.dispatch_line(ev.agent, ev.data), classes="msg"))
                 elif ev.kind == "opening":
                     self._append(Static(Text(ev.text, style=Style(color=self._palette.hex("muted"))),
                                         classes="msg"))
+                elif ev.kind == "compaction_start":
+                    self._compacting = True
+                    self._flash(str(ev.text or "正在压缩上下文…"), 120)
+                elif ev.kind == "compaction_end":
+                    self._compacting = False
+                    entry = ev.data.get("entry") or {}
+                    self._append_compaction(entry or {"summary": ev.text,
+                                                      "tokensBefore": ev.data.get("tokensBefore")})
+                    self._flash("已自动压缩上下文")
                 elif ev.kind == "thinking_delta":
                     if self._live_thinking is None:
                         self._live_thinking = ThinkingMessage("", self._palette)
@@ -1226,6 +1290,18 @@ class QiTui(App):
                     return
         elif cmd == "/clone":
             self._clone_session(arg)
+        elif cmd == "/compact":
+            session = self._session
+            if session is None:
+                self._note("当前没有会话", "warning")
+            elif self._working:
+                self._note("回合进行中,等它结束再 /compact", "warning")
+            elif self._rt is None:
+                self._note("运行时不可用。", "error")
+            else:
+                self.run_worker(self._compact_worker(arg), exclusive=False)
+                self._scroll_end()
+                return
         elif cmd == "/session":
             session = self._session
             if session is None:
@@ -1465,6 +1541,8 @@ class QiTui(App):
             block.set_output(self._renderer.tool_body(name, output, expanded=self._expanded))
         for bash in self._bash_blocks:
             bash.set_expanded(self._expanded)
+        for block in self._compaction_blocks:
+            block.set_expanded(self._expanded)
         self._flash("工具输出:" + ("已展开" if self._expanded else "已折叠"))
 
     # -- 思考级别(pi 的 app.thinking.*)----------------------
@@ -1709,11 +1787,19 @@ class QiTui(App):
         session = self._session
         if session is None:
             return
+        old_leaf = session.current
+        source_branch = session.branch()          # 跳之前的快照:分支摘要要用它
+        target_branch_ids = {str(e.get("id")) for e in session.branch(entry_id)}
         if not self._session_store().set_position(session, entry_id):
             self._flash("节点不存在")
             return
+        old_leaf = old_leaf or None
         self._replay_branch(session)
         self._flash(f"已跳到节点 {entry_id};下次提问从这里分叉")
+        # 跳到了别的分支 → 把被放弃的那段压成摘要挂过来(否则切回来时上下文断了)
+        if old_leaf and old_leaf not in target_branch_ids and self._rt is not None:
+            self.run_worker(self._branch_summary_worker(session, source_branch, old_leaf, entry_id),
+                            exclusive=False)
 
     def _resolve_user_message(self, session, arg: str) -> str | None:
         """`/fork` 参数:entry id(前缀)或 1-based 序号。"""
@@ -1818,6 +1904,7 @@ class QiTui(App):
             child.remove()
         self._tool_blocks.clear()
         self._bash_blocks.clear()
+        self._compaction_blocks.clear()
         self._thinking_widgets.clear()
         self._live = None
         self._live_thinking = None
@@ -1850,7 +1937,64 @@ class QiTui(App):
                                                     is_error=status != "ok"))
                 self._tool_blocks.append((block, name, result))
                 self._append(block)
+            elif kind in ("compaction", "branch_summary"):
+                self._append_compaction(entry)
         self._sync_log_height()
+        self._scroll_end()
+
+    def _append_compaction(self, entry: dict) -> None:
+        """把压缩/分支摘要 entry 渲染成 pi 同款底色块(摘要调用本身的用量也计入 footer)。"""
+        kind = "branch" if entry.get("type") == "branch_summary" else "compaction"
+        block = CompactionBlock(str(entry.get("summary") or ""),
+                                _as_int(entry.get("tokensBefore")), self._palette, kind=kind)
+        block.set_expanded(self._expanded)
+        self._compaction_blocks.append(block)
+        self._append(block)
+        usage = entry.get("usage") or {}
+        self._usage["prompt_tokens"] += _as_int(usage.get("prompt_tokens"))
+        self._usage["completion_tokens"] += _as_int(usage.get("completion_tokens"))
+        self._refresh_footer()
+
+    async def _compact_worker(self, instructions: str) -> None:
+        """/compact:手动压缩当前分支(对齐 pi 的 /compact [instructions])。"""
+        if self._rt is None or self._session is None:
+            return
+        self._set_working(True)
+        self._flash("正在压缩上下文…", 120)
+        try:
+            entry = await self._rt.compact_session(self._session, instructions or None)
+        except Exception as exc:  # noqa: BLE001 压缩失败不该把 TUI 弄挂
+            self._note(f"压缩失败: {exc}", "error")
+            self._scroll_end()
+            return
+        finally:
+            self._set_working(False)
+        if entry is None:
+            self._flash("没有可压缩的内容(会话太短或刚压过)")
+            return
+        self._append_compaction(entry)
+        self._flash(f"已压缩:{_as_int(entry.get('tokensBefore')):,} tokens → 摘要")
+        self._scroll_end()
+
+    async def _branch_summary_worker(self, session, source_branch: list[dict],
+                                     from_id: str, target_id: str) -> None:
+        """`/tree` 跳走后,把被放弃的那段压成摘要挂到跳转点(pi 会先征求同意,qi 直接做并提示)。
+
+        `source_branch` 是**跳之前**的分支快照 —— 跳转已改过 current,不能再现算。
+        """
+        if self._rt is None:
+            return
+        try:
+            entry = await self._rt.summarize_branch_for_jump(session, source_branch,
+                                                             from_id, target_id)
+        except Exception as exc:  # noqa: BLE001 摘要失败只提示
+            self._note(f"分支摘要失败: {exc}", "warning")
+            self._scroll_end()
+            return
+        if entry is None:
+            return
+        self._append_compaction(entry)
+        self._flash("已为离开的分支生成摘要(挂在跳转点)")
         self._scroll_end()
 
     # -- 补全(pi 的 autocomplete:`/` 命令与 `@` 文件)------------

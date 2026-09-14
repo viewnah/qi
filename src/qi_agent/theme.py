@@ -94,11 +94,13 @@ def load_palette(name: str) -> Palette:
         raise ThemeError(f"主题文件不可用: {path}") from exc
     variables: dict[str, str] = data.get("vars") or {}
     raw: dict[str, str] = data.get("colors") or {}
+    # 统一小写:pi 的 JSON 里大小写混用(#2D2838 / #343541)。归一后才可预期 ——
+    # 注意 Textual 的 `Color.hex` 会**原样保留**传入字符串的大小写,所以别指望它帮你归一。
     colors = {
-        key: (value if value.startswith("#") else variables.get(value, value))
+        key: (value if value.startswith("#") else variables.get(value, value)).lower()
         for key, value in raw.items()
     }
-    page_bg = (data.get("export") or {}).get("pageBg") or "#18181e"
+    page_bg = ((data.get("export") or {}).get("pageBg") or "#18181e").lower()
     return Palette(name=name, colors=colors, page_bg=page_bg)
 
 

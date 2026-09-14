@@ -6,6 +6,7 @@ footer 真的取到了 pi 调色板里的颜色。像素级对齐由人工比对
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -14,6 +15,7 @@ import pytest
 from qi_agent import tui as tui_mod
 from qi_agent.config import ResolvedModel
 from qi_agent.models import AgentEvent
+from qi_agent.llm import LiteLLMClient
 from qi_agent.theme import load_palette
 from qi_agent.tui import SPINNER_FRAMES, QiTui, TuiRenderer, ToolBlock, UserMessage
 
@@ -95,10 +97,10 @@ def test_dispatch_line_is_pi_style():
 def test_banner_lists_agents_and_skills():
     text = _renderer().banner("0.1.0", ["general", "code-analyst"], ["termio"]).plain
     assert "qi v0.1.0" in text
-    assert "ctrl+c exit" in text and "ctrl+o tools" in text
-    # 不再抄 pi 的提示行:qi 没实现的（escape/ctrl+d/! bash）不得出现在 banner 里
-    assert "escape interrupt" not in text
-    assert "! bash" not in text
+    # 只写 qi 真的实现了的快捷键(escape 中断、ctrl+c 清空/退出、ctrl+o 展开)
+    assert "escape interrupt" in text
+    assert "ctrl+c clear/exit" in text and "ctrl+o tools" in text
+    assert "! bash" not in text          # pi 的 bash 模式 qi 未实现,不写
     assert "[Agents]" in text and "general, code-analyst" in text
     assert "[Skills]" in text and "termio" in text
 
@@ -237,6 +239,8 @@ async def test_tui_command_surface(tmp_path, monkeypatch):
     app = QiTui(palette=PALETTE)
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause(0.1)
+        assert app._rt is not None
+        app._rt.cfg = _fake_cfg()          # /model 需要有可选模型
         notes = await _command_notes(app, monkeypatch)
 
         app._command("/help")
@@ -244,7 +248,7 @@ async def test_tui_command_surface(tmp_path, monkeypatch):
         assert "/sessions" in notes[-1][0] and "/export" in notes[-1][0]
 
         app._command("/hotkeys")
-        assert "ctrl+o" in notes[-1][0] and "尚未实现" in notes[-1][0]
+        assert "ctrl+o" in notes[-1][0] and "尚未对齐" in notes[-1][0]
 
         app._command("/session")
         assert "会话: " in notes[-1][0] and "deepseek/deepseek-v4.1-flash" in notes[-1][0]
@@ -257,8 +261,8 @@ async def test_tui_command_surface(tmp_path, monkeypatch):
         assert app._session is not None and app._session.title == "我的会话"
         assert "我的会话" in app.footer_text.plain      # 名字进 footer(对齐 pi)
 
-        app._command("/copy")                # 还没有回答
-        assert "还没有回答" in notes[-1][0]
+        app._command("/copy")                # 还没有回答 → 底部状态行提示,不进 transcript
+        assert app._status == "还没有回答可复制"
 
         app._command("/login")
         assert "用法" in notes[-1][0]
@@ -268,7 +272,10 @@ async def test_tui_command_surface(tmp_path, monkeypatch):
         app._command("/logout")
         assert "用法" in notes[-1][0]
 
-        app._command("/model")               # pi 有、qi 未实现 → “计划中”
+        app._command("/model")               # 已实现(不再“计划中”)
+        assert "当前: " in notes[-1][0] and "切换: " in notes[-1][0]
+
+        app._command("/thinking")            # pi 有、qi 未实现 → “计划中”
         assert "计划中" in notes[-1][0]
 
         app._command("/changelog")
@@ -326,4 +333,114 @@ async def test_tui_import_session_and_copy_answer(tmp_path, monkeypatch):
         await pilot.pause(0.1)
         assert "就是 qi" in app._last_answer
         app._command("/copy")
-        assert "已复制" in notes[-1][0]
+        assert app._status == "已复制最后一条回答"
+
+
+# ── 键位对齐:escape / ctrl+x / ctrl+l / ctrl+p ────────────
+
+
+def _fake_cfg():
+    """两个 provider / 三个模型:用来验证模型选择与轮换顺序。"""
+    from qi_agent.config import ModelEntry, ProviderConfig, QiConfig
+
+    return QiConfig(providers={
+        "alpha": ProviderConfig(api="openai-completions",
+                                models=[ModelEntry(id="m1"), ModelEntry(id="m2")]),
+        "beta": ProviderConfig(api="openai-completions", models=[ModelEntry(id="m3")]),
+    })
+
+
+class SlowRuntime(FakeRuntime):
+    """文本先流式出来,然后卡住 —— 用来测 escape 中断。"""
+
+    async def stream(self, prompt, session, agent_override=None):
+        yield AgentEvent(kind="text_delta", agent="general", text="开始……")
+        await asyncio.sleep(5)
+        yield AgentEvent(kind="assistant_message", agent="general", text="不该到这一步",
+                         data={"step": 1, "tool_calls": []})
+
+
+@pytest.mark.asyncio
+async def test_escape_interrupts_running_turn(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", SlowRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        app._submit("你好")
+        await pilot.pause(0.3)
+        assert app._working is True and "Working" in app._top_border().plain
+        await pilot.press("escape")            # pi 的 app.interrupt
+        await pilot.pause(0.2)
+        assert app._working is False
+        assert "Working" not in app._top_border().plain
+        assert app._status == "已中断"
+
+
+@pytest.mark.asyncio
+async def test_ctrl_x_copies_last_answer(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    copied: list[str] = []
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        app.copy_to_clipboard = copied.append      # type: ignore[method-assign]
+        await pilot.press("ctrl+x")                # 还没有回答
+        await pilot.pause(0.05)
+        assert app._status == "还没有回答可复制" and copied == []
+        app._last_answer = "答案正文"
+        await pilot.press("ctrl+x")                # pi 的 app.message.copy
+        await pilot.pause(0.05)
+        assert copied == ["答案正文"] and app._status == "已复制最后一条回答"
+
+
+@pytest.mark.asyncio
+async def test_model_keys_and_command(tmp_path, monkeypatch):
+    """ctrl+l / ctrl+p / ctrl+shift+p / `/model` 都真的换掉 runtime 的模型。"""
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        assert app._rt is not None
+        app._rt.cfg = _fake_cfg()
+        notes = await _command_notes(app, monkeypatch)
+
+        app._command("/model alpha/m2")
+        assert app._model is not None
+        assert (app._model.provider, app._model.model) == ("alpha", "m2")
+        assert isinstance(app._rt.llm_exec, LiteLLMClient)
+        assert app._rt.llm_exec.spec.model == "m2"        # 真的换到运行期模型上
+        assert "alpha/m2" in app.footer_text.plain
+
+        app.action_cycle_model()                          # ctrl+p
+        assert (app._model.provider, app._model.model) == ("beta", "m3")
+        app.action_cycle_model()
+        assert (app._model.provider, app._model.model) == ("alpha", "m1")   # 环绕
+        app.action_cycle_model_back()                     # ctrl+shift+p
+        assert (app._model.provider, app._model.model) == ("beta", "m3")
+
+        app._command("/model")                            # 列表 + 当前
+        assert "当前: beta/m3" in notes[-1][0]
+        app._command("/model m2")                         # 只给模型名也能唯一匹配
+        assert (app._model.provider, app._model.model) == ("alpha", "m2")
+
+        app.action_select_model()                         # ctrl+l → 模态选择器
+        await pilot.pause(0.1)
+        assert isinstance(app.screen, tui_mod.ModelSelector)
+        from textual.widgets import OptionList as _OptionList
+
+        assert app.screen.query_one("#model-list", _OptionList).option_count == 3
+        await pilot.press("escape")
+        await pilot.pause(0.1)
+        assert not isinstance(app.screen, tui_mod.ModelSelector)

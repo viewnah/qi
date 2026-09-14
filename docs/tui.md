@@ -13,8 +13,8 @@
 (终端滚动历史保留 —— inline 渲染,不占全屏、不进备用屏)
 
  qi v0.1.0                                                    ← bold accent + dim
- escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash   ← 快捷提示
- qi 是多 agent 编码框架:专职角色 + auto 分派(@name 可点名)。       ← dim 引导
+ escape interrupt · ctrl+c clear/exit · ctrl+o tools · / commands · @agent   ← 快捷提示
+ qi 是多 agent 编码框架:专职角色 + auto 分派;/help 看全部命令。       ← dim 引导
 
 [Agents]
   code-analyst, general
@@ -70,6 +70,7 @@ qi · auto                                 ← footer 3:状态行
 | `/sessions` | 列出历史会话 |
 | `/name <name>` | 会话显示名(进 footer) |
 | `/session` | 会话信息(ID/文件/cwd/消息数/模型/用量) |
+| `/model [p/m]` | 当前模型 / 切换模型(等同 ctrl+l / ctrl+p) |
 | `/export [file]` | 导出会话 JSONL(默认 `./qi-<id>.jsonl`;**pi 默认导出 HTML** —— qi 无 HTML 导出器) |
 | `/import <file>` | 从 JSONL 导入并切换会话(重名给提示,不静默覆盖) |
 | `/copy` | 复制最后一条回答到剪贴板(OSC 52) |
@@ -93,26 +94,41 @@ qi · auto                                 ← footer 3:状态行
 
 | pi 命令 | 缺什么 |
 | --- | --- |
-| `/model` `/scoped-models` | 运行期切模型 + Ctrl+P 轮换清单 |
 | `/thinking` | 思考级别(要贯穿 llm 调用与系统提示) |
+| `/scoped-models` | Ctrl+P 轮换清单(qi 现在轮完 models.json 里全部) |
 | `/compact` | 上下文压缩/摘要 |
 | `/tree` `/fork` `/clone` | 会话树与分支 |
 | `/settings` | TUI 内设置面板 |
 | `/share` | GitHub gist 分享 |
 | `/trust` | 项目信任门控(qi 只有 `defaultProjectTrust` 字段,没有信任判定) |
 
-### 键位
+### 键位(已对齐 pi;`core/keybindings.js`)
 
-| 键 | qi | pi |
+| 键 | qi 行为 | pi 的 action |
 | --- | --- | --- |
-| `ctrl+c` | 退出 | 清空编辑器(连按两次退出) |
-| `ctrl+l` | 清屏 | 打开模型选择器 |
-| `ctrl+o` | 展开/折叠工具输出 | 同 |
-| `escape` / `ctrl+d` / `shift+tab` / `ctrl+p` / `ctrl+g` / `ctrl+x` / `ctrl+t` / `ctrl+r` | — | 中断 / 空输入退出 / 思考级别 / 切模型 / 外部编辑器 / 复制消息 / 折叠思考 / 重命名会话 |
+| `escape` | 中断当前回合(取消 worker) | `app.interrupt` |
+| `ctrl+c` | 清空输入框;再按一次退出 | `app.clear` + `app.exit` |
+| `ctrl+d` | 输入框为空时退出;非空删右侧字符 | `app.exit` |
+| `ctrl+o` | 展开/折叠工具输出 | `app.tools.expand` |
+| `ctrl+x` | 复制最后一条回答 | `app.message.copy` |
+| `ctrl+g` | `$EDITOR` 编辑当前输入 | `app.editor.external` |
+| `ctrl+l` | 模型选择器(模态列表) | `app.model.select` |
+| `ctrl+p` / `ctrl+shift+p` | 下一个 / 上一个模型 | `app.model.cycleForward/Backward` |
+| `ctrl+z` | 挂起(回到 shell) | `app.suspend` |
 
-qi 的输入层目前是**单行 `Input`**:没有历史、kill-ring、多行编辑、`/` 与 `@` 补全、
-`!` bash 模式、消息队列。这些属于 pi 编辑器(`pi-tui/dist/components/editor.js`)的能力,
-要补需要先替换输入控件。
+实现注记:Textual 的 `Input` 默认把 `ctrl+c/ctrl+x/ctrl+d` 绑到「复制/剪切/删右侧」,
+qi 用 `priority=True` 抢过来以匹配 pi 语义(`ctrl+d` 非空时仍自己调 `delete_right`);
+另关闭 Textual 的 command palette,因为它的默认键 `ctrl+p` 在 pi 里是切模型。
+
+**尚未对齐**(qi 缺后端能力或输入层,`/hotkeys` 里也如实列出):
+
+| 键 | pi 用途 | qi 缺什么 |
+| --- | --- | --- |
+| `shift+tab` / `ctrl+t` | 思考级别 / 折叠思考块 | qi 无 thinking 概念(事件流里就没有 thinking 内容) |
+| `ctrl+n` / `ctrl+r` | 会话列表过滤 / 重命名 | 无会话选择器 UI(`/sessions` 只打印列表) |
+| `alt+enter` / `alt+up` | 排队 follow-up / 取回排队 | 无消息队列 |
+| `ctrl+v` | 粘贴图片 | 单行 `Input`,无图片粘贴 |
+| `/` `@` `!` | 命令/文件补全、bash 模式 | 单行 `Input`,无补全;无 bash 模式 |
 
 ## 3. 消息队列行为(pi 现状;qi 未实现)
 

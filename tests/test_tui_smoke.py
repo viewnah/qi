@@ -68,14 +68,84 @@ def test_tui_quit_action_is_textual_builtin():
 
     # 基类(App)提供 action_quit,qi 不再覆盖
     assert getattr(QiTui.action_quit, "__qualname__", "").startswith("App.")
-    # 且绑定表把 ctrl+c 映射到 quit
+    # 且绑定表把 ctrl+c 映射到 pi 的「清空/退出」语义(不再是 ctrl+c 直接退)
     actions: dict[str, str] = {}
     for b in QiTui.BINDINGS:
         if isinstance(b, Binding):
             actions[b.key] = b.action
         else:  # BindingType 的元组形态 (key, action, description)
             actions[b[0]] = b[1]
-    assert actions.get("ctrl+c") == "quit"
+    assert actions.get("ctrl+c") == "clear_or_exit"
+
+
+def test_tui_bindings_match_pi():
+    """键位对齐 pi `core/keybindings.js`:同名同义(取不到的已在 /hotkeys 标注)。"""
+    from textual.binding import Binding
+
+    from qi_agent.tui import QiTui
+
+    actions: dict[str, str] = {}
+    for b in QiTui.BINDINGS:
+        assert isinstance(b, Binding)
+        actions[b.key] = b.action
+    assert actions == {
+        "escape": "interrupt",
+        "ctrl+c": "clear_or_exit",
+        "ctrl+d": "exit_or_delete",
+        "ctrl+o": "toggle_expand",
+        "ctrl+x": "copy_answer",
+        "ctrl+g": "external_editor",
+        "ctrl+l": "select_model",
+        "ctrl+p": "cycle_model",
+        "ctrl+shift+p": "cycle_model_back",
+        "ctrl+z": "suspend_process",
+    }
+
+
+@pytest.mark.asyncio
+async def test_tui_ctrl_c_clears_then_exits(tmp_path, monkeypatch):
+    """ctrl+c:有输入 = 清空;再按一次 = 退出(对齐 pi 的 ctrl+c 双击退出)。"""
+    _tui_env(tmp_path, monkeypatch)
+    from textual.widgets import Input
+
+    from qi_agent.tui import QiTui
+
+    app = QiTui()
+    async with app.run_test() as pilot:
+        await pilot.pause(0.05)
+        field = app.query_one("#input", Input)
+        field.value = "写了一半"
+        await pilot.press("ctrl+c")
+        await pilot.pause(0.05)
+        assert field.value == ""           # 第一次只清空
+        assert app._exit is False
+        await pilot.press("ctrl+c")         # 空输入框再按 = 退出
+        await pilot.pause(0.05)
+        assert app._exit is True
+
+
+@pytest.mark.asyncio
+async def test_tui_ctrl_d_exits_only_when_empty(tmp_path, monkeypatch):
+    """ctrl+d:空输入框退出;非空则删右侧字符,不退出。"""
+    _tui_env(tmp_path, monkeypatch)
+    from textual.widgets import Input
+
+    from qi_agent.tui import QiTui
+
+    app = QiTui()
+    async with app.run_test() as pilot:
+        await pilot.pause(0.05)
+        field = app.query_one("#input", Input)
+        field.value = "abc"
+        field.cursor_position = 0
+        await pilot.press("ctrl+d")
+        await pilot.pause(0.05)
+        assert field.value == "bc"          # 删右侧字符
+        assert app._exit is False
+        field.value = ""
+        await pilot.press("ctrl+d")
+        await pilot.pause(0.05)
+        assert app._exit is True
 
 
 @pytest.mark.asyncio
@@ -92,11 +162,10 @@ async def test_tui_initial_prompt_is_submitted(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_tui_ctrl_c_quits(tmp_path, monkeypatch):
-    """ctrl+c → "quit" → Textual 内置 async `App.action_quit` → `self.exit()`。
+async def test_tui_ctrl_c_twice_quits(tmp_path, monkeypatch):
+    """ctrl+c → 清空/退出(pi 语义):连按两次才退出。
 
-    回归:qi 曾自己实现同步 `action_quit`,而 Textual 8.x 的基类方法是 async,
-    覆盖签名不兼容(且属重复实现)。本测试固定「ctrl+c 仍能退出」这一行为。
+    回归:qi 曾把 ctrl+c 直接绑到 quit。现在对齐 pi 的 app.clear/app.exit。
     """
     _tui_env(tmp_path, monkeypatch)
     from qi_agent.tui import QiTui
@@ -107,4 +176,7 @@ async def test_tui_ctrl_c_quits(tmp_path, monkeypatch):
         assert app._exit is False
         await pilot.press("ctrl+c")
         await pilot.pause(0.05)
-        assert app._exit is True, "ctrl+c 未触发退出"
+        assert app._exit is False, "第一次 ctrl+c 只应该 arm,不应该退出"
+        await pilot.press("ctrl+c")
+        await pilot.pause(0.05)
+        assert app._exit is True, "第二次 ctrl+c 应该退出"

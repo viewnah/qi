@@ -16,7 +16,11 @@ qi 特有的 auto 分派保留,但按 pi 的行样式渲染(`● → agent (sour
 from __future__ import annotations
 
 import json
+import os
+import shlex
 import shutil
+import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -25,11 +29,16 @@ from rich.markdown import Markdown as RichMarkdown
 from rich.style import Style
 from rich.text import Text
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
-from textual.widgets import Input, Static
+from textual.screen import ModalScreen
+from textual.widgets import Input, OptionList, Static
+from textual.widgets.option_list import Option
 
+from .auth import AuthStore
 from .cli import _load_registry
-from .config import ConfigError, ResolvedModel, resolve_default_model
+from .config import ConfigError, ResolvedModel, resolve_default_model, resolve_model
+from .llm import LiteLLMClient
 from .loader import LoadError
 from .registry import ToolCatalog
 from .runtime import QiRuntime
@@ -60,6 +69,7 @@ qi TUI 命令(实现状态以本表为准)
   /sessions          列出历史会话
   /name <名字>       设置会话显示名(进 footer)
   /session           会话信息(文件/ID/消息数/模型/用量)
+  /model [p/m]       当前模型 / 切换模型(等同 ctrl+l)
   /export [文件]     导出会话 JSONL(默认 ./qi-<id>.jsonl)
   /import <文件>     从 JSONL 导入并切换会话
   /reload            重载 agents / plugins / 配置
@@ -84,25 +94,32 @@ qi TUI 命令(实现状态以本表为准)
   /quit              退出
 
  计划中(对齐 pi,需先给后端加能力)
-  /model /thinking /compact /tree /fork /clone /scoped-models /settings /share /trust
+  /thinking /compact /tree /fork /clone /scoped-models /settings /share /trust
 """
 
 PLANNED_COMMANDS = frozenset({
-    "/model", "/thinking", "/compact", "/tree", "/fork", "/clone",
+    "/thinking", "/compact", "/tree", "/fork", "/clone",
     "/scoped-models", "/settings", "/share", "/trust",
 })
 """pi 有、qi 暂未实现的命令 —— 单独提示“计划中”,不冒充“未知命令”。"""
 
 HOTKEYS_TEXT = """\
-快捷键(已实现):
-  ctrl+c    退出
-  ctrl+l    清屏
-  ctrl+o    展开/折叠工具输出
-  enter     提交
-  up/down   单行输入框内移动光标
+快捷键(已对齐 pi 的部分):
+  escape           中断当前回合
+  ctrl+c           清空输入框;连按两次退出
+  ctrl+d           输入框为空时退出(非空 = 删除右侧字符)
+  ctrl+o           展开/折叠工具输出
+  ctrl+x           复制最后一条回答
+  ctrl+g           用 $EDITOR 编辑当前输入
+  ctrl+l           选择模型(models.json 里的)
+  ctrl+p / ctrl+shift+p  切换下一个 / 上一个模型
+  ctrl+z           挂起(回到 shell,fg 回来)
+  enter            提交
 
-尚未实现(pi 有):escape 中断、ctrl+d 空输入退出、ctrl+c 清空编辑器、
-! bash 模式、@ 文件补全、/ 命令补全、多行编辑、消息队列。见 docs/tui.md。
+尚未对齐(pi 有,qi 缺后端能力或输入层):
+  shift+tab  思考级别   ctrl+t  折叠思考块   ctrl+n  会话列表过滤
+  ctrl+r     重命名     alt+enter 排队 follow-up   alt+up  取回排队
+  ctrl+v     粘贴图片   ! bash 模式   @ / 命令补全   多行编辑
 """
 
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -262,7 +279,7 @@ class TuiRenderer:
         text.append("qi", style=Style(color=p.hex("accent"), bold=True))
         text.append(f" v{version}", style=dim)
         text.append("\n")
-        hints = ["ctrl+c exit", "ctrl+l clear", "ctrl+o tools", "/ commands", "@agent"]
+        hints = ["escape interrupt", "ctrl+c clear/exit", "ctrl+o tools", "/ commands", "@agent"]
         for index, hint in enumerate(hints):
             if index:
                 text.append(" · ", style=muted)
@@ -353,6 +370,34 @@ class ToolBlock(Static):
 # ── App ─────────────────────────────────────────────────
 
 
+class ModelSelector(ModalScreen[str | None]):
+    """ctrl+l / `/model`:选模型(对齐 pi 的模型选择器,只列 models.json 里的)。
+
+    返回 `"<provider>\x00<model>"`,取消返回 None。
+    """
+
+    BINDINGS = [("escape", "dismiss(None)", "取消")]
+
+    def __init__(self, options: list[tuple[str, str, bool]]) -> None:
+        super().__init__()
+        self._options = options
+
+    def compose(self) -> ComposeResult:
+        items = []
+        for provider, model, current in self._options:
+            label = f"{provider}/{model}" + ("    ← 当前" if current else "")
+            items.append(Option(label, id=f"{provider}\x00{model}"))
+        with Vertical(id="model-box"):
+            yield Static("选择模型(↑↓ 选择 · enter 确认 · escape 取消)", id="model-hint")
+            yield OptionList(*items, id="model-list")
+
+    def on_mount(self) -> None:
+        self.query_one("#model-list", OptionList).focus()
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(str(event.option.id))
+
+
 class QiTui(App):
     TITLE = "qi"
     SUB_TITLE = "多 agent · auto 分派"
@@ -367,12 +412,32 @@ class QiTui(App):
     #border-top, #border-bottom { height: 1; background: transparent; }
     #input { border: none; height: 1; padding: 0 1; background: transparent; }
     #footer { height: auto; width: 1fr; background: transparent; scrollbar-size: 0 0; }
+    /* 模型选择器(ctrl+l):模态,只在需要时出现 */
+    ModelSelector { align: center middle; }
+    #model-box { width: 64; max-height: 70%; background: $surface; border: round $primary;
+                 padding: 0 1; }
+    #model-hint { color: $text-muted; }
+    #model-list { background: transparent; }
     """
 
+    # pi 没有命令面板;Textual 默认用 ctrl+p 开面板,而 pi 的 ctrl+p = 切模型。
+    ENABLE_COMMAND_PALETTE = False
+
+    # 键位对齐 pi(`core/keybindings.js`):同名同义。
+    # ctrl+c / ctrl+x / ctrl+d 加 priority=True —— Textual 的 Input 默认把它们绑到
+    # 「复制/剪切/删右侧」,而 pi 里 ctrl+c = 清空编辑器、ctrl+x = 复制消息、
+    # ctrl+d = 空输入框时退出,必须抢过来(非空时 ctrl+d 仍自己调 delete_right)。
     BINDINGS = [
-        ("ctrl+c", "quit", "退出"),
-        ("ctrl+l", "clear_log", "清屏"),
-        ("ctrl+o", "toggle_expand", "展开工具"),
+        Binding("escape", "interrupt", "中断"),
+        Binding("ctrl+c", "clear_or_exit", "清空/退出", priority=True),
+        Binding("ctrl+d", "exit_or_delete", "退出", priority=True),
+        Binding("ctrl+o", "toggle_expand", "展开工具"),
+        Binding("ctrl+x", "copy_answer", "复制回答", priority=True),
+        Binding("ctrl+g", "external_editor", "外部编辑器"),
+        Binding("ctrl+l", "select_model", "选择模型"),
+        Binding("ctrl+p", "cycle_model", "切换模型"),
+        Binding("ctrl+shift+p", "cycle_model_back", "切换模型(反向)"),
+        Binding("ctrl+z", "suspend_process", "挂起"),
     ]
 
     def __init__(self, runtime: QiRuntime | None = None, initial_prompt: str | None = None,
@@ -400,10 +465,11 @@ class QiTui(App):
         self._current_tool: ToolBlock | None = None
         self._model: ResolvedModel | None = None
         self._usage = {"prompt_tokens": 0, "completion_tokens": 0}
-        self._status = "qi · auto"
+        self._status = self._default_status()
         self.footer_text = Text("")
         self._branch: str | None = None
         self._last_answer = ""
+        self._exit_armed = False
 
     # -- 布局 -----------------------------------------------------------
     def compose(self) -> ComposeResult:
@@ -674,7 +740,7 @@ class QiTui(App):
             self._usage = {"prompt_tokens": 0, "completion_tokens": 0}
             self._last_answer = ""
             self._note("已开新会话(auto)")
-            self._refresh_footer()
+            self._restore_status()
         elif cmd in ("/resume", "/sessions"):
             sessions = store.list()[:10]
             if cmd == "/resume" and arg:
@@ -710,6 +776,27 @@ class QiTui(App):
                 f"↓{format_tokens(usage['completion_tokens'])}",
             ]
             self._note("\n".join(lines), "text")
+        elif cmd == "/model":
+            options = self._model_options()
+            if not options:
+                self._note("models.json 里没有可选模型", "warning")
+            elif not arg:
+                current = self._model.label if self._model else "(未解析)"
+                lines = [f"当前: {current}", "可选:"]
+                lines += [f"  {p}/{m}" + ("  ← 当前" if cur else "") for p, m, cur in options]
+                lines.append("切换: /model <provider/model> 或 ctrl+l / ctrl+p")
+                self._note("\n".join(lines), "text")
+            else:
+                provider, _, model = arg.partition("/")
+                if not model:
+                    matches = [(p, m) for p, m, _ in options if m == provider]
+                    if len(matches) != 1:
+                        self._note(f"用法: /model <provider>/<model>(只给模型名匹配到 {len(matches)} 个)",
+                                   "warning")
+                        self._scroll_end()
+                        return
+                    provider, model = matches[0]
+                self._switch_model(provider, model)
         elif cmd == "/name":
             session = self._session
             if session is None:
@@ -749,11 +836,7 @@ class QiTui(App):
 
         # ── 回答与凭证 ────────────────────────────────────────
         elif cmd == "/copy":
-            if not self._last_answer.strip():
-                self._note("还没有回答可复制", "warning")
-            else:
-                self.copy_to_clipboard(self._last_answer)
-                self._note("已复制最后一条回答到剪贴板")
+            self._copy_answer()
         elif cmd == "/login":
             providers = sorted(getattr(getattr(rt, "cfg", None), "providers", {}) or {})
             if not arg:
@@ -794,6 +877,7 @@ class QiTui(App):
             if mode in ("auto", "manual"):
                 self._auto = mode == "auto"
                 self._note(f"模式: {mode}")
+                self._restore_status()
             else:
                 self._note("用法: /mode auto|manual", "warning")
         elif cmd == "/agent":
@@ -801,6 +885,7 @@ class QiTui(App):
                 self._agent = arg
                 self._auto = False
                 self._note(f"锁定 agent: {arg}(manual)")
+                self._restore_status()
             else:
                 self._note(f"未知 agent: {arg};可用 /agents 查看", "error")
         elif cmd == "/tools":
@@ -884,7 +969,7 @@ class QiTui(App):
                 return f"{path}\n\n" + "\n".join(head) + more
         return "未找到 CHANGELOG.md(qi 仓库暂无)"
 
-    # -- 动作 -----------------------------------------------------------
+    # -- 动作(键位对齐 pi `core/keybindings.js`)-------------------------
     def action_clear_log(self) -> None:
         log = self.query_one("#log", VerticalScroll)
         for child in list(log.children):
@@ -897,6 +982,149 @@ class QiTui(App):
         self._expanded = not self._expanded
         for block, name, output in self._tool_blocks:
             block.set_output(self._renderer.tool_body(name, output, expanded=self._expanded))
+        self._flash("工具输出:" + ("已展开" if self._expanded else "已折叠"))
+
+    def action_interrupt(self) -> None:
+        """escape:中断当前回合(对齐 pi 的 app.interrupt)。"""
+        if not self._working:
+            return
+        self.workers.cancel_all()
+        self._set_working(False)
+        self._live = None
+        self._flash("已中断")
+
+    def action_clear_or_exit(self) -> None:
+        """ctrl+c:清空输入框;连按两次退出 —— 对齐 pi 的 app.clear/app.exit。"""
+        inp = self.query_one("#input", Input)
+        if inp.value:
+            inp.value = ""
+            self._arm_exit()
+            return
+        if self._exit_armed:
+            self.exit()
+        else:
+            self._arm_exit()
+
+    def _arm_exit(self) -> None:
+        self._exit_armed = True
+        self._flash("再按一次 ctrl+c 退出")
+        self.set_timer(2.0, self._disarm_exit)
+
+    def _disarm_exit(self) -> None:
+        self._exit_armed = False
+
+    def action_exit_or_delete(self) -> None:
+        """ctrl+d:输入框为空时退出,非空时删除右侧字符(对齐 pi 的 app.exit)。"""
+        inp = self.query_one("#input", Input)
+        if inp.value:
+            inp.action_delete_right()
+        else:
+            self.exit()
+
+    def action_copy_answer(self) -> None:
+        """ctrl+x:复制最后一条回答(对齐 pi 的 app.message.copy)。"""
+        self._copy_answer()
+
+    def _copy_answer(self) -> None:
+        if not self._last_answer.strip():
+            self._flash("还没有回答可复制")
+            return
+        self.copy_to_clipboard(self._last_answer)
+        self._flash("已复制最后一条回答")
+
+    def action_external_editor(self) -> None:
+        """ctrl+g:用 $EDITOR 编辑当前输入(对齐 pi 的 app.editor.external)。"""
+        inp = self.query_one("#input", Input)
+        editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
+        handle = tempfile.NamedTemporaryFile("w+", suffix=".md", delete=False)
+        path = Path(handle.name)
+        try:
+            handle.write(inp.value)
+            handle.close()
+            with self.suspend():
+                subprocess.call([*shlex.split(editor), str(path)])
+            inp.value = path.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            self._flash(f"外部编辑器不可用: {exc}")
+        finally:
+            path.unlink(missing_ok=True)
+
+    # -- 模型(ctrl+l / ctrl+p;对齐 pi 的 app.model.*)----------------
+    def _model_options(self) -> list[tuple[str, str, bool]]:
+        rt = self._rt
+        if rt is None:
+            return []
+        current = self._model
+        out: list[tuple[str, str, bool]] = []
+        providers = getattr(getattr(rt, "cfg", None), "providers", None) or {}
+        for provider, prov in sorted(providers.items()):
+            for entry in prov.models:
+                is_current = bool(current and current.provider == provider
+                                  and current.model == entry.id)
+                out.append((provider, entry.id, is_current))
+        return out
+
+    def _switch_model(self, provider: str, model: str) -> None:
+        """运行期换模型:换掉 runtime 的 llm_exec,下一回合生效。"""
+        rt = self._rt
+        if rt is None:
+            return
+        try:
+            resolved = resolve_model(rt.cfg, provider, model)
+            rt.llm_exec = LiteLLMClient(resolved, AuthStore())
+        except Exception as exc:  # 配置/凭证异常不该把 TUI 弄崩
+            self._note(f"切换模型失败: {exc}", "error")
+            self._scroll_end()
+            return
+        self._model = resolved
+        self._refresh_footer()
+        self._flash(f"模型: {resolved.label}")
+
+    def action_select_model(self) -> None:
+        """ctrl+l:模型选择器(对齐 pi 的 app.model.select)。"""
+        options = self._model_options()
+        if not options:
+            self._flash("models.json 里没有可选模型")
+            return
+
+        def picked(value: str | None) -> None:
+            if value:
+                provider, _, model = value.partition("\x00")
+                self._switch_model(provider, model)
+
+        self.push_screen(ModelSelector(options), picked)
+
+    def action_cycle_model(self) -> None:
+        self._cycle_model(1)
+
+    def action_cycle_model_back(self) -> None:
+        self._cycle_model(-1)
+
+    def _cycle_model(self, step: int) -> None:
+        options = self._model_options()
+        if not options:
+            self._flash("models.json 里没有可选模型")
+            return
+        flat = [(provider, model) for provider, model, _ in options]
+        current = (self._model.provider, self._model.model) if self._model else None
+        index = flat.index(current) if current in flat else -1
+        provider, model = flat[(index + step) % len(flat)]
+        self._switch_model(provider, model)
+
+    # -- 底部状态行的瞬时提示(pi 的状态区,不加额外 chrome)----------
+    def _default_status(self) -> str:
+        mode = "auto" if self._auto else f"manual:{self._agent or '-'}"
+        return f"qi · {mode}"
+
+    def _flash(self, message: str, seconds: float = 2.0) -> None:
+        self._status = message
+        self._refresh_footer()
+        self.set_timer(seconds, self._restore_status)
+
+    def _restore_status(self) -> None:
+        self._status = self._default_status()
+        self._refresh_footer()
+
 
 def _version() -> str:
     from . import __version__

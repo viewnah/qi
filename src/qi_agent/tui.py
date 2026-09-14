@@ -15,6 +15,7 @@ qi 特有的 auto 分派保留,但按 pi 的行样式渲染(`● → agent (sour
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shlex
@@ -29,7 +30,7 @@ from rich.markdown import Markdown as RichMarkdown
 from rich.style import Style
 from rich.text import Text
 from textual import events
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, ScreenStackError
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.css.query import NoMatches
@@ -44,7 +45,7 @@ from .config import ConfigError, ResolvedModel, resolve_default_model, resolve_m
 from .llm import LiteLLMClient
 from .loader import LoadError
 from .registry import ToolCatalog
-from .runtime import QiRuntime
+from .runtime import MAX_TOOL_ENTRY_CHARS, QiRuntime
 from .session import SessionStore
 from .theme import (
     Palette,
@@ -106,12 +107,45 @@ PLANNED_COMMANDS = frozenset({
 })
 """pi 有、qi 暂未实现的命令 —— 单独提示“计划中”,不冒充“未知命令”。"""
 
+TUI_COMMANDS: dict[str, str] = {
+    "/help": "本帮助",
+    "/hotkeys": "快捷键",
+    "/quit": "退出",
+    "/clear": "清屏",
+    "/new": "新会话",
+    "/resume": "选/恢复历史会话",
+    "/sessions": "列出历史会话",
+    "/name": "设置会话显示名",
+    "/session": "会话信息",
+    "/model": "当前/切换模型",
+    "/export": "导出会话 JSONL",
+    "/import": "从 JSONL 导入会话",
+    "/reload": "重载 agents/插件/配置",
+    "/copy": "复制最后一条回答",
+    "/login": "登录指引(密钥不进会话)",
+    "/logout": "删除已存凭证",
+    "/changelog": "显示 CHANGELOG.md",
+    "/agents": "列出 agent",
+    "/mode": "切换分派模式",
+    "/agent": "manual 锁定执行 agent",
+    "/tools": "工具清单",
+}
+"""`/` 补全的候选(命令 → 说明);与 `_command` 的已实现分支一一对应。"""
+
+COMPLETION_ROWS = 8
+"""补全面板最多显示几行。"""
+
+BASH_PREVIEW_LINES = 20
+"""bash 输出折叠时的预览行数(对齐 pi 的 BashExecutionComponent)。"""
+
 HOTKEYS_TEXT = """\
 快捷键(对齐 pi 的部分)
 
   输入(多行编辑器,对齐 pi-tui/components/editor.js)
   enter                   提交
   shift+enter / ctrl+j    换行
+  tab                     补全:行首 `/` = 命令、`@` = 相对路径;无候选时 = 缩进
+  ↑ / ↓                   补全面板开着时选候选,否则移动光标
   ctrl+b / ctrl+f         光标左 / 右
   alt+b / alt+f、alt+←/→、ctrl+←/→  按词移动
   ctrl+w / alt+backspace  删前一个词
@@ -119,6 +153,10 @@ HOTKEYS_TEXT = """\
   ctrl+u / ctrl+k        删到行首 / 删到行尾
   ctrl+-                  撤销
   ctrl+v                  粘贴(支持多行 / 括号粘贴)
+
+  bash 模式(行首 `!`)
+  !<命令>                 执行 shell,并把「命令 + 输出」记入上下文
+  !!<命令>                同样执行,但输出不进上下文(边框变暗)
 
   应用
   escape                  中断当前回合
@@ -133,8 +171,8 @@ HOTKEYS_TEXT = """\
 
 尚未对齐(pi 有,qi 缺能力或驱动不了):
   shift+tab 思考级别    ctrl+t 折叠思考块    ctrl+n 会话列表过滤   ctrl+r 重命名会话
-  alt+enter 排队 follow-up   alt+up 取回排队   ctrl+y/alt+y kill-ring 的 yank
-  tab 补全(@ 文件 / / 命令)   ! bash 模式   ctrl+v 粘贴图片(现在只会粘文本)
+  alt+enter 排队 follow-up   alt+up 取回排队
+  ctrl+y/alt+y kill-ring 的 yank   ctrl+v 粘贴图片(现在只会粘文本)
 """
 
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -297,7 +335,8 @@ class TuiRenderer:
         text.append("qi", style=Style(color=p.hex("accent"), bold=True))
         text.append(f" v{version}", style=dim)
         text.append("\n")
-        hints = ["escape interrupt", "ctrl+c clear/exit", "ctrl+o tools", "/ commands", "@agent"]
+        hints = ["escape interrupt", "ctrl+c clear/exit", "ctrl+o tools", "/ commands",
+                 "@ files", "! bash"]
         for index, hint in enumerate(hints):
             if index:
                 text.append(" · ", style=muted)
@@ -385,6 +424,75 @@ class ToolBlock(Static):
         self.update(combined)
 
 
+class BashBlock(Static):
+    """`!` / `!!` 手动 bash(对齐 pi 的 `bash-execution.js`)。
+
+    pi 用「上下 `─` 边框 + `$ command` + 输出」而不是工具块底色;边框色
+    `bashMode`(绿),`!!`(不进上下文)用 `dim`。宽度变化时重画边框。
+    """
+
+    rendered: Text
+    """最近一次画出来的内容(不能叫 content:Static 已有同名 property)。"""
+
+    def __init__(self, command: str, palette: Palette, excluded: bool) -> None:
+        super().__init__("", classes="msg bash-msg")
+        self.command = command
+        self._palette = palette
+        self._excluded = excluded
+        self._output = ""
+        self._code: int | None = None
+        self._expanded = False
+        self.rendered = Text("")
+        self._repaint()
+
+    def set_result(self, output: str, code: int | None) -> None:
+        self._output = output
+        self._code = code
+        self._repaint()
+
+    def set_expanded(self, expanded: bool) -> None:
+        self._expanded = expanded
+        self._repaint()
+
+    def on_resize(self) -> None:
+        self._repaint()
+
+    def _repaint(self) -> None:
+        p = self._palette
+        width = max(20, self.size.width or (self.app.size.width - 2) or 80)
+        color_key = "dim" if self._excluded else "bashMode"
+        border = Style(color=p.hex(color_key))
+        block = Text()
+        block.append("─" * width, style=border)
+        block.append("\n $ ", style=border)
+        block.append(self.command, style=Style(color=p.hex(color_key), bold=True))
+        title = "  (不进上下文)" if self._excluded else ""
+        if title:
+            block.append(title, style=Style(color=p.hex("dim")))
+        block.append("\n")
+        if self._code is None:
+            block.append("运行中…", style=Style(color=p.hex("muted")))
+        else:
+            out = self._output.rstrip("\n")
+            lines = out.split("\n") if out else ["(无输出)"]
+            limit = len(lines) if self._expanded else BASH_PREVIEW_LINES
+            shown = lines[:limit]
+            block.append("\n".join(shown), style=Style(color=p.hex("toolOutput")))
+            remaining = len(lines) - len(shown)
+            if remaining > 0:
+                block.append(f"\n... ({remaining} more lines,",
+                             style=Style(color=p.hex("muted")))
+                block.append(" ctrl+o", style=Style(color=p.hex("accent")))
+                block.append(" to expand)", style=Style(color=p.hex("muted")))
+            mark = "✓" if self._code == 0 else "✗"
+            mark_key = "success" if self._code == 0 else "error"
+            block.append(f"\n{mark} exit {self._code}", style=Style(color=p.hex(mark_key)))
+        block.append("\n")
+        block.append("─" * width, style=border)
+        self.rendered = block
+        self.update(block)
+
+
 # ── App ─────────────────────────────────────────────────
 
 
@@ -409,12 +517,22 @@ class Editor(TextArea):
             self.value = value
 
     class Interrupt(Message):
-        """escape:请求中断当前回合。
+        """escape:关闭补全面板 / 请求中断当前回合。
 
         为什么要在这里接管:Textual 的 `Screen._key_escape` 会把 escape 当成「清选区」
         先吃掉,App 级非 priority 绑定收不到;而改成 priority 又会抢掉模态选择器的
         escape。编辑器持焦时自行处理最干净(模态打开时焦点不在编辑器,不受影响)。
         """
+
+    class Complete(Message):
+        """tab:接受当前补全候选。"""
+
+    class MoveCompletion(Message):
+        """↑/↓:在补全面板里移动。"""
+
+        def __init__(self, delta: int) -> None:
+            super().__init__()
+            self.delta = delta
 
     BINDINGS = [
         Binding("enter", "submit", "提交", priority=True, show=False),
@@ -437,12 +555,21 @@ class Editor(TextArea):
         super().__init__("", **kwargs)
 
     async def _on_key(self, event: events.Key) -> None:
-        # TextArea 在 tab_behavior="indent" 下会把 escape 当成「换焦点」并 stop 事件,
-        # 而 pi 的 escape 是「中断当前回合」——这里直接拦下。
+        # TextArea 在 tab_behavior="indent" 下会把 escape 当「换焦点」、tab 当「缩进」
+        # 并 stop 事件;补全面板开着时这三个键要归补全(pi 的 tui.input.tab / select.*)。
+        panel_open = bool(getattr(self.app, "_completions_open", False))
         if event.key == "escape":
             event.stop()
             event.prevent_default()
             self.post_message(self.Interrupt())
+            return
+        if panel_open and event.key in ("tab", "up", "down"):
+            event.stop()
+            event.prevent_default()
+            if event.key == "tab":
+                self.post_message(self.Complete())
+            else:
+                self.post_message(self.MoveCompletion(-1 if event.key == "up" else 1))
             return
         await super()._on_key(event)
 
@@ -504,6 +631,10 @@ class QiTui(App):
     #border-top, #border-bottom { height: 1; background: transparent; }
     #editor { border: none; height: auto; max-height: 8; padding: 0 1; background: transparent; }
     #editor .text-area--cursor-line { background: transparent; }
+    /* `/` 与 `@` 补全面板(pi 的 autocomplete):默认隐藏,有候选才显示 */
+    #completions { display: none; width: 1fr; height: auto; max-height: 8;
+                   padding: 0 1; background: $surface; }
+    #completions.visible { display: block; }
     #footer { height: auto; width: 1fr; background: transparent; scrollbar-size: 0 0; }
     /* 模型选择器(ctrl+l):模态,只在需要时出现 */
     ModelSelector { align: center middle; }
@@ -563,11 +694,16 @@ class QiTui(App):
         self._branch: str | None = None
         self._last_answer = ""
         self._exit_armed = False
+        # 补全(pi 的 autocomplete):候选列表 + 当前替换区间
+        self._completions: list[tuple[str, str]] = []
+        self._completions_open = False
+        self._bash_blocks: list[BashBlock] = []
 
     # -- 布局 -----------------------------------------------------------
     def compose(self) -> ComposeResult:
         with Vertical(id="body"):
             yield VerticalScroll(id="log")
+            yield OptionList(id="completions")
             yield Static("", id="border-top")
             yield Editor(id="editor")
             yield Static("", id="border-bottom")
@@ -623,6 +759,8 @@ class QiTui(App):
         except NoMatches:  # pragma: no cover - 挂载前/卸载后的调用
             return
         reserved = self._editor_rows(editor) + 2 + FOOTER_LINES
+        if self._completions_open:
+            reserved += min(len(self._completions), COMPLETION_ROWS)
         log.styles.max_height = max(3, self.size.height - reserved)
 
     def _editor_rows(self, editor: Editor) -> int:
@@ -658,20 +796,37 @@ class QiTui(App):
         top.update(self._top_border())
 
     def _top_border(self) -> Text:
-        """空闲 = 整行 `─`;工作中 = `── ⠋ Working ───…`(pi 把 loader 嵌在上边框)。"""
+        """空闲 = 整行 `─`;工作中 = `── ⠋ Working ───…`(pi 把 loader 嵌在上边框)。
+
+        输入以 `!` / `!!` 开头时整条边框换成 `bashMode`(绿) / `dim` —— 对齐 pi 的
+        `updateEditorBorderColor()`。
+        """
         width = max(1, self.size.width)
         p = self._palette
-        border = Style(color=p.hex("border"))
+        color_key = self._editor_color_key()
+        border = Style(color=p.hex(color_key))
         if not self._working:
             return Text("─" * width, style=border)
         label = f" {SPINNER_FRAMES[self._frame]} Working "
         head = "── "
         rest = "─" * max(0, width - len(head) - len(label))
-        line = Text(head, style=border)
+        line = Text(head, style=Style(color=p.hex("border")))
         line.append(SPINNER_FRAMES[self._frame], style=Style(color=p.hex("accent")))
         line.append(" Working ", style=Style(color=p.hex("muted")))
-        line.append(rest, style=border)
+        line.append(rest, style=Style(color=p.hex("border")))
         return line
+
+    def _editor_color_key(self) -> str:
+        """边框色:`!` = bashMode(绿),`!!` = dim,否则 border。"""
+        try:
+            text = self.query_one("#editor", Editor).text.lstrip()
+        except (NoMatches, ScreenStackError):  # 未挂载/已卸载时有纯粹的调用
+            return "border"
+        if text.startswith("!!"):
+            return "dim"
+        if text.startswith("!"):
+            return "bashMode"
+        return "border"
 
     def _set_working(self, working: bool) -> None:
         self._working = working
@@ -752,14 +907,30 @@ class QiTui(App):
         self._submit(text)
 
     def on_editor_interrupt(self, event: Editor.Interrupt) -> None:
+        """escape:先关补全面板,再考虑中断(对齐 pi:escape 先取消选择器)。"""
+        if self._completions_open:
+            self._close_completions()
+            return
         self.action_interrupt()
 
+    def on_editor_complete(self, event: Editor.Complete) -> None:
+        self._apply_completion()
+
+    def on_editor_move_completion(self, event: Editor.MoveCompletion) -> None:
+        self._move_completion(event.delta)
+
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
-        """编辑器长高/变矮时,同步 transcript 的上限(否则 inline 区域会被截断)。"""
-        if event.text_area.id == "editor":
-            self._sync_log_height()
+        """编辑器变高/变矮、进入/退出 bash 模式时,同步布局与边框色。"""
+        if event.text_area.id != "editor":
+            return
+        self._repaint_borders()
+        self._refresh_completions()
+        self._sync_log_height()
 
     def _submit(self, text: str) -> None:
+        if text.startswith("!"):
+            self._run_bash(text)
+            return
         if text.startswith("/"):
             self._append(Static(Text(f"> {text}", style=Style(color=self._palette.hex("dim"))),
                                 classes="msg"))
@@ -1119,6 +1290,8 @@ class QiTui(App):
         self._expanded = not self._expanded
         for block, name, output in self._tool_blocks:
             block.set_output(self._renderer.tool_body(name, output, expanded=self._expanded))
+        for bash in self._bash_blocks:
+            bash.set_expanded(self._expanded)
         self._flash("工具输出:" + ("已展开" if self._expanded else "已折叠"))
 
     def action_interrupt(self) -> None:
@@ -1249,6 +1422,190 @@ class QiTui(App):
         index = flat.index(current) if current in flat else -1
         provider, model = flat[(index + step) % len(flat)]
         self._switch_model(provider, model)
+
+    # -- 补全(pi 的 autocomplete:`/` 命令与 `@` 文件)------------
+    def _completion_candidates(self) -> tuple[list[tuple[str, str]], int, int]:
+        """根据光标前的 token 给出候选。
+
+        返回 `(candidates [(value, label)], start, end)`,start/end 是要被替换的区间。
+        规则对齐 pi:
+          · 行首的 `/xxx`(不含第二个 `/`)= 命令名补全
+          · 当前 token 以 `@` 开头 = 相对路径补全
+        """
+        editor = self.query_one("#editor", Editor)
+        text = editor.text
+        row, col = editor.cursor_location
+        lines = text.split("\n")
+        if row >= len(lines):
+            return [], 0, 0
+        line = lines[row]
+        col = min(col, len(line))
+        before = line[:col]
+
+        # 1) 命令补全:行首 /xxx,且还没输入空格或第二个 /
+        if before.startswith("/") and " " not in before and "/" not in before[1:]:
+            prefix = before
+            items = [(name, detail) for name, detail in sorted(TUI_COMMANDS.items())
+                     if name.startswith(prefix)]
+            if len(items) == 1 and items[0][0] == prefix:
+                items = []          # 已完整匹配,不必再提示
+            row_start = len("\n".join(lines[:row])) + (row > 0)
+            return items, row_start, row_start + col
+
+        # 2) 文件补全:当前 token 以 @ 开头
+        token_start = max(before.rfind(" ") + 1, before.rfind("\t") + 1, 0)
+        token = before[token_start:]
+        if not token.startswith("@"):
+            return [], 0, 0
+        query = token[1:]
+        row_start = len("\n".join(lines[:row])) + (row > 0)
+        items = self._file_candidates(query)
+        return items, row_start + token_start, row_start + col
+
+    def _file_candidates(self, query: str) -> list[tuple[str, str]]:
+        """按 `@` 后的相对路径列目录(目录优先,以 `/` 结尾)。
+
+        没装 fd 也能用:直接扫描目录,不做 .gitignore 过滤(pi 用 fd)。
+        """
+        if self._rt is None:
+            return []
+        base = Path(self._rt.cwd)
+        query_path = Path(query) if query else Path("")
+        if query.endswith("/") or query == "":
+            directory, stem = base / query_path, ""
+        else:
+            directory, stem = base / query_path.parent, query_path.name
+        show_hidden = stem.startswith(".")
+        try:
+            entries = sorted(directory.iterdir(),
+                             key=lambda p: (p.is_file(), p.name.lower()))
+        except OSError:
+            return []
+        out: list[tuple[str, str]] = []
+        for entry in entries:
+            if entry.name.startswith(".") and not show_hidden:
+                continue
+            if not entry.name.startswith(stem):
+                continue
+            if len(out) >= COMPLETION_ROWS:
+                break
+            rel = entry.relative_to(base).as_posix()
+            is_dir = entry.is_dir()
+            value = f"@{rel}" + ("/" if is_dir else "")
+            out.append((value, rel + ("/" if is_dir else "")))
+        return out
+
+    def _refresh_completions(self) -> None:
+        """重算候选并同步面板显隐(不改文本,只负责菜单)。"""
+        try:
+            panel = self.query_one("#completions", OptionList)
+        except NoMatches:  # pragma: no cover
+            return
+        candidates, _, _ = self._completion_candidates()
+        self._completions = candidates
+        if not candidates:
+            self._completions_open = False
+            panel.remove_class("visible")
+            panel.clear_options()
+            self._sync_log_height()
+            return
+        panel.clear_options()
+        for value, label in candidates:
+            detail = TUI_COMMANDS.get(value, "")
+            text = f"{label}    {detail}" if detail else label
+            panel.add_option(Option(text, id=value))
+        panel.highlighted = 0
+        panel.add_class("visible")
+        self._completions_open = True
+        self._sync_log_height()
+
+    def _move_completion(self, step: int) -> None:
+        panel = self.query_one("#completions", OptionList)
+        count = panel.option_count
+        if not count:
+            return
+        current = panel.highlighted if panel.highlighted is not None else 0
+        panel.highlighted = (current + step) % count
+
+    def _close_completions(self) -> None:
+        self._completions_open = False
+        self._completions = []
+        try:
+            panel = self.query_one("#completions", OptionList)
+        except NoMatches:  # pragma: no cover
+            return
+        panel.remove_class("visible")
+        panel.clear_options()
+        self._sync_log_height()
+
+    def _apply_completion(self) -> None:
+        """tab:把选中候选写回编辑器(替换当前 token)。"""
+        candidates, start, end = self._completion_candidates()
+        if not candidates:
+            self._close_completions()
+            return
+        panel = self.query_one("#completions", OptionList)
+        index = panel.highlighted if panel.highlighted is not None else 0
+        value = candidates[min(index, len(candidates) - 1)][0]
+        editor = self.query_one("#editor", Editor)
+        text = editor.text
+        # 命令补全补一个空格(pi 同款:`/name `),目录补全保留 `/` 继续往下补
+        suffix = " " if value.startswith("/") else ""
+        new_text = text[:start] + value + suffix + text[end:]
+        editor.load_text(new_text)
+        cursor = start + len(value) + len(suffix)
+        editor.move_cursor(self._offset_to_location(new_text, cursor))
+        if value.endswith("/"):
+            self._refresh_completions()
+        else:
+            self._close_completions()
+
+    @staticmethod
+    def _offset_to_location(text: str, offset: int) -> tuple[int, int]:
+        """字符偏移 → TextArea 的 (row, col)。"""
+        offset = max(0, min(offset, len(text)))
+        row = text.count("\n", 0, offset)
+        line_start = text.rfind("\n", 0, offset) + 1
+        return row, offset - line_start
+
+    # -- `!` / `!!` 手动 bash(pi 的 handleBashCommand)----------
+    def _run_bash(self, text: str) -> None:
+        excluded = text.startswith("!!")
+        command = (text[2:] if excluded else text[1:]).strip()
+        if not command:
+            self._note("用法: !<命令>(!! 同样执行,但输出不进上下文)", "warning")
+            self._scroll_end()
+            return
+        block = BashBlock(command, self._palette, excluded)
+        self._bash_blocks.append(block)
+        self._append(block)
+        self.run_worker(self._exec_bash(command, excluded, block), exclusive=False)
+
+    async def _exec_bash(self, command: str, excluded: bool, block: BashBlock) -> None:
+        """执行用户手敲的命令;`!` 会把「命令 + 输出」落成一条 user 消息供后续回合参考。"""
+        rt = self._rt
+        cwd = str(rt.cwd) if rt is not None else str(Path.cwd())
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                command, cwd=cwd,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            raw, _ = await proc.communicate()
+            code = proc.returncode
+        except OSError as exc:
+            block.set_result(f"无法执行: {exc}", -1)
+            self._scroll_end()
+            return
+        output = raw.decode("utf-8", "replace")
+        block.set_result(output, code)
+        self._scroll_end()
+        if excluded or rt is None or self._session is None:
+            return
+        body = output.strip() or "(无输出)"
+        if len(body) > MAX_TOOL_ENTRY_CHARS:
+            body = body[:MAX_TOOL_ENTRY_CHARS] + "\n…(已截断)"
+        content = (f"[用户手动执行 bash]\n$ {command}\n{body}\n(exit {code})")
+        rt.sessions.append(self._session,
+                           {"type": "message", "role": "user", "content": content})
 
     # -- 底部状态行的瞬时提示(pi 的状态区,不加额外 chrome)----------
     def _default_status(self) -> str:

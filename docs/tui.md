@@ -13,7 +13,7 @@
 (终端滚动历史保留 —— inline 渲染,不占全屏、不进备用屏)
 
  qi v0.1.0                                                    ← bold accent + dim
- escape interrupt · ctrl+c clear/exit · ctrl+o tools · / commands · @agent   ← 快捷提示
+ escape interrupt · ctrl+c clear/exit · ctrl+o tools · / commands · @ files · ! bash   ← 快捷提示
  qi 是多 agent 编码框架:专职角色 + auto 分派;/help 看全部命令。       ← dim 引导
 
 [Agents]
@@ -128,8 +128,22 @@ qi 用 `priority=True` 抢过来以匹配 pi 语义(`ctrl+d` 非空时仍自己�
 | `ctrl+n` / `ctrl+r` | 会话列表过滤 / 重命名 | 无会话选择器 UI(`/sessions` 只打印列表) |
 | `alt+enter` / `alt+up` | 排队 follow-up / 取回排队 | 无消息队列 |
 | `ctrl+y` / `alt+y` | kill-ring 的 yank / yank-pop | Textual 无 kill-ring,`ctrl+y` 仍是它的 redo |
-| `tab` | 补全(`@` 文件 / `/` 命令) | 无补全引擎;qi 的 tab = 缩进 |
 | `ctrl+v` | 粘贴图片 | 无图片输入,目前只会粘文本 |
+
+### 补全与 bash 模式(对齐 pi 的 autocomplete / `handleBashCommand`)
+
+| 触发 | 行为 |
+| --- | --- |
+| 行首 `/xx` | 命令名补全(候选来自 `TUI_COMMANDS`,与 `_command` 的已实现分支对应) |
+| 任意位置 `@xx` | 相对路径补全(目录优先、以 `/` 结尾继续往下补;隐藏文件只在 `@.` 时列出) |
+| `tab` | 接受候选(命令补完带一个空格);**无候选时仍是缩进** |
+| `↑` / `↓` | 面板开着时选候选,否则移动光标 |
+| `escape` | 先关面板,再考虑中断 |
+| `!<命令>` | 执行 shell,输出以 pi 同款「上下 `─` + `$ cmd` + 输出」块展示,并把「命令 + 输出」落成一条 user 消息供后续回合参考 |
+| `!!<命令>` | 同样执行,但**不进上下文**(块边框变 `dim`,标题标出) |
+
+与 pi 的差异(已落档):pi 用 `fd` 走全树模糊匹配并支持 `@"带空格的路径"`;qi 只扫描当前目录层级、前缀匹配。
+pi 在 bash 运行中会拒绝再跑一条;qi 允许并发。两者都不影响普通聊天。
 
 ### 输入层:多行编辑器(对齐 pi `pi-tui/components/editor.js`)
 
@@ -148,9 +162,10 @@ qi 用 Textual 的 `TextArea` 做成 pi 的编辑器,补齐了这些键(其余�
 
 实现注记:
 
-- `TextArea` 在 `tab_behavior="indent"` 下会把 **escape 当成「换焦点」并吞掉**,而 pi 的 escape 是中断;
-  qi 在 `Editor._on_key` 里直接拦下 escape 并发消息给 App(不走 priority 绑定 ——
-  那会抢掉模型选择器的 escape)。
+- `TextArea` 在 `tab_behavior="indent"` 下会把 **escape 当成「换焦点」、tab 当「缩进」并吞掉**;
+  qi 在 `Editor._on_key` 里先判断补全面板是否开着:开着就归补全(tab/↑/↓/escape),否则
+  放行给 TextArea(缩进)或发 `Interrupt` 消息给 App(中断)。
+  不走 priority 绑定 —— 那会抢掉模型选择器的 escape。
 - 编辑器 `height: auto`(最多 8 行,矮终端还会再降);transcript 上限按
   `终端高 - (编辑器当前行数 + 上下边框 + footer)` 动态算 —— 编辑器长高时 transcript 让位,
   否则 inline 区域会把输入框挤掉。

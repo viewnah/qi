@@ -108,7 +108,7 @@ def test_banner_lists_agents_and_skills():
     # 只写 qi 真的实现了的快捷键(escape 中断、ctrl+c 清空/退出、ctrl+o 展开)
     assert "escape interrupt" in text
     assert "ctrl+c clear/exit" in text and "ctrl+o tools" in text
-    assert "! bash" not in text          # pi 的 bash 模式 qi 未实现,不写
+    assert "! bash" in text and "@ files" in text      # 补全与 bash 模式已实现,可以写
     assert "[Agents]" in text and "general, code-analyst" in text
     assert "[Skills]" in text and "termio" in text
 
@@ -157,7 +157,9 @@ PROMPTS: list[str] = []          # 本轮提交过的 prompt(测试里清空)
 
 class FakeRuntime:
     def __init__(self, *args, **kwargs):
-        self.sessions = None
+        from qi_agent.session import SessionStore
+
+        self.sessions = SessionStore()
         self.cfg = None
         self.cwd = Path.cwd()
         self.registry = _FakeRegistry()
@@ -596,3 +598,169 @@ async def test_footer_stays_three_lines_and_truncates(tmp_path, monkeypatch):
         lines = app.footer_text.plain.split("\n")
         assert len(lines) == 3                      # 不折行
         assert all(len(line) <= 60 for line in lines)
+
+
+# ── 补全(`/` 命令 与 `@` 文件)──────────────────────────
+
+
+async def _editor_with(app, pilot, text: str):
+    editor = app.query_one("#editor", Editor)
+    editor.load_text(text)
+    editor.move_cursor(app._offset_to_location(text, len(text)))
+    await pilot.pause(0.05)
+    return editor
+
+
+@pytest.mark.asyncio
+async def test_completion_candidates_commands_and_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "alpha.py").write_text("x")
+    (tmp_path / "beta.txt").write_text("x")
+    (tmp_path / "subdir").mkdir()
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+
+        await _editor_with(app, pilot, "/se")            # 命令补全
+        values = [v for v, _ in app._completion_candidates()[0]]
+        assert "/session" in values and "/sessions" in values
+        assert "/help" not in values
+        assert app._completions_open is True
+
+        await _editor_with(app, pilot, "讲一下 @al")     # 文件补全
+        values = [v for v, _ in app._completion_candidates()[0]]
+        assert values == ["@alpha.py"]
+
+        await _editor_with(app, pilot, "@")              # 目录优先、隐藏文件默认不列
+        values = [v for v, _ in app._completion_candidates()[0]]
+        assert "@subdir/" in values and "@alpha.py" in values
+
+        await _editor_with(app, pilot, "普通文本")        # 没有触发词
+        assert app._completion_candidates()[0] == []
+        assert app._completions_open is False
+
+
+@pytest.mark.asyncio
+async def test_tab_applies_completion(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "alpha.py").write_text("x")
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+
+        editor = await _editor_with(app, pilot, "/se")
+        assert app._completions_open
+        await pilot.press("down")                        # 面板里下移
+        await pilot.press("tab")                         # tab = 接受补全
+        await pilot.pause(0.05)
+        assert editor.text == "/sessions "               # 第二个候选 + 尾随空格
+        assert app._completions_open is False
+
+        editor = await _editor_with(app, pilot, "@al")
+        await pilot.press("tab")
+        await pilot.pause(0.05)
+        assert editor.text == "@alpha.py"
+
+        # 面板没开时 tab 仍然是缩进(pi 的 tab 是补全,但没候选时不该吃掉输入)
+        editor = await _editor_with(app, pilot, "")
+        await pilot.press("tab")
+        await pilot.pause(0.05)
+        assert editor.text.startswith(" ")
+
+        # escape 先关面板,不该被当成中断
+        editor = await _editor_with(app, pilot, "/se")
+        assert app._completions_open
+        await pilot.press("escape")
+        await pilot.pause(0.05)
+        assert app._completions_open is False
+        assert app._status != "已中断"
+
+
+# ── `!` / `!!` 手动 bash ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_bash_mode_runs_and_records_context(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        assert app._session is not None
+        before = len(app._session.entries)
+
+        app._submit("!echo hello-qi")                    # 单 !:进上下文
+        await app.workers.wait_for_complete()
+        await pilot.pause(0.1)
+        block = app._bash_blocks[-1]
+        assert block.command == "echo hello-qi"
+        assert "hello-qi" in block.rendered.plain
+        assert "exit 0" in block.rendered.plain
+        assert "不进上下文" not in block.rendered.plain
+        added = app._session.entries[before:]
+        assert len(added) == 1
+        assert added[0]["role"] == "user"
+        assert "[用户手动执行 bash]" in added[0]["content"]
+        assert "hello-qi" in added[0]["content"]
+
+        before = len(app._session.entries)
+        app._submit("!!echo quiet")                      # 双 !:不进上下文
+        await app.workers.wait_for_complete()
+        await pilot.pause(0.1)
+        block = app._bash_blocks[-1]
+        assert block.command == "echo quiet"
+        assert "不进上下文" in block.rendered.plain
+        assert len(app._session.entries) == before        # 没有新增消息
+
+        notes: list[tuple[str, str]] = []
+        app._note = lambda text, tone="dim": notes.append((text, tone))  # type: ignore[method-assign]
+        app._submit("!")                                  # 空命令:给用法,不起 worker
+        await pilot.pause(0.05)
+        assert "用法: !<命令>" in notes[-1][0]
+        assert len(app._bash_blocks) == 2                  # 没有多出第三个块
+
+
+@pytest.mark.asyncio
+async def test_editor_border_color_tracks_bash_mode(tmp_path, monkeypatch):
+    """`!` / `!!` 前缀把编辑器边框换成 bashMode / dim(pi 的 updateEditorBorderColor)。"""
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        editor = app.query_one("#editor", Editor)
+
+        assert app._editor_color_key() == "border"
+        editor.load_text("!"); await pilot.pause(0.05)
+        assert app._editor_color_key() == "bashMode"
+        editor.load_text("!!"); await pilot.pause(0.05)
+        assert app._editor_color_key() == "dim"
+        editor.load_text(""); await pilot.pause(0.05)
+        assert app._editor_color_key() == "border"
+
+        # 边框真的按这个色画(bashMode = #b5bd68)
+        editor.load_text("!ls"); await pilot.pause(0.05)
+        from textual.widgets import Static
+
+        from rich.style import Style
+
+        base = app._top_border().style
+        if not isinstance(base, Style):
+            base = Style.parse(base or "")
+        color = base.color
+        assert color is not None
+        assert color.get_truecolor().hex == PALETTE.hex("bashMode")

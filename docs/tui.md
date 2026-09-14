@@ -126,7 +126,7 @@ qi 用 `priority=True` 抢过来以匹配 pi 语义(`ctrl+d` 非空时仍自己�
 | --- | --- | --- |
 | `shift+tab` / `ctrl+t` | 思考级别 / 折叠思考块 | qi 无 thinking 概念(事件流里就没有 thinking 内容) |
 | `ctrl+n` / `ctrl+r` | 会话列表过滤 / 重命名 | 无会话选择器 UI(`/sessions` 只打印列表) |
-| `alt+enter` / `alt+up` | 排队 follow-up / 取回排队 | 无消息队列 |
+| `alt+enter` / `alt+up` | 排队 follow-up / 取回排队 | ✅ 已实现(见 §3) |
 | `ctrl+y` / `alt+y` | kill-ring 的 yank / yank-pop | Textual 无 kill-ring,`ctrl+y` 仍是它的 redo |
 | `ctrl+v` | 粘贴图片 | 无图片输入,目前只会粘文本 |
 
@@ -174,16 +174,26 @@ qi 用 Textual 的 `TextArea` 做成 pi 的编辑器,补齐了这些键(其余�
 qi 的输入层是**多行编辑器**(见下面「输入层」一节):`/` 与 `@` 补全、`!` bash 模式、
 消息队列仍未实现——它们现在是纯输入层功能,不再受控件限制。
 
-## 3. 消息队列行为(pi 现状;qi 未实现)
+## 3. 消息队列(已实现;语义对齐 pi)
 
-pi 的行为(供后续对齐参考):
+| 操作 | pi | qi |
+| --- | --- | --- |
+| 回合中 `Enter` | steer:下一个模型边界送达 | 排队,当前回合结束后立即作为下一回合发送 |
+| `Alt+Enter` | follow-up:全部工作完成后送达 | 排队,排在所有 steer 之后 |
+| `Esc` | 中止当前轮 + 排队退回编辑器 | 同(有排队就退回,否则只中止) |
+| `Alt+Up` | 取回排队消息 | 同(多条按 steer→follow-up 顺序拼回编辑器) |
 
-- **Enter**:排队 steering 消息,当前轮工具执行完后送达
-- **Alt+Enter**:follow-up,agent 全部工作完成后送达
-- **Esc**:中止当前轮,队列消息退回编辑器
-- **Alt+Up**:取回排队消息
+行为细节:
 
-qi 现状:回合进行中输入框仍可输入并可提交(并发起新的 worker),没有排队/回退语义。
+- 回合进行中**不再并发起第二个 worker**(旧实现会两个回合互踩同一会话文件);
+  提交一律进队列,footer 状态行显示 `排队 N`。
+- 每条排队消息会以 dim 行写进 transcript(带“当前回合结束后发送”/“follow-up”标签),
+  不会静默丢消息。
+- `/new` 清空队列。
+
+与 pi 的差异:pi 的 steer 是在**同一次 run 内**的下一个模型边界注入(可以影响正在进行的工作),
+qi 的 runtime 没有 mid-run 注入接口,所以 steer 实际是“下一回合”。顺序语义一致(steer 先于 follow-up)。
+队列只存在于当前 TUI 进程(不落盘)。
 
 ## 4. 扩展点(v2)
 

@@ -764,3 +764,140 @@ async def test_editor_border_color_tracks_bash_mode(tmp_path, monkeypatch):
         color = base.color
         assert color is not None
         assert color.get_truecolor().hex == PALETTE.hex("bashMode")
+
+
+# ── 消息队列(pi 的 steer / follow-up)──────────────────
+
+
+class BlockingRuntime(FakeRuntime):
+    """回合卡在 gate 上 —— 让"回合进行中"的断言完全可控(不靠 sleep 抢时间)。"""
+
+    gate: asyncio.Event | None = None
+
+    async def stream(self, prompt, session, agent_override=None):
+        PROMPTS.append(prompt)
+        if BlockingRuntime.gate is not None:
+            await BlockingRuntime.gate.wait()
+        yield AgentEvent(kind="assistant_message", agent="general", text=f"echo:{prompt}",
+                         data={"step": 1, "tool_calls": []})
+        yield AgentEvent(kind="agent_end", agent="general", text="", data={"usage": {}})
+
+
+async def _settle(app, pilot, rounds: int = 6) -> None:
+    """等所有回合(含队列抽干后新起的那些)跑完。"""
+    for _ in range(rounds):
+        await app.workers.wait_for_complete()
+        await pilot.pause(0.1)
+        if not app._working and not app._queue_count():
+            return
+
+
+async def _type_and_submit(app, pilot, text: str) -> None:
+    editor = app.query_one("#editor", Editor)
+    editor.load_text(text)
+    editor.move_cursor((0, len(text)))
+    await pilot.press("enter")
+
+
+@pytest.mark.asyncio
+async def test_enter_during_turn_queues_instead_of_racing(tmp_path, monkeypatch):
+    """回合进行中按 enter:排队,结束后按顺序发出(不并发跑第二个回合)。"""
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", BlockingRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+    PROMPTS.clear()
+    BlockingRuntime.gate = asyncio.Event()
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        app._submit("first")
+        await pilot.pause(0.1)
+        assert app._working is True
+
+        await _type_and_submit(app, pilot, "second")   # 回合中的 enter
+        await pilot.pause(0.05)
+        assert app._pending_steer == ["second"]        # 排队,不是并发
+        assert PROMPTS == ["first"]
+        assert "排队 1" in app._status
+
+        BlockingRuntime.gate.set()                     # 放行 → 抽队列
+        await _settle(app, pilot)
+        assert PROMPTS == ["first", "second"]          # 顺序发出
+        assert app._queue_count() == 0
+    BlockingRuntime.gate = None
+
+
+@pytest.mark.asyncio
+async def test_follow_up_queues_after_steer(tmp_path, monkeypatch):
+    """alt+enter = follow-up;排序在 steer 之后。"""
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", BlockingRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+    PROMPTS.clear()
+    BlockingRuntime.gate = asyncio.Event()
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        app._submit("first")
+        await pilot.pause(0.1)
+
+        await _type_and_submit(app, pilot, "steer-1")
+        editor = app.query_one("#editor", Editor)
+        editor.load_text("follow-1")
+        editor.move_cursor((0, len("follow-1")))
+        await pilot.press("alt+enter")                 # pi 的 app.message.followUp
+        await pilot.pause(0.05)
+        assert app._pending_steer == ["steer-1"]
+        assert app._pending_follow == ["follow-1"]
+        assert editor.text == ""                       # 两种都清空编辑器
+
+        BlockingRuntime.gate.set()
+        await _settle(app, pilot)
+        assert PROMPTS == ["first", "steer-1", "follow-1"]
+    BlockingRuntime.gate = None
+
+
+@pytest.mark.asyncio
+async def test_dequeue_and_interrupt_return_queue(tmp_path, monkeypatch):
+    """alt+up 取回排队;escape 中断时也退回编辑器。"""
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", BlockingRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+    PROMPTS.clear()
+    BlockingRuntime.gate = asyncio.Event()
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        editor = app.query_one("#editor", Editor)
+        app._submit("first")
+        await pilot.pause(0.1)
+        assert app._working is True
+
+        await _type_and_submit(app, pilot, "queued-text")
+        assert app._pending_steer == ["queued-text"]
+
+        await pilot.press("alt+up")                    # pi 的 app.message.dequeue
+        await pilot.pause(0.05)
+        assert app._pending_steer == []
+        assert editor.text == "queued-text"            # 回到编辑器
+
+        await _type_and_submit(app, pilot, "pending-2")
+        assert app._pending_steer == ["pending-2"]
+        await pilot.press("escape")                    # 中断 + 退回排队
+        await pilot.pause(0.1)
+        assert app._working is False
+        assert app._pending_steer == []
+        assert "pending-2" in editor.text
+
+        # /new 清空队列
+        app._enqueue("to-be-dropped", "steer")
+        app._command("/new")
+        await pilot.pause(0.05)
+        assert app._queue_count() == 0
+    BlockingRuntime.gate = None

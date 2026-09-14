@@ -159,7 +159,10 @@ HOTKEYS_TEXT = """\
   !!<命令>                同样执行,但输出不进上下文(边框变暗)
 
   应用
-  escape                  中断当前回合
+  escape                  中断当前回合;有排队时先把排队退回编辑器
+  enter                   提交(回合进行中 = 排队,当前回合结束后发送)
+  alt+enter               排队 follow-up(排在 steer 之后发送)
+  alt+up                  取回排队消息到编辑器
   ctrl+c                  清空编辑器;连按两次退出
   ctrl+d                  编辑器为空时退出(非空 = 删右侧字符)
   ctrl+o                  展开/折叠工具输出
@@ -171,7 +174,6 @@ HOTKEYS_TEXT = """\
 
 尚未对齐(pi 有,qi 缺能力或驱动不了):
   shift+tab 思考级别    ctrl+t 折叠思考块    ctrl+n 会话列表过滤   ctrl+r 重命名会话
-  alt+enter 排队 follow-up   alt+up 取回排队
   ctrl+y/alt+y kill-ring 的 yank   ctrl+v 粘贴图片(现在只会粘文本)
 """
 
@@ -534,6 +536,11 @@ class Editor(TextArea):
             super().__init__()
             self.delta = delta
 
+    class FollowUp(Message):
+        """alt+enter:排队 follow-up(pi 的 app.message.followUp)。"""
+
+    class RestoreQueue(Message):
+        """alt+up:把排队中的消息取回编辑器(pi 的 app.message.dequeue)。"""
     BINDINGS = [
         Binding("enter", "submit", "提交", priority=True, show=False),
         Binding("shift+enter", "newline", "换行", priority=True, show=False),
@@ -570,6 +577,16 @@ class Editor(TextArea):
                 self.post_message(self.Complete())
             else:
                 self.post_message(self.MoveCompletion(-1 if event.key == "up" else 1))
+            return
+        if event.key == "alt+enter":          # pi:排队 follow-up
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.FollowUp())
+            return
+        if event.key == "alt+up":             # pi:取回排队
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.RestoreQueue())
             return
         await super()._on_key(event)
 
@@ -689,6 +706,10 @@ class QiTui(App):
         self._current_tool: ToolBlock | None = None
         self._model: ResolvedModel | None = None
         self._usage = {"prompt_tokens": 0, "completion_tokens": 0}
+        # 消息队列(pi 的 steer / follow-up):回合进行中提交的消息不并发跑,而是排队。
+        # 必须在 _default_status() 之前初始化 —— 它会把排队数写进状态行。
+        self._pending_steer: list[str] = []
+        self._pending_follow: list[str] = []
         self._status = self._default_status()
         self.footer_text = Text("")
         self._branch: str | None = None
@@ -904,6 +925,10 @@ class QiTui(App):
         self._sync_log_height()
         if not text:
             return
+        if self._working:
+            # 回合进行中:不并发跑第二个回合(会互踩会话),按 pi 排队
+            self._enqueue(text, "steer")
+            return
         self._submit(text)
 
     def on_editor_interrupt(self, event: Editor.Interrupt) -> None:
@@ -918,6 +943,22 @@ class QiTui(App):
 
     def on_editor_move_completion(self, event: Editor.MoveCompletion) -> None:
         self._move_completion(event.delta)
+
+    def on_editor_follow_up(self, event: Editor.FollowUp) -> None:
+        """alt+enter:排队 follow-up(空闲时就直接发)。"""
+        editor = self.query_one("#editor", Editor)
+        text = editor.text.strip()
+        if not text:
+            return
+        editor.reset()
+        self._sync_log_height()
+        if self._working:
+            self._enqueue(text, "follow")
+        else:
+            self._submit(text)
+
+    def on_editor_restore_queue(self, event: Editor.RestoreQueue) -> None:
+        self._restore_queue()
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """编辑器变高/变矮、进入/退出 bash 模式时,同步布局与边框色。"""
@@ -1010,6 +1051,8 @@ class QiTui(App):
             self._set_working(False)
             self._live = None
             self._scroll_end()
+            # 回合结束再抽队列(排队消息不并发跑,避免两个回合互踩同一会话)
+            self.call_after_refresh(self._drain_queue)
 
     # -- 命令 -----------------------------------------------------------
     def _note(self, text: str, tone: str = "dim") -> None:
@@ -1047,6 +1090,8 @@ class QiTui(App):
             self._auto = True
             self._usage = {"prompt_tokens": 0, "completion_tokens": 0}
             self._last_answer = ""
+            self._pending_steer.clear()
+            self._pending_follow.clear()
             self._note("已开新会话(auto)")
             self._restore_status()
         elif cmd in ("/resume", "/sessions"):
@@ -1295,13 +1340,16 @@ class QiTui(App):
         self._flash("工具输出:" + ("已展开" if self._expanded else "已折叠"))
 
     def action_interrupt(self) -> None:
-        """escape:中断当前回合(对齐 pi 的 app.interrupt)。"""
+        """escape:中断当前回合(对齐 pi 的 app.interrupt)。排队消息退回编辑器。"""
         if not self._working:
             return
         self.workers.cancel_all()
         self._set_working(False)
         self._live = None
-        self._flash("已中断")
+        if self._queue_count():
+            self._restore_queue()
+        else:
+            self._flash("已中断")
 
     def action_clear_or_exit(self) -> None:
         """ctrl+c:清空编辑器;连按两次退出 —— 对齐 pi 的 app.clear/app.exit。"""
@@ -1607,10 +1655,58 @@ class QiTui(App):
         rt.sessions.append(self._session,
                            {"type": "message", "role": "user", "content": content})
 
+    # -- 消息队列(pi 的 steer / follow-up)--------------------
+    def _queue_count(self) -> int:
+        return len(self._pending_steer) + len(self._pending_follow)
+
+    def _enqueue(self, text: str, kind: str) -> None:
+        """排队一条消息。steer 先送达,follow-up 排在后面(不要乱序)。"""
+        if kind == "follow":
+            self._pending_follow.append(text)
+        else:
+            self._pending_steer.append(text)
+        label = "follow-up" if kind == "follow" else "当前回合结束后发送"
+        self._note(f"已排队({label}):{text}", "dim")
+        self._restore_status()
+        self._scroll_end()
+
+    def _drain_queue(self) -> None:
+        """回合结束后,把队首那条发出去(steer 优先)。"""
+        if self._working or not self.is_running:
+            return
+        if self._pending_steer:
+            text = self._pending_steer.pop(0)
+        elif self._pending_follow:
+            text = self._pending_follow.pop(0)
+        else:
+            return
+        self._restore_status()
+        self._submit(text)
+
+    def _restore_queue(self) -> None:
+        """alt+up:把排队的消息整段放回编辑器(不动正在跑的那轮)。"""
+        queued = [*self._pending_steer, *self._pending_follow]
+        if not queued:
+            self._flash("没有排队的消息")
+            return
+        self._pending_steer.clear()
+        self._pending_follow.clear()
+        editor = self.query_one("#editor", Editor)
+        current = editor.text.rstrip("\n")
+        restored = "\n".join([current, *queued]) if current else "\n".join(queued)
+        editor.load_text(restored)
+        editor.move_cursor(self._offset_to_location(restored, len(restored)))
+        self._sync_log_height()
+        self._restore_status()
+        self._flash(f"已取回 {len(queued)} 条排队消息")
+
     # -- 底部状态行的瞬时提示(pi 的状态区,不加额外 chrome)----------
     def _default_status(self) -> str:
         mode = "auto" if self._auto else f"manual:{self._agent or '-'}"
-        return f"qi · {mode}"
+        status = f"qi · {mode}"
+        if self._queue_count():
+            status += f" · 排队 {self._queue_count()}"
+        return status
 
     def _flash(self, message: str, seconds: float = 2.0) -> None:
         self._status = message

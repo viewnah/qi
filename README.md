@@ -16,8 +16,13 @@ qi init -y --provider deepseek --model deepseek-chat \
 # 2. 校验配置与凭证
 qi doctor
 
-# 3. 运行(无头一次执行,auto 分派)
+# 3. 运行:裸 `qi` 直接进 TUI(交互,auto 分派);`-p` 是无头一次执行
+qi
 qi -p "分析这个仓库"
+
+# TUI 视觉/配色与 pi 同源(theme/dark.json、light.json),主题默认跟随终端背景
+# (`qi config --set theme=dark|light|auto`,或 `QI_THEME=light qi`)
+qi "分析这个仓库"          # 进 TUI 并把这句话作为首条发出(对齐 pi 的 `pi "问题"`)
 ```
 
 零配置即可跑:框架内置了一个 `general`(兜底角色)与一份**基座系统提示词**,不需要先装任何 agent。

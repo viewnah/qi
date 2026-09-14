@@ -1,7 +1,8 @@
 """CLI 入口(对齐 docs/cli.md;P1-P6)。
 
-顶层:qi [options] [--] [消息...]  →  -p 无头执行(auto);否则提示/进 TUI(v2 在 cli 不可用时提示)
-子命令:doctor / models list / auth / init / agents / sessions / version
+顶层:`qi [options] [--] [消息...]` —— 不带 `-p` 且 `--mode text` 时进 TUI(裸 `qi`
+或 `qi "问题"`,后者把消息作为首条提交);否则无头执行后退出(`-p` / `--mode json`)。
+子命令:doctor / models list / auth / init / agents / sessions / config / web / version
 """
 
 from __future__ import annotations
@@ -197,7 +198,7 @@ def root_callback(
     name: str | None = typer.Option(None, "--name", "-n", help="会话显示名"),
     no_session: bool = typer.Option(False, "--no-session", help="不落盘(临时)"),
     export_file: str | None = typer.Option(None, "--export", help="导出会话 JSONL 到文件后退出"),
-    mode: str = typer.Option("text", "--mode", help="输出: text|json"),
+    mode: str = typer.Option("text", "--mode", help="输出: text|json(json 隐含无头,不进 TUI)"),
     verbose: bool = typer.Option(False, "--verbose", help="显示分派与工具调用进度(默认只输出答案,对齐 pi)"),
     skill: list[str] = typer.Option(None, "--skill", help="额外技能文件/目录(可重复;叠加)"),
     no_skills: bool = typer.Option(False, "--no-skills", "-ns", help="关闭技能自动发现(--skill 仍生效)"),
@@ -208,16 +209,24 @@ def root_callback(
         _cmd_export(session_id or "", Path(export_file))
         raise typer.Exit()
     messages = list(ctx.args)
-    if not messages and not print_mode:
-        # 无参:进了。(docs/cli.md §1:无 -p = TUI);非 TTY(管道/CI)退化为提示。
-        if sys.stdin.isatty() and sys.stdout.isatty():
-            tui()
-        else:
+    prompt = " ".join(messages).strip()
+    # docs/cli.md §1 / 对齐 pi:不带 -p 恒为交互(`-p` 才是无头),也不再需要 `qi tui`;
+    # 给了消息就进 TUI 并把它作为首条消息发出(pi 的 `pi "问题"` 同款)。
+    # `--mode json` 是脚本路径(输出事件流,不是 TUI),仍走无头。
+    interactive = not print_mode and mode == "text"
+    if interactive:
+        if not (sys.stdin.isatty() and sys.stdout.isatty()):
+            # 非 TTY(管道/CI):退化为提示,而不是抛 traceback / 卡住。
             console.print("交互界面需要 TTY;无头用法: qi -p \"问题\" [--agent name]")
-        raise typer.Exit(code=0)
-    prompt = " ".join(messages).strip() or ""
-    if not prompt and print_mode:
-        console.print("[red]需要消息内容: qi -p \"问题\"[/red]")
+            raise typer.Exit(code=0)
+        _launch_tui(prompt or None)
+        return
+    if not prompt:
+        usage = (
+            "qi -p \"问题\"" if print_mode
+            else "qi --mode json \"问题\"(--mode json 为无头输出)"
+        )
+        console.print(f"[red]需要消息内容: {usage}[/red]")
         raise typer.Exit(code=2)
     from .runtime import QiRuntime, RuntimeConfig
     from .config import ConfigError as _CfgErr
@@ -1079,15 +1088,18 @@ def version() -> None:
     console.print(f"qi {__version__}")
 
 
-@app.command("tui")
-def tui() -> None:
-    """启动文本交互界面(TUI)。"""
+def _launch_tui(initial_prompt: str | None = None) -> None:
+    """启动 TUI(顶层 `qi` 的默认去向)。
+
+    刻意不做成子命令:`pi` 也没有 `pi tui` —— 裸 `qi` 就是交互界面。
+    `initial_prompt` 来自 `qi "问题"`:进界面后立刻提交这条消息。
+    """
     try:
         from .tui import run_tui
     except Exception as exc:  # textual 依赖问题
         console.print(f"[red]TUI 不可用: {escape(str(exc))}[/red]")
         raise typer.Exit(code=1) from exc
-    run_tui()
+    run_tui(initial_prompt)
 
 
 def _port_free(host: str, port: int) -> bool:

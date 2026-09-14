@@ -40,9 +40,10 @@ class QiTui(App):
 
     BINDINGS = [("ctrl+c", "quit", "退出"), ("ctrl+l", "clear_log", "清屏")]
 
-    def __init__(self, runtime: QiRuntime | None = None):
+    def __init__(self, runtime: QiRuntime | None = None, initial_prompt: str | None = None):
         super().__init__()
         self._rt = runtime
+        self._initial_prompt = (initial_prompt or "").strip() or None
         self._session = None
         self._agent: str | None = None      # manual 锁定
         self._auto = True
@@ -68,12 +69,13 @@ class QiTui(App):
         except (LoadError, ConfigError) as exc:
             log.write(f"[red]启动失败: {exc}[/red]")
             self._rt = None
+        if self._initial_prompt and self._rt is not None:
+            # `qi "问题"`:进界面后立刻提交这条消息(对齐 pi 的 `pi "问题"`)。
+            # 走 call_after_refresh,等首屏渲染完再写日志/起 worker。
+            self.call_after_refresh(self._submit, self._initial_prompt)
 
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        text = event.value.strip()
-        self.query_one("#input", Input).value = ""
-        if not text:
-            return
+    def _submit(self, text: str) -> None:
+        """提交一条用户输入:渲染 → `/` 命令 / 执行。"""
         log = self.query_one("#log", RichLog)
         log.write(f"[bold cyan]你:[/bold cyan] {text}")
         if text.startswith("/"):
@@ -86,6 +88,13 @@ class QiTui(App):
             self._session = SessionStore().create("tui", cwd=self._rt.cwd)
         override = None if self._auto else self._agent
         self.run_worker(self._run(text, override), exclusive=False)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        text = event.value.strip()
+        self.query_one("#input", Input).value = ""
+        if not text:
+            return
+        self._submit(text)
 
     async def _run(self, text: str, override: str | None) -> None:
         log = self.query_one("#log", RichLog)
@@ -167,5 +176,6 @@ class QiTui(App):
     # `App.action_quit`(async,内部即 self.exit())处理 —— 不重复实现。
 
 
-def run_tui() -> None:
-    QiTui().run()
+def run_tui(initial_prompt: str | None = None) -> None:
+    """启动 TUI;`initial_prompt` 非空时进界面即提交(来自 `qi "问题"`)。"""
+    QiTui(initial_prompt=initial_prompt).run()

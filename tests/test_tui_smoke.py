@@ -79,6 +79,19 @@ def test_tui_quit_action_is_textual_builtin():
 
 
 @pytest.mark.asyncio
+async def test_tui_initial_prompt_is_submitted(tmp_path, monkeypatch):
+    """`qi "问题"` = 进 TUI 后自动提交该消息(用 `/mode manual` 验证其生效)。"""
+    _tui_env(tmp_path, monkeypatch)
+    from qi_agent.tui import QiTui
+
+    assert QiTui()._initial_prompt is None      # 裸 `qi` 不自动提交
+    app = QiTui(initial_prompt="/mode manual")
+    async with app.run_test() as pilot:
+        await pilot.pause(0.05)
+        assert app._auto is False, "初始消息未被提交"
+
+
+@pytest.mark.asyncio
 async def test_tui_ctrl_c_quits(tmp_path, monkeypatch):
     """ctrl+c → "quit" → Textual 内置 async `App.action_quit` → `self.exit()`。
 

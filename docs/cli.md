@@ -8,6 +8,7 @@
 ```
 ── 运行 ────────────────────────────────
 qi                              # 进 TUI(交互)
+qi "<问题>"                      # 进 TUI,并把该消息作为首条发出(对齐 pi)
 qi -p "<问题>"                    # 无头一次执行(auto 分派)
 qi -p --agent <name> "<问题>"     # 指定 agent(manual)
 
@@ -43,10 +44,10 @@ qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt
 
 | 命令 | 说明 | pi 对齐 |
 | --- | --- | --- |
-| `qi [options] [--] [@files...] [messages...]` | 无 `-p` = 进 TUI;`-p` = 无头执行后退出 | ✅ 形态同 pi |
+| `qi [options] [--] [@files...] [messages...]` | **不带 `-p` 且 `--mode text` = 进 TUI**(无 `qi tui` 子命令,对齐 pi 的裸 `pi`);给了 messages 就在进界面后作为首条消息提交;`-p` = 无头执行后退出 | ✅ 形态同 pi |
 | `-p, --print` | 无头一次执行;**auto 分派**;给 `--agent` 即 manual。**默认只输出答案**(对齐 pi 的 "Print response and exit");分派行/工具进度默认不显示,加 `--verbose` 才输出(走 stderr,不污染 stdout) | ✅ |
 | `--agent <name>` | 指定 agent(长参;不用 `-a`,pi 的 `-a`=approve) | qi 新增 |
-| `--mode <text\|json>` | 输出格式(`rpc` 二期) | ✅ |
+| `--mode <text\|json>` | 输出格式(`rpc` 二期)。`json` 输出事件 JSON 行,**隐含无头**(不进 TUI) | ✅ |
 | `-t <tools>` / `-xt <tools>` | 工具 allowlist / denylist 临时覆盖(tools 三态) | ✅ |
 | `-nt` / `-nbt` | 禁用全部工具 / 保留插件工具 | ✅ |
 | `--plugin <path>` | 本次运行临时加载插件 | 🟡 pi `-e` |

@@ -105,6 +105,30 @@ def test_bare_qi_without_tty_prints_hint(fake_runtime):
     assert CREATED == []
 
 
+def test_qi_with_message_without_print_is_interactive(fake_runtime):
+    """不带 -p 给消息 = 进 TUI(并把消息作首条),不再走无头(对齐 pi)。"""
+    res = runner.invoke(app, ["你好"])
+    assert res.exit_code == 0, res.output
+    assert "需要 TTY" in res.output
+    assert CREATED == []                       # 未构造无头 runtime
+
+
+def test_mode_json_without_print_is_still_headless(fake_runtime):
+    """`--mode json` 是企业脚本路径:即使没有 -p 也不进 TUI。"""
+    res = runner.invoke(app, ["--mode", "json", "你好"])
+    assert res.exit_code == 0, res.output
+    assert _last(fake_runtime).prompts == ["你好"]
+    assert "echo:你好" in res.output
+
+
+def test_tui_is_not_a_subcommand(fake_runtime):
+    """`qi tui` 已移除:不再被当作子命令分派(而是普通消息)。"""
+    res = runner.invoke(app, ["tui"])
+    assert res.exit_code == 0, res.output
+    assert "需要 TTY" in res.output
+    assert CREATED == []
+
+
 def test_real_subcommands_still_dispatch(fake_runtime):
     res = runner.invoke(app, ["version"])
     assert res.exit_code == 0, res.output

@@ -6,6 +6,7 @@ footer 真的取到了 pi 调色板里的颜色。像素级对齐由人工比对
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -94,7 +95,10 @@ def test_dispatch_line_is_pi_style():
 def test_banner_lists_agents_and_skills():
     text = _renderer().banner("0.1.0", ["general", "code-analyst"], ["termio"]).plain
     assert "qi v0.1.0" in text
-    assert "ctrl+c/ctrl+d clear/exit" in text
+    assert "ctrl+c exit" in text and "ctrl+o tools" in text
+    # 不再抄 pi 的提示行:qi 没实现的（escape/ctrl+d/! bash）不得出现在 banner 里
+    assert "escape interrupt" not in text
+    assert "! bash" not in text
     assert "[Agents]" in text and "general, code-analyst" in text
     assert "[Skills]" in text and "termio" in text
 
@@ -211,3 +215,115 @@ async def test_tui_renders_pi_blocks_and_footer(tmp_path, monkeypatch):
         assert "↑12k ↓678" in footer
         assert "deepseek/deepseek-v4.1-flash • medium" in footer
         assert "qi · auto" in footer
+
+
+# ── `/` 命令:对齐 pi 的部分 + “计划中”不冒充未知 ──────────
+
+
+async def _command_notes(app, monkeypatch) -> list[tuple[str, str]]:
+    """把 `_note` 换成收集器,便于断言命令输出。"""
+    notes: list[tuple[str, str]] = []
+    app._note = lambda text, tone="dim": notes.append((text, tone))  # type: ignore[method-assign]
+    return notes
+
+
+@pytest.mark.asyncio
+async def test_tui_command_surface(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        notes = await _command_notes(app, monkeypatch)
+
+        app._command("/help")
+        assert "计划中" in notes[-1][0] and "/hotkeys" in notes[-1][0]
+        assert "/sessions" in notes[-1][0] and "/export" in notes[-1][0]
+
+        app._command("/hotkeys")
+        assert "ctrl+o" in notes[-1][0] and "尚未实现" in notes[-1][0]
+
+        app._command("/session")
+        assert "会话: " in notes[-1][0] and "deepseek/deepseek-v4.1-flash" in notes[-1][0]
+
+        app._command("/sessions")            # help 里承诺过,必须真的有实现
+        assert "会话(最新在前)" in notes[-1][0]
+
+        app._command("/name 我的会话")
+        assert "我的会话" in notes[-1][0]
+        assert app._session is not None and app._session.title == "我的会话"
+        assert "我的会话" in app.footer_text.plain      # 名字进 footer(对齐 pi)
+
+        app._command("/copy")                # 还没有回答
+        assert "还没有回答" in notes[-1][0]
+
+        app._command("/login")
+        assert "用法" in notes[-1][0]
+        app._command("/login deepseek")
+        assert "qi auth login deepseek" in notes[-1][0]   # 密钥不进会话记录
+
+        app._command("/logout")
+        assert "用法" in notes[-1][0]
+
+        app._command("/model")               # pi 有、qi 未实现 → “计划中”
+        assert "计划中" in notes[-1][0]
+
+        app._command("/changelog")
+        assert "CHANGELOG" in notes[-1][0]
+
+        app._command("/export")
+        assert "已导出" in notes[-1][0]
+        assert Path(notes[-1][0].split("→ ")[1].strip()).is_file()
+
+        app._command("/import /nonexistent.jsonl")
+        assert "不存在" in notes[-1][0]
+
+        app._command("/reload")
+        assert "已重载" in notes[-1][0]
+
+        app._command("/不存在")
+        assert "未知命令" in notes[-1][0]
+
+
+@pytest.mark.asyncio
+async def test_tui_import_session_and_copy_answer(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    sid = "deadbeef1234"
+    source = tmp_path / "incoming.jsonl"
+    source.write_text(
+        json.dumps({"type": "session", "id": sid, "title": "imported",
+                    "created_at": "2024-01-01T00:00:00"}) + "\n"
+        + json.dumps({"type": "message", "role": "user", "content": "hi"}) + "\n",
+        encoding="utf-8",
+    )
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        notes = await _command_notes(app, monkeypatch)
+
+        app._command(f"/import {source}")
+        assert "已导入" in notes[-1][0]
+        assert app._session is not None and app._session.id == sid
+        assert app._session.message_count == 1
+
+        app._command(f"/import {source}")     # 重复导入 → 明确提示,不静默覆盖
+        assert "已存在" in notes[-1][0]
+
+        app._command("/import")               # 缺参数
+        assert "用法" in notes[-1][0]
+
+        # 回答完成后 /copy 能拿到最后一条(FakeRuntime 的最后一条不带工具调用)
+        app._submit("读一下 pyproject.toml")
+        await app.workers.wait_for_complete()
+        await pilot.pause(0.1)
+        assert "就是 qi" in app._last_answer
+        app._command("/copy")
+        assert "已复制" in notes[-1][0]

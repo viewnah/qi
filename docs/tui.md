@@ -53,58 +53,77 @@ qi · auto                                 ← footer 3:状态行
 已知差异(Textual 与 pi 自研渲染器的边界,不做逐字节对齐):OSC133 zone 标记、
 代码块左侧 `│` 边线、图片/kitty 协议、超长历史进终端原生 scrollback。
 
-## 2. `/` 内部命令(草案)
+## 2. `/` 内部命令
 
-### 会话与恢复(对齐 pi)
+> 以**实现状态**为准(不再写“草案”)。pi 的 23 个内置命令见 `dist/core/slash-commands.js`;
+> 下表里「计划中」= qi 尚无对应后端能力,单独提示,不冒充“未知命令”。
+
+### 已实现(对齐 pi)
 
 | 命令 | 说明 |
 | --- | --- |
-| `/resume` | 选历史会话恢复 |
-| `/new` | 新会话 |
-| `/name <name>` | 会话显示名 |
-| `/session` | 会话信息(文件/ID/消息数) |
-| `/fork` | 从某条历史消息 fork 新会话 |
-| `/export [file]` | 导出 HTML/JSONL |
-| `/import <file>` | 从 JSONL 导入并恢复 |
-| `/trust` | 保存项目 `.qi` 信任决定 |
+| `/help` | 命令帮助(含实现/计划分区) |
+| `/hotkeys` | 快捷键(明写哪些 pi 键位还没做) |
 | `/quit` | 退出 |
+| `/new` | 新会话 |
+| `/resume [id]` | 不给 id = 列出历史会话;给 id = 恢复 |
+| `/sessions` | 列出历史会话 |
+| `/name <name>` | 会话显示名(进 footer) |
+| `/session` | 会话信息(ID/文件/cwd/消息数/模型/用量) |
+| `/export [file]` | 导出会话 JSONL(默认 `./qi-<id>.jsonl`;**pi 默认导出 HTML** —— qi 无 HTML 导出器) |
+| `/import <file>` | 从 JSONL 导入并切换会话(重名给提示,不静默覆盖) |
+| `/copy` | 复制最后一条回答到剪贴板(OSC 52) |
+| `/reload` | 重载 agents / plugins / 配置(主题改动需重开) |
+| `/login <provider>` | **只给指引**:`qi auth login <provider>`(密钥不进会话记录) |
+| `/logout [provider]` | 删除已存凭证(无密钥输入,可直接在 TUI 里做) |
+| `/changelog` | 显示 `CHANGELOG.md`(qi 仓库暂无该文件) |
 
-### Agent 与分派(qi 特色)
+### qi 独有
 
 | 命令 | 说明 |
 | --- | --- |
-| `/agents` | 列出 agent(可 `@name` 直派) |
+| `/agents` | 列出 agent |
 | `/mode auto\|manual` | 切换分派模式 |
 | `/agent <name>` | manual 下锁定执行 agent |
-| `/todos` | 预留(二期 todo 工作流) |
+| `/tools` | 当前/全部 agent 工具清单(简版) |
+| `/clear` | 清屏 |
+| `@name` 开头 | 直接点名 agent(与 pi 无关,qi 的 auto 分派补充) |
 
-### 检查与维护
+### 计划中(pi 有,qi 缺后端能力)
 
-| 命令 | 说明 |
+| pi 命令 | 缺什么 |
 | --- | --- |
-| `/help` | 命令帮助(含快捷键) |
-| `/tools` | 当前 agent 的工具清单 |
-| `/skills` | 当前 agent 绑定的技能 |
-| `/doctor` | 装载/配置诊断 |
-| `/reload` | 重载 agents/plugins/配置(改 agent.md 即生效) |
+| `/model` `/scoped-models` | 运行期切模型 + Ctrl+P 轮换清单 |
+| `/thinking` | 思考级别(要贯穿 llm 调用与系统提示) |
+| `/compact` | 上下文压缩/摘要 |
+| `/tree` `/fork` `/clone` | 会话树与分支 |
+| `/settings` | TUI 内设置面板 |
+| `/share` | GitHub gist 分享 |
+| `/trust` | 项目信任门控(qi 只有 `defaultProjectTrust` 字段,没有信任判定) |
 
-### 对齐 pi 但砍掉/改造的
+### 键位
 
-| pi 命令 | qi 处理 |
-| --- | --- |
-| `/login` | 选 provider,写入 auth store(`~/.qi/agent/auth.json`,0600) |
-| `/logout` | 清除某 provider 凭证 |
-| `/model /thinking /scoped-models /settings` | 配置化:改 `models.json`,不进 TUI |
-| `/llama /share /tree /clone /changelog` | 无对应能力(v2 按需,如 `/share` 随 web v2) |
-| `/hotkeys` | 并入 `/help` |
-| `/compact` | 等会话摘要设计(v2) |
+| 键 | qi | pi |
+| --- | --- | --- |
+| `ctrl+c` | 退出 | 清空编辑器(连按两次退出) |
+| `ctrl+l` | 清屏 | 打开模型选择器 |
+| `ctrl+o` | 展开/折叠工具输出 | 同 |
+| `escape` / `ctrl+d` / `shift+tab` / `ctrl+p` / `ctrl+g` / `ctrl+x` / `ctrl+t` / `ctrl+r` | — | 中断 / 空输入退出 / 思考级别 / 切模型 / 外部编辑器 / 复制消息 / 折叠思考 / 重命名会话 |
 
-## 3. 消息队列行为(对齐 pi)
+qi 的输入层目前是**单行 `Input`**:没有历史、kill-ring、多行编辑、`/` 与 `@` 补全、
+`!` bash 模式、消息队列。这些属于 pi 编辑器(`pi-tui/dist/components/editor.js`)的能力,
+要补需要先替换输入控件。
+
+## 3. 消息队列行为(pi 现状;qi 未实现)
+
+pi 的行为(供后续对齐参考):
 
 - **Enter**:排队 steering 消息,当前轮工具执行完后送达
 - **Alt+Enter**:follow-up,agent 全部工作完成后送达
 - **Esc**:中止当前轮,队列消息退回编辑器
 - **Alt+Up**:取回排队消息
+
+qi 现状:回合进行中输入框仍可输入并可提交(并发起新的 worker),没有排队/回退语义。
 
 ## 4. 扩展点(v2)
 

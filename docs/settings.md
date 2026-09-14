@@ -49,7 +49,7 @@
 | 字段 | pi 中的用途 | qi 现状 |
 | --- | --- | --- |
 | `theme` | 主题名(dark/light/auto) | TUI 已接:自动探测终端背景(OSC 11),失败落 dark;`QI_THEME` 可覆盖。见 [tui.md](tui.md) §1 |
-| `defaultThinkingLevel` | 默认思考级别 | 无思考级别概念 |
+| `defaultThinkingLevel` | 默认思考级别 | 已接:`off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`;TUI `shift+tab` 可运行时切换(`--thinking` 可覆盖)。见 [tui.md](tui.md) §2 |
 | `enabledModels` | 模型轮换(Ctrl+P) | 无模型轮换 |
 | `quietStartup` | 隐藏启动头 | 未接 |
 | `defaultProjectTrust` | `ask`/`always`/`never` | 项目信任尚未实现(`-a` 未落地) |

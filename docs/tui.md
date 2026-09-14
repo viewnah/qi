@@ -94,7 +94,6 @@ qi · auto                                 ← footer 3:状态行
 
 | pi 命令 | 缺什么 |
 | --- | --- |
-| `/thinking` | 思考级别(要贯穿 llm 调用与系统提示) |
 | `/scoped-models` | Ctrl+P 轮换清单(qi 现在轮完 models.json 里全部) |
 | `/compact` | 上下文压缩/摘要 |
 | `/tree` `/fork` `/clone` | 会话树与分支 |
@@ -110,6 +109,19 @@ qi · auto                                 ← footer 3:状态行
 | `ctrl+c` | 清空输入框;再按一次退出 | `app.clear` + `app.exit` |
 | `ctrl+d` | 输入框为空时退出;非空删右侧字符 | `app.exit` |
 | `ctrl+o` | 展开/折叠工具输出 | `app.tools.expand` |
+| `shift+tab` | 循环思考级别(off→minimal→…→max→off) | `app.thinking.cycle` |
+| `ctrl+t` | 显示/隐藏思考块 | `app.thinking.toggle` |
+
+思考(对齐 pi 的 `thinkingLevel`):
+
+- 级别经 litellm 的 `reasoning_effort` 下发(`minimal/low/medium/high`);
+  **`xhigh`/`max` 收敛为 `high`** —— litellm / 多数 provider 没有这两个档。
+- 只有模型在 `models.json` 里声明 `reasoning: true` 时才带参(否则某些 provider 会 400);
+  footer 右侧显示 `模型 • <级别>`(off 时按 pi 的写法显示 `• thinking off`)。
+- 思考内容与回答**分开流式**(`thinking_delta`),灰色斜体渲染;`ctrl+t` 可随时隐藏/显示。
+- **provider 拒收 `reasoning_effort` 时**(实测自建 LiteLLM 代理默认就是这样)自动去掉参数重试,
+  并在 footer 提示一次“已按不思考运行”——不会因此整轮失败。
+- 思考内容**不落盘**(仅当轮展示):会话 JSONL 仍只有 message/tool/dispatch/state 四类。
 | `ctrl+x` | 复制最后一条回答 | `app.message.copy` |
 | `ctrl+g` | `$EDITOR` 编辑当前输入 | `app.editor.external` |
 | `ctrl+l` | 模型选择器(模态列表) | `app.model.select` |
@@ -124,9 +136,7 @@ qi 用 `priority=True` 抢过来以匹配 pi 语义(`ctrl+d` 非空时仍自己�
 
 | 键 | pi 用途 | qi 缺什么 |
 | --- | --- | --- |
-| `shift+tab` / `ctrl+t` | 思考级别 / 折叠思考块 | qi 无 thinking 概念(事件流里就没有 thinking 内容) |
 | `ctrl+n` / `ctrl+r` | 会话列表过滤 / 重命名 | 无会话选择器 UI(`/sessions` 只打印列表) |
-| `alt+enter` / `alt+up` | 排队 follow-up / 取回排队 | ✅ 已实现(见 §3) |
 | `ctrl+y` / `alt+y` | kill-ring 的 yank / yank-pop | Textual 无 kill-ring,`ctrl+y` 仍是它的 redo |
 | `ctrl+v` | 粘贴图片 | 无图片输入,目前只会粘文本 |
 

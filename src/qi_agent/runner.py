@@ -86,10 +86,16 @@ class AgentRunner:
         try:
             for turn in range(self.settings.max_turns):
                 acc_text = ""
+                acc_thinking = ""
                 tool_calls: list[ToolCallOut] = []
                 usage: dict = {}
                 async with asyncio.timeout(self.settings.timeout_s):
                     async for delta in stream_llm(self.llm, msgs, tools=schemas):
+                        if delta.reasoning:
+                            # 思考内容:与回答分开流式(pi 的 thinking block)
+                            acc_thinking += delta.reasoning
+                            yield AgentEvent(kind="thinking_delta", agent=self.unit.name,
+                                             text=delta.reasoning)
                         if delta.text:
                             acc_text += delta.text
                             # 逐字流式:Web 端靠它打字。CLI/TUI 只读回合末尾的 text 事件,
@@ -109,6 +115,7 @@ class AgentRunner:
                 yield AgentEvent(kind="assistant_message", agent=self.unit.name,
                                  text=acc_text,
                                  data={"step": turns_used,
+                                       "thinking": acc_thinking,
                                        "tool_calls": [c.name for c in tool_calls]})
                 if not tool_calls:
                     break

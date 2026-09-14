@@ -9,7 +9,7 @@ import contextlib
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import Any, Protocol, cast
+from typing import Any, Protocol, cast, runtime_checkable
 
 from .config import ResolvedModel
 from .auth import AuthStore, resolve_key
@@ -42,12 +42,14 @@ class ChatMessage:
         return d
 
 
+@dataclass
 class ChatResponse:
-    def __init__(self, text: str = "", tool_calls: list[ToolCallOut] | None = None,
-                 usage: dict | None = None):
-        self.text = text
-        self.tool_calls = tool_calls or []
-        self.usage = usage or {}
+    """一次非流式回复。`reasoning` = 思考内容(pi 的 thinking block),不算回答。"""
+
+    text: str = ""
+    tool_calls: list[ToolCallOut] = field(default_factory=list)
+    usage: dict = field(default_factory=dict)
+    reasoning: str = ""
 
 
 class LLMClient(Protocol):
@@ -71,18 +73,77 @@ class StreamingLLMClient(Protocol):
                 temperature: float | None = None) -> AsyncIterator[LLMDelta]: ...
 
 
+@runtime_checkable
+class ThinkingLLMClient(Protocol):
+    """可选增强:支持思考级别(pi 的 thinkingLevel → `reasoning_effort`)。
+
+    单独一个协议而不是塞进 `LLMClient`:很多实现(测试替身/第三方)没有思考概念,
+    不该被强迫实现一个空属性。用 `isinstance` 在运行期判定是否真的可设。
+    """
+
+    thinking_level: str
+    reasoning_dropped: bool
+    """provider 拒过 reasoning_effort 吗(UI 据此提示一次)。"""
+
+
 @dataclass
 class LLMDelta:
     """流式增量。契约:**0+ 个文本块,然后恰好一个 `finished` 块**。
 
     最终文本 = 所有文本块拼接;`tool_calls` 与 `usage` **只在** `finished` 块上。
     这一形状让消费者(AgentRunner)只需处理一种情况,而不是"有的实现流式、有的不流式"。
+
+    `reasoning` 是思考内容(pi 的 thinking block):与 `text` 分开流式,**不算**最终回答。
     """
 
     text: str = ""
+    reasoning: str = ""
     finished: bool = False
     tool_calls: list[ToolCallOut] = field(default_factory=list)
     usage: dict = field(default_factory=dict)
+
+
+THINKING_LEVELS: tuple[str, ...] = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
+"""思考级别(对齐 pi 的 thinkingLevel)。`off` = 不请求思考。"""
+
+# qi 经 litellm 传 reasoning_effort;litellm / 各 provider 只认 minimal/low/medium/high,
+# 所以 xhigh / max 收敛到 high(pi 的 provider 侧有原生 xhigh/max,litellm 没有)。
+_EFFORT_MAP = {"minimal": "minimal", "low": "low", "medium": "medium",
+               "high": "high", "xhigh": "high", "max": "high"}
+
+
+def normalize_thinking_level(value: str | None) -> str:
+    """级别归一:未知值一律当 `off`(不能因为 settings 里写错就让请求带上怪参数)。"""
+    level = (value or "").strip().lower()
+    return level if level in THINKING_LEVELS else "off"
+
+
+def reasoning_text_of(obj: object) -> str:
+    """从 litellm 的 delta / message 里取思考内容。
+
+    各 provider 字段名不一:`reasoning_content`(DeepSeek/Qwen 系)、`reasoning`
+    (OpenAI 兼容网关)、`thinking`(Anthropic 系,可能是块列表)。统一成字符串。
+    """
+    for attr in ("reasoning_content", "reasoning", "thinking"):
+        value = getattr(obj, attr, None)
+        if value is None and isinstance(obj, dict):
+            value = obj.get(attr)
+        if not value:
+            continue
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):     # Anthropic 风格块列表
+            parts = []
+            for item in value:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    parts.append(str(item.get("thinking") or item.get("text") or ""))
+                else:
+                    parts.append(str(getattr(item, "thinking", "") or ""))
+            return "".join(parts)
+        return str(value)
+    return ""
 
 
 async def chat_as_stream(llm: LLMClient, messages: list[ChatMessage],
@@ -93,9 +154,11 @@ async def chat_as_stream(llm: LLMClient, messages: list[ChatMessage],
     两处用途:(a) 实现方只有 chat(第三方/测试替身);(b) 流式打不开时的降级。
     """
     resp = await llm.chat(messages, tools=tools, temperature=temperature)
+    if resp.reasoning:
+        yield LLMDelta(reasoning=resp.reasoning)
     if resp.text:
         yield LLMDelta(text=resp.text)
-    yield LLMDelta(finished=True, tool_calls=resp.tool_calls, usage=resp.usage)
+    yield LLMDelta(finished=True, tool_calls=resp.tool_calls or [], usage=resp.usage or {})
 
 
 async def stream_llm(llm: LLMClient, messages: list[ChatMessage],
@@ -194,10 +257,17 @@ def merged_tool_calls(merged: dict[int, dict]) -> list[ToolCallOut]:
 class LiteLLMClient:
     """基于 litellm 的实现。spec 来自 resolve_model()(经 resolve_key 取 key)。"""
 
-    def __init__(self, spec: ResolvedModel, auth_store: AuthStore | None = None):
+    def __init__(self, spec: ResolvedModel, auth_store: AuthStore | None = None,
+                 thinking_level: str = "off"):
         self.spec = spec
         self._resolved = resolve_key(spec.provider, spec.api_key_ref, auth_store or AuthStore())
         self.model_name = litellm_model_name(spec)
+        self.thinking_level = normalize_thinking_level(thinking_level)
+        """思考级别(可在运行期改:TUI 的 shift+tab / `/thinking`)。"""
+        # provider 明确拒过 reasoning_effort 后粘住这个事实,后续不再带(与 _no_usage_opt 同模式)
+        self._no_reasoning_effort = False
+        self.reasoning_dropped = False
+        """曾因 provider 不接受而丢掉思考参数吗(供 UI 提示一次)。"""
         # 该 provider 是否已拒绝过 stream_options(见 astream 的容错 1)
         self._no_usage_opt = False
         # 流式是否已确认打不开(容错 2):钉住后不再每轮重试一次注定失败的请求
@@ -224,13 +294,39 @@ class LiteLLMClient:
             kwargs["max_tokens"] = self.spec.max_tokens
         if temperature is not None:
             kwargs["temperature"] = temperature
+        kwargs.update(self._reasoning_params())
         return kwargs
+
+    def _reasoning_params(self) -> dict:
+        """思考参数:只有模型声明 reasoning、级别非 off、且 provider 没拒过时才带。"""
+        effort = _EFFORT_MAP.get(self.thinking_level)
+        if effort and self.spec.reasoning and not self._no_reasoning_effort:
+            return {"reasoning_effort": effort}
+        return {}
+
+    def _consider_reasoning_rejection(self, exc: BaseException) -> bool:
+        """看这次失败是不是「provider 不接受 reasoning_effort」;是则降级并返回 True。
+
+        真实场景:自建 LiteLLM 代理默认 `drop_params` 会把未知参数丢掉并**直接报错**。
+        用户只是想调思考级别,不应该因此整轮失败——所以丢掉参数重试一次并记下来。
+        """
+        if self._no_reasoning_effort or "reasoning_effort" not in str(exc):
+            return False
+        self._no_reasoning_effort = True
+        self.reasoning_dropped = True
+        return True
 
     async def chat(self, messages: list[ChatMessage], tools: list[dict] | None = None,
                    temperature: float | None = None) -> ChatResponse:
         import litellm
 
-        resp = await litellm.acompletion(**self._base_kwargs(messages, tools, temperature))
+        try:
+            resp = await litellm.acompletion(**self._base_kwargs(messages, tools, temperature))
+        except Exception as exc:
+            if not self._consider_reasoning_rejection(exc):
+                raise
+            # 去掉 reasoning_effort 重试一次(用户只想调级别,不该因此整轮失败)
+            resp = await litellm.acompletion(**self._base_kwargs(messages, tools, temperature))
         # litellm 的返回类型是 "流式包装器 | 补全对象" 的联合,
         # 这里只走非流式分支,按实际形状收窄。
         msg = cast(Any, resp).choices[0].message
@@ -249,7 +345,8 @@ class LiteLLMClient:
             tool_calls.append(ToolCallOut(id=tc.id or f"call_{len(tool_calls)}",
                                           name=fn.name, args=args))
         return ChatResponse(text=text or "", tool_calls=tool_calls,
-                            usage=usage_to_dict(getattr(resp, "usage", None)))
+                            usage=usage_to_dict(getattr(resp, "usage", None)),
+                            reasoning=reasoning_text_of(msg))
 
     async def _open_stream(self, messages: list[ChatMessage], tools: list[dict] | None,
                            temperature: float | None, with_usage: bool) -> AsyncIterator[Any]:
@@ -262,6 +359,27 @@ class LiteLLMClient:
         # litellm 的返回类型是 "流式包装器 | 补全对象" 的联合:这里只走流式分支,
         # 按实际形状收窄(与 chat() 的处理对称)。
         return cast(AsyncIterator[Any], await litellm.acompletion(**kwargs))
+
+    async def _open_stream_with_fallbacks(self, messages: list[ChatMessage],
+                                          tools: list[dict] | None,
+                                          temperature: float | None) -> AsyncIterator[Any] | None:
+        """开流,依次容忍两种“参数不被接受”:reasoning_effort → stream_options。
+
+        顺序上先处理 reasoning(它是我们主动加的可选参数),再处理 usage 选项;
+        两次都失败就返回 None,交给上层退回非流式。
+        """
+        for _ in range(3):
+            with_usage = not self._no_usage_opt
+            try:
+                return await self._open_stream(messages, tools, temperature, with_usage)
+            except Exception as exc:  # noqa: BLE001 打开流失败:逐项降级
+                if self._consider_reasoning_rejection(exc):
+                    continue
+                if with_usage:
+                    self._no_usage_opt = True     # 某些 provider 不认 stream_options
+                    continue
+                return None
+        return None
 
     async def astream(self, messages: list[ChatMessage], tools: list[dict] | None = None,
                       temperature: float | None = None) -> AsyncIterator[LLMDelta]:
@@ -281,16 +399,8 @@ class LiteLLMClient:
                 yield delta
             return
 
-        stream: AsyncIterator[Any] | None = None
-        for with_usage in ((False,) if self._no_usage_opt else (True, False)):
-            try:
-                stream = await self._open_stream(messages, tools, temperature, with_usage)
-                break
-            except Exception:  # noqa: BLE001 打开流失败:区分"参数被拒"与"不支持流式"
-                if with_usage:
-                    self._no_usage_opt = True
-                else:
-                    stream = None
+        stream: AsyncIterator[Any] | None = await self._open_stream_with_fallbacks(
+            messages, tools, temperature)
         if stream is None:
             self._stream_broken = True
             async for delta in chat_as_stream(self, messages, tools, temperature):
@@ -299,7 +409,7 @@ class LiteLLMClient:
 
         merged: dict[int, dict] = {}
         usage: dict = {}
-        text_seen = False
+        content_seen = False        # 文本或思考已吐出:此时失败不能重试(会重复输出)
         try:
             async for chunk in stream:
                 got = usage_to_dict(getattr(chunk, "usage", None))
@@ -314,14 +424,18 @@ class LiteLLMClient:
                 text = getattr(delta_obj, "content", "") or ""
                 if isinstance(text, list):           # 多模态块:取文本
                     text = "".join(p.get("text", "") for p in text if isinstance(p, dict))
+                reasoning = reasoning_text_of(delta_obj)
+                if reasoning:
+                    content_seen = True
+                    yield LLMDelta(reasoning=reasoning)
                 if text:
-                    text_seen = True
+                    content_seen = True
                     yield LLMDelta(text=text)
                 for tc in getattr(delta_obj, "tool_calls", None) or []:
                     merge_tool_call_delta(merged, tc)
         except Exception:
-            # 首片就失败 → 可安全降级;已吐过字 → 不能重试(会重复输出)
-            if text_seen:
+            # 首片就失败 → 可安全降级;已吐过字/思考 → 不能重试(会重复输出)
+            if content_seen:
                 raise
             self._stream_broken = True
             async for delta in chat_as_stream(self, messages, tools, temperature):

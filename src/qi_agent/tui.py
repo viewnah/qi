@@ -42,7 +42,7 @@ from textual.widgets.option_list import Option
 from .auth import AuthStore
 from .cli import _load_registry
 from .config import ConfigError, ResolvedModel, resolve_default_model, resolve_model
-from .llm import LiteLLMClient
+from .llm import THINKING_LEVELS, LiteLLMClient, ThinkingLLMClient, normalize_thinking_level
 from .loader import LoadError
 from .registry import ToolCatalog
 from .runtime import MAX_TOOL_ENTRY_CHARS, QiRuntime
@@ -73,6 +73,7 @@ qi TUI 命令(实现状态以本表为准)
   /sessions          列出历史会话
   /name <名字>       设置会话显示名(进 footer)
   /session           会话信息(文件/ID/消息数/模型/用量)
+  /thinking [级别]   思考级别(off|minimal|low|medium|high|xhigh|max;等同 shift+tab)
   /model [p/m]       当前模型 / 切换模型(等同 ctrl+l)
   /export [文件]     导出会话 JSONL(默认 ./qi-<id>.jsonl)
   /import <文件>     从 JSONL 导入并切换会话
@@ -98,11 +99,11 @@ qi TUI 命令(实现状态以本表为准)
   /quit              退出
 
  计划中(对齐 pi,需先给后端加能力)
-  /thinking /compact /tree /fork /clone /scoped-models /settings /share /trust
+  /compact /tree /fork /clone /scoped-models /settings /share /trust
 """
 
 PLANNED_COMMANDS = frozenset({
-    "/thinking", "/compact", "/tree", "/fork", "/clone",
+    "/compact", "/tree", "/fork", "/clone",
     "/scoped-models", "/settings", "/share", "/trust",
 })
 """pi 有、qi 暂未实现的命令 —— 单独提示“计划中”,不冒充“未知命令”。"""
@@ -160,6 +161,8 @@ HOTKEYS_TEXT = """\
 
   应用
   escape                  中断当前回合;有排队时先把排队退回编辑器
+  shift+tab               循环思考级别(off→minimal→…→max)
+  ctrl+t                  显示/隐藏思考块
   enter                   提交(回合进行中 = 排队,当前回合结束后发送)
   alt+enter               排队 follow-up(排在 steer 之后发送)
   alt+up                  取回排队消息到编辑器
@@ -173,8 +176,8 @@ HOTKEYS_TEXT = """\
   ctrl+z                  挂起(回到 shell,fg 回来)
 
 尚未对齐(pi 有,qi 缺能力或驱动不了):
-  shift+tab 思考级别    ctrl+t 折叠思考块    ctrl+n 会话列表过滤   ctrl+r 重命名会话
-  ctrl+y/alt+y kill-ring 的 yank   ctrl+v 粘贴图片(现在只会粘文本)
+  ctrl+n 会话列表过滤   ctrl+r 重命名会话   ctrl+y/alt+y kill-ring 的 yank
+  ctrl+v 粘贴图片(现在只会粘文本)
 """
 
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -394,13 +397,22 @@ class AssistantMessage(Static):
 
 
 class ThinkingMessage(Static):
+    """思考块(pi 的 thinking):灰色斜体 markdown;流式追加。"""
+
     def __init__(self, text: str, palette: Palette) -> None:
-        super().__init__(RichMarkdown(text.strip(), code_theme=cast(Any, syntax_theme(palette))),
-                         classes="msg thinking-msg")
+        super().__init__(RichMarkdown(text.strip(), code_theme=cast(Any, syntax_theme(palette)))
+                         if text.strip() else "", classes="msg thinking-msg")
+        self.text_content = text
+        self._palette = palette
         self.styles.padding = (0, 1)
         self.styles.background = "transparent"
         self.styles.text_style = "italic"
         self.styles.color = palette.hex("thinkingText")
+
+    def append_delta(self, delta: str) -> None:
+        self.text_content += delta
+        self.update(RichMarkdown(self.text_content.strip(),
+                                 code_theme=cast(Any, syntax_theme(self._palette))))
 
 
 class ToolBlock(Static):
@@ -541,6 +553,14 @@ class Editor(TextArea):
 
     class RestoreQueue(Message):
         """alt+up:把排队中的消息取回编辑器(pi 的 app.message.dequeue)。"""
+
+    class CycleThinking(Message):
+        """shift+tab:循环思考级别(pi 的 app.thinking.cycle)。
+
+        在编辑器里接管而不是 App binding:Textual 的 `Screen` 把 shift+tab 绑给了
+        `focus_previous`,非 priority 的 App 绑定抢不到,而 priority 会连带
+        影响模态里的行为。
+        """
     BINDINGS = [
         Binding("enter", "submit", "提交", priority=True, show=False),
         Binding("shift+enter", "newline", "换行", priority=True, show=False),
@@ -587,6 +607,11 @@ class Editor(TextArea):
             event.stop()
             event.prevent_default()
             self.post_message(self.RestoreQueue())
+            return
+        if event.key == "shift+tab":          # pi:循环思考级别
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.CycleThinking())
             return
         await super()._on_key(event)
 
@@ -673,6 +698,7 @@ class QiTui(App):
         Binding("ctrl+c", "clear_or_exit", "清空/退出", priority=True),
         Binding("ctrl+d", "exit_or_delete", "退出", priority=True),
         Binding("ctrl+o", "toggle_expand", "展开工具"),
+        Binding("ctrl+t", "toggle_thinking", "折叠思考块"),
         Binding("ctrl+x", "copy_answer", "复制回答", priority=True),
         Binding("ctrl+g", "external_editor", "外部编辑器"),
         Binding("ctrl+l", "select_model", "选择模型"),
@@ -719,6 +745,12 @@ class QiTui(App):
         self._completions: list[tuple[str, str]] = []
         self._completions_open = False
         self._bash_blocks: list[BashBlock] = []
+        # 思考(pi 的 thinking):级别 + 是否展示思考块
+        self._thinking_level = "off"
+        self._show_thinking = True
+        self._thinking_widgets: list[ThinkingMessage] = []
+        self._live_thinking: ThinkingMessage | None = None
+        self._reasoning_warned = False
 
     # -- 布局 -----------------------------------------------------------
     def compose(self) -> ComposeResult:
@@ -744,6 +776,8 @@ class QiTui(App):
                 self._model = resolve_default_model(self._rt.cfg, self._rt.cwd)
             except ConfigError:
                 self._model = None
+            self._thinking_level = normalize_thinking_level(
+                getattr(self._rt, "thinking_level", None))
             skills = sorted({s.name for unit in self._rt.registry.all() for s in unit.skills})
             self._append(Static(self._renderer.banner(
                 _version(), self._rt.registry.names, skills), classes="msg"))
@@ -892,7 +926,9 @@ class QiTui(App):
 
         model_name = self._model.label if self._model else "no-model"
         if self._model and self._model.reasoning:
-            model_name = f"{model_name} • medium"
+            level = self._thinking_level
+            model_name = (f"{model_name} • thinking off" if level == "off"
+                          else f"{model_name} • {level}")
         right = Text(model_name, style=dim)
         # 右对齐、放不下就截断(pi footer.js 的同款处理:否则 Text 会折行,footer 变 4 行
         # → 预留行数失真 → inline 区域把输入框挤掉)
@@ -960,6 +996,9 @@ class QiTui(App):
     def on_editor_restore_queue(self, event: Editor.RestoreQueue) -> None:
         self._restore_queue()
 
+    def on_editor_cycle_thinking(self, event: Editor.CycleThinking) -> None:
+        self.action_cycle_thinking()
+
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """编辑器变高/变矮、进入/退出 bash 模式时,同步布局与边框色。"""
         if event.text_area.id != "editor":
@@ -1001,6 +1040,14 @@ class QiTui(App):
                 elif ev.kind == "opening":
                     self._append(Static(Text(ev.text, style=Style(color=self._palette.hex("muted"))),
                                         classes="msg"))
+                elif ev.kind == "thinking_delta":
+                    if self._live_thinking is None:
+                        self._live_thinking = ThinkingMessage("", self._palette)
+                        self._live_thinking.display = self._show_thinking
+                        self._thinking_widgets.append(self._live_thinking)
+                        self._append(self._live_thinking)
+                    self._live_thinking.append_delta(ev.text)
+                    self._scroll_end()
                 elif ev.kind == "text_delta":
                     if self._live is None:
                         self._live = AssistantMessage(self._palette)
@@ -1013,6 +1060,7 @@ class QiTui(App):
                         self._append(self._live)
                     self._live.set_text(ev.text, renderer)
                     self._live = None
+                    self._live_thinking = None      # 收束思考块(保留可 ctrl+t 切换)
                     # 最终回答(不带工具调用的那条)才供 /copy 使用
                     if ev.text.strip() and not ev.data.get("tool_calls"):
                         self._last_answer = ev.text
@@ -1050,6 +1098,8 @@ class QiTui(App):
         finally:
             self._set_working(False)
             self._live = None
+            self._live_thinking = None
+            self._report_reasoning_dropped()
             self._scroll_end()
             # 回合结束再抽队列(排队消息不并发跑,避免两个回合互踩同一会话)
             self.call_after_refresh(self._drain_queue)
@@ -1150,6 +1200,17 @@ class QiTui(App):
                         return
                     provider, model = matches[0]
                 self._switch_model(provider, model)
+        elif cmd == "/thinking":
+            if not arg:
+                lines = [f"当前: {self._thinking_level}",
+                         "可选: " + " | ".join(THINKING_LEVELS)]
+                if self._model is not None and not self._model.reasoning:
+                    lines.append(f"注:{self._model.label} 未声明 reasoning,级别不会随请求发送")
+                self._note("\n".join(lines), "text")
+            elif arg.lower() not in THINKING_LEVELS:
+                self._note("用法: /thinking " + "|".join(THINKING_LEVELS), "warning")
+            else:
+                self._set_thinking_level(arg.lower())
         elif cmd == "/name":
             session = self._session
             if session is None:
@@ -1338,6 +1399,43 @@ class QiTui(App):
         for bash in self._bash_blocks:
             bash.set_expanded(self._expanded)
         self._flash("工具输出:" + ("已展开" if self._expanded else "已折叠"))
+
+    # -- 思考级别(pi 的 app.thinking.*)----------------------
+    def action_cycle_thinking(self) -> None:
+        """shift+tab:循环思考级别(off→minimal→low→…→max→off)。"""
+        index = (THINKING_LEVELS.index(self._thinking_level)
+                 if self._thinking_level in THINKING_LEVELS else 0)
+        self._set_thinking_level(THINKING_LEVELS[(index + 1) % len(THINKING_LEVELS)])
+
+    def action_toggle_thinking(self) -> None:
+        """ctrl+t:显示/隐藏思考块(对齐 pi 的 app.thinking.toggle)。"""
+        self._show_thinking = not self._show_thinking
+        for widget in self._thinking_widgets:
+            widget.display = self._show_thinking
+        self._flash("思考块:" + ("显示" if self._show_thinking else "隐藏"))
+
+    def _report_reasoning_dropped(self) -> None:
+        """provider 拒绝了 reasoning_effort 时提示一次(别让用户以为级别生效了)。"""
+        if self._reasoning_warned or self._rt is None:
+            return
+        # 用 getattr:这个函数在 worker 的 finally 里跑,抛异常会把整轮弄挂
+        client = getattr(self._rt, "llm_exec", None)
+        if isinstance(client, ThinkingLLMClient) and client.reasoning_dropped:
+            self._reasoning_warned = True
+            self._flash("该 provider 不接受 reasoning_effort,已按不思考运行", 4.0)
+
+    def _set_thinking_level(self, level: str) -> None:
+        """设置级别:下一回合生效(写到 runtime 的 llm_exec 上,与切模型同一处)。"""
+        self._thinking_level = normalize_thinking_level(level)
+        client = getattr(self._rt, "llm_exec", None) if self._rt is not None else None
+        # 可选能力:测试替身/第三方实现可能连 llm_exec 都没有
+        if isinstance(client, ThinkingLLMClient):
+            client.thinking_level = self._thinking_level
+        self._refresh_footer()
+        notice = ""
+        if self._model is not None and not self._model.reasoning:
+            notice = "(当前模型未声明 reasoning,不会随请求发送)"
+        self._flash(f"思考级别: {self._thinking_level}{notice}")
 
     def action_interrupt(self) -> None:
         """escape:中断当前回合(对齐 pi 的 app.interrupt)。排队消息退回编辑器。"""

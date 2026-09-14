@@ -37,6 +37,7 @@ from .config import (
     resolve_router_model,
     save_models_file,
 )
+from .llm import THINKING_LEVELS, ThinkingLLMClient
 from .loader import (
     LoadError,
     load_agent_dir,
@@ -202,6 +203,7 @@ def root_callback(
     verbose: bool = typer.Option(False, "--verbose", help="显示分派与工具调用进度(默认只输出答案,对齐 pi)"),
     skill: list[str] = typer.Option(None, "--skill", help="额外技能文件/目录(可重复;叠加)"),
     no_skills: bool = typer.Option(False, "--no-skills", "-ns", help="关闭技能自动发现(--skill 仍生效)"),
+    thinking: str | None = typer.Option(None, "--thinking", help="思考级别: " + "/".join(THINKING_LEVELS)),
 ) -> None:
     if ctx.invoked_subcommand is not None:
         return
@@ -228,11 +230,15 @@ def root_callback(
         )
         console.print(f"[red]需要消息内容: {usage}[/red]")
         raise typer.Exit(code=2)
+    if thinking is not None and thinking.strip().lower() not in THINKING_LEVELS:
+        console.print(f"[red]未知思考级别: {thinking}(可选 {"/".join(THINKING_LEVELS)}）[/red]")
+        raise typer.Exit(code=2)
     from .runtime import QiRuntime, RuntimeConfig
     from .config import ConfigError as _CfgErr
     from .loader import LoadError as _LoadErr
     try:
         runtime = QiRuntime(skills_enabled=not no_skills,
+                            thinking_level=thinking,
                             extra_skill_paths=[Path(p) for p in (skill or [])])
     except _LoadErr as exc:
         console.print(f"[red]装载失败:[/red] {escape(str(exc))}")
@@ -284,6 +290,10 @@ def root_callback(
                 err_console.print(f"[bold]{escape(ev.text)}[/bold]")
 
     asyncio.run(_run())
+    # provider 拒了 reasoning_effort:已经自动降级重试,但要告知(否则用户以为级别生效了)
+    client = getattr(runtime, "llm_exec", None)
+    if isinstance(client, ThinkingLLMClient) and client.reasoning_dropped:
+        err_console.print("[yellow]提示:该 provider 不接受 reasoning_effort,已按不思考运行[/yellow]")
 
 
 def _cmd_export(session_id: str, out: Path) -> None:

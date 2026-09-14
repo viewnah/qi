@@ -13,7 +13,7 @@ from . import paths
 from .auth import AuthStore
 from .config import ResolvedModel, load_config, resolve_default_model, resolve_router_model
 from .dispatcher import Decision, Dispatcher
-from .llm import LiteLLMClient, LLMClient, chat_message_from_dict
+from .llm import LiteLLMClient, LLMClient, chat_message_from_dict, normalize_thinking_level
 from .loader import LoadError, load_all_agents, load_top_level_skills, resolve_base_prompt
 from .models import AgentEvent
 from .registry import AgentRegistry, CapabilityRegistry, ToolCatalog, discover_plugins
@@ -45,6 +45,7 @@ class QiRuntime:
                  router_llm: LLMClient | None = None,
                  disable_router: bool = False,
                  skills_enabled: bool = True,
+                 thinking_level: str | None = None,
                  extra_skill_paths: Iterable[Path] | None = None):
         self.cwd = Path(cwd) if cwd else Path.cwd()
         # 旧版扁平布局 → ~/.qi/agent/(幂等;显式设了 QI_AGENT_HOME 时不动)
@@ -82,7 +83,10 @@ class QiRuntime:
 
         auth = AuthStore()
         default: ResolvedModel = resolve_default_model(self.cfg, self.cwd)
-        self.llm_exec = llm or LiteLLMClient(default, auth)
+        # 思考级别:显式传参(CLI --thinking)> settings.defaultThinkingLevel > off
+        level = thinking_level if thinking_level is not None else self.settings.defaultThinkingLevel
+        self.thinking_level = normalize_thinking_level(level)
+        self.llm_exec = llm or LiteLLMClient(default, auth, thinking_level=self.thinking_level)
         if disable_router:
             self.router_llm = None
         else:

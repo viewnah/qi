@@ -91,6 +91,7 @@ def test_tui_bindings_match_pi():
         "ctrl+c": "clear_or_exit",
         "ctrl+d": "exit_or_delete",
         "ctrl+o": "toggle_expand",
+        "ctrl+t": "toggle_thinking",
         "ctrl+x": "copy_answer",
         "ctrl+g": "external_editor",
         "ctrl+l": "select_model",

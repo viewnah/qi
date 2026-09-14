@@ -157,12 +157,17 @@ PROMPTS: list[str] = []          # 本轮提交过的 prompt(测试里清空)
 
 class FakeRuntime:
     def __init__(self, *args, **kwargs):
+        from types import SimpleNamespace
+
         from qi_agent.session import SessionStore
 
         self.sessions = SessionStore()
         self.cfg = None
         self.cwd = Path.cwd()
         self.registry = _FakeRegistry()
+        # 与 QiRuntime 对齐的可写字段(思考级别相关)
+        self.thinking_level = "off"
+        self.llm_exec = SimpleNamespace(thinking_level="off", reasoning_dropped=False)
 
     async def stream(self, prompt, session, agent_override=None):
         PROMPTS.append(prompt)
@@ -229,7 +234,7 @@ async def test_tui_renders_pi_blocks_and_footer(tmp_path, monkeypatch):
         # footer:第一行 cwd、第二行统计 + 右对齐模型、第三行状态
         footer = app.footer_text.plain
         assert "↑12k ↓678" in footer
-        assert "deepseek/deepseek-v4.1-flash • medium" in footer
+        assert "deepseek/deepseek-v4.1-flash • thinking off" in footer
         assert "qi · auto" in footer
 
 
@@ -291,7 +296,10 @@ async def test_tui_command_surface(tmp_path, monkeypatch):
         app._command("/model")               # 已实现(不再“计划中”)
         assert "当前: " in notes[-1][0] and "切换: " in notes[-1][0]
 
-        app._command("/thinking")            # pi 有、qi 未实现 → “计划中”
+        app._command("/thinking")            # 已实现:列出当前级别 + 可选值
+        assert "当前: off" in notes[-1][0] and "xhigh" in notes[-1][0]
+
+        app._command("/compact")             # pi 有、qi 未实现 → “计划中”
         assert "计划中" in notes[-1][0]
 
         app._command("/changelog")

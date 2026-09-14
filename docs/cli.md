@@ -49,6 +49,7 @@ qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt
 | `--agent <name>` | 指定 agent(长参;不用 `-a`,pi 的 `-a`=approve) | qi 新增 |
 | `--mode <text\|json>` | 输出格式(`rpc` 二期)。`json` 输出事件 JSON 行,**隐含无头**(不进 TUI) | ✅ |
 | `-t <tools>` / `-xt <tools>` | 工具 allowlist / denylist 临时覆盖(tools 三态) | ✅ |
+| `--thinking <级别>` | 思考级别(off/minimal/low/medium/high/xhigh/max;非法值退出码 2)。不传则用 settings.json 的 defaultThinkingLevel,再退 off。provider 拒收 `reasoning_effort` 时自动去掉参数重试,并在 stderr 提示一次 | ✅ `pi --thinking` |
 | `-nt` / `-nbt` | 禁用全部工具 / 保留插件工具 | ✅ |
 | `--plugin <path>` | 本次运行临时加载插件 | 🟡 pi `-e` |
 
@@ -159,4 +160,5 @@ qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt
 | --- | --- |
 | `pi config` 的 TUI 资源启停面板 | `qi config` 只做「查看 + 写键」(见 §5);资源启停随 packages 落地再补 |
 | theme / prompt-template / skill 加载开关 | 概念不存在;内容跟 agent 走 |
-| `--provider / --api-key / --thinking / --models` | 模型在 `models.json` 配置(`qi init` 引导) |
+| `--provider / --api-key / --models` | 模型在 `models.json` 配置(`qi init` 引导) |
+| (`--thinking` 已实现,见 §1) | — |

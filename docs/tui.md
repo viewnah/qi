@@ -127,8 +127,37 @@ qi 用 `priority=True` 抢过来以匹配 pi 语义(`ctrl+d` 非空时仍自己�
 | `shift+tab` / `ctrl+t` | 思考级别 / 折叠思考块 | qi 无 thinking 概念(事件流里就没有 thinking 内容) |
 | `ctrl+n` / `ctrl+r` | 会话列表过滤 / 重命名 | 无会话选择器 UI(`/sessions` 只打印列表) |
 | `alt+enter` / `alt+up` | 排队 follow-up / 取回排队 | 无消息队列 |
-| `ctrl+v` | 粘贴图片 | 单行 `Input`,无图片粘贴 |
-| `/` `@` `!` | 命令/文件补全、bash 模式 | 单行 `Input`,无补全;无 bash 模式 |
+| `ctrl+y` / `alt+y` | kill-ring 的 yank / yank-pop | Textual 无 kill-ring,`ctrl+y` 仍是它的 redo |
+| `tab` | 补全(`@` 文件 / `/` 命令) | 无补全引擎;qi 的 tab = 缩进 |
+| `ctrl+v` | 粘贴图片 | 无图片输入,目前只会粘文本 |
+
+### 输入层:多行编辑器(对齐 pi `pi-tui/components/editor.js`)
+
+qi 用 Textual 的 `TextArea` 做成 pi 的编辑器,补齐了这些键(其余是 Textual 自带):
+
+| 键 | 行为 | pi 的 action |
+| --- | --- | --- |
+| `enter` | 提交 | `tui.input.submit` |
+| `shift+enter` / `ctrl+j` | 换行 | `tui.input.newLine` |
+| `ctrl+b` / `ctrl+f` | 光标左 / 右 | `cursorLeft` / `cursorRight` |
+| `alt+b` `alt+f` `alt+←/→` | 按词移动 | `cursorWordLeft` / `cursorWordRight` |
+| `alt+d` | 删后一个词 | `deleteWordForward` |
+| `ctrl+-` | 撤销 | `undo`(pi 不用 `ctrl+z` —— 那个是挂起) |
+| `ctrl+w` / `ctrl+u` / `ctrl+k` / `alt+backspace` | 删词 / 删到行首 / 删到行尾 | 同名 action(Textual 自带) |
+| `ctrl+v` | 粘贴(含括号粘贴,多行可用) | 文本部分对齐 |
+
+实现注记:
+
+- `TextArea` 在 `tab_behavior="indent"` 下会把 **escape 当成「换焦点」并吞掉**,而 pi 的 escape 是中断;
+  qi 在 `Editor._on_key` 里直接拦下 escape 并发消息给 App(不走 priority 绑定 ——
+  那会抢掉模型选择器的 escape)。
+- 编辑器 `height: auto`(最多 8 行,矮终端还会再降);transcript 上限按
+  `终端高 - (编辑器当前行数 + 上下边框 + footer)` 动态算 —— 编辑器长高时 transcript 让位,
+  否则 inline 区域会把输入框挤掉。
+- `enter` 是提升到 priority 的绑定(`TextArea` 原生会把 enter 插成换行,必须先抢)。
+
+qi 的输入层是**多行编辑器**(见下面「输入层」一节):`/` 与 `@` 补全、`!` bash 模式、
+消息队列仍未实现——它们现在是纯输入层功能,不再受控件限制。
 
 ## 3. 消息队列行为(pi 现状;qi 未实现)
 

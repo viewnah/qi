@@ -28,11 +28,14 @@ from typing import Any, cast
 from rich.markdown import Markdown as RichMarkdown
 from rich.style import Style
 from rich.text import Text
+from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
+from textual.css.query import NoMatches
+from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import Input, OptionList, Static
+from textual.widgets import OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from .auth import AuthStore
@@ -104,22 +107,34 @@ PLANNED_COMMANDS = frozenset({
 """pi 有、qi 暂未实现的命令 —— 单独提示“计划中”,不冒充“未知命令”。"""
 
 HOTKEYS_TEXT = """\
-快捷键(已对齐 pi 的部分):
-  escape           中断当前回合
-  ctrl+c           清空输入框;连按两次退出
-  ctrl+d           输入框为空时退出(非空 = 删除右侧字符)
-  ctrl+o           展开/折叠工具输出
-  ctrl+x           复制最后一条回答
-  ctrl+g           用 $EDITOR 编辑当前输入
-  ctrl+l           选择模型(models.json 里的)
-  ctrl+p / ctrl+shift+p  切换下一个 / 上一个模型
-  ctrl+z           挂起(回到 shell,fg 回来)
-  enter            提交
+快捷键(对齐 pi 的部分)
 
-尚未对齐(pi 有,qi 缺后端能力或输入层):
-  shift+tab  思考级别   ctrl+t  折叠思考块   ctrl+n  会话列表过滤
-  ctrl+r     重命名     alt+enter 排队 follow-up   alt+up  取回排队
-  ctrl+v     粘贴图片   ! bash 模式   @ / 命令补全   多行编辑
+  输入(多行编辑器,对齐 pi-tui/components/editor.js)
+  enter                   提交
+  shift+enter / ctrl+j    换行
+  ctrl+b / ctrl+f         光标左 / 右
+  alt+b / alt+f、alt+←/→、ctrl+←/→  按词移动
+  ctrl+w / alt+backspace  删前一个词
+  alt+d                   删后一个词
+  ctrl+u / ctrl+k        删到行首 / 删到行尾
+  ctrl+-                  撤销
+  ctrl+v                  粘贴(支持多行 / 括号粘贴)
+
+  应用
+  escape                  中断当前回合
+  ctrl+c                  清空编辑器;连按两次退出
+  ctrl+d                  编辑器为空时退出(非空 = 删右侧字符)
+  ctrl+o                  展开/折叠工具输出
+  ctrl+x                  复制最后一条回答
+  ctrl+g                  用 $EDITOR 编辑当前内容
+  ctrl+l                  选择模型(models.json 里的)
+  ctrl+p / ctrl+shift+p   切换下一个 / 上一个模型
+  ctrl+z                  挂起(回到 shell,fg 回来)
+
+尚未对齐(pi 有,qi 缺能力或驱动不了):
+  shift+tab 思考级别    ctrl+t 折叠思考块    ctrl+n 会话列表过滤   ctrl+r 重命名会话
+  alt+enter 排队 follow-up   alt+up 取回排队   ctrl+y/alt+y kill-ring 的 yank
+  tab 补全(@ 文件 / / 命令)   ! bash 模式   ctrl+v 粘贴图片(现在只会粘文本)
 """
 
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -130,6 +145,9 @@ SPINNER_INTERVAL = 0.08
 
 FOOTER_LINES = 3
 """footer 占的行数(cwd / 统计+模型 / 状态);编辑器 3 行由边框各 1 行 + 输入 1 行组成。"""
+
+MAX_EDITOR_ROWS = 8
+"""编辑器最多长到几行(再多在编辑器内部滚动,不抢 transcript 的空间)。"""
 
 PREVIEW_LINES = {"read": 10, "write": 10, "grep": 15, "ls": 20, "find": 20}
 """折叠态下各工具的输出行上限(对齐 pi 各工具的 format*Result)。"""
@@ -370,6 +388,80 @@ class ToolBlock(Static):
 # ── App ─────────────────────────────────────────────────
 
 
+class Editor(TextArea):
+    """多行编辑器(对齐 pi 的 `pi-tui/components/editor.js` 键位)。
+
+    Textual 的 `TextArea` 已经提供多行编辑/选区/撤销/括号粘贴,这里只补齐 pi 的差异:
+      · enter = 提交(pi `tui.input.submit`)
+      · shift+enter / ctrl+j = 换行(pi `tui.input.newLine`)
+      · ctrl+b/f。alt+b/f、alt+←/→、alt+d = 光标词移动/删词(pi 的别名)
+      · ctrl+- = 撤销(pi `tui.editor.undo`;Textual 默认把 undo 绑在 ctrl+z,
+        而 ctrl+z 在 pi 里是挂起,所以改绑到 pi 的键)
+    未实现:kill-ring 的 yank/yank-pop(ctrl+y / alt+y)—— Textual 没有 kill-ring,
+    ctrl+y 仍是它默认的 redo。
+    """
+
+    class Submitted(Message):
+        """Enter 提交。"""
+
+        def __init__(self, value: str) -> None:
+            super().__init__()
+            self.value = value
+
+    class Interrupt(Message):
+        """escape:请求中断当前回合。
+
+        为什么要在这里接管:Textual 的 `Screen._key_escape` 会把 escape 当成「清选区」
+        先吃掉,App 级非 priority 绑定收不到;而改成 priority 又会抢掉模态选择器的
+        escape。编辑器持焦时自行处理最干净(模态打开时焦点不在编辑器,不受影响)。
+        """
+
+    BINDINGS = [
+        Binding("enter", "submit", "提交", priority=True, show=False),
+        Binding("shift+enter", "newline", "换行", priority=True, show=False),
+        Binding("ctrl+j", "newline", "换行", show=False),
+        Binding("ctrl+b", "cursor_left", show=False),
+        Binding("ctrl+f", "cursor_right", show=False),
+        Binding("alt+left", "cursor_word_left", show=False),
+        Binding("alt+right", "cursor_word_right", show=False),
+        Binding("alt+b", "cursor_word_left", show=False),
+        Binding("alt+f", "cursor_word_right", show=False),
+        Binding("alt+d", "delete_word_right", show=False),
+        Binding("ctrl+-", "undo", show=False),
+    ]
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs.setdefault("soft_wrap", True)
+        kwargs.setdefault("tab_behavior", "indent")   # 不抢焦点
+        kwargs.setdefault("show_line_numbers", False)
+        super().__init__("", **kwargs)
+
+    async def _on_key(self, event: events.Key) -> None:
+        # TextArea 在 tab_behavior="indent" 下会把 escape 当成「换焦点」并 stop 事件,
+        # 而 pi 的 escape 是「中断当前回合」——这里直接拦下。
+        if event.key == "escape":
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.Interrupt())
+            return
+        await super()._on_key(event)
+
+    def action_submit(self) -> None:
+        self.post_message(self.Submitted(self.text))
+
+    def action_newline(self) -> None:
+        self.insert("\n")
+
+    @property
+    def value(self) -> str:
+        """与 Input 同名的读取口(业务代码/测试都读 value)。"""
+        return self.text
+
+    def reset(self) -> None:
+        """清空(不能叫 clear:TextArea.clear 的返回类型是 EditResult)。"""
+        self.load_text("")
+
+
 class ModelSelector(ModalScreen[str | None]):
     """ctrl+l / `/model`:选模型(对齐 pi 的模型选择器,只列 models.json 里的)。
 
@@ -410,7 +502,8 @@ class QiTui(App):
     .blank { height: 1; background: transparent; }
     .msg { width: 1fr; height: auto; }
     #border-top, #border-bottom { height: 1; background: transparent; }
-    #input { border: none; height: 1; padding: 0 1; background: transparent; }
+    #editor { border: none; height: auto; max-height: 8; padding: 0 1; background: transparent; }
+    #editor .text-area--cursor-line { background: transparent; }
     #footer { height: auto; width: 1fr; background: transparent; scrollbar-size: 0 0; }
     /* 模型选择器(ctrl+l):模态,只在需要时出现 */
     ModelSelector { align: center middle; }
@@ -476,7 +569,7 @@ class QiTui(App):
         with Vertical(id="body"):
             yield VerticalScroll(id="log")
             yield Static("", id="border-top")
-            yield Input(id="input")
+            yield Editor(id="editor")
             yield Static("", id="border-bottom")
             yield Static("", id="footer")
 
@@ -504,7 +597,7 @@ class QiTui(App):
         self._repaint_borders()
         self._refresh_footer()
         self._sync_log_height()
-        self.query_one("#input", Input).focus()
+        self.query_one("#editor", Editor).focus()
         if self._initial_prompt and self._rt is not None:
             self.call_after_refresh(self._submit, self._initial_prompt)
 
@@ -523,12 +616,29 @@ class QiTui(App):
             pass
 
     def _sync_log_height(self) -> None:
-        """transcript 最多占 终端高 - (编辑器 3 + footer 3),超出内部滚动。"""
-        reserved = 3 + FOOTER_LINES
+        """transcript 最多占 终端高 - (编辑器实际行数 + 上下边框 + footer),超出内部滚动。"""
         try:
-            self.query_one("#log").styles.max_height = max(3, self.size.height - reserved)
-        except Exception:  # pragma: no cover
-            pass
+            editor = self.query_one("#editor", Editor)
+            log = self.query_one("#log")
+        except NoMatches:  # pragma: no cover - 挂载前/卸载后的调用
+            return
+        reserved = self._editor_rows(editor) + 2 + FOOTER_LINES
+        log.styles.max_height = max(3, self.size.height - reserved)
+
+    def _editor_rows(self, editor: Editor) -> int:
+        """编辑器会占几行(含软换行估算)。
+
+        transcript 的上限必须在布局前算出来,不能反查 `editor.size.height`(循环依赖),
+        所以按终端宽估算包裹行数;估多了只是 transcript 少一行,估少了会把输入框挤掉。
+        同时受终端高限制(矮终端下不能让编辑器把屏幕吃光)。
+        """
+        width = max(8, self.size.width - 2)
+        rows = 0
+        for line in editor.text.split("\n"):
+            rows += max(1, -(-len(line) // width))
+        # 终端高 - (上下边框 2 + footer 3 + transcript 至少 3) 才是编辑器的安全上限
+        ceiling = max(1, min(MAX_EDITOR_ROWS, self.size.height - 8))
+        return max(1, min(ceiling, rows))
 
     def on_resize(self) -> None:
         self._sync_log_height()
@@ -536,12 +646,16 @@ class QiTui(App):
         self._refresh_footer()
 
     def _repaint_borders(self) -> None:
+        try:
+            bottom = self.query_one("#border-bottom", Static)
+            top = self.query_one("#border-top", Static)
+        except NoMatches:      # App 正在卸载(worker 的 finally 可能跑到这里)
+            return
         width = max(1, self.size.width)
         p = self._palette
         border = Style(color=p.hex("border"))
-        bottom = Text("─" * width, style=border)
-        self.query_one("#border-bottom", Static).update(bottom)
-        self.query_one("#border-top", Static).update(self._top_border())
+        bottom.update(Text("─" * width, style=border))
+        top.update(self._top_border())
 
     def _top_border(self) -> Text:
         """空闲 = 整行 `─`;工作中 = `── ⠋ Working ───…`(pi 把 loader 嵌在上边框)。"""
@@ -604,23 +718,46 @@ class QiTui(App):
         if self._model and self._model.reasoning:
             model_name = f"{model_name} • medium"
         right = Text(model_name, style=dim)
-        gap = max(2, width - left.cell_len - right.cell_len)
-        second = Text()
-        second.append_text(left)
-        second.append(" " * gap)
-        second.append_text(right)
+        # 右对齐、放不下就截断(pi footer.js 的同款处理:否则 Text 会折行,footer 变 4 行
+        # → 预留行数失真 → inline 区域把输入框挤掉)
+        available = width - left.cell_len - 2
+        if available <= 0:
+            second = left
+        else:
+            if right.cell_len > available:
+                right = right.copy()
+                right.truncate(available, overflow="ellipsis")
+            second = Text()
+            second.append_text(left)
+            second.append(" " * max(2, width - left.cell_len - right.cell_len))
+            second.append_text(right)
 
         third = Text(self._status, style=Style(color=p.hex("muted")))
+        third.truncate(width, overflow="ellipsis")
+        first.truncate(width, overflow="ellipsis")
         self.footer_text = Text("\n").join([first, second, third])
-        self.query_one("#footer", Static).update(self.footer_text)
+        try:
+            footer = self.query_one("#footer", Static)
+        except NoMatches:      # App 正在卸载
+            return
+        footer.update(self.footer_text)
 
     # -- 输入 -----------------------------------------------------------
-    def on_input_submitted(self, event: Input.Submitted) -> None:
+    def on_editor_submitted(self, event: Editor.Submitted) -> None:
         text = event.value.strip()
-        self.query_one("#input", Input).value = ""
+        self.query_one("#editor", Editor).reset()
+        self._sync_log_height()
         if not text:
             return
         self._submit(text)
+
+    def on_editor_interrupt(self, event: Editor.Interrupt) -> None:
+        self.action_interrupt()
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        """编辑器长高/变矮时,同步 transcript 的上限(否则 inline 区域会被截断)。"""
+        if event.text_area.id == "editor":
+            self._sync_log_height()
 
     def _submit(self, text: str) -> None:
         if text.startswith("/"):
@@ -994,10 +1131,11 @@ class QiTui(App):
         self._flash("已中断")
 
     def action_clear_or_exit(self) -> None:
-        """ctrl+c:清空输入框;连按两次退出 —— 对齐 pi 的 app.clear/app.exit。"""
-        inp = self.query_one("#input", Input)
-        if inp.value:
-            inp.value = ""
+        """ctrl+c:清空编辑器;连按两次退出 —— 对齐 pi 的 app.clear/app.exit。"""
+        editor = self.query_one("#editor", Editor)
+        if editor.text:
+            editor.reset()
+            self._sync_log_height()
             self._arm_exit()
             return
         if self._exit_armed:
@@ -1014,10 +1152,10 @@ class QiTui(App):
         self._exit_armed = False
 
     def action_exit_or_delete(self) -> None:
-        """ctrl+d:输入框为空时退出,非空时删除右侧字符(对齐 pi 的 app.exit)。"""
-        inp = self.query_one("#input", Input)
-        if inp.value:
-            inp.action_delete_right()
+        """ctrl+d:编辑器为空时退出,非空时删除右侧字符(对齐 pi 的 app.exit)。"""
+        editor = self.query_one("#editor", Editor)
+        if editor.text:
+            editor.action_delete_right()
         else:
             self.exit()
 
@@ -1034,16 +1172,17 @@ class QiTui(App):
 
     def action_external_editor(self) -> None:
         """ctrl+g:用 $EDITOR 编辑当前输入(对齐 pi 的 app.editor.external)。"""
-        inp = self.query_one("#input", Input)
-        editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
+        editor = self.query_one("#editor", Editor)
+        command = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
         handle = tempfile.NamedTemporaryFile("w+", suffix=".md", delete=False)
         path = Path(handle.name)
         try:
-            handle.write(inp.value)
+            handle.write(editor.text)
             handle.close()
             with self.suspend():
-                subprocess.call([*shlex.split(editor), str(path)])
-            inp.value = path.read_text(encoding="utf-8").strip()
+                subprocess.call([*shlex.split(command), str(path)])
+            editor.load_text(path.read_text(encoding="utf-8").strip())
+            self._sync_log_height()
         except OSError as exc:
             self._flash(f"外部编辑器不可用: {exc}")
         finally:

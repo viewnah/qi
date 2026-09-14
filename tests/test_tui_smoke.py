@@ -47,15 +47,13 @@ def _tui_env(tmp_path, monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_tui_smoke_import(tmp_path, monkeypatch):
     _tui_env(tmp_path, monkeypatch)
-    from textual.widgets import Input
-
-    from qi_agent.tui import QiTui
+    from qi_agent.tui import Editor, QiTui
 
     app = QiTui()
     async with app.run_test() as pilot:
         await pilot.pause(0.05)
-        app.query_one("#input", Input).value = "/quit"
-        await app.query_one("#input", Input).action_submit()
+        app.query_one("#editor", Editor).load_text("/quit")
+        await pilot.press("enter")          # 多行编辑器:enter = 提交
         await pilot.pause(0.05)
     assert True  # 冒烟:能启动并退出
 
@@ -106,20 +104,18 @@ def test_tui_bindings_match_pi():
 async def test_tui_ctrl_c_clears_then_exits(tmp_path, monkeypatch):
     """ctrl+c:有输入 = 清空;再按一次 = 退出(对齐 pi 的 ctrl+c 双击退出)。"""
     _tui_env(tmp_path, monkeypatch)
-    from textual.widgets import Input
-
-    from qi_agent.tui import QiTui
+    from qi_agent.tui import Editor, QiTui
 
     app = QiTui()
     async with app.run_test() as pilot:
         await pilot.pause(0.05)
-        field = app.query_one("#input", Input)
-        field.value = "写了一半"
+        field = app.query_one("#editor", Editor)
+        field.load_text("写了一半\n第二行")   # 多行也要能一次清空
         await pilot.press("ctrl+c")
         await pilot.pause(0.05)
-        assert field.value == ""           # 第一次只清空
+        assert field.text == ""             # 第一次只清空
         assert app._exit is False
-        await pilot.press("ctrl+c")         # 空输入框再按 = 退出
+        await pilot.press("ctrl+c")         # 空编辑器再按 = 退出
         await pilot.pause(0.05)
         assert app._exit is True
 
@@ -128,21 +124,19 @@ async def test_tui_ctrl_c_clears_then_exits(tmp_path, monkeypatch):
 async def test_tui_ctrl_d_exits_only_when_empty(tmp_path, monkeypatch):
     """ctrl+d:空输入框退出;非空则删右侧字符,不退出。"""
     _tui_env(tmp_path, monkeypatch)
-    from textual.widgets import Input
-
-    from qi_agent.tui import QiTui
+    from qi_agent.tui import Editor, QiTui
 
     app = QiTui()
     async with app.run_test() as pilot:
         await pilot.pause(0.05)
-        field = app.query_one("#input", Input)
-        field.value = "abc"
-        field.cursor_position = 0
+        field = app.query_one("#editor", Editor)
+        field.load_text("abc")
+        field.move_cursor((0, 0))
         await pilot.press("ctrl+d")
         await pilot.pause(0.05)
-        assert field.value == "bc"          # 删右侧字符
+        assert field.text == "bc"           # 删右侧字符
         assert app._exit is False
-        field.value = ""
+        field.load_text("")
         await pilot.press("ctrl+d")
         await pilot.pause(0.05)
         assert app._exit is True

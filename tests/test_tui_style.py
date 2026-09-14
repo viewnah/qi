@@ -17,7 +17,15 @@ from qi_agent.config import ResolvedModel
 from qi_agent.models import AgentEvent
 from qi_agent.llm import LiteLLMClient
 from qi_agent.theme import load_palette
-from qi_agent.tui import SPINNER_FRAMES, QiTui, TuiRenderer, ToolBlock, UserMessage
+from qi_agent.tui import (
+    MAX_EDITOR_ROWS,
+    SPINNER_FRAMES,
+    Editor,
+    QiTui,
+    TuiRenderer,
+    ToolBlock,
+    UserMessage,
+)
 
 PALETTE = load_palette("dark")
 MODEL = ResolvedModel(provider="deepseek", model="deepseek-v4.1-flash",
@@ -144,6 +152,9 @@ class _FakeRegistry:
         return object() if name in self.names else None
 
 
+PROMPTS: list[str] = []          # 本轮提交过的 prompt(测试里清空)
+
+
 class FakeRuntime:
     def __init__(self, *args, **kwargs):
         self.sessions = None
@@ -152,6 +163,7 @@ class FakeRuntime:
         self.registry = _FakeRegistry()
 
     async def stream(self, prompt, session, agent_override=None):
+        PROMPTS.append(prompt)
         yield AgentEvent(kind="dispatch", agent="general", text="qi (router, 0.90)",
                          data={"confidence": 0.9, "source": "router", "agent": "general",
                                "display_name": "qi", "reasoning": ""})
@@ -256,6 +268,8 @@ async def test_tui_command_surface(tmp_path, monkeypatch):
         app._command("/sessions")            # help 里承诺过,必须真的有实现
         assert "会话(最新在前)" in notes[-1][0]
 
+        assert app._rt is not None
+        app._rt.cwd = Path("/tmp/short")          # tmp_path 太长会被 footer 截断(pi 同款)
         app._command("/name 我的会话")
         assert "我的会话" in notes[-1][0]
         assert app._session is not None and app._session.title == "我的会话"
@@ -444,3 +458,141 @@ async def test_model_keys_and_command(tmp_path, monkeypatch):
         await pilot.press("escape")
         await pilot.pause(0.1)
         assert not isinstance(app.screen, tui_mod.ModelSelector)
+
+
+# ── 多行编辑器(对齐 pi pi-tui/components/editor.js)──────────
+
+
+def test_editor_bindings_cover_pi_keys():
+    from textual.binding import Binding
+
+    keys = {b.key: b.action for b in Editor.BINDINGS if isinstance(b, Binding)}
+    assert keys["enter"] == "submit"                     # tui.input.submit
+    assert keys["shift+enter"] == "newline"              # tui.input.newLine
+    assert keys["ctrl+j"] == "newline"
+    assert keys["ctrl+b"] == "cursor_left" and keys["ctrl+f"] == "cursor_right"
+    assert keys["alt+b"] == "cursor_word_left" and keys["alt+f"] == "cursor_word_right"
+    assert keys["alt+left"] == "cursor_word_left" and keys["alt+right"] == "cursor_word_right"
+    assert keys["alt+d"] == "delete_word_right"
+    assert keys["ctrl+-"] == "undo"                      # pi 的 undo 键(不是 ctrl+z)
+
+
+@pytest.mark.asyncio
+async def test_editor_enter_submits_and_newline_keys_insert(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+    PROMPTS.clear()
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        editor = app.query_one("#editor", Editor)
+
+        editor.load_text("第一行")
+        editor.move_cursor((0, len("第一行")))        # load_text 后光标在 (0,0),移到行尾
+        await pilot.press("shift+enter")            # pi 的换行键
+        await pilot.press("ctrl+j")                 # 另一个换行键
+        await pilot.pause(0.05)
+        assert editor.text == "第一行\n\n"
+        assert PROMPTS == []                        # 换行不提交
+
+        editor.insert("第二行")
+        await pilot.press("enter")                  # enter = 提交
+        await app.workers.wait_for_complete()
+        await pilot.pause(0.1)
+        assert PROMPTS == ["第一行\n\n第二行"]        # 多行原文完整送出
+        assert editor.text == ""                     # 提交后清空
+        assert app.footer_text.plain                # footer 仍在(布局没被撑坏)
+
+
+@pytest.mark.asyncio
+async def test_editor_grows_and_transcript_yields_space(tmp_path, monkeypatch):
+    """编辑器长高 → transcript 上限下降(否则 inline 区域会把输入框挤掉)。"""
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 24)) as pilot:
+        await pilot.pause(0.1)
+        editor = app.query_one("#editor", Editor)
+
+        editor.load_text("一行")
+        await pilot.pause(0.05)
+        assert app._editor_rows(editor) == 1
+        assert editor.size.height == 1                       # height: auto 真的按内容长
+
+        editor.load_text("a\nb\nc")
+        await pilot.pause(0.05)
+        assert app._editor_rows(editor) == 3
+        assert editor.size.height == 3
+
+        editor.load_text("\n".join(str(i) for i in range(30)))   # 超长 → 封顶
+        await pilot.pause(0.05)
+        assert app._editor_rows(editor) == MAX_EDITOR_ROWS
+        assert app.query_one("#log").styles.max_height is not None
+
+        # 软换行也要算进去(单行很长时按终端宽估行数)
+        editor.load_text("x" * 400)
+        await pilot.pause(0.05)
+        assert app._editor_rows(editor) > 1
+
+
+@pytest.mark.asyncio
+async def test_editor_word_nav_and_undo(tmp_path, monkeypatch):
+    """ctrl+b/f、alt+b/f 词移动与 ctrl+- 撤销都要在这套编辑器里可用。"""
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        editor = app.query_one("#editor", Editor)
+
+        editor.load_text("one two three")
+        editor.move_cursor((0, 0))
+        await pilot.press("ctrl+f", "ctrl+f", "ctrl+f")      # 前移 3 个字
+        await pilot.pause(0.05)
+        assert editor.cursor_location[1] == 3
+        await pilot.press("alt+f")                            # 跳到下一个词尾
+        await pilot.pause(0.05)
+        assert editor.cursor_location[1] > 3
+
+        editor.load_text("")
+        await pilot.press("a", "b")
+        await pilot.pause(0.05)
+        assert editor.text == "ab"
+        await pilot.press("ctrl+-")                           # pi 的 undo 键
+        await pilot.pause(0.05)
+        assert editor.text in ("", "a")
+
+
+@pytest.mark.asyncio
+async def test_footer_stays_three_lines_and_truncates(tmp_path, monkeypatch):
+    """footer 必须恒为 3 行:超长 cwd / 模型名要被截断,不能折行(折行会挤掉输入框)。"""
+    import dataclasses
+
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(60, 20)) as pilot:
+        await pilot.pause(0.1)
+        assert app._rt is not None
+        app._rt.cwd = Path("/tmp/" + "very-long-directory-name/" * 4)
+        app._model = dataclasses.replace(MODEL, provider="a-very-long-provider-name",
+                                         model="a-very-long-model-name")
+        assert app._session is not None
+        app._session.title = "一个挺长的会话名字"
+        app._refresh_footer()
+
+        lines = app.footer_text.plain.split("\n")
+        assert len(lines) == 3                      # 不折行
+        assert all(len(line) <= 60 for line in lines)

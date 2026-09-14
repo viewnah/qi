@@ -69,7 +69,10 @@ qi · auto                                 ← footer 3:状态行
 | `/resume [id]` | 不给 id = 列出历史会话;给 id = 恢复 |
 | `/sessions` | 列出历史会话 |
 | `/name <name>` | 会话显示名(进 footer) |
-| `/session` | 会话信息(ID/文件/cwd/消息数/模型/用量) |
+| `/session` | 会话信息(ID/文件/cwd/消息数·仅当前分支/节点数与分支点/模型/用量) |
+| `/tree` | 会话树:跳到本会话任意节点继续(同文件内分支,见下节) |
+| `/fork [序号\|id]` | 从某条用户消息**之前**分叉出新会话,并把那条消息放回编辑器(对齐 pi) |
+| `/clone [名字]` | 把当前分支复制成新会话 |
 | `/model [p/m]` | 当前模型 / 切换模型(等同 ctrl+l / ctrl+p) |
 | `/export [file]` | 导出会话 JSONL(默认 `./qi-<id>.jsonl`;**pi 默认导出 HTML** —— qi 无 HTML 导出器) |
 | `/import <file>` | 从 JSONL 导入并切换会话(重名给提示,不静默覆盖) |
@@ -78,6 +81,33 @@ qi · auto                                 ← footer 3:状态行
 | `/login <provider>` | **只给指引**:`qi auth login <provider>`(密钥不进会话记录) |
 | `/logout [provider]` | 删除已存凭证(无密钥输入,可直接在 TUI 里做) |
 | `/changelog` | 显示 `CHANGELOG.md`(qi 仓库暂无该文件) |
+
+### 会话树(格式 v2,对齐 pi 的 `id`/`parentId`)
+
+会话文件里**每条 entry 带 `id`/`parentId`**,历史 = 「从当前节点沿 parent 回溯到根」的
+那条链。所以同一个文件里可以并存多条分支:回到旧节点继续提问,新内容是它的子节点,
+旧分支原样保留。header 里写 `version: 2`。
+
+| 操作 | qi | pi |
+| --- | --- | --- |
+| `/tree` | 弹出树(深度缩进;`●` 当前节点、`│` 当前分支、`·` 其它分支)→ 选中即把「当前节点」移到那里,transcript 换成那条分支 | 同 |
+| `/fork` | 选一条用户消息 → **新会话文件**(只到它的 parent)+ 消息放回编辑器 | 同 |
+| `/clone` | 把当前分支复制成**新会话文件** | 同 |
+| 旧会话 | 读入时补链,**首次写入**时落盘(读路径不写文件) | pi 在加载时迁移 |
+| 当前节点 | 内存里(`/tree` 改它);落盘约定 = 文件最后一条 entry | 同 (leaf) |
+
+上下文只走当前分支:`_history` / `_active_agent` / `_opening_shown` / 回放 / web `/messages`
+全部按 `branch()`;所以另一条分支上的 state、开场白、消息不会串进来。
+
+进 TUI 时的会话选择与 headless 同义:`qi -c`(续最近)/ `--session <id>` /
+`--fork <id>` / `-n <名>` / `--no-session` 都生效,有历史就把当前分支回放到 transcript
+(以前 TUI 无视这些参数、每次都新建一个叫 `tui` 的会话)。
+
+ki 与 pi 的差异(已落档):
+
+- qi 没有 pi 的 `branch_summary` entry(那是 `/compact` 的机制),也不支持树内标签/过滤;
+- `qi sessions show` 与 web `/messages` 只展示**当前分支**(web 契约仍把 header 放在 `entries[0]`);
+- `--export` / `qi sessions show` 之外的导出仍拷**整个文件**(含其它分支)。
 
 ### qi 独有
 
@@ -96,7 +126,6 @@ qi · auto                                 ← footer 3:状态行
 | --- | --- |
 | `/scoped-models` | Ctrl+P 轮换清单(qi 现在轮完 models.json 里全部) |
 | `/compact` | 上下文压缩/摘要 |
-| `/tree` `/fork` `/clone` | 会话树与分支 |
 | `/settings` | TUI 内设置面板 |
 | `/share` | GitHub gist 分享 |
 | `/trust` | 项目信任门控(qi 只有 `defaultProjectTrust` 字段,没有信任判定) |
@@ -136,7 +165,7 @@ qi 用 `priority=True` 抢过来以匹配 pi 语义(`ctrl+d` 非空时仍自己�
 
 | 键 | pi 用途 | qi 缺什么 |
 | --- | --- | --- |
-| `ctrl+n` / `ctrl+r` | 会话列表过滤 / 重命名 | 无会话选择器 UI(`/sessions` 只打印列表) |
+| `ctrl+n` / `ctrl+r` | 会话列表过滤 / 重命名会话 | 无会话选择器 UI(pi 里这两个键只在那面板内生效);`/name` 可改名 |
 | `ctrl+y` / `alt+y` | kill-ring 的 yank / yank-pop | Textual 无 kill-ring,`ctrl+y` 仍是它的 redo |
 | `ctrl+v` | 粘贴图片 | 无图片输入,目前只会粘文本 |
 
@@ -196,7 +225,9 @@ qi 的输入层是**多行编辑器**(见下面「输入层」一节):`/` 与 `@
 行为细节:
 
 - 回合进行中**不再并发起第二个 worker**(旧实现会两个回合互踩同一会话文件);
-  提交一律进队列,footer 状态行显示 `排队 N`。
+  普通对话提交一律进队列,footer 状态行显示 `排队 N`。
+- **命令(`/x`)与 bash(`!x`)例外:回合进行中也立即执行**(与 pi 一致) —— 否则
+  `/quit`、`/tree` 这类命令会被推到回合结束后,等于按不下去。
 - 每条排队消息会以 dim 行写进 transcript(带“当前回合结束后发送”/“follow-up”标签),
   不会静默丢消息。
 - `/new` 清空队列。

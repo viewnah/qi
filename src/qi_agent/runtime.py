@@ -107,7 +107,8 @@ class QiRuntime:
 
     # ── 主流程 ──
     def _active_agent(self, session: Session) -> str | None:
-        for e in reversed(session.entries):
+        # 只用**当前分支**:别的分支上的 state 不能影响这一条
+        for e in reversed(session.branch()):
             if e.get("type") == "state" and e.get("key") == "active_agent":
                 return e.get("value")
         return None
@@ -118,20 +119,20 @@ class QiRuntime:
     def _opening_shown(self, session: Session, agent: str) -> bool:
         """该 agent 的开场白是否已在本会话展示过。
 
-        必须扫描**全部** entries:旧实现只看 `entries[-1]`,而首轮末尾已是 assistant
+        必须扫描**当前分支的全部** entry:旧实现只看 `entries[-1]`,而首轮末尾已是 assistant
         消息,.get("opening_shown") 恒为 None → 开场白每轮都重复显示。
         按 agent 记(非按会话记),所以切换到另一个 agent 时会展示它自己的开场白。
         """
         return any(
             e.get("type") == "custom" and e.get("custom_type") == "opening_shown"
             and e.get("agent") == agent
-            for e in session.entries
+            for e in session.branch()
         )
 
     def _history(self, session: Session) -> list:
-        """取最近会话消息(含 tool 往返),供上下文。"""
+        """取当前分支的最近会话消息(含 tool 往返),供上下文。"""
         out = []
-        for e in session.entries:
+        for e in session.branch():
             if e.get("type") == "message" and e.get("role") != "system":
                 d = dict(e)
                 d.pop("type", None); d.pop("ts", None); d.pop("agent_id", None)

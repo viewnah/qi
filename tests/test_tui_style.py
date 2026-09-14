@@ -16,6 +16,7 @@ from qi_agent import tui as tui_mod
 from qi_agent.config import ResolvedModel
 from qi_agent.models import AgentEvent
 from qi_agent.llm import LiteLLMClient
+from qi_agent.session import SessionStore
 from qi_agent.theme import load_palette
 from qi_agent.tui import (
     MAX_EDITOR_ROWS,
@@ -909,3 +910,264 @@ async def test_dequeue_and_interrupt_return_queue(tmp_path, monkeypatch):
         await pilot.pause(0.05)
         assert app._queue_count() == 0
     BlockingRuntime.gate = None
+
+
+# ── 会话树 / fork / clone(pi 的 /tree /fork /clone)──────────
+
+
+def _seed_branch(app) -> list[str]:
+    """在 app 的当前会话里铺一条 Q1/A1/Q2 的分支,返回各 entry id。"""
+    store = app._session_store()
+    session = app._session
+    assert session is not None
+    store.append(session, {"type": "message", "role": "user", "content": "Q1"})
+    store.append(session, {"type": "message", "role": "assistant", "content": "A1"})
+    store.append(session, {"type": "message", "role": "user", "content": "Q2"})
+    app._replay_branch(session)
+    ids = [str(e.get("id")) for e in session.tree_entries]
+    return ids
+
+
+@pytest.mark.asyncio
+async def test_tree_lists_tree_and_jumps(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        ids = _seed_branch(app)
+        session = app._session
+        assert session is not None
+
+        app._command("/tree")
+        await pilot.pause(0.1)
+        assert isinstance(app.screen, tui_mod.PickerScreen)
+        labels = app.screen._options                      # (entry id, label)
+        assert [value for value, _ in labels] == ids
+        assert "●" in labels[-1][1]                       # 当前节点
+        assert labels[0][1].strip().startswith("│")       # 当前分支
+        await pilot.press("escape")
+        await pilot.pause(0.05)
+
+        app._jump_to(ids[0])                              # 跳到第一条
+        await pilot.pause(0.05)
+        assert session.current == ids[0]
+        assert session.message_count == 1
+        shown = [w.source for w in app.query_one("#log").children
+                 if isinstance(w, UserMessage)]
+        assert shown == ["Q1"]                            # transcript 换成该分支
+        assert "已跳到节点" in app._status
+
+        # 在旧节点继续 → 新分支;旧分支仍在文件里
+        # (FakeRuntime 不落盘,所以这里直接用 store 追加,等价于 runtime 在 current 下 append)
+        app._session_store().append(
+            session, {"type": "message", "role": "user", "content": "Q1-另一问"})
+        assert [e.get("content") for e in session.branch()] == ["Q1", "Q1-另一问"]
+        assert session.branch_points == 1
+        assert session.message_count_of(ids[2]) == 3      # Q1/A1/Q2 那条仍然可回溯
+
+
+@pytest.mark.asyncio
+async def test_fork_creates_new_session_and_prefills_editor(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        _seed_branch(app)
+        original = app._session
+        assert original is not None
+
+        notes: list[tuple[str, str]] = []
+        app._note = lambda text, tone="dim": notes.append((text, tone))  # type: ignore[method-assign]
+
+        app._command("/fork 2")                           # 第 2 条用户消息 = Q2
+        await pilot.pause(0.1)
+        forked = app._session
+        assert forked is not None and forked.id != original.id
+        assert [e.get("content") for e in forked.branch()] == ["Q1", "A1"]  # 不含被 fork 的那条
+        assert app.query_one("#editor", Editor).text == "Q2"               # 放回编辑器
+        assert any("已 fork" in text for text, _ in notes)
+        # 原会话不受影响
+        assert [e.get("content") for e in original.branch()] == ["Q1", "A1", "Q2"]
+
+        # 无参 → 弹选择器,列出**当前(已 fork 的)会话**分支上的用户消息
+        app._command("/fork")
+        await pilot.pause(0.1)
+        assert isinstance(app.screen, tui_mod.PickerScreen)
+        assert [label for _, label in app.screen._options] == ["你: Q1"]
+        await pilot.press("escape")
+        await pilot.pause(0.05)
+
+        app._command("/fork 99")                          # 越界 → 明确提示,不静默
+        assert any("找不到那条用户消息" in text for text, _ in notes)
+
+
+@pytest.mark.asyncio
+async def test_clone_copies_branch_and_is_independent(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        _seed_branch(app)
+        original = app._session
+        assert original is not None
+
+        notes: list[tuple[str, str]] = []
+        app._note = lambda text, tone="dim": notes.append((text, tone))  # type: ignore[method-assign]
+
+        app._command("/clone 副本")
+        await pilot.pause(0.1)
+        cloned = app._session
+        assert cloned is not None and cloned.id != original.id
+        assert cloned.title == "副本"
+        assert [e.get("content") for e in cloned.branch()] == ["Q1", "A1", "Q2"]
+        assert cloned.path != original.path
+        assert any("已 clone" in text for text, _ in notes)
+
+        # 往副本里加东西不影响原件
+        app._session_store().append(cloned, {"type": "message", "role": "user", "content": "只副本"})
+        assert original.message_count == 3 and cloned.message_count == 4
+
+
+@pytest.mark.asyncio
+async def test_resume_replays_branch_and_session_shows_tree_info(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        _seed_branch(app)
+        other = app._session
+        assert other is not None
+        store = app._session_store()
+
+        fresh = store.create("另一个", cwd=tmp_path)
+        store.append(fresh, {"type": "message", "role": "user", "content": "别的会话"})
+        app._switch_session(fresh)
+        await pilot.pause(0.05)
+        assert [w.source for w in app.query_one("#log").children
+                if isinstance(w, UserMessage)] == ["别的会话"]
+
+        app._command(f"/resume {other.id}")
+        await pilot.pause(0.1)
+        assert app._session is not None and app._session.id == other.id
+        assert [w.source for w in app.query_one("#log").children
+                if isinstance(w, UserMessage)] == ["Q1", "Q2"]   # 回放当前分支
+
+        notes: list[tuple[str, str]] = []
+        app._note = lambda text, tone="dim": notes.append((text, tone))  # type: ignore[method-assign]
+        app._command("/session")
+        assert "条(当前分支)" in notes[-1][0] and "个分支点" in notes[-1][0]
+
+
+# ── 回合中的命令立即执行 / TUI 会话选择参数 ────────────────
+
+
+@pytest.mark.asyncio
+async def test_slash_command_runs_immediately_during_turn(tmp_path, monkeypatch):
+    """回合进行中的 `/x` 与 `!x` 必须立即执行 —— 否则 `/quit` 会被推到回合结束。"""
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", BlockingRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+    PROMPTS.clear()
+    BlockingRuntime.gate = asyncio.Event()
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        notes: list[str] = []
+        app._note = lambda text, tone="dim": notes.append(text)   # type: ignore[method-assign]
+
+        app._submit("first")
+        await pilot.pause(0.1)
+        assert app._working is True
+
+        await _type_and_submit(app, pilot, "/help")
+        await pilot.pause(0.05)
+        assert any("计划中" in text for text in notes)      # HELP_TEXT 真的渲染了
+        assert app._pending_steer == []                     # 没有被当成对话排队
+
+        await _type_and_submit(app, pilot, "/thinking high")
+        await pilot.pause(0.05)
+        assert app._thinking_level == "high"                # 命令真的生效
+
+        BlockingRuntime.gate.set()
+        await _settle(app, pilot)
+    BlockingRuntime.gate = None
+
+
+@pytest.mark.asyncio
+async def test_tui_session_selection_flags(tmp_path, monkeypatch):
+    """`qi -c` / `--session` / `--fork` / `-n`:进 TUI 也要生效(以前被无视)。"""
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    store = SessionStore()
+    history = store.create("历史会话", cwd=tmp_path)
+    store.append(history, {"type": "message", "role": "user", "content": "历史问题"})
+    store.append(history, {"type": "message", "role": "assistant", "content": "历史回答"})
+
+    def shown(app) -> list[str]:
+        return [w.source for w in app.query_one("#log").children
+                if isinstance(w, UserMessage)]
+
+    # -c:续最近一个会话,并把它的分支回放出来
+    app = QiTui(palette=PALETTE, cont=True)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        assert app._session is not None and app._session.id == history.id
+        assert shown(app) == ["历史问题"]
+
+    # --session <id>:指定会话
+    app = QiTui(palette=PALETTE, session_id=history.id)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        assert app._session is not None and app._session.id == history.id
+
+    # --session 指向不存在的 id:新建 + 明确提示(不静默)
+    app = QiTui(palette=PALETTE, session_id="nope")
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        assert app._session is not None and app._session.id != "nope"
+        assert "会话不存在" in app._startup_note
+
+    # --fork <id>:复制该会话的分支到新会话
+    app = QiTui(palette=PALETTE, fork_id=history.id)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        assert app._session is not None and app._session.id != history.id
+        assert [e.get("content") for e in app._session.branch()] == ["历史问题", "历史回答"]
+        assert "已从" in app._startup_note
+
+    # -n <名字>:新会话的标题
+    app = QiTui(palette=PALETTE, name="我的名字")
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        assert app._session is not None and app._session.title == "我的名字"
+        assert app._rt is not None
+        app._rt.cwd = Path("/tmp/short")      # tmp_path 太长会被 footer 截断(pi 同款)
+        app._refresh_footer()
+        assert "我的名字" in app.footer_text.plain
+
+    # --no-session:临时会话(仍落盘,但名字明确)
+    app = QiTui(palette=PALETTE, no_session=True)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        assert app._session is not None and app._session.title == "ephemeral"

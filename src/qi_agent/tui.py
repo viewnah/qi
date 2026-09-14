@@ -71,6 +71,9 @@ qi TUI 命令(实现状态以本表为准)
   /new               新会话
   /resume [id]       选/恢复历史会话(不给 id = 列出来)
   /sessions          列出历史会话
+  /tree              会话树:跳到任意节点继续(同文件内分支)
+  /fork [序号|id]     从某条用户消息 fork 出新会话(消息放回编辑器)
+  /clone [名字]       复制当前分支为新会话
   /name <名字>       设置会话显示名(进 footer)
   /session           会话信息(文件/ID/消息数/模型/用量)
   /thinking [级别]   思考级别(off|minimal|low|medium|high|xhigh|max;等同 shift+tab)
@@ -99,12 +102,11 @@ qi TUI 命令(实现状态以本表为准)
   /quit              退出
 
  计划中(对齐 pi,需先给后端加能力)
-  /compact /tree /fork /clone /scoped-models /settings /share /trust
+  /compact /scoped-models /settings /share /trust
 """
 
 PLANNED_COMMANDS = frozenset({
-    "/compact", "/tree", "/fork", "/clone",
-    "/scoped-models", "/settings", "/share", "/trust",
+    "/compact", "/scoped-models", "/settings", "/share", "/trust",
 })
 """pi 有、qi 暂未实现的命令 —— 单独提示“计划中”,不冒充“未知命令”。"""
 
@@ -118,6 +120,9 @@ TUI_COMMANDS: dict[str, str] = {
     "/sessions": "列出历史会话",
     "/name": "设置会话显示名",
     "/session": "会话信息",
+    "/tree": "跳到本会话的任意节点",
+    "/fork": "从某条用户消息 fork 出新会话",
+    "/clone": "复制当前分支为新会话",
     "/model": "当前/切换模型",
     "/export": "导出会话 JSONL",
     "/import": "从 JSONL 导入会话",
@@ -631,32 +636,57 @@ class Editor(TextArea):
         self.load_text("")
 
 
-class ModelSelector(ModalScreen[str | None]):
-    """ctrl+l / `/model`:选模型(对齐 pi 的模型选择器,只列 models.json 里的)。
+class PickerScreen(ModalScreen[str | None]):
+    """通用选择器(模型 / 会话树 / fork 点共用同一套模态外壳)。
 
-    返回 `"<provider>\x00<model>"`,取消返回 None。
+    返回选中的 `value`(entry id / `provider\x00model`);取消返回 None。
     """
 
     BINDINGS = [("escape", "dismiss(None)", "取消")]
 
-    def __init__(self, options: list[tuple[str, str, bool]]) -> None:
+    def __init__(self, title: str, options: list[tuple[str, str]],
+                 current: str | None = None) -> None:
         super().__init__()
+        self._title = title
         self._options = options
+        self._current = current
 
     def compose(self) -> ComposeResult:
         items = []
-        for provider, model, current in self._options:
-            label = f"{provider}/{model}" + ("    ← 当前" if current else "")
-            items.append(Option(label, id=f"{provider}\x00{model}"))
+        for value, label in self._options:
+            if self._current is not None and value == self._current:
+                label += "    ← 当前"
+            items.append(Option(label, id=value))
         with Vertical(id="model-box"):
-            yield Static("选择模型(↑↓ 选择 · enter 确认 · escape 取消)", id="model-hint")
+            yield Static(self._title, id="model-hint")
             yield OptionList(*items, id="model-list")
 
     def on_mount(self) -> None:
-        self.query_one("#model-list", OptionList).focus()
+        listing = self.query_one("#model-list", OptionList)
+        listing.focus()
+        if self._current is not None:
+            for index, (value, _) in enumerate(self._options):
+                if value == self._current:
+                    listing.highlighted = index
+                    break
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         self.dismiss(str(event.option.id))
+
+
+class ModelSelector(PickerScreen):
+    """ctrl+l / `/model`:选模型(对齐 pi 的模型选择器,只列 models.json 里的)。"""
+
+    def __init__(self, options: list[tuple[str, str, bool]]) -> None:
+        entries: list[tuple[str, str]] = []
+        current: str | None = None
+        for provider, model, is_current in options:
+            value = f"{provider}\x00{model}"
+            entries.append((value, f"{provider}/{model}"))
+            if is_current:
+                current = value
+        super().__init__("选择模型(↑↓ 选择 · enter 确认 · escape 取消)", entries,
+                         current=current)
 
 
 class QiTui(App):
@@ -708,10 +738,19 @@ class QiTui(App):
     ]
 
     def __init__(self, runtime: QiRuntime | None = None, initial_prompt: str | None = None,
-                 palette: Palette | None = None):
+                 palette: Palette | None = None, session_id: str | None = None,
+                 cont: bool = False, fork_id: str | None = None,
+                 no_session: bool = False, name: str | None = None):
         super().__init__()
         self._rt = runtime
         self._initial_prompt = (initial_prompt or "").strip() or None
+        # 会话选择(对齐 CLI/pi:`qi -c` / `--session` / `--fork` / `-n` / `--no-session`)
+        self._want_session_id = session_id
+        self._want_cont = cont
+        self._want_fork_id = fork_id
+        self._want_no_session = no_session
+        self._want_name = name
+        self._startup_note = ""
         self._palette = palette or resolve_theme(probe=False)
         # Textual inline 区域一定有不透明底色:用 pi 调色板 + 探测到的终端背景色注册主题,
         # 才能既拿到 pi 的色彩,又看不出“被填色”。
@@ -768,10 +807,7 @@ class QiTui(App):
             if self._rt is None:
                 self._rt = QiRuntime()
             self._renderer = TuiRenderer(self._palette, self._rt.cwd)
-            store = SessionStore()
-            self._session = store.create("tui", cwd=self._rt.cwd) or store.latest()
-            if self._session is None:
-                self._session = store.create("tui", cwd=self._rt.cwd)
+            self._select_session()
             try:
                 self._model = resolve_default_model(self._rt.cfg, self._rt.cwd)
             except ConfigError:
@@ -779,8 +815,14 @@ class QiTui(App):
             self._thinking_level = normalize_thinking_level(
                 getattr(self._rt, "thinking_level", None))
             skills = sorted({s.name for unit in self._rt.registry.all() for s in unit.skills})
-            self._append(Static(self._renderer.banner(
-                _version(), self._rt.registry.names, skills), classes="msg"))
+            banner = self._renderer.banner(_version(), self._rt.registry.names, skills)
+            if self._session is not None and self._session.branch():
+                self._replay_branch(self._session, banner=banner)   # 恢复历史(banner 在最上)
+            else:
+                self._append(Static(banner, classes="msg"))
+            if self._startup_note:
+                tone = "warning" if "不存在" in self._startup_note else "dim"
+                self._note(self._startup_note, tone)
         except (LoadError, ConfigError) as exc:
             self._append(Static(Text(f"启动失败: {exc}", style=self._palette.hex("error")),
                                 classes="msg"))
@@ -961,8 +1003,13 @@ class QiTui(App):
         self._sync_log_height()
         if not text:
             return
+        # 命令(`/x`)与 bash(`!x`)回合进行中也**立即执行** —— pi 就是这样,
+        # 否则 `/quit` 这种命令会被推到回合结束后,等于按不下去。
+        if text.startswith("/") or text.startswith("!"):
+            self._submit(text)
+            return
         if self._working:
-            # 回合进行中:不并发跑第二个回合(会互踩会话),按 pi 排队
+            # 普通对话:不并发跑第二个回合(会互踩会话),按 pi 排队
             self._enqueue(text, "steer")
             return
         self._submit(text)
@@ -1022,7 +1069,7 @@ class QiTui(App):
         rt = self._rt
         self._append(UserMessage(text, self._renderer, self._palette))
         if self._session is None:
-            self._session = SessionStore().create("tui", cwd=rt.cwd)
+            self._session = self._session_store().create("tui", cwd=rt.cwd)
         override = None if self._auto else self._agent
         self.run_worker(self._run(text, override), exclusive=False)
 
@@ -1119,7 +1166,7 @@ class QiTui(App):
             self._scroll_end()
             return
         rt = self._rt
-        store = SessionStore()
+        store = self._session_store()
 
         if cmd == "/help":
             self._note(HELP_TEXT, "text")
@@ -1134,16 +1181,9 @@ class QiTui(App):
         elif cmd == "/new":
             if rt is None:
                 return
-            self._session = store.create("tui", cwd=rt.cwd)
-            self._branch = git_branch(str(rt.cwd))
             self._agent = None
             self._auto = True
-            self._usage = {"prompt_tokens": 0, "completion_tokens": 0}
-            self._last_answer = ""
-            self._pending_steer.clear()
-            self._pending_follow.clear()
-            self._note("已开新会话(auto)")
-            self._restore_status()
+            self._switch_session(store.create("tui", cwd=rt.cwd), note="已开新会话(auto)")
         elif cmd in ("/resume", "/sessions"):
             sessions = store.list()[:10]
             if cmd == "/resume" and arg:
@@ -1151,15 +1191,41 @@ class QiTui(App):
                 if s is None:
                     self._note(f"会话不存在 {arg}", "error")
                 else:
-                    self._session = s
-                    self._refresh_footer()
-                    self._note(f"已恢复 {s.id}")
+                    self._switch_session(s, note=f"已恢复 {s.id}(分支 {s.message_count} 条消息)")
             else:
                 rows = ["会话(最新在前):"]
-                rows += [f"  {s.id}  {s.title or '(未命名)'}  {s.created_at}" for s in sessions]
+                rows += [(f"  {s.id}  {s.title or '(未命名)'}  {s.created_at}"
+                          + (f"  分支点×{s.branch_points}" if s.branch_points else ""))
+                         for s in sessions]
                 self._note("\n".join(rows) if sessions else "(无会话)")
                 if sessions and cmd == "/resume":
                     self._note("用 /resume <id> 恢复")
+        elif cmd == "/tree":
+            self.action_show_tree()
+            self._scroll_end()
+            return
+        elif cmd == "/fork":
+            session = self._session
+            if session is None:
+                self._note("当前没有会话", "warning")
+            else:
+                options = self._user_message_options(session)
+                if not options:
+                    self._note("这个会话还没有用户消息可 fork", "warning")
+                elif arg:
+                    target = self._resolve_user_message(session, arg)
+                    if target is None:
+                        self._note(f"找不到那条用户消息:{arg}(共 {len(options)} 条)", "warning")
+                    else:
+                        self._fork_from(session, target)
+                else:
+                    self.push_screen(
+                        PickerScreen("从哪条用户消息 fork(选中后重新提问)", options),
+                        lambda value: self._fork_from(session, value) if value else None)
+                    self._scroll_end()
+                    return
+        elif cmd == "/clone":
+            self._clone_session(arg)
         elif cmd == "/session":
             session = self._session
             if session is None:
@@ -1173,7 +1239,8 @@ class QiTui(App):
                 f"文件: {session.path}",
                 f"目录: {session.cwd or '(未记录)'}",
                 f"创建: {session.created_at or '?'}",
-                f"消息: {session.message_count} 条",
+                f"消息: {session.message_count} 条(当前分支)",
+                f"分支: {len(session.tree_entries)} 节点 / {session.branch_points} 个分支点",
                 f"模型: {model}",
                 f"用量: ↑{format_tokens(usage['prompt_tokens'])} "
                 f"↓{format_tokens(usage['completion_tokens'])}",
@@ -1316,7 +1383,7 @@ class QiTui(App):
         if self._rt is None:
             self._note("运行时不可用。", "error")
             return
-        store = SessionStore()
+        store = self._session_store()
         if not source.is_file():
             self._note(f"文件不存在: {source}", "error")
             return
@@ -1568,6 +1635,223 @@ class QiTui(App):
         index = flat.index(current) if current in flat else -1
         provider, model = flat[(index + step) % len(flat)]
         self._switch_model(provider, model)
+
+    # -- 会话树(pi 的 /tree /fork /clone)--------------------
+    def _session_store(self) -> SessionStore:
+        """用 runtime 的 store(`sessionDir` 设置才会生效),而不是自己 new 一个。"""
+        if self._rt is not None:
+            return self._rt.sessions
+        return SessionStore()
+
+    def _entry_label(self, entry: dict) -> str:
+        """树/选择器里的一行标签(单行、截断)。"""
+        def clip(value: object, limit: int = 56) -> str:
+            text = str(value or "").strip().splitlines()[0] if str(value or "").strip() else ""
+            return text[:limit] + ("…" if len(text) > limit else "")
+
+        kind = entry.get("type")
+        if kind == "message":
+            who = "你" if entry.get("role") == "user" else "助手"
+            return f"{who}: {clip(entry.get('content'))}"
+        if kind == "tool":
+            return f"工具: {entry.get('tool')}  [{entry.get('status') or '?'}]"
+        if kind == "dispatch":
+            return f"分派: → {entry.get('display_name') or entry.get('agent')}"
+        if kind == "custom":
+            if entry.get("custom_type") == "assistant_narration":
+                return f"叙述: {clip(entry.get('content'))}"
+            return f"自定义: {entry.get('custom_type')}"
+        if kind == "state":
+            return f"状态: {entry.get('key')} = {entry.get('value')}"
+        return str(kind)
+
+    def _tree_options(self, session) -> list[tuple[str, str]]:
+        """整棵树 → `(entry id, 缩进标签)`;`●` 当前节点,`│` 当前分支,`·` 其它分支。"""
+        on_branch = {str(e.get("id")) for e in session.branch()}
+        node = session.current
+        out: list[tuple[str, str]] = []
+
+        def walk(parent: str | None, depth: int) -> None:
+            for child in session.children(parent):
+                child_id = str(child.get("id"))
+                mark = "●" if child_id == node else ("│" if child_id in on_branch else "·")
+                out.append((child_id, "  " * depth + f"{mark} {self._entry_label(child)}"))
+                walk(child_id, depth + 1)
+
+        walk(None, 0)
+        return out
+
+    def _user_message_options(self, session) -> list[tuple[str, str]]:
+        """当前分支上的用户消息(fork 的可选点)。"""
+        return [(str(e.get("id")), self._entry_label(e))
+                for e in session.branch()
+                if e.get("type") == "message" and e.get("role") == "user"]
+
+    def action_show_tree(self) -> None:
+        """/tree:跳转当前会话的任意节点(同一文件内的分支导航)。"""
+        session = self._session
+        if session is None:
+            return
+        options = self._tree_options(session)
+        if not options:
+            self._flash("会话还是空的")
+            return
+
+        def picked(value: str | None) -> None:
+            if value:
+                self._jump_to(value)
+
+        self.push_screen(PickerScreen(
+            "会话树(↑↓ 选择 · enter 跳到该节点继续 · escape 取消)", options,
+            current=session.current), picked)
+
+    def _jump_to(self, entry_id: str) -> None:
+        session = self._session
+        if session is None:
+            return
+        if not self._session_store().set_position(session, entry_id):
+            self._flash("节点不存在")
+            return
+        self._replay_branch(session)
+        self._flash(f"已跳到节点 {entry_id};下次提问从这里分叉")
+
+    def _resolve_user_message(self, session, arg: str) -> str | None:
+        """`/fork` 参数:entry id(前缀)或 1-based 序号。"""
+        options = self._user_message_options(session)
+        for entry_id, _ in options:
+            if entry_id == arg or entry_id.startswith(arg):
+                return entry_id
+        try:
+            index = int(arg) - 1          # 不用 isdigit():部分 Unicode 数字能过 isdigit 却过不了 int
+        except ValueError:
+            return None
+        if 0 <= index < len(options):
+            return options[index][0]
+        return None
+
+    def _fork_from(self, session, entry_id: str) -> None:
+        """在选中用户消息**之前**分叉出新会话,并把该消息放回编辑器(对齐 pi 的 /fork)。"""
+        entry = next((e for e in session.branch() if str(e.get("id")) == entry_id), None)
+        if entry is None:
+            self._flash("找不到那条消息")
+            return
+        title = f"{session.title} @fork" if session.title else "fork"
+        forked = self._session_store().fork_at(session, entry.get("parentId"), title=title)
+        text = str(entry.get("content") or "")
+        self._switch_session(forked, note=f"已 fork 出新会话 {forked.id}(那条消息已放回编辑器)")
+        editor = self.query_one("#editor", Editor)
+        editor.load_text(text)
+        editor.move_cursor(self._offset_to_location(text, len(text)))
+        self._sync_log_height()
+
+    def _clone_session(self, title: str) -> None:
+        session = self._session
+        if session is None:
+            return
+        if session.current is None:
+            self._note("还没有内容可 clone", "warning")
+            self._scroll_end()
+            return
+        cloned = self._session_store().fork_at(
+            session, session.current, title=title or f"{session.title} 副本")
+        self._switch_session(cloned, note=f"已 clone 到新会话 {cloned.id}(分支已复制)")
+
+    def _switch_session(self, session, note: str = "") -> None:
+        """切到另一个会话:重放它的当前分支,清掉属于上一个会话的临时状态。"""
+        self._session = session
+        self._usage = {"prompt_tokens": 0, "completion_tokens": 0}
+        self._last_answer = ""
+        self._pending_steer.clear()
+        self._pending_follow.clear()
+        self._branch = git_branch(session.cwd or str(Path.cwd()))
+        self._replay_branch(session)
+        self._restore_status()
+        if note:
+            self._note(note)
+        self._scroll_end()
+
+    def _select_session(self) -> None:
+        """按 CLI 传来的意图选/建会话(对齐 `qi -c` / `--session` / `--fork` / `-n` / `--no-session`)。
+
+        以前 TUI 无视这些参数、每次都新建一个名叫 `tui` 的会话 —— 文档里写了 `-c` 支持,
+        但进 TUI 就失效了。现在与 headless 路径用同一套规则。
+        """
+        store = self._session_store()
+        cwd = self._rt.cwd if self._rt is not None else Path.cwd()
+        name = (self._want_name or "").strip()
+
+        if self._want_no_session:
+            self._session = store.create(name or "ephemeral", cwd=cwd)
+            return
+        if self._want_fork_id:
+            source = store.get(self._want_fork_id)
+            if source is None:
+                self._session = store.create(name or "tui", cwd=cwd)
+                self._startup_note = f"会话不存在: {self._want_fork_id}(已新建)"
+                return
+            title = name or (f"{source.title} @fork" if source.title else "fork")
+            self._session = store.fork_at(source, source.current, title=title)
+            self._startup_note = f"已从 {source.id} 分叉出新会话 {self._session.id}"
+            return
+        if self._want_session_id:
+            found = store.get(self._want_session_id)
+            if found is None:
+                self._session = store.create(name or "tui", cwd=cwd)
+                self._startup_note = f"会话不存在: {self._want_session_id}(已新建)"
+            else:
+                self._session = found
+                if name:
+                    self._session.title = name
+            return
+        if self._want_cont:
+            self._session = store.latest() or store.create(name or "tui", cwd=cwd)
+            return
+        self._session = store.create(name or "tui", cwd=cwd)
+
+    def _replay_branch(self, session, banner: Text | None = None) -> None:
+        """把 transcript 换成该会话**当前分支**的内容(回放/跳分支/恢复会话共用)。
+
+        `banner` 非空时先写它(恢复历史时启动头仍应在最上面)。
+        """
+        log = self.query_one("#log", VerticalScroll)
+        for child in list(log.children):
+            child.remove()
+        self._tool_blocks.clear()
+        self._bash_blocks.clear()
+        self._thinking_widgets.clear()
+        self._live = None
+        self._live_thinking = None
+        if banner is not None:
+            self._append(Static(banner, classes="msg"))
+        renderer = self._renderer
+        for entry in session.branch():
+            kind = entry.get("type")
+            if kind == "message" and entry.get("role") == "user":
+                self._append(UserMessage(str(entry.get("content") or ""), renderer, self._palette))
+            elif kind == "message" and entry.get("role") == "assistant":
+                message = AssistantMessage(self._palette)
+                message.set_text(str(entry.get("content") or ""), renderer)
+                self._append(message)
+            elif kind == "custom" and entry.get("custom_type") == "assistant_narration":
+                message = AssistantMessage(self._palette)
+                message.set_text(str(entry.get("content") or ""), renderer)
+                self._append(message)
+            elif kind == "dispatch":
+                self._append(Static(renderer.dispatch_line(entry.get("agent"), entry),
+                                    classes="msg"))
+            elif kind == "tool":
+                name = str(entry.get("tool") or "?")
+                status = "ok" if entry.get("status") == "ok" else "error"
+                block = ToolBlock(renderer.tool_title(name, entry.get("args") or {}),
+                                  self._palette)
+                block.set_state(status)
+                result = str(entry.get("result") or "")
+                block.set_output(renderer.tool_body(name, result, expanded=self._expanded,
+                                                    is_error=status != "ok"))
+                self._tool_blocks.append((block, name, result))
+                self._append(block)
+        self._sync_log_height()
+        self._scroll_end()
 
     # -- 补全(pi 的 autocomplete:`/` 命令与 `@` 文件)------------
     def _completion_candidates(self) -> tuple[list[tuple[str, str]], int, int]:
@@ -1822,8 +2106,13 @@ def _version() -> str:
     return __version__
 
 
-def run_tui(initial_prompt: str | None = None) -> None:
-    """启动 TUI;`initial_prompt` 非空时进界面即提交(来自 `qi "问题"`)。"""
+def run_tui(initial_prompt: str | None = None, *, session_id: str | None = None,
+            cont: bool = False, fork_id: str | None = None,
+            no_session: bool = False, name: str | None = None) -> None:
+    """启动 TUI;`initial_prompt` 非空时进界面即提交(来自 `qi "问题"`)。
+
+    会话选择参数与 headless 路径同义:`qi -c` / `--session` / `--fork` / `-n` / `--no-session`。
+    """
     setting = None
     try:
         from .settings import load_settings
@@ -1832,4 +2121,6 @@ def run_tui(initial_prompt: str | None = None) -> None:
     except Exception:  # settings 坏了不该挡住进界面
         setting = None
     palette = resolve_theme(setting, probe=True)
-    QiTui(initial_prompt=initial_prompt, palette=palette).run(inline=True, inline_no_clear=True)
+    QiTui(initial_prompt=initial_prompt, palette=palette, session_id=session_id, cont=cont,
+          fork_id=fork_id, no_session=no_session, name=name).run(
+              inline=True, inline_no_clear=True)

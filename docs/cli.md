@@ -5,7 +5,7 @@
 
 ## 0. 速查(按用途分类)
 
-```
+```text
 ── 运行 ────────────────────────────────
 qi                              # 进 TUI(交互)
 qi "<问题>"                      # 进 TUI,并把该消息作为首条发出(对齐 pi)
@@ -60,11 +60,11 @@ qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt
 | `-c, --continue` | 续上次会话 | ✅ |
 | `-r, --resume` | 选择会话恢复 | ✅ |
 | `--session <path\|id>` / `--session-id <id>` | 指定会话 | ✅ |
-| `--fork <id>` | fork 出新会话 | ✅ |
+| `--fork <path\|id>` | 从已有会话分叉出新会话(复制它的当前分支;`/fork` `/clone` 的另一入口) | ✅ `pi --fork` |
 | `--session-dir <dir>` | 会话目录 | ✅ |
 | `--no-session` / `-n, --name` | 临时会话 / 显示名 | ✅ |
-| `qi sessions list \| show <id> \| rm <id>` | 列表 / 查看 / 删除。列表带会话 cwd;`show` 回放时用**记录时的展示名**(`display_name`,回落到 name)、用户消息不标说话人,并回放 `tool` entry(状态/耗时/退出码/参数) | qi 扩展 |
-| `--export <file>` | 会话导出 HTML | ✅ |
+| `qi sessions list \| show <id> \| rm <id>` | 列表 / 查看 / 删除。列表带会话 cwd(有分支时标 `分支点×N`);`show` 只回放**当前分支**、回放时用**记录时的展示名**(`display_name`,回落到 name)、用户消息不标说话人,并回放 `tool` entry(状态/耗时/退出码/参数) | qi 扩展 |
+| `--export <file>` | 拷出会话 JSONL(**整个文件**,含其它分支) | 🟡 pi 默认导 HTML |
 
 `-c/-r/--session` 管"接着跑哪段",`qi sessions` 管"历史浏览/删除",互补。
 

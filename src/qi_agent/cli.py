@@ -196,6 +196,7 @@ def root_callback(
     agent: str | None = typer.Option(None, "--agent", help="指定 agent(manual)"),
     cont: bool = typer.Option(False, "--continue", "-c", help="续上次会话"),
     session_id: str | None = typer.Option(None, "--session", help="指定会话 id"),
+    fork_id: str | None = typer.Option(None, "--fork", help="从已有会话分叉出新会话(path|id 前缀)"),
     name: str | None = typer.Option(None, "--name", "-n", help="会话显示名"),
     no_session: bool = typer.Option(False, "--no-session", help="不落盘(临时)"),
     export_file: str | None = typer.Option(None, "--export", help="导出会话 JSONL 到文件后退出"),
@@ -221,7 +222,8 @@ def root_callback(
             # 非 TTY(管道/CI):退化为提示,而不是抛 traceback / 卡住。
             console.print("交互界面需要 TTY;无头用法: qi -p \"问题\" [--agent name]")
             raise typer.Exit(code=0)
-        _launch_tui(prompt or None)
+        _launch_tui(prompt or None, session_id=session_id, cont=cont, fork_id=fork_id,
+                    no_session=no_session, name=name)
         return
     if not prompt:
         usage = (
@@ -250,6 +252,15 @@ def root_callback(
     session = None
     if no_session:
         session = store.create(name or "ephemeral", cwd=runtime.cwd)
+    elif fork_id:
+        # 对齐 pi `--fork <path|id>`:把源会话的当前分支复制成一个新会话再跑
+        source = store.get(fork_id)
+        if source is None:
+            console.print(f"[red]会话不存在: {fork_id}[/red]")
+            raise typer.Exit(code=1)
+        session = store.fork_at(source, source.current,
+                                title=name or (f"{source.title} @fork" if source.title else "fork"))
+        err_console.print(f"[dim]已从 {source.id} 分叉出新会话 {session.id}[/dim]")
     elif session_id:
         session = store.get(session_id)
         if session is None:
@@ -520,9 +531,10 @@ def sessions_show(session_id: str = typer.Argument(...)) -> None:
         console.print(f"[red]会话不存在: {session_id}[/red]")
         raise typer.Exit(code=1)
     console.print(f"[bold]{s.id}[/bold] {s.title}")
-    console.print(f"[dim]cwd: {escape(_short_cwd(s.cwd, limit=64))}  文件: {escape(str(s.path))}[/dim]")
-    names = _replay_names(s.entries)
-    for e in s.entries:
+    console.print(f"[dim]cwd: {escape(_short_cwd(s.cwd, limit=64))}  文件: {escape(str(s.path))}"
+                  + (f"  分支点: {s.branch_points}" if s.branch_points else "") + "[/dim]")
+    names = _replay_names(s.branch())        # 只回放**当前分支**(树里的其它分支不混进来看
+    for e in s.branch():
         if e.get("type") == "message":
             role = e.get("role")
             body = escape(str(e.get('content', '')))[:200]
@@ -1098,18 +1110,22 @@ def version() -> None:
     console.print(f"qi {__version__}")
 
 
-def _launch_tui(initial_prompt: str | None = None) -> None:
+def _launch_tui(initial_prompt: str | None = None, *, session_id: str | None = None,
+                cont: bool = False, fork_id: str | None = None,
+                no_session: bool = False, name: str | None = None) -> None:
     """启动 TUI(顶层 `qi` 的默认去向)。
 
     刻意不做成子命令:`pi` 也没有 `pi tui` —— 裸 `qi` 就是交互界面。
-    `initial_prompt` 来自 `qi "问题"`:进界面后立刻提交这条消息。
+    `initial_prompt` 来自 `qi "问题"`:进界面后立刻提交这条消息;
+    会话选择参数透传给 TUI(否则 `qi -c` 进界面后会失效)。
     """
     try:
         from .tui import run_tui
     except Exception as exc:  # textual 依赖问题
         console.print(f"[red]TUI 不可用: {escape(str(exc))}[/red]")
         raise typer.Exit(code=1) from exc
-    run_tui(initial_prompt)
+    run_tui(initial_prompt, session_id=session_id, cont=cont, fork_id=fork_id,
+            no_session=no_session, name=name)
 
 
 def _port_free(host: str, port: int) -> bool:

@@ -89,7 +89,9 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
         )
 
     def detail(session, limit: int, before: int | None) -> schemas.SessionDetail:
-        entries = session.entries
+        # 只暴露**当前分支**(+ header,契约里 entries[0] 一直是 header):
+        # 树里其它分支不属于这段对话的历史
+        entries = session.visible_entries()
         end = len(entries) if before is None else max(0, min(before, len(entries)))
         start = max(0, end - max(1, limit))
         return schemas.SessionDetail(

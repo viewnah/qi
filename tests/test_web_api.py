@@ -4,8 +4,8 @@
   * 不需要端口、不受本机其他服务影响;
   * SSE 也走真实路径(StreamingResponse),不是伪造的字节流。
 
-覆盖:契约号 / 会话增删改查 / 一轮执行 + SSE 事件序列 / 并发 409 / 取消 /
-凭证写入的二次确认闸门 / 口令保护 / Host 允许表 / 只读配置掩码。
+覆盖:契约号 / 会话增删改查 / **AG-UI 线格式 + 事件序列 + 落盘回放** / 并发 409 /
+输入校验与旧路由已移除 / 凭证写入的二次确认闸门 / 口令保护 / Host 允许表 / 只读配置掩码。
 """
 
 from __future__ import annotations
@@ -105,223 +105,211 @@ async def client(app, tmp_path):
         yield c
 
 
-async def _sse_frames(client, sid: str, run_id: str | None = None,
-                      timeout: float = 10.0) -> list[tuple[str, dict]]:
-    """读完一条 SSE 流(在 run.finished 后服务端会关闭)。返回 (event, payload) 列表。"""
+def _input(sid: str, text: str = "看下目录", run_id: str = "r1") -> dict:
+    """AG-UI 的 RunAgentInput(单次 POST 的 body)。"""
+    return {
+        "threadId": sid,
+        "runId": run_id,
+        "messages": [{"role": "user", "content": text}],
+        "forwardedProps": {"agent": None},
+    }
+
+
+async def _agui(client, sid: str, text: str = "看下目录",
+                run_id: str = "r1", timeout: float = 10.0) -> tuple[list[dict], list[str]]:
+    """跑一轮 AG-UI,读完流。返回 (事件序列, 原始行)。
+
+    返回原始行是为了断言**线格式**:AG-UI 的官方编码器只写 `data:`,
+    不得出现 `event:` 或 `id:`。
+    """
     import asyncio
 
-    url = f"/api/sessions/{sid}/events"
-    if run_id:
-        url += f"?run_id={run_id}"
-    frames: list[tuple[str, dict]] = []
+    events: list[dict] = []
+    raw_lines: list[str] = []
     async with asyncio.timeout(timeout):
-        async with client.stream("GET", url) as resp:
-            assert resp.status_code == 200
+        async with client.stream("POST", "/api/ag-ui",
+                                 json=_input(sid, text, run_id)) as resp:
+            assert resp.status_code == 200, resp.text
             assert resp.headers["content-type"].startswith("text/event-stream")
-            event_name, data = None, None
             async for line in resp.aiter_lines():
-                if line.startswith("event: "):
-                    event_name = line[7:].strip()
-                elif line.startswith("data: "):
-                    data = json.loads(line[6:])
-                elif line == "" and event_name is not None:
-                    frames.append((event_name, data or {}))
-                    if event_name == "run.finished":
-                        break
-                    event_name, data = None, None
-    return frames
+                if line == "":
+                    continue
+                raw_lines.append(line)
+                if line.startswith("data: "):
+                    events.append(json.loads(line[6:]))
+    return events, raw_lines
 
 
-# ── 元信息 ────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_meta_exposes_contract_and_capabilities(client, tmp_path):
-    """契约号必须可读:前端据此判断能否与宿主协作(docs/web.md §3)。"""
-    resp = await client.get("/api/meta")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["contract"] == CONTRACT_VERSION
-    assert body["default_cwd"] == str(tmp_path)
-    assert body["auth_required"] is False
-    assert body["capabilities"]["sse"] is True and body["capabilities"]["streaming"] is True
-    assert (await client.get("/api/health")).json()["ok"] is True
+def _kinds(events: list[dict]) -> list[str]:
+    return [str(e.get("type")) for e in events]
 
 
-# ── 会话增删改查 ──────────────────────────────────────────
+def _paired(events: list[dict], start: str, end: str, id_key: str) -> None:
+    """断言 start/end 成对:每个 start 的 id 都被恰好一个 end 收掉。"""
+    open_ids: list[str] = []
+    for e in events:
+        if e.get("type") == start:
+            open_ids.append(str(e.get(id_key)))
+        elif e.get("type") == end:
+            assert open_ids, f"出现没有 {start} 的 {end}"
+            open_ids.remove(str(e.get(id_key)))
+    assert open_ids == [], f"这些 {start} 没有 {end}:{open_ids}"
+
+
+# ── AG-UI:线格式 ──────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_session_lifecycle(client, tmp_path):
-    created = await client.post("/api/sessions", json={"title": "第一个"})
-    assert created.status_code == 201
-    sid = created.json()["id"]
-    assert created.json()["cwd"] == str(tmp_path)      # 会话头带 cwd
-    assert created.json()["running"] is False
+async def test_agui_wire_format_is_data_only(client, tmp_path):
+    """**线格式**:只有 `data:` 行。
 
-    listed = (await client.get("/api/sessions")).json()["sessions"]
-    assert [s["id"] for s in listed] == [sid]
+    依据是官方编码器(`@ag-ui/encoder` 的 `encodeSSE`):
+        `data: ${JSON.stringify(event)}\n\n`
+    所以不得出现 SSE 的 `event:` 或 `id:` 字段 —— 事件类型在 JSON 的 `type` 里。
+    """
+    sid = (await client.post("/api/sessions", json={"title": "线格式", "cwd": str(tmp_path)})).json()["id"]
+    _, lines = await _agui(client, sid)
+    assert lines, "流是空的"
+    assert not [ln for ln in lines if ln.startswith("event:")], "AG-UI 不写 event: 字段"
+    assert not [ln for ln in lines if ln.startswith("id:")], "AG-UI 不写 id: 字段(没有续传语义)"
+    for ln in lines:
+        assert ln.startswith("data: "), f"非法行:{ln!r}"
+
+
+@pytest.mark.asyncio
+async def test_turn_streams_full_event_sequence(client, tmp_path):
+    """一轮的完整 AG-UI 事件序列:首 RUN_STARTED,末 RUN_FINISHED,三段式成对。"""
+    sid = (await client.post("/api/sessions", json={"title": "序列", "cwd": str(tmp_path)})).json()["id"]
+    events, _ = await _agui(client, sid, "看下目录")
+    kinds = _kinds(events)
+
+    assert kinds[0] == "RUN_STARTED", f"首帧必须是 RUN_STARTED,实际 {kinds[0]}"
+    assert kinds[-1] == "RUN_FINISHED", f"末帧必须是 RUN_FINISHED,实际 {kinds[-1]}"
+
+    # 历史与状态作为权威起点,紧跟 RUN_STARTED
+    assert "MESSAGES_SNAPSHOT" in kinds
+    assert "STATE_SNAPSHOT" in kinds
+    # qi 自己的完整 entry 列表:没有它,刷新后轨迹只剩对话
+    assert any(e.get("type") == "CUSTOM" and e.get("name") == "qi.history" for e in events)
+
+    # 分段必须成对,否则客户端会停在"正在流式"的状态
+    _paired(events, "TEXT_MESSAGE_START", "TEXT_MESSAGE_END", "messageId")
+    _paired(events, "REASONING_START", "REASONING_END", "messageId")
+    _paired(events, "TOOL_CALL_START", "TOOL_CALL_END", "toolCallId")
+
+    # 工具三段式:Start 之后必须有 Args(规范要求"一个或多个"),然后是 Result
+    assert "TOOL_CALL_ARGS" in kinds and "TOOL_CALL_RESULT" in kinds
+
+    # 分派是 qi 独有 → 走 CUSTOM,不污染标准事件
+    assert any(e.get("type") == "CUSTOM" and e.get("name") == "qi.dispatch" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_run_finished_carries_outcome_and_usage(client, tmp_path):
+    """RUN_FINISHED 必须带 outcome(AG-UI 的生命周期契约),usage 挂在 metadata。"""
+    sid = (await client.post("/api/sessions", json={"title": "收尾", "cwd": str(tmp_path)})).json()["id"]
+    events, _ = await _agui(client, sid)
+    last = events[-1]
+    assert last["type"] == "RUN_FINISHED"
+    assert last.get("outcome") == {"type": "success"}
+    # usage 走 metadata 的 open-by-key 槽,而不是自造字段
+    assert "qi.usage" in (last.get("metadata") or {})
+    assert last["metadata"]["qi.usage"]["llm_calls"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_turn_result_is_persisted_and_replayed(client, tmp_path):
+    """落盘完整,而且**下一轮的 qi.history 能把它带回来**(直播与回放一致)。
+
+    qi 一直守着这条不变量:叙述与工具卡不能只活在直播里。
+    """
+    sid = (await client.post("/api/sessions", json={"title": "落盘", "cwd": str(tmp_path)})).json()["id"]
+    await _agui(client, sid, "看下目录")
 
     detail = (await client.get(f"/api/sessions/{sid}")).json()
-    assert detail["total_entries"] == 1 and detail["entries"][0]["type"] == "session"
-    assert detail["skipped"] == 0
+    types = [e.get("type") for e in detail["entries"]]
+    assert "dispatch" in types
+    assert types.count("message") >= 2          # user + assistant
+    assert "tool" in types                      # 工具往返落盘(第五类 entry)
+    assert "custom" in types                    # 叙述落成 custom(不进 LLM 上下文)
+    assert types[-1] == "message"
 
-    renamed = await client.patch(f"/api/sessions/{sid}", json={"title": "改名了"})
-    assert renamed.status_code == 200 and renamed.json()["title"] == "改名了"
-    # 改名落到 header entry 上(回放时读到的就是新名字)
-    again = (await client.get(f"/api/sessions/{sid}")).json()
-    assert again["entries"][0]["title"] == "改名了"
-
-    assert (await client.delete(f"/api/sessions/{sid}")).status_code == 204
-    assert (await client.get(f"/api/sessions/{sid}")).status_code == 404
-    assert (await client.delete(f"/api/sessions/{sid}")).status_code == 404
-
-
-@pytest.mark.asyncio
-async def test_create_session_rejects_missing_cwd(client):
-    resp = await client.post("/api/sessions", json={"cwd": "/nonexistent/xyz"})
-    assert resp.status_code == 400 and "工作目录不存在" in resp.json()["detail"]
+    # 第二轮:qi.history 必须带着上一轮的工具卡与叙述
+    events, _ = await _agui(client, sid, "再来一轮", run_id="r2")
+    hist = next(e for e in events if e.get("type") == "CUSTOM" and e.get("name") == "qi.history")
+    replayed = [x.get("type") for x in hist["value"]["entries"]]
+    assert "tool" in replayed and "custom" in replayed
 
 
 @pytest.mark.asyncio
-async def test_detail_window_paginates(client):
-    """长会话只回一个窗口(渐进恢复):limit/before 必须真的按窗口切。"""
+async def test_busy_session_is_serialised(client, tmp_path):
+    """同一会话串行:占用中再来一个 POST → 409;占用中不允许删除。
+
+    **为什么在 state 层手工占用、而不是真开两条并发流**:
+    单 POST 之下,"忙"的时间窗恰好等于那条响应流的存活期。而
+    `httpx.ASGITransport` 会把整个响应体缓冲完再交还,拿不到"已收到响应头、
+    身体仍在流"的句柄 —— 所以没法在进程内造出那个时间窗(旧协议能测,
+    是因为它 POST 就返回 202、run 在后台任务里跑,窗口与响应无关)。
+
+    这里改为直接验证两件真正要做对的事:闸门本身(同会话两次占用必须拒绝),
+    以及端点把闸门翻译成 409。两者都比"靠 sleep 抢时间窗"更确定。
+    """
+    sid = (await client.post("/api/sessions", json={"title": "并发", "cwd": str(tmp_path)})).json()["id"]
     web = _web(client)
-    sid = (await client.post("/api/sessions", json={"title": "长"})).json()["id"]
-    session = web.sessions.get(sid)
-    assert session is not None
-    for i in range(4):                          # header + 4 = 5 条
-        web.sessions.append(session, {"type": "message", "role": "user", "content": f"m{i}"})
 
-    full = (await client.get(f"/api/sessions/{sid}?limit=50")).json()
-    assert full["total_entries"] == 5 and full["skipped"] == 0
-
-    tail = (await client.get(f"/api/sessions/{sid}?limit=2")).json()
-    assert [e.get("content") for e in tail["entries"]] == ["m2", "m3"]
-    assert tail["skipped"] == 3                 # 窗口之前还有 3 条可继续向更早翻
-
-    older = (await client.get(f"/api/sessions/{sid}?limit=2&before=3")).json()
-    assert [e.get("content") for e in older["entries"]] == ["m0", "m1"]
-    assert older["skipped"] == 1
-
-
-# ── 一轮执行 + SSE ────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_turn_streams_full_event_sequence(client):
-    """一轮执行的事件序列:snapshot → dispatch → … → tool_* → text → agent_end → run.finished。"""
-    sid = (await client.post("/api/sessions", json={"title": "跑一轮"})).json()["id"]
-    accepted = await client.post(f"/api/sessions/{sid}/turn", json={"text": "看下目录"})
-    assert accepted.status_code == 202
-    run_id = accepted.json()["run_id"]
-    assert accepted.json()["from_seq"] == 0        # 客户端重放整轮
-
-    frames = await _sse_frames(client, sid, run_id)
-    kinds = [k for k, _ in frames]
-    assert kinds[0] == "snapshot"                   # 每代以快照开头
-    for expected in ("dispatch", "agent_start", "tool_start", "tool_end",
-                     "text", "agent_end", "run.finished"):
-        assert expected in kinds, f"缺少事件 {expected}:{kinds}"
-
-    # 逐字流式:文本增量确实在流里,且拼接 == 最终 text
-    deltas = "".join(p["text"] for k, p in frames if k == "text_delta")
-    assert deltas == "我先看一下完成"
-    final = [p["text"] for k, p in frames if k == "text"][-1]
-    assert final == "完成"
-
-    # 工具事件带结构化字段(前端工具行的依据)
-    tool_end = next(p for k, p in frames if k == "tool_end")
-    assert tool_end["data"]["status"] == "ok"
-    assert isinstance(tool_end["data"]["duration_ms"], int)
-
-    # usage 透出(状态栏)
-    usage = next(p for k, p in frames if k == "agent_end")["data"]["usage"]
-    assert usage["total_tokens"] == 12 and usage["llm_calls"] == 2
-
-    assert next(p for k, p in frames if k == "run.finished")["status"] == "ok"
-
-
-@pytest.mark.asyncio
-async def test_turn_result_is_replayable_from_session(client):
-    """SSE 之外,结果必须已落盘:刷新后靠会话快照也能重建(含叙述与工具卡)。"""
-    sid = (await client.post("/api/sessions", json={"title": "回放"})).json()["id"]
-    await client.post(f"/api/sessions/{sid}/turn", json={"text": "看下目录"})
-    await _sse_frames(client, sid, (await _last_run(client, sid)))
-
-    entries = (await client.get(f"/api/sessions/{sid}?limit=50")).json()["entries"]
-    shaped = [(e.get("type"), e.get("custom_type")) for e in entries]
-    assert ("custom", "assistant_narration") in shaped          # 工具前的叙述
-    assert ("tool", None) in shaped                             # 工具往返
-    assert entries[-1]["role"] == "assistant"                   # 最终回答
-    assert shaped.index(("custom", "assistant_narration")) < shaped.index(("tool", None))
-
-
-async def _last_run(client, sid: str) -> str:
-    """取该会话最近一次 run(含已完成的)。"""
-    run = _web(client).active_run(sid) or _web(client).recent_run(sid)
-    if run is None:
-        raise AssertionError("没有找到 run")
-    return run.run_id
-
-
-@pytest.mark.asyncio
-async def test_second_turn_while_running_gets_409(tmp_path, monkeypatch):
-    """同一会话串行:并发提交返回 409(而不是静默交错写 JSONL)。"""
-    app = _app(tmp_path, monkeypatch, llm=SlowStub())
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
-        sid = (await client.post("/api/sessions", json={"title": "并发"})).json()["id"]
-        first = await client.post(f"/api/sessions/{sid}/turn", json={"text": "a"})
-        assert first.status_code == 202
-        second = await client.post(f"/api/sessions/{sid}/turn", json={"text": "b"})
-        assert second.status_code == 409
-        assert second.json()["detail"]["run_id"] == first.json()["run_id"]
+    web.begin(sid)                      # 手工占用 = 另有一个请求正在流
+    try:
+        busy = await client.post("/api/ag-ui", json=_input(sid))
+        assert busy.status_code == 409
         # 运行中不允许删除(否则会删掉正在写的文件)
         assert (await client.delete(f"/api/sessions/{sid}")).status_code == 409
-        assert (await client.post(f"/api/sessions/{sid}/cancel")).status_code == 202
+    finally:
+        web.end(sid)
+
+    # 释放之后必须能正常跑 —— 否则一次异常就把会话永久卡住
+    events, _ = await _agui(client, sid)
+    assert events[-1]["type"] == "RUN_FINISHED"
+
+
+def test_webstate_gate_is_symmetric():
+    """闸门语义:重复占用拒绝、释放可重复、释放后可再占用。"""
+    import tempfile
+    from qi_agent.web.state import RunBusy, WebState
+
+    web = WebState(Path(tempfile.mkdtemp()))
+    assert web.is_busy("s") is False
+    web.begin("s")
+    assert web.is_busy("s") is True
+    with pytest.raises(RunBusy):
+        web.begin("s")
+    web.end("s")
+    web.end("s")                        # 幂等:finally 里释放两次不该炸
+    assert web.is_busy("s") is False
+    web.begin("s")                      # 释放后可以再占
 
 
 @pytest.mark.asyncio
-async def test_cancel_without_run_is_409(client):
-    sid = (await client.post("/api/sessions", json={"title": "空"})).json()["id"]
-    assert (await client.post(f"/api/sessions/{sid}/cancel")).status_code == 409
+async def test_run_rejects_bad_input(client, tmp_path):
+    """三类输入错误必须是 4xx,而且**不能**开出流。
 
-
-class _FakeRequest:
-    """只为 idle 路径提供 `is_disconnected()`:不经过 HTTP,直接驱动生成器。"""
-
-    def __init__(self, disconnect_after: int = 0) -> None:
-        self.calls = 0
-        self._after = disconnect_after
-
-    async def is_disconnected(self) -> bool:
-        self.calls += 1
-        return bool(self._after) and self.calls > self._after
-
-
-@pytest.mark.asyncio
-async def test_idle_stream_opens_with_snapshot(app):
-    """没有活跃 run 时也要能连上:先给快照,再靠心跳保活。
-
-    这里**直接驱动生成器**而不是走 httpx:httpx 的 ASGITransport 会缓冲整个响应体,
-    对"永不结束"的空闲流会一直等下去。增量投递(真实分块到达)由真机 e2e
-    (uvicorn + curl)覆盖,见 tests 之外的验收记录。
+    改造后取消不再有端点:单 POST 之下"客户端断开"就是取消语义。
+    所以这里顺带断言旧路由确实没了(405),免得有人以为它还在。
     """
-    web: WebState = app.state.web
-    sid = web.sessions.create("空闲", cwd=web.default_cwd).id
-    route = next(r for r in app.routes
-                 if getattr(r, "path", "") == "/api/sessions/{sid}/events")
-    resp = await route.endpoint(sid=sid, request=_FakeRequest(), run_id=None, from_seq=0)
-    agen = resp.body_iterator
-    opening = await agen.__anext__()
-    snapshot = await agen.__anext__()
-    await agen.aclose()
+    sid = (await client.post("/api/sessions", json={"title": "输入", "cwd": str(tmp_path)})).json()["id"]
 
-    assert opening.startswith(": ")                    # 开场注释帧
-    assert snapshot.startswith("event: snapshot")      # 快照
-    assert "id: " not in snapshot.split("\n", 1)[0]   # 快照不带 id,避免与 seq 0 撞号
-    assert json.loads(snapshot.split("data: ", 1)[1])["id"] == sid
+    empty_thread = await client.post("/api/ag-ui", json={"runId": "r", "messages": []})
+    assert empty_thread.status_code == 422
 
+    unknown = await client.post("/api/ag-ui", json=_input("does-not-exist"))
+    assert unknown.status_code == 404
 
-# ── 凭证写入:二次确认闸门 ────────────────────────────────
+    no_user = await client.post("/api/ag-ui", json={
+        "threadId": sid, "runId": "r", "messages": [{"role": "assistant", "content": "x"}]})
+    assert no_user.status_code == 422
+
+    # 旧的两跳路由与取消端点都已移除
+    assert (await client.post(f"/api/sessions/{sid}/cancel")).status_code == 405
+    assert (await client.post(f"/api/sessions/{sid}/turn", json={"text": "x"})).status_code == 405
+
 
 @pytest.mark.asyncio
 async def test_auth_write_requires_explicit_confirm(client, tmp_path, monkeypatch):

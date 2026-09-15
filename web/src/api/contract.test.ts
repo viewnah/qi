@@ -79,6 +79,15 @@ describe("事件 kind 两侧对齐", () => {
     "agent_start", // 只表示"开始跑",没有可展示内容
     "snapshot", // 由 client.ts 单独处理(重建条目列表)
     "run.finished", // 由 client.ts 单独处理(收尾 + 重拉明细)
+    // 以下 4 个来自 TUI 线的三批提交(思考级别 d58e270 / 上下文压缩 3bfb676 /
+    // 会话树 e8398e5),**web 前端尚未跟进渲染**。这里显式登记,而不是让它们被
+    // 静默丢弃 —— 这个断言本来就是为这件事存在的(它红了,而且指名道姓)。
+    // 跟进方向(本次未做):thinking_delta → MessageView 的折叠思考块;
+    // compaction_start/end → 一条"已压缩"分隔条;branch → 轨迹视图。
+    "thinking_delta",
+    "compaction_start",
+    "compaction_end",
+    "branch",
   ];
 
   it("后端发出的 kind 全部被处理或显式忽略", () => {

@@ -109,10 +109,25 @@ qi · auto                                 ← footer 3:状态行
 
 qi 与 pi 的差异(已落档):
 
-- 树里只显示块,不支持 pi 树选择器内的过滤键(它的 ctrl+t/ctrl+u/ctrl+l/ctrl+a);
+- `/tree` 选择器已支持 pi 的过滤键与搜索、标签(见下表);**未做**折叠/展开
+  (`alt/ctrl+←/→`)、树内过滤的持久化(pi 把 `treeFilterMode` 存进 settings);
+- 标签存储不同:qi 直接写在 entry 上(`label` / `labelTimestamp` 字段),pi 另写一条
+  `type=label` 的 entry;两边都是「标签属于某条 entry」的语义;
 - `/tree` 跳转时 pi 会**先问**要不要摘要被放弃的分支,qi 直接做并提示;
 - `qi sessions show` 与 web `/messages` 只展示**当前分支**(web 契约仍把 header 放在 `entries[0]`);
 - `--export` / `qi sessions show` 之外的导出仍拷**整个文件**(含其它分支)。
+
+树选择器键位(模态,`/tree`;对齐 pi 的 `app.tree.*`):
+
+| 键 | 行为 |
+| --- | --- |
+| 输入框打字 | 搜索节点(空格分词,全部命中才显示) |
+| `↑` / `↓` / `enter` | 选 / 跳到该节点继续 |
+| `ctrl+d` / `ctrl+t` / `ctrl+u` / `ctrl+l` / `ctrl+a` | 过滤:默认(隐藏状态类)/ 隐藏工具结果 / 只看用户消息 / 只看有标签 / 全部 |
+| `ctrl+o` / `shift+ctrl+o` | 过滤模式循环 / 反向循环 |
+| `shift+l` | 编辑标签(输入框变标签编辑器,`enter` 保存;留空 = 清除) |
+| `shift+t` | 标签是否附带时间戳 |
+| `escape` | 先退出标签编辑,再关面板 |
 
 ### 上下文压缩(对齐 pi 的 `core/compaction`)
 

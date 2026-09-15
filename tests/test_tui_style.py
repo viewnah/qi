@@ -1242,8 +1242,8 @@ async def test_double_escape_default_opens_tree(tmp_path, monkeypatch):
 
         await pilot.press("escape")                       # 窗口内第二次 → /tree
         await pilot.pause(0.1)
-        assert isinstance(app.screen, tui_mod.PickerScreen)
-        assert "会话树" in app.screen._title
+        assert isinstance(app.screen, tui_mod.TreeSelector)
+        assert "会话树" in app.screen._hint()
 
 
 @pytest.mark.asyncio
@@ -1302,11 +1302,12 @@ async def test_tree_lists_tree_and_jumps(tmp_path, monkeypatch):
 
         app._command("/tree")
         await pilot.pause(0.1)
-        assert isinstance(app.screen, tui_mod.PickerScreen)
-        labels = app.screen._options                      # (entry id, label)
-        assert [value for value, _ in labels] == ids
-        assert "●" in labels[-1][1]                       # 当前节点
-        assert labels[0][1].strip().startswith("│")       # 当前分支
+        selector = app.screen
+        assert isinstance(selector, tui_mod.TreeSelector)
+        rows = selector._rows()                           # (id, text, label)
+        assert [row.id for row in rows] == ids
+        assert "●" in rows[-1].text                       # 当前节点
+        assert rows[0].text.strip().startswith("│")        # 当前分支
         await pilot.press("escape")
         await pilot.pause(0.05)
 
@@ -1851,3 +1852,103 @@ async def test_modal_blocks_app_level_shortcuts(tmp_path, monkeypatch):
         await pilot.press("ctrl+t")
         await pilot.pause(0.05)
         assert app._show_thinking != thinking
+
+
+# ── /tree 过滤键与标签(pi 的 app.tree.*)──────────────────
+
+
+@pytest.mark.asyncio
+async def test_tree_filters_search_and_labels(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        session = app._session
+        assert session is not None
+        store = app._session_store()
+        for entry in (
+            {"type": "message", "role": "user", "content": "问一"},
+            {"type": "message", "role": "assistant", "content": "答一"},
+            {"type": "tool", "tool": "read", "status": "ok", "result": "x"},
+            {"type": "state", "key": "model", "value": "m"},
+        ):
+            store.append(session, entry)
+        app._replay_branch(session)
+
+        app._command("/tree")
+        await pilot.pause(0.1)
+        selector = app.screen
+        assert isinstance(selector, tui_mod.TreeSelector)
+        box = selector.query_one("#session-filter", tui_mod.Input)
+
+        def texts() -> list[str]:
+            return [row.text for row in selector._rows()]
+
+        # default:隐藏状态类 entry(pi 的 settings 类)
+        assert not any("状态" in text for text in texts())
+        assert any("工具" in text for text in texts())
+
+        await pilot.press("ctrl+a")                       # 全部条目
+        await pilot.pause(0.05)
+        assert any("状态" in text for text in texts())
+
+        await pilot.press("ctrl+t")                       # 隐藏工具结果
+        await pilot.pause(0.05)
+        assert not any("工具" in text for text in texts())
+
+        await pilot.press("ctrl+u")                       # 只看用户消息
+        await pilot.pause(0.05)
+        assert texts() and all("你:" in text for text in texts())
+
+        await pilot.press("ctrl+d")                       # 回到默认
+        await pilot.pause(0.05)
+        assert selector._mode == "default"
+
+        box.value = "答一"                                 # 搜索(空格分词)
+        await pilot.pause(0.05)
+        assert len(texts()) == 1 and "答一" in texts()[0]
+        box.value = ""
+        await pilot.pause(0.05)
+
+        # shift+l 打标签:输入框变标签编辑器,enter 保存并落盘
+        listing = selector.query_one("#session-list", tui_mod.OptionList)
+        listing.highlighted = 0
+        target = selector._rows()[0].id
+        await pilot.press("shift+l")
+        await pilot.pause(0.05)
+        assert selector._editing == target
+        box.value = "重点"
+        await pilot.press("enter")
+        await pilot.pause(0.05)
+        assert selector._editing is None
+        entry = next(e for e in session.entries if str(e.get("id")) == target)
+        assert entry["label"] == "重点" and entry["labelTimestamp"]
+        reread = store.get(session.id)
+        assert reread is not None
+        assert any(e.get("label") == "重点" for e in reread.entries)   # 真的落盘了
+
+        await pilot.press("ctrl+l")                       # 只看有标签
+        await pilot.pause(0.05)
+        assert [row.id for row in selector._rows()] == [target]
+        assert "[重点]" in texts()[0]
+
+        await pilot.press("shift+t")                      # 标签带时间戳
+        await pilot.pause(0.05)
+        assert "(" in texts()[0]
+
+        # 清标签(留空保存)→ labeled-only 变空
+        await pilot.press("shift+l")
+        await pilot.pause(0.05)
+        box.value = ""
+        await pilot.press("enter")
+        await pilot.pause(0.05)
+        assert "label" not in entry
+        assert selector._rows() == []
+
+        await pilot.press("escape")
+        await pilot.pause(0.05)
+        assert not isinstance(app.screen, tui_mod.TreeSelector)

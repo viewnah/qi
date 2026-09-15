@@ -24,6 +24,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, NamedTuple, cast
 
@@ -1162,23 +1163,6 @@ class ScopedModelsSelector(ModalScreen[list[str] | None]):
                 listing.select(value)
 
 
-def _binding_key_of(binding: Any) -> str:
-    """Textual 的 BINDINGS 允许 `Binding` 或 `(key, action)` 元组,统一取按键串。"""
-    key = getattr(binding, "key", None)
-    if key is None and isinstance(binding, tuple) and binding:
-        key = binding[0]
-    return str(key or "")
-
-
-class _FilterInput(Input):
-    """选择器的过滤/重命名输入框。
-
-    Textual 的 `Input` 把 `ctrl+d` 绑成「删右侧字符」、`ctrl+u` 绑成「删到行首」。
-    这些键在 pi 的选择器里另有含义(删除 / 过滤),所以面板要把自己的同名绑定标成
-    `priority`;App 级快捷键则由 `QiTui.check_action` 在模态打开时统一关掉。
-    """
-
-
 class SessionSelector(ModalScreen[str | None]):
     """`/resume` 的会话选择器(对齐 pi 的会话选择器键位)。
 
@@ -1210,7 +1194,7 @@ class SessionSelector(ModalScreen[str | None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="session-box"):
             yield Static(self._hint(), id="session-hint")
-            yield _FilterInput(placeholder="输入以过滤(标题 / id)", id="session-filter")
+            yield Input(placeholder="输入以过滤(标题 / id)", id="session-filter")
             yield OptionList(id="session-list")
 
     def on_mount(self) -> None:
@@ -1332,6 +1316,179 @@ class SessionSelector(ModalScreen[str | None]):
         self.dismiss(str(event.option.id))
 
 
+TREE_FILTERS = ("default", "no-tools", "user-only", "labeled-only", "all")
+"""`/tree` 的过滤模式(对齐 pi 的 app.tree.filter.*:ctrl+d/t/u/l/a + ctrl+o 循环)。"""
+
+TREE_FILTER_HINTS = {
+    "default": "默认(隐藏状态类)",
+    "no-tools": "隐藏工具结果",
+    "user-only": "只看用户消息",
+    "labeled-only": "只看有标签",
+    "all": "全部条目",
+}
+
+
+class TreeRow(NamedTuple):
+    """树里的一行:`text` 是展示文本,`label` 是原标签(供编辑时回填)。"""
+
+    id: str
+    text: str
+    label: str = ""
+
+
+def entry_passes_tree_filter(entry: dict, mode: str) -> bool:
+    """pi 的 tree filter 语义(对齐 applyFilter 的 switch)。"""
+    kind = entry.get("type")
+    if mode == "user-only":
+        return kind == "message" and entry.get("role") == "user"
+    if mode == "labeled-only":
+        return bool(str(entry.get("label") or "").strip())
+    if mode == "no-tools":
+        return kind not in ("state", "tool")
+    if mode == "all":
+        return True
+    return kind != "state"           # default:隐藏状态类(pi 的 settings 类 entry)
+
+
+class TreeSelector(ModalScreen[str | None]):
+    """`/tree` 的会话树选择器(对齐 pi 的 tree filter 与标签键位)。
+
+    返回要跳到的 entry id;取消返回 None。标签直接在环上改(回调负责落盘),
+    改完重新 `provider()` 取一遍行。
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "取消"),
+        Binding("ctrl+d", "set_filter('default')", "默认视图", priority=True, show=False),
+        Binding("ctrl+t", "set_filter('no-tools')", "隐藏工具结果", priority=True, show=False),
+        Binding("ctrl+u", "set_filter('user-only')", "只看用户消息", priority=True, show=False),
+        Binding("ctrl+l", "set_filter('labeled-only')", "只看有标签", priority=True, show=False),
+        Binding("ctrl+a", "set_filter('all')", "全部条目", priority=True, show=False),
+        Binding("ctrl+o", "cycle_filter", "循环过滤", priority=True, show=False),
+        Binding("shift+ctrl+o", "cycle_filter_back", "反向循环", priority=True, show=False),
+        Binding("shift+l", "edit_label", "编辑标签", priority=True, show=False),
+        Binding("shift+t", "toggle_label_time", "标签时间戳", priority=True, show=False),
+    ]
+
+    def __init__(self, provider, *, on_label, current: str | None = None) -> None:
+        super().__init__()
+        self._provider = provider      # (mode, query, show_label_time) -> list[TreeRow]
+        self._on_label = on_label
+        self._current = current
+        self._mode = "default"
+        self._show_label_time = False
+        self._editing: str | None = None
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="session-box"):
+            yield Static("", id="session-hint")
+            yield Input(placeholder="输入搜索节点(空格分词)", id="session-filter")
+            yield OptionList(id="session-list")
+
+    def on_mount(self) -> None:
+        self.query_one("#session-filter", Input).focus()
+        self._refresh()
+
+    def _input(self) -> Input:
+        return self.query_one("#session-filter", Input)
+
+    def _hint(self) -> str:
+        if self._editing is not None:
+            return "编辑标签:输入后 enter 保存(留空 = 清除),escape 取消"
+        return (f"会话树 · 过滤={TREE_FILTER_HINTS.get(self._mode, self._mode)}"
+                + (" · 标签带时间" if self._show_label_time else "")
+                + "   ↑↓ 选择 · enter 跳转 · ctrl+d/t/u/l/a 过滤 · ctrl+o 循环 · "
+                  "shift+l 标签 · shift+t 标签时间 · escape 取消")
+
+    def _rows(self) -> list[TreeRow]:
+        return self._provider(self._mode, self._input().value.strip(), self._show_label_time)
+
+    def _refresh(self) -> None:
+        listing = self.query_one("#session-list", OptionList)
+        listing.clear_options()
+        rows = self._rows()
+        for row in rows:
+            listing.add_option(Option(row.text, id=row.id))
+        if rows:
+            listing.highlighted = 0
+        self.query_one("#session-hint", Static).update(self._hint())
+
+    def _highlighted_id(self) -> str | None:
+        listing = self.query_one("#session-list", OptionList)
+        if not listing.option_count:
+            return None
+        index = listing.highlighted if listing.highlighted is not None else 0
+        return str(listing.get_option_at_index(index).id)
+
+    # -- 键位 ---------------------------------------------------------
+    def action_cancel(self) -> None:
+        if self._editing is not None:
+            self._end_edit()
+            return
+        self.dismiss(None)
+
+    def action_set_filter(self, mode: str) -> None:
+        if mode in TREE_FILTERS:
+            self._mode = mode
+            self._refresh()
+
+    def action_cycle_filter(self) -> None:
+        self._step_filter(1)
+
+    def action_cycle_filter_back(self) -> None:
+        self._step_filter(-1)
+
+    def _step_filter(self, step: int) -> None:
+        index = (TREE_FILTERS.index(self._mode) + step) % len(TREE_FILTERS)
+        self._mode = TREE_FILTERS[index]
+        self._refresh()
+
+    def action_toggle_label_time(self) -> None:
+        self._show_label_time = not self._show_label_time
+        self._refresh()
+
+    def action_edit_label(self) -> None:
+        if self._editing is not None:
+            self._commit_label()
+            return
+        entry_id = self._highlighted_id()
+        if entry_id is None:
+            return
+        current = next((row.label for row in self._rows() if row.id == entry_id), "")
+        self._editing = entry_id
+        box = self._input()
+        box.value = current
+        box.cursor_position = len(box.value)
+        self.query_one("#session-hint", Static).update(self._hint())
+
+    def _end_edit(self) -> None:
+        self._editing = None
+        self._input().value = ""
+        self._refresh()
+
+    def _commit_label(self) -> None:
+        entry_id, self._editing = self._editing, None
+        label = self._input().value.strip()
+        if entry_id:
+            self._on_label(entry_id, label)
+        self._end_edit()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if self._editing is None:
+            self._refresh()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if self._editing is not None:
+            self._commit_label()
+            return
+        entry_id = self._highlighted_id()
+        if entry_id is not None:
+            self.dismiss(entry_id)
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(str(event.option.id))
+
+
 class QiTui(App):
     TITLE = "qi"
     SUB_TITLE = "多 agent · auto 分派"
@@ -1358,6 +1515,7 @@ class QiTui(App):
     #scoped-list { background: transparent; height: auto; max-height: 60%; }
     /* 会话选择器(/resume) */
     SessionSelector { align: center middle; }
+    TreeSelector { align: center middle; }
     #session-box { width: 78; max-height: 70%; background: $surface; border: round $primary;
                    padding: 0 1; }
     #session-hint { color: $text-muted; }
@@ -2500,35 +2658,59 @@ class QiTui(App):
             return f"状态: {entry.get('key')} = {entry.get('value')}"
         return str(kind)
 
-    def _tree_options(self, session) -> list[tuple[str, str]]:
-        """整棵树 → `(entry id, 缩进标签)`;`●` 当前节点,`│` 当前分支,`·` 其它分支。"""
+    def _tree_rows(self, session, mode: str, query: str,
+                   show_label_time: bool) -> list[TreeRow]:
+        """整棵树 → 行(按 `mode` 过滤、按 `query` 搜索);`●` 当前节点,`│` 当前分支。
+
+        父节点被过滤掉时子节点仍然继续遍历 —— 缩进保留,与 pi 一致。
+        """
         on_branch = {str(e.get("id")) for e in session.branch()}
         node = session.current
-        out: list[tuple[str, str]] = []
+        tokens = [token for token in query.lower().split() if token]
+        out: list[TreeRow] = []
 
         def walk(parent: str | None, depth: int) -> None:
             for child in session.children(parent):
                 child_id = str(child.get("id"))
+                label = str(child.get("label") or "").strip()
                 mark = "●" if child_id == node else ("│" if child_id in on_branch else "·")
-                out.append((child_id, "  " * depth + f"{mark} {self._entry_label(child)}"))
+                text = "  " * depth + f"{mark} "
+                if label:
+                    text += f"[{label}] "
+                    if show_label_time and child.get("labelTimestamp"):
+                        text += f"({child['labelTimestamp']}) "
+                text += self._entry_label(child)
+                if entry_passes_tree_filter(child, mode) \
+                        and all(token in text.lower() for token in tokens):
+                    out.append(TreeRow(child_id, text, label))
                 walk(child_id, depth + 1)
 
         walk(None, 0)
         return out
 
-    def _user_message_options(self, session) -> list[tuple[str, str]]:
-        """当前分支上的用户消息(fork 的可选点)。"""
-        return [(str(e.get("id")), self._entry_label(e))
-                for e in session.branch()
-                if e.get("type") == "message" and e.get("role") == "user"]
-
-    def action_show_tree(self) -> None:
-        """/tree:跳转当前会话的任意节点(同一文件内的分支导航)。"""
+    def _set_entry_label(self, entry_id: str, label: str) -> None:
+        """给 entry 打/清标签(直接落在会话文件里,对齐 pi 的标签编辑)。"""
         session = self._session
         if session is None:
             return
-        options = self._tree_options(session)
-        if not options:
+        entry = next((e for e in session.entries if str(e.get("id")) == entry_id), None)
+        if entry is None:
+            return
+        if label:
+            entry["label"] = label
+            entry["labelTimestamp"] = datetime.now().isoformat(timespec="seconds")
+        else:
+            entry.pop("label", None)
+            entry.pop("labelTimestamp", None)
+        self._session_store().save(session)
+        self._flash(f"标签: {label}" if label else f"已清除标签 {entry_id}")
+
+    def action_show_tree(self) -> None:
+        """/tree:跳转当前会话的任意节点(同一文件内的分支导航 + pi 的过滤/标签键)。"""
+        session = self._session
+        if session is None:
+            return
+        if not self._tree_rows(session, "all", "", False):
             self._flash("会话还是空的")
             return
 
@@ -2536,9 +2718,16 @@ class QiTui(App):
             if value:
                 self._jump_to(value)
 
-        self.push_screen(PickerScreen(
-            "会话树(↑↓ 选择 · enter 跳到该节点继续 · escape 取消)", options,
+        self.push_screen(TreeSelector(
+            lambda mode, query, show_ts: self._tree_rows(session, mode, query, show_ts),
+            on_label=self._set_entry_label,
             current=session.current), picked)
+
+    def _user_message_options(self, session) -> list[tuple[str, str]]:
+        """当前分支上的用户消息(fork 的可选点)。"""
+        return [(str(e.get("id")), self._entry_label(e))
+                for e in session.branch()
+                if e.get("type") == "message" and e.get("role") == "user"]
 
     def _jump_to(self, entry_id: str) -> None:
         session = self._session

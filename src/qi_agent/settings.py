@@ -76,6 +76,7 @@ class QiSettings(BaseModel):
     theme: str | None = None
     quietStartup: bool = False
     defaultProjectTrust: str = "ask"
+    doubleEscapeAction: str = "tree"
 
     # 会话 / 工具
     sessionDir: str | None = None
@@ -283,6 +284,16 @@ def project_trust_default(settings: QiSettings) -> str:
     """`defaultProjectTrust` 取值归一(ask/always/never);未知值按 ask。"""
     value = (settings.defaultProjectTrust or "ask").strip().lower()
     return value if value in ("ask", "always", "never") else "ask"
+
+
+DOUBLE_ESCAPE_ACTIONS = ("tree", "fork", "none")
+"""`doubleEscapeAction` 的合法取值(对齐 pi 的 settings-manager)。"""
+
+
+def double_escape_action(settings: QiSettings | None) -> str:
+    """空编辑器连按两次 escape 干什么:tree / fork / none。默认 tree(pi 同款)。"""
+    value = (getattr(settings, "doubleEscapeAction", None) or "tree").strip().lower()
+    return value if value in DOUBLE_ESCAPE_ACTIONS else "tree"
 
 
 def session_dir(settings: QiSettings, cwd: Path | None = None,

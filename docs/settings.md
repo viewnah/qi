@@ -41,6 +41,7 @@
 | `sessionDir` | string | — | 会话目录;相对路径按**各自 settings.json 所在目录**解析,支持 `~`;项目优先于全局 |
 | `skills` | string[] | `[]` | 追加技能路径;支持 glob、`~`、相对路径与排除项(见 §4) |
 | `skillsEnabled` | boolean | `true` | qi 扩展:关闭技能自动发现(等价 pi 的 `--no-skills` CLI 开关) |
+| `doubleEscapeAction` | string | `tree` | 空编辑器连按两次 `escape`:`tree`(默认)/`fork`/`none`;非法值按 `tree`。见 [tui.md](tui.md) §2 |
 
 ### 仅存储(预留,尚未参与行为)
 

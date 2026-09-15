@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from qi_agent.config import ResolvedModel
 from qi_agent.models import AgentEvent
 from qi_agent.llm import LiteLLMClient
 from qi_agent.session import SessionStore
+from qi_agent.settings import QiSettings
 from qi_agent.theme import load_palette
 from textual.widgets import Static
 from qi_agent.tui import (
@@ -642,17 +644,17 @@ async def test_completion_candidates_commands_and_files(tmp_path, monkeypatch):
         await pilot.pause(0.1)
 
         await _editor_with(app, pilot, "/se")            # 命令补全
-        values = [v for v, _ in app._completion_candidates()[0]]
+        values = [c.value for c in app._completion_candidates()[0]]
         assert "/session" in values and "/sessions" in values
         assert "/help" not in values
         assert app._completions_open is True
 
         await _editor_with(app, pilot, "讲一下 @al")     # 文件补全
-        values = [v for v, _ in app._completion_candidates()[0]]
+        values = [c.value for c in app._completion_candidates()[0]]
         assert values == ["@alpha.py"]
 
         await _editor_with(app, pilot, "@")              # 目录优先、隐藏文件默认不列
-        values = [v for v, _ in app._completion_candidates()[0]]
+        values = [c.value for c in app._completion_candidates()[0]]
         assert "@subdir/" in values and "@alpha.py" in values
 
         await _editor_with(app, pilot, "普通文本")        # 没有触发词
@@ -698,6 +700,145 @@ async def test_tab_applies_completion(tmp_path, monkeypatch):
         await pilot.pause(0.05)
         assert app._completions_open is False
         assert app._status != "已中断"
+
+
+@pytest.mark.asyncio
+async def test_completion_argument_candidates(tmp_path, monkeypatch):
+    """`/model` `/thinking` `/login` 的第一个参数有候选(pi 的 getArgumentCompletions)。"""
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        assert app._rt is not None
+        app._rt.cfg = _fake_cfg()
+
+        await _editor_with(app, pilot, "/thinking ")     # 级别全列
+        values = [c.value for c in app._completion_candidates()[0]]
+        assert values == list(tui_mod.THINKING_LEVELS)
+        assert app._completions_open is True
+
+        await _editor_with(app, pilot, "/thinking hi")   # 参数前缀过滤
+        assert [c.value for c in app._completion_candidates()[0]] == ["high"]
+
+        await _editor_with(app, pilot, "/model beta")    # 模型候选是 provider/model
+        assert [c.value for c in app._completion_candidates()[0]] == ["beta/m3"]
+
+        await _editor_with(app, pilot, "/model m2")      # 只给模型名也能补出 provider/model
+        assert [c.value for c in app._completion_candidates()[0]] == ["alpha/m2"]
+
+        await _editor_with(app, pilot, "/login ")        # provider 候选
+        assert [c.value for c in app._completion_candidates()[0]] == ["alpha", "beta"]
+
+        # tab 写回的是参数本身,既不补尾随空格也不当作命令
+        editor = await _editor_with(app, pilot, "/model beta")
+        await pilot.press("tab")
+        await pilot.pause(0.05)
+        assert editor.text == "/model beta/m3"
+        assert app._completions_open is False
+
+
+@pytest.mark.asyncio
+async def test_completion_source_tag_rendered(tmp_path, monkeypatch):
+    """第三方/项目来源的候选带 `[u]/[p]/[t]` 标签(为 prompt template / 插件命令备)。"""
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        # 内置候选没有标签
+        await _editor_with(app, pilot, "/se")
+        panel = app.query_one("#completions", tui_mod.OptionList)
+        assert "[" not in str(panel.get_option_at_index(0).prompt)
+
+        # 带来源的候选(将来 prompt template / 插件命令):渲染成 `[p] tpl   说明`
+        app._completion_candidates = (  # type: ignore[method-assign]
+            lambda: ([tui_mod.Candidate("/tpl", "tpl", "项目模板", "p")], 0, 0))
+        app._refresh_completions()
+        panel = app.query_one("#completions", tui_mod.OptionList)
+        shown = str(panel.get_option_at_index(0).prompt)
+        assert "[p] tpl" in shown and "项目模板" in shown
+
+
+# ── 输入历史(pi 的 editor.addToHistory / navigateHistory)──
+
+
+@pytest.mark.asyncio
+async def test_editor_history_up_down_keeps_draft(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        editor = app.query_one("#editor", Editor)
+        editor.add_to_history("第一条")
+        editor.add_to_history("第二条")
+        editor.add_to_history("第二条")                   # 连续重复不入
+        assert editor._history == ["第二条", "第一条"]
+
+        editor.load_text("草稿")
+        editor.move_cursor((0, len("草稿")))
+        await pilot.pause(0.05)
+        await pilot.press("up")                          # 光标不在行首 → 只移动光标
+        await pilot.pause(0.05)
+        assert editor.text == "草稿"
+
+        editor.move_cursor((0, 0))
+        await pilot.press("up")
+        await pilot.pause(0.05)
+        assert editor.text == "第二条"
+        await pilot.press("up")
+        await pilot.pause(0.05)
+        assert editor.text == "第一条"
+        await pilot.press("down")
+        await pilot.pause(0.05)
+        assert editor.text == "第二条"
+        await pilot.press("down")                        # 回到 -1 = 草稿
+        await pilot.pause(0.05)
+        assert editor.text == "草稿"
+        assert editor._history_index == -1
+
+        # 翻历史时手动改动 → 退出浏览(回草稿后光标在行尾,先回到行首再 ↑)
+        editor.move_cursor((0, 0))
+        await pilot.press("up")
+        await pilot.pause(0.05)
+        assert editor.text == "第二条"
+        editor.insert("X")
+        await pilot.pause(0.05)
+        assert editor._history_index == -1
+        assert editor.text == "X第二条"
+
+
+@pytest.mark.asyncio
+async def test_editor_history_records_chat_but_not_commands(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        editor = app.query_one("#editor", Editor)
+
+        editor.load_text("你好")
+        await pilot.press("enter")                        # 对话 → 进历史
+        await pilot.pause(0.2)
+        assert editor._history[0] == "你好"
+
+        editor.load_text("/help")                         # 内置命令 → 不进历史
+        await pilot.press("enter")
+        await pilot.pause(0.1)
+        assert editor._history == ["你好"]
 
 
 # ── `!` / `!!` 手动 bash ───────────────────────────────
@@ -935,6 +1076,72 @@ def _seed_branch(app) -> list[str]:
     return ids
 
 
+# ── 双击 escape(pi 的 settings.doubleEscapeAction)─────────
+
+
+@pytest.mark.asyncio
+async def test_double_escape_default_opens_tree(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        _seed_branch(app)
+        assert app.query_one("#editor", Editor).text == ""
+
+        await pilot.press("escape")                       # 第一次:只记时间
+        await pilot.pause(0.05)
+        assert not isinstance(app.screen, tui_mod.PickerScreen)
+
+        await pilot.press("escape")                       # 窗口内第二次 → /tree
+        await pilot.pause(0.1)
+        assert isinstance(app.screen, tui_mod.PickerScreen)
+        assert "会话树" in app.screen._title
+
+
+@pytest.mark.asyncio
+async def test_double_escape_action_fork_and_none(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        _seed_branch(app)
+        assert app._rt is not None
+
+        app._rt.settings = QiSettings(doubleEscapeAction="none")
+        app._last_escape = time.monotonic()
+        await pilot.press("escape")
+        await pilot.pause(0.1)
+        assert not isinstance(app.screen, tui_mod.PickerScreen)
+
+        app._rt.settings = QiSettings(doubleEscapeAction="fork")
+        app._last_escape = time.monotonic()
+        await pilot.press("escape")
+        await pilot.pause(0.1)
+        assert isinstance(app.screen, tui_mod.PickerScreen)   # /fork 的用户消息选择器
+        assert "fork" in app.screen._title
+
+        # 编辑器非空时不触发(escape 只当普通中断)
+        await pilot.press("escape")                       # 关掉选择器
+        await pilot.pause(0.1)
+        assert not isinstance(app.screen, tui_mod.PickerScreen)
+        editor = app.query_one("#editor", Editor)
+        editor.load_text("还没发出去")
+        editor.move_cursor((0, 0))
+        app._last_escape = time.monotonic()
+        await pilot.press("escape")
+        await pilot.pause(0.1)
+        assert not isinstance(app.screen, tui_mod.PickerScreen)
+        assert editor.text == "还没发出去"
+
+
 @pytest.mark.asyncio
 async def test_tree_lists_tree_and_jumps(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -1014,6 +1221,20 @@ async def test_fork_creates_new_session_and_prefills_editor(tmp_path, monkeypatc
 
         app._command("/fork 99")                          # 越界 → 明确提示,不静默
         assert any("找不到那条用户消息" in text for text, _ in notes)
+
+
+def test_fork_numeric_arg_is_index_not_id_prefix():
+    """`/fork 2` 必须稳定指向第 2 条用户消息:entry id 是随机串,以前会让
+    「id 以 2 开头」的第 1 条抢走 —— 按运行随机失败。"""
+    app = QiTui(palette=PALETTE)
+    session = object()
+    app._user_message_options = lambda _session: [      # type: ignore[method-assign]
+        ("2abc-def", "你: Q1"), ("f00d", "你: Q2"),
+    ]
+    assert app._resolve_user_message(session, "2") == "f00d"    # 序号优先
+    assert app._resolve_user_message(session, "1") == "2abc-def"
+    assert app._resolve_user_message(session, "f0") == "f00d"   # 非纯数字才当 id 前缀
+    assert app._resolve_user_message(session, "9") is None
 
 
 @pytest.mark.asyncio

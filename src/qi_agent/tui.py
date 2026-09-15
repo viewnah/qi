@@ -24,7 +24,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 from rich.markdown import Markdown as RichMarkdown
 from rich.style import Style
@@ -47,6 +47,7 @@ from .loader import LoadError
 from .registry import ToolCatalog
 from .runtime import MAX_TOOL_ENTRY_CHARS, QiRuntime
 from .session import SessionStore
+from .settings import double_escape_action
 from .theme import (
     Palette,
     format_cwd_line,
@@ -144,6 +145,26 @@ TUI_COMMANDS: dict[str, str] = {
 COMPLETION_ROWS = 8
 """补全面板最多显示几行。"""
 
+DOUBLE_ESCAPE_WINDOW = 0.5
+"""空编辑器连按两次 escape 的判定窗口(秒);pi 用 500ms。"""
+
+
+class Candidate(NamedTuple):
+    """补全候选(对齐 pi 的 AutocompleteItem:value/label/description + 来源标签)。
+
+    `source` 为空 = 内置;非空时按 pi 的写法在补全面板里前置 `[u]/[p]/[t]`
+    (user / project / third-party)—— 将来 prompt template 与插件命令带着它进来。
+    """
+
+    value: str          # 写回编辑器的文本
+    label: str          # 面板里显示的名字
+    detail: str = ""    # 右侧说明
+    source: str = ""    # 来源标签(空 = 内置)
+
+
+ARG_COMPLETION_COMMANDS = ("/model", "/thinking", "/login")
+"""参数补全(对齐 pi 的 `getArgumentCompletions`):这些命令的第一个参数给候选。"""
+
 BASH_PREVIEW_LINES = 20
 """bash 输出折叠时的预览行数(对齐 pi 的 BashExecutionComponent)。"""
 
@@ -154,7 +175,7 @@ HOTKEYS_TEXT = """\
   enter                   提交
   shift+enter / ctrl+j    换行
   tab                     补全:行首 `/` = 命令、`@` = 相对路径;无候选时 = 缩进
-  ↑ / ↓                   补全面板开着时选候选,否则移动光标
+  ↑ / ↓                   补全面板开着时选候选;行首/空编辑器时翻输入历史,否则移动光标
   ctrl+b / ctrl+f         光标左 / 右
   alt+b / alt+f、alt+←/→、ctrl+←/→  按词移动
   ctrl+w / alt+backspace  删前一个词
@@ -169,6 +190,7 @@ HOTKEYS_TEXT = """\
 
   应用
   escape                  中断当前回合;有排队时先把排队退回编辑器
+  escape ×2               空编辑器连按两次:settings.doubleEscapeAction(默认 tree / fork / none)
   shift+tab               循环思考级别(off→minimal→…→max)
   ctrl+t                  显示/隐藏思考块
   enter                   提交(回合进行中 = 排队,当前回合结束后发送)
@@ -577,6 +599,10 @@ class Editor(TextArea):
         而 ctrl+z 在 pi 里是挂起,所以改绑到 pi 的键)
     未实现:kill-ring 的 yank/yank-pop(ctrl+y / alt+y)—— Textual 没有 kill-ring,
     ctrl+y 仍是它默认的 redo。
+
+    输入历史(pi 的 `addToHistory` / `navigateHistory`):无补全面板时 `↑` 取回上一条
+    提交过的文本(对话与 `!` bash,内置命令不记),`↓` 往回走;首次翻历史时留住当前
+    草稿,手动改动即退出浏览。
     """
 
     class Submitted(Message):
@@ -636,6 +662,11 @@ class Editor(TextArea):
         kwargs.setdefault("tab_behavior", "indent")   # 不抢焦点
         kwargs.setdefault("show_line_numbers", False)
         super().__init__("", **kwargs)
+        # 输入历史(对齐 pi-tui editor 的 history/historyIndex/historyDraft)
+        self._history: list[str] = []
+        self._history_index = -1          # -1 = 没在翻历史
+        self._history_draft: str | None = None
+        self._history_applied: str | None = None   # 历史/草稿刚写回去的文本
 
     async def _on_key(self, event: events.Key) -> None:
         # TextArea 在 tab_behavior="indent" 下会把 escape 当「换焦点」、tab 当「缩进」
@@ -653,6 +684,10 @@ class Editor(TextArea):
                 self.post_message(self.Complete())
             else:
                 self.post_message(self.MoveCompletion(-1 if event.key == "up" else 1))
+            return
+        if not panel_open and event.key in ("up", "down") and self._history_key(event.key):
+            event.stop()
+            event.prevent_default()
             return
         if event.key == "alt+enter":          # pi:排队 follow-up
             event.stop()
@@ -674,6 +709,77 @@ class Editor(TextArea):
     def action_submit(self) -> None:
         self.post_message(self.Submitted(self.text))
 
+    # -- 输入历史(对齐 pi 的 editor.addToHistory / navigateHistory)------
+    def add_to_history(self, text: str) -> None:
+        """提交成功后入历史:去空、去连续重复、上限 100 条(pi 同款)。"""
+        trimmed = text.strip()
+        if not trimmed:
+            return
+        if self._history and self._history[0] == trimmed:
+            return
+        self._history.insert(0, trimmed)
+        del self._history[100:]
+
+    def navigate_history(self, direction: int) -> None:
+        """direction: -1 = 更旧(↑),+1 = 更新(↓)。"""
+        if not self._history:
+            return
+        new_index = self._history_index - direction   # ↑(-1)让索引变大 = 更旧
+        if new_index < -1 or new_index >= len(self._history):
+            return
+        if self._history_index == -1 and new_index >= 0:
+            self._history_draft = self.text           # 首次进入:留住草稿
+        self._history_index = new_index
+        if new_index == -1:
+            draft = self._history_draft or ""
+            self._history_draft = None
+            self._set_history_text(draft, at_start=False)
+        else:
+            self._set_history_text(self._history[new_index], at_start=direction == -1)
+
+    def _set_history_text(self, text: str, *, at_start: bool) -> None:
+        """写回历史/草稿,并把光标放行首(↑)或行尾(↓)—— pi 同款。"""
+        self._history_applied = text
+        self.load_text(text)
+        if at_start:
+            self.move_cursor((0, 0))
+        else:
+            self.move_cursor((text.count("\n"), len(text.rsplit("\n", 1)[-1])))
+
+    def _history_key(self, key: str) -> bool:
+        """↑/↓ 是否该翻历史(返回 True = 已消费)。
+
+        pi 的规则:首行上移且(编辑器为空 或 正在翻历史 或 光标在第 0 列)→ 翻历史;
+        已在历史里时 ↓ 回退。其余情况交给 TextArea 移动光标。
+        """
+        if key == "up":
+            row, col = self.cursor_location
+            if row == 0 and (not self.text or self._history_index > -1 or col == 0):
+                self.navigate_history(-1)
+                return True
+            return False
+        if self._history_index > -1:
+            self.navigate_history(1)
+            return True
+        return False
+
+    def _exit_history_browsing(self) -> None:
+        self._history_index = -1
+        self._history_draft = None
+        self._history_applied = None
+
+    @property
+    def history_browsing(self) -> bool:
+        """正在翻历史时不要在历史文本上弹补全面板(否则 ↑/↓ 会被面板抢走)。"""
+        return self._history_index > -1
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        """用户手动改动就退出历史浏览(对齐 pi:任何编辑都 exitHistoryBrowsing)。"""
+        if event.text_area.id != "editor":
+            return
+        if self._history_index > -1 and self.text != self._history_applied:
+            self._exit_history_browsing()
+
     def action_newline(self) -> None:
         self.insert("\n")
 
@@ -684,6 +790,7 @@ class Editor(TextArea):
 
     def reset(self) -> None:
         """清空(不能叫 clear:TextArea.clear 的返回类型是 EditResult)。"""
+        self._exit_history_browsing()
         self.load_text("")
 
 
@@ -832,8 +939,9 @@ class QiTui(App):
         self._branch: str | None = None
         self._last_answer = ""
         self._exit_armed = False
+        self._last_escape = 0.0              # 双击 escape(pi 的 doubleEscapeAction)
         # 补全(pi 的 autocomplete):候选列表 + 当前替换区间
-        self._completions: list[tuple[str, str]] = []
+        self._completions: list[Candidate] = []
         self._completions_open = False
         self._bash_blocks: list[BashBlock] = []
         self._compaction_blocks: list[CompactionBlock] = []
@@ -1053,10 +1161,14 @@ class QiTui(App):
     # -- 输入 -----------------------------------------------------------
     def on_editor_submitted(self, event: Editor.Submitted) -> None:
         text = event.value.strip()
-        self.query_one("#editor", Editor).reset()
+        editor = self.query_one("#editor", Editor)
+        editor.reset()
         self._sync_log_height()
         if not text:
             return
+        # pi 只把对话与 bash 记进输入历史,内置命令不入 —— 否则 ↑ 全被 /tree 之类古满
+        if not text.startswith("/"):
+            editor.add_to_history(text)
         # 命令(`/x`)与 bash(`!x`)回合进行中也**立即执行** —— pi 就是这样,
         # 否则 `/quit` 这种命令会被推到回合结束后,等于按不下去。
         if text.startswith("/") or text.startswith("!"):
@@ -1069,10 +1181,23 @@ class QiTui(App):
         self._submit(text)
 
     def on_editor_interrupt(self, event: Editor.Interrupt) -> None:
-        """escape:先关补全面板,再考虑中断(对齐 pi:escape 先取消选择器)。"""
+        """escape:先关补全面板;空编辑器连按两次触发 settings.doubleEscapeAction。"""
         if self._completions_open:
             self._close_completions()
             return
+        editor = self.query_one("#editor", Editor)
+        if not editor.text.strip() and not self._working:
+            action = double_escape_action(getattr(self._rt, "settings", None))
+            if action != "none":
+                now = time.monotonic()
+                if now - self._last_escape < DOUBLE_ESCAPE_WINDOW:
+                    self._last_escape = 0.0
+                    if action == "tree":
+                        self.action_show_tree()
+                    else:
+                        self._command("/fork")
+                    return
+                self._last_escape = now
         self.action_interrupt()
 
     def on_editor_complete(self, event: Editor.Complete) -> None:
@@ -1105,7 +1230,10 @@ class QiTui(App):
         if event.text_area.id != "editor":
             return
         self._repaint_borders()
-        self._refresh_completions()
+        if self.query_one("#editor", Editor).history_browsing:
+            self._close_completions()      # 翻历史时不弹面板,否则 ↑/↓ 会被面板抢走
+        else:
+            self._refresh_completions()
         self._sync_log_height()
 
     def _submit(self, text: str) -> None:
@@ -1803,17 +1931,21 @@ class QiTui(App):
                             exclusive=False)
 
     def _resolve_user_message(self, session, arg: str) -> str | None:
-        """`/fork` 参数:entry id(前缀)或 1-based 序号。"""
+        """`/fork` 参数:1-based 序号,或 entry id(前缀)。
+
+        纯数字优先当序号:entry id 是随机串,否则 `/fork 2` 会随「第 1 条 id 是不是
+        以 2 开头」而随机指向第 1 条 —— 不可复现的抖动。
+        """
         options = self._user_message_options(session)
+        if arg.isascii() and arg.isdigit():
+            try:
+                index = int(arg) - 1      # 不用 isdigit()单判:部分 Unicode 数字能过却过不了 int
+            except ValueError:            # 防御:isascii+isdigit 已排除,留个兜底
+                return None
+            return options[index][0] if 0 <= index < len(options) else None
         for entry_id, _ in options:
             if entry_id == arg or entry_id.startswith(arg):
                 return entry_id
-        try:
-            index = int(arg) - 1          # 不用 isdigit():部分 Unicode 数字能过 isdigit 却过不了 int
-        except ValueError:
-            return None
-        if 0 <= index < len(options):
-            return options[index][0]
         return None
 
     def _fork_from(self, session, entry_id: str) -> None:
@@ -1998,13 +2130,13 @@ class QiTui(App):
         self._flash("已为离开的分支生成摘要(挂在跳转点)")
         self._scroll_end()
 
-    # -- 补全(pi 的 autocomplete:`/` 命令与 `@` 文件)------------
-    def _completion_candidates(self) -> tuple[list[tuple[str, str]], int, int]:
+    # -- 补全(pi 的 autocomplete:`/` 命令、参数与 `@` 文件)------
+    def _completion_candidates(self) -> tuple[list[Candidate], int, int]:
         """根据光标前的 token 给出候选。
 
-        返回 `(candidates [(value, label)], start, end)`,start/end 是要被替换的区间。
-        规则对齐 pi:
+        返回 `(candidates, start, end)`,start/end 是要被替换的区间。规则对齐 pi:
           · 行首的 `/xxx`(不含第二个 `/`)= 命令名补全
+          · `/cmd <前缀>` = 参数补全(`/model` `/thinking` `/login`,pi 的 getArgumentCompletions)
           · 当前 token 以 `@` 开头 = 相对路径补全
         """
         editor = self.query_one("#editor", Editor)
@@ -2016,26 +2148,56 @@ class QiTui(App):
         line = lines[row]
         col = min(col, len(line))
         before = line[:col]
+        row_start = len("\n".join(lines[:row])) + (row > 0)
 
         # 1) 命令补全:行首 /xxx,且还没输入空格或第二个 /
         if before.startswith("/") and " " not in before and "/" not in before[1:]:
-            prefix = before
-            items = [(name, detail) for name, detail in sorted(TUI_COMMANDS.items())
-                     if name.startswith(prefix)]
-            if len(items) == 1 and items[0][0] == prefix:
+            items = [Candidate(name, name, detail)
+                     for name, detail in sorted(TUI_COMMANDS.items())
+                     if name.startswith(before)]
+            if len(items) == 1 and items[0].value == before:
                 items = []          # 已完整匹配,不必再提示
-            row_start = len("\n".join(lines[:row])) + (row > 0)
             return items, row_start, row_start + col
+
+        # 1b) 参数补全:`/cmd <前缀>`(还没输入第二个参数)
+        if before.startswith("/") and " " in before:
+            cmd, _, rest = before.partition(" ")
+            if " " not in rest and cmd.lower() in ARG_COMPLETION_COMMANDS:
+                items = self._argument_candidates(cmd.lower(), rest)
+                start = row_start + len(cmd) + 1
+                return items, start, row_start + col
 
         # 2) 文件补全:当前 token 以 @ 开头
         token_start = max(before.rfind(" ") + 1, before.rfind("\t") + 1, 0)
         token = before[token_start:]
         if not token.startswith("@"):
             return [], 0, 0
-        query = token[1:]
-        row_start = len("\n".join(lines[:row])) + (row > 0)
-        items = self._file_candidates(query)
+        items = [Candidate(value, label) for value, label in self._file_candidates(token[1:])]
         return items, row_start + token_start, row_start + col
+
+    def _argument_candidates(self, cmd: str, prefix: str) -> list[Candidate]:
+        """`/model` `/thinking` `/login` 的第一个参数候选。"""
+        items: list[Candidate] = []
+        if cmd == "/model":
+            for provider, model, is_current in self._model_options():
+                value = f"{provider}/{model}"
+                items.append(Candidate(value, value,
+                                       "← 当前" if is_current else provider))
+        elif cmd == "/thinking":
+            items = [Candidate(level, level,
+                               "← 当前" if level == self._thinking_level else "")
+                     for level in THINKING_LEVELS]
+        elif cmd == "/login":
+            providers = sorted(getattr(getattr(self._rt, "cfg", None), "providers", {}) or {})
+            items = [Candidate(name, name) for name in providers]
+        lowered = prefix.lower()
+        # 前缀匹配也认「模型名」那一段:`/model m2` 能补出 `alpha/m2`(pi 的模糊匹配的简化)
+        out = [c for c in items
+               if not lowered or c.value.lower().startswith(lowered)
+               or c.value.rsplit("/", 1)[-1].lower().startswith(lowered)]
+        if len(out) == 1 and out[0].value == prefix:
+            return []               # 已完整匹配
+        return out[:COMPLETION_ROWS]
 
     def _file_candidates(self, query: str) -> list[tuple[str, str]]:
         """按 `@` 后的相对路径列目录(目录优先,以 `/` 结尾)。
@@ -2085,10 +2247,10 @@ class QiTui(App):
             self._sync_log_height()
             return
         panel.clear_options()
-        for value, label in candidates:
-            detail = TUI_COMMANDS.get(value, "")
-            text = f"{label}    {detail}" if detail else label
-            panel.add_option(Option(text, id=value))
+        for cand in candidates:
+            tag = f"[{cand.source}] " if cand.source else ""
+            text = f"{tag}{cand.label}" + (f"    {cand.detail}" if cand.detail else "")
+            panel.add_option(Option(text, id=cand.value))
         panel.highlighted = 0
         panel.add_class("visible")
         self._completions_open = True
@@ -2121,7 +2283,7 @@ class QiTui(App):
             return
         panel = self.query_one("#completions", OptionList)
         index = panel.highlighted if panel.highlighted is not None else 0
-        value = candidates[min(index, len(candidates) - 1)][0]
+        value = candidates[min(index, len(candidates) - 1)].value
         editor = self.query_one("#editor", Editor)
         text = editor.text
         # 命令补全补一个空格(pi 同款:`/name `),目录补全保留 `/` 继续往下补

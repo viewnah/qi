@@ -157,6 +157,7 @@ qi 与 pi 的差异(已落档):
 | 键 | qi 行为 | pi 的 action |
 | --- | --- | --- |
 | `escape` | 中断当前回合(取消 worker) | `app.interrupt` |
+| `escape` ×2 | 空编辑器连按两次(500ms 内):按 `settings.doubleEscapeAction` 开 `/tree` 或 `/fork`(默认 `tree`) | `getDoubleEscapeAction` |
 | `ctrl+c` | 清空输入框;再按一次退出 | `app.clear` + `app.exit` |
 | `ctrl+d` | 输入框为空时退出;非空删右侧字符 | `app.exit` |
 | `ctrl+o` | 展开/折叠工具输出 | `app.tools.expand` |
@@ -196,14 +197,18 @@ qi 用 `priority=True` 抢过来以匹配 pi 语义(`ctrl+d` 非空时仍自己�
 | 触发 | 行为 |
 | --- | --- |
 | 行首 `/xx` | 命令名补全(候选来自 `TUI_COMMANDS`,与 `_command` 的已实现分支对应) |
+| `/model ` `/thinking ` `/login ` | **参数补全**(对齐 pi 的 `getArgumentCompletions`):模型 `provider/model`、思考级别、provider |
 | 任意位置 `@xx` | 相对路径补全(目录优先、以 `/` 结尾继续往下补;隐藏文件只在 `@.` 时列出) |
 | `tab` | 接受候选(命令补完带一个空格);**无候选时仍是缩进** |
-| `↑` / `↓` | 面板开着时选候选,否则移动光标 |
+| `↑` / `↓` | 面板开着时选候选;否则在行首/空编辑器时翻输入历史,其余情况移动光标 |
 | `escape` | 先关面板,再考虑中断 |
 | `!<命令>` | 执行 shell,输出以 pi 同款「上下 `─` + `$ cmd` + 输出」块展示,并把「命令 + 输出」落成一条 user 消息供后续回合参考 |
 | `!!<命令>` | 同样执行,但**不进上下文**(块边框变 `dim`,标题标出) |
 
 与 pi 的差异(已落档):pi 用 `fd` 走全树模糊匹配并支持 `@"带空格的路径"`;qi 只扫描当前目录层级、前缀匹配。
+pi 的候选还带来源标签 `[u]/[p]/[t]`(user / project / third-party)—— qi 的候选结构
+(`Candidate`:value/label/detail/source)与标签渲染已就位,但 prompt template 与插件命令
+这两个来源还没接,所以目前实际只会渲染内置候选(无标签)。
 pi 在 bash 运行中会拒绝再跑一条;qi 允许并发。两者都不影响普通聊天。
 
 ### 输入层:多行编辑器(对齐 pi `pi-tui/components/editor.js`)
@@ -215,6 +220,7 @@ qi 用 Textual 的 `TextArea` 做成 pi 的编辑器,补齐了这些键(其余�
 | `enter` | 提交 | `tui.input.submit` |
 | `shift+enter` / `ctrl+j` | 换行 | `tui.input.newLine` |
 | `ctrl+b` / `ctrl+f` | 光标左 / 右 | `cursorLeft` / `cursorRight` |
+| `↑` / `↓` | 无补全面板时翻输入历史(首次进入留住草稿、手动改动即退出);否则移动光标 | `historyPrevious` / `historyNext` |
 | `alt+b` `alt+f` `alt+←/→` | 按词移动 | `cursorWordLeft` / `cursorWordRight` |
 | `alt+d` | 删后一个词 | `deleteWordForward` |
 | `ctrl+-` | 撤销 | `undo`(pi 不用 `ctrl+z` —— 那个是挂起) |
@@ -232,8 +238,8 @@ qi 用 Textual 的 `TextArea` 做成 pi 的编辑器,补齐了这些键(其余�
   否则 inline 区域会把输入框挤掉。
 - `enter` 是提升到 priority 的绑定(`TextArea` 原生会把 enter 插成换行,必须先抢)。
 
-qi 的输入层是**多行编辑器**(见下面「输入层」一节):`/` 与 `@` 补全、`!` bash 模式、
-消息队列仍未实现——它们现在是纯输入层功能,不再受控件限制。
+qi 的输入层是**多行编辑器**(见下面「输入层」一节):`/` 与 `@` 补全、参数补全、输入历史、
+`!` bash 模式、消息队列都已落地。
 
 ## 3. 消息队列(已实现;语义对齐 pi)
 

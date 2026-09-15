@@ -25,6 +25,8 @@ from qi_agent.loader import (
 )
 from qi_agent.settings import (
     SettingsError,
+    QiSettings,
+    double_escape_action,
     load_settings,
     load_settings_by_scope,
     parse_value,
@@ -107,6 +109,16 @@ def test_settings_unknown_keys_preserved_and_defaults(tmp_path, monkeypatch):
     assert settings.model_extra is not None and settings.model_extra["myExtension"] == {"x": 1}
     assert settings.defaultProjectTrust == "ask"    # 默认值
     assert settings.skillsEnabled is True
+
+
+def test_double_escape_action_defaults_and_normalizes():
+    """双击 escape 的默认/非法值都归一到 tree(对齐 pi 的 getDoubleEscapeAction)。"""
+    assert double_escape_action(None) == "tree"
+    assert double_escape_action(QiSettings()) == "tree"
+    assert double_escape_action(QiSettings(doubleEscapeAction="fork")) == "fork"
+    assert double_escape_action(QiSettings(doubleEscapeAction=" TREE ")) == "tree"
+    assert double_escape_action(QiSettings(doubleEscapeAction="nope")) == "tree"
+    assert double_escape_action(QiSettings(doubleEscapeAction="none")) == "none"
 
 
 def test_settings_invalid_json_raises(tmp_path, monkeypatch):

@@ -68,7 +68,7 @@ qi · auto                                 ← footer 3:状态行
 | `/hotkeys` | 快捷键(明写哪些 pi 键位还没做) |
 | `/quit` | 退出 |
 | `/new` | 新会话 |
-| `/resume [id]` | 不给 id = 列出历史会话;给 id = 恢复 |
+| `/resume [id]` | 不给 id = 打开**会话选择器**(模态);给 id = 直接恢复 |
 | `/sessions` | 列出历史会话 |
 | `/name <name>` | 会话显示名(进 footer) |
 | `/session` | 会话信息(ID/文件/cwd/消息数·仅当前分支/节点数与分支点/模型/用量) |
@@ -190,8 +190,25 @@ qi 用 `priority=True` 抢过来以匹配 pi 语义(`ctrl+d` 非空时仍自己�
 
 | 键 | pi 用途 | qi 缺什么 |
 | --- | --- | --- |
-| `ctrl+n` / `ctrl+r` | 会话列表过滤 / 重命名会话 | 无会话选择器 UI(pi 里这两个键只在那面板内生效);`/name` 可改名 |
 | `ctrl+v` | 粘贴图片 | 无图片输入,目前只会粘文本 |
+
+模态里的键位(会话选择器,`/resume`;对齐 pi):
+
+| 键 | 行为 |
+| --- | --- |
+| 输入框打字 | 按标题 / id 过滤 |
+| `↑` / `↓` / `enter` | 选 / 恢复 |
+| `ctrl+n` | 只看命名会话 |
+| `ctrl+s` | 排序循环(最新 → 最旧 → 名字) |
+| `ctrl+p` | 显示 / 隐藏会话文件路径 |
+| `ctrl+r` | 重命名选中会话(输入框变名字编辑器,`enter` 保存) |
+| `ctrl+d` | 删除选中会话(删当前会话时下一条消息会自动新建) |
+| `escape` | 先退出重命名态,再关面板 |
+
+实现注记:Textual 的 **priority 绑定是从 App 往下检查**的(`reversed(_binding_chain)`),
+所以 App 级的 `ctrl+d/o/t/l/p/x/c` 会盖掉模态里同名的键 —— 而 pi 的选择器恰好全用这些键。
+qi 的做法:`QiTui.check_action` 在 `screen_stack > 1` 时把 App 级快捷键返回 `False`,
+让模态自己的 priority 绑定接管(仅模态打开时生效,关上面板立即恢复)。
 
 ### 补全与 bash 模式(对齐 pi 的 autocomplete / `handleBashCommand`)
 

@@ -37,7 +37,7 @@ from textual.containers import Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import OptionList, SelectionList, Static, TextArea
+from textual.widgets import Input, OptionList, SelectionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from .auth import AuthStore
@@ -47,7 +47,7 @@ from .llm import THINKING_LEVELS, LiteLLMClient, ThinkingLLMClient, normalize_th
 from .loader import LoadError
 from .registry import ToolCatalog
 from .runtime import MAX_TOOL_ENTRY_CHARS, QiRuntime
-from .session import SessionStore
+from .session import Session, SessionStore
 from .settings import SettingsError, double_escape_action, set_value
 from .theme import (
     Palette,
@@ -1162,6 +1162,176 @@ class ScopedModelsSelector(ModalScreen[list[str] | None]):
                 listing.select(value)
 
 
+def _binding_key_of(binding: Any) -> str:
+    """Textual 的 BINDINGS 允许 `Binding` 或 `(key, action)` 元组,统一取按键串。"""
+    key = getattr(binding, "key", None)
+    if key is None and isinstance(binding, tuple) and binding:
+        key = binding[0]
+    return str(key or "")
+
+
+class _FilterInput(Input):
+    """选择器的过滤/重命名输入框。
+
+    Textual 的 `Input` 把 `ctrl+d` 绑成「删右侧字符」、`ctrl+u` 绑成「删到行首」。
+    这些键在 pi 的选择器里另有含义(删除 / 过滤),所以面板要把自己的同名绑定标成
+    `priority`;App 级快捷键则由 `QiTui.check_action` 在模态打开时统一关掉。
+    """
+
+
+class SessionSelector(ModalScreen[str | None]):
+    """`/resume` 的会话选择器(对齐 pi 的会话选择器键位)。
+
+    返回选中的会话 id;取消返回 None。重命名与删除直接作用在 store 上(由 App 传进来的
+    回调负责),选择器只负责交互与刷新 —— 所以它在改完之后重新 `provider()` 取一遍列表。
+    """
+
+    SORTS = ("recent", "oldest", "name")
+    BINDINGS = [
+        Binding("escape", "cancel", "取消"),
+        Binding("ctrl+n", "toggle_named", "只看命名会话", priority=True, show=False),
+        Binding("ctrl+s", "toggle_sort", "切换排序", priority=True, show=False),
+        Binding("ctrl+p", "toggle_path", "显示/隐藏路径", priority=True, show=False),
+        Binding("ctrl+r", "rename", "重命名", priority=True, show=False),
+        Binding("ctrl+d", "delete", "删除", priority=True, show=False),
+    ]
+
+    def __init__(self, provider, *, on_rename, on_delete, current: str | None = None) -> None:
+        super().__init__()
+        self._provider = provider          # () -> list[Session],每次刷新重取
+        self._on_rename = on_rename
+        self._on_delete = on_delete
+        self._current = current
+        self._named_only = False
+        self._sort = "recent"
+        self._show_path = False
+        self._renaming: str | None = None
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="session-box"):
+            yield Static(self._hint(), id="session-hint")
+            yield _FilterInput(placeholder="输入以过滤(标题 / id)", id="session-filter")
+            yield OptionList(id="session-list")
+
+    def on_mount(self) -> None:
+        self.query_one("#session-filter", Input).focus()
+        self._refresh()
+
+    def _hint(self) -> str:
+        return ("↑↓ 选择 · enter 恢复 · ctrl+n 只看命名 · ctrl+s 排序 · "
+                "ctrl+p 路径 · ctrl+r 重命名 · ctrl+d 删除 · escape 取消")
+
+    # -- 列表 ---------------------------------------------------------
+    def _visible(self) -> list[Session]:
+        items = list(self._provider())
+        if self._named_only:
+            items = [s for s in items if (s.title or "").strip()]
+        if self._sort == "oldest":
+            items = list(reversed(items))
+        elif self._sort == "name":
+            items.sort(key=lambda s: (s.title or "").lower() or "\uffff")
+        query = self.query_one("#session-filter", Input).value.strip().lower()
+        if query:
+            items = [s for s in items
+                     if query in s.id.lower() or query in (s.title or "").lower()]
+        return items
+
+    def _refresh(self) -> None:
+        listing = self.query_one("#session-list", OptionList)
+        listing.clear_options()
+        items = self._visible()
+        for session in items:
+            label = f"{session.title or '(未命名)'}   {session.id}   {session.created_at}"
+            if session.branch_points:
+                label += f"   分支点×{session.branch_points}"
+            if self._show_path:
+                label += f"   {session.path}"
+            if session.id == self._current:
+                label += "   ← 当前"
+            listing.add_option(Option(label, id=session.id))
+        if items:
+            listing.highlighted = 0
+
+    def _highlighted_id(self) -> str | None:
+        listing = self.query_one("#session-list", OptionList)
+        if not listing.option_count:
+            return None
+        index = listing.highlighted if listing.highlighted is not None else 0
+        return str(listing.get_option_at_index(index).id)
+
+    def _input(self) -> Input:
+        return self.query_one("#session-filter", Input)
+
+    # -- 键位 ---------------------------------------------------------
+    def action_cancel(self) -> None:
+        if self._renaming is not None:          # 先退出重命名,再考虑关面板
+            self._end_rename()
+            return
+        self.dismiss(None)
+
+    def action_toggle_named(self) -> None:
+        self._named_only = not self._named_only
+        self._refresh()
+
+    def action_toggle_sort(self) -> None:
+        self._sort = self.SORTS[(self.SORTS.index(self._sort) + 1) % len(self.SORTS)]
+        self._refresh()
+
+    def action_toggle_path(self) -> None:
+        self._show_path = not self._show_path
+        self._refresh()
+
+    def action_rename(self) -> None:
+        if self._renaming is not None:
+            self._commit_rename()
+            return
+        session_id = self._highlighted_id()
+        if session_id is None:
+            return
+        title = next((s.title for s in self._provider() if s.id == session_id), "")
+        self._renaming = session_id
+        box = self._input()
+        box.value = title or ""
+        box.cursor_position = len(box.value)
+        self.query_one("#session-hint", Static).update(
+            "重命名:输入新名字后 enter 保存,escape 取消")
+
+    def action_delete(self) -> None:
+        session_id = self._highlighted_id()
+        if session_id is None:
+            return
+        self._on_delete(session_id)
+        self._refresh()
+
+    def _end_rename(self) -> None:
+        self._renaming = None
+        self._input().value = ""
+        self.query_one("#session-hint", Static).update(self._hint())
+        self._refresh()
+
+    def _commit_rename(self) -> None:
+        session_id, self._renaming = self._renaming, None
+        name = self._input().value.strip()
+        if session_id and name:
+            self._on_rename(session_id, name)
+        self._end_rename()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if self._renaming is None:              # 重命名时输入框是名字,不是过滤器
+            self._refresh()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if self._renaming is not None:
+            self._commit_rename()
+            return
+        session_id = self._highlighted_id()
+        if session_id is not None:
+            self.dismiss(session_id)
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(str(event.option.id))
+
+
 class QiTui(App):
     TITLE = "qi"
     SUB_TITLE = "多 agent · auto 分派"
@@ -1186,6 +1356,13 @@ class QiTui(App):
     ModelSelector { align: center middle; }
     ScopedModelsSelector { align: center middle; }
     #scoped-list { background: transparent; height: auto; max-height: 60%; }
+    /* 会话选择器(/resume) */
+    SessionSelector { align: center middle; }
+    #session-box { width: 78; max-height: 70%; background: $surface; border: round $primary;
+                   padding: 0 1; }
+    #session-hint { color: $text-muted; }
+    #session-filter { background: transparent; border: none; padding: 0; height: 1; }
+    #session-list { background: transparent; height: auto; max-height: 50%; }
     #model-box { width: 64; max-height: 70%; background: $surface; border: round $primary;
                  padding: 0 1; }
     #model-hint { color: $text-muted; }
@@ -1212,6 +1389,24 @@ class QiTui(App):
         Binding("ctrl+shift+p", "cycle_model_back", "切换模型(反向)"),
         Binding("ctrl+z", "suspend_process", "挂起"),
     ]
+
+    # 模态(选择器)打开时关掉的应用级快捷键。
+    #
+    # 为什么必须关:Textual 的 priority 绑定是**从 App 往下**检查的
+    # (`App._check_bindings` 用 `reversed(screen._binding_chain)`),所以 App 级
+    # ctrl+d/o/t/l/p/x/c 会盖掉模态里同名的键 —— 而 pi 的会话/树选择器恰好全用
+    # 这些键(删除 / 过滤 / 跳转)。`check_action` 返回 False 后 Textual 会继续
+    # 往下找模态自己的 priority 绑定。
+    MODAL_BLOCKED_ACTIONS = frozenset({
+        "interrupt", "clear_or_exit", "exit_or_delete", "toggle_expand",
+        "toggle_thinking", "copy_answer", "external_editor", "select_model",
+        "cycle_model", "cycle_model_back", "suspend_process",
+    })
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if len(self.screen_stack) > 1 and action in self.MODAL_BLOCKED_ACTIONS:
+            return False
+        return True
 
     def __init__(self, runtime: QiRuntime | None = None, initial_prompt: str | None = None,
                  palette: Palette | None = None, session_id: str | None = None,
@@ -1719,21 +1914,23 @@ class QiTui(App):
             self._auto = True
             self._switch_session(store.create("tui", cwd=rt.cwd), note="已开新会话(auto)")
         elif cmd in ("/resume", "/sessions"):
-            sessions = store.list()[:10]
+            sessions = store.list()
             if cmd == "/resume" and arg:
                 s = store.get(arg)
                 if s is None:
                     self._note(f"会话不存在 {arg}", "error")
                 else:
                     self._switch_session(s, note=f"已恢复 {s.id}(分支 {s.message_count} 条消息)")
+            elif cmd == "/resume":
+                self._show_session_selector()          # 模态选择器(对齐 pi)
+                self._scroll_end()
+                return
             else:
                 rows = ["会话(最新在前):"]
                 rows += [(f"  {s.id}  {s.title or '(未命名)'}  {s.created_at}"
                           + (f"  分支点×{s.branch_points}" if s.branch_points else ""))
                          for s in sessions]
                 self._note("\n".join(rows) if sessions else "(无会话)")
-                if sessions and cmd == "/resume":
-                    self._note("用 /resume <id> 恢复")
         elif cmd == "/tree":
             self.action_show_tree()
             self._scroll_end()
@@ -2238,6 +2435,48 @@ class QiTui(App):
         if self._rt is not None:
             return self._rt.sessions
         return SessionStore()
+
+    # -- 会话选择器(/resume;对齐 pi 的会话选择器键位)----------
+    def _show_session_selector(self) -> None:
+        store = self._session_store()
+        if not store.list():
+            self._flash("没有历史会话")
+            return
+
+        def picked(session_id: str | None) -> None:
+            if not session_id:
+                return
+            session = store.get(session_id)
+            if session is None:
+                self._flash("会话不存在")
+                return
+            self._switch_session(session, note=f"已恢复 {session.id}")
+
+        self.push_screen(
+            SessionSelector(store.list, on_rename=self._rename_session,
+                            on_delete=self._delete_session,
+                            current=self._session.id if self._session else None),
+            picked)
+
+    def _rename_session(self, session_id: str, name: str) -> None:
+        store = self._session_store()
+        session = store.get(session_id)
+        if session is None:
+            return
+        session.title = name
+        if session.entries and session.entries[0].get("type") == "session":
+            session.entries[0]["title"] = name
+        store.save(session)
+        if self._session is not None and self._session.id == session_id:
+            self._session.title = name
+            self._refresh_footer()
+
+    def _delete_session(self, session_id: str) -> None:
+        if not self._session_store().delete(session_id):
+            return
+        if self._session is not None and self._session.id == session_id:
+            self._session = None          # 删的是当前会话:下一条消息会自动新建
+        self._flash(f"已删除会话 {session_id}")
 
     def _entry_label(self, entry: dict) -> str:
         """树/选择器里的一行标签(单行、截断)。"""

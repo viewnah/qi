@@ -1702,3 +1702,152 @@ async def test_scoped_models_saves_and_limits_cycling(tmp_path, monkeypatch):
         await pilot.pause(0.1)
         assert app._rt.settings.enabledModels == []
         assert app._cycle_labels() == ["alpha/m1", "alpha/m2", "beta/m3"]
+
+
+# ── 会话选择器(/resume;pi 的会话选择器键位)──────────────
+
+
+@pytest.mark.asyncio
+async def test_session_selector_lists_filters_and_acts(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        store = app._session_store()
+        zeta = store.create("zeta")
+        alpha = store.create("alpha")
+        unnamed = store.create("")
+        order = [s.id for s in store.list()]             # 最新在前(mtime);包含 App 启动时那个会话
+
+        app._command("/resume")
+        await pilot.pause(0.1)
+        selector = app.screen
+        assert isinstance(selector, tui_mod.SessionSelector)
+        listing = selector.query_one("#session-list", tui_mod.OptionList)
+        assert listing.option_count == len(order)
+        assert [s.id for s in selector._visible()] == order
+
+        # 输入即过滤(标题 / id)
+        box = selector.query_one("#session-filter", tui_mod.Input)
+        box.value = "alp"
+        await pilot.pause(0.05)
+        assert [s.id for s in selector._visible()] == [alpha.id]
+        box.value = ""
+        await pilot.pause(0.05)
+
+        await pilot.press("ctrl+n")                      # 只看命名会话
+        await pilot.pause(0.05)
+        named = [s.id for s in store.list() if (s.title or "").strip()]
+        assert [s.id for s in selector._visible()] == named
+        await pilot.press("ctrl+n")
+        await pilot.pause(0.05)
+        assert len(selector._visible()) == len(order)
+
+        await pilot.press("ctrl+s")                      # recent → oldest → name
+        await pilot.pause(0.05)
+        assert [s.id for s in selector._visible()] == list(reversed(order))
+        await pilot.press("ctrl+s")
+        await pilot.pause(0.05)
+        titled = [s.title for s in selector._visible()]
+        nonempty = [t for t in titled if t]
+        assert nonempty == sorted(nonempty)              # 命名的按名字排;未命名的垫底
+
+        await pilot.press("ctrl+p")                      # 显示路径
+        await pilot.pause(0.05)
+        assert str(alpha.path) in str(listing.get_option_at_index(
+            [i for i, s in enumerate(selector._visible()) if s.id == alpha.id][0]).prompt)
+        await pilot.press("ctrl+p")
+        await pilot.pause(0.05)
+
+        # ctrl+r 重命名:输入框变名字编辑器,enter 保存并落盘
+        index = [i for i, s in enumerate(selector._visible()) if s.id == zeta.id][0]
+        listing.highlighted = index
+        await pilot.press("ctrl+r")
+        await pilot.pause(0.05)
+        assert selector._renaming == zeta.id
+        box.value = "重命名后"
+        await pilot.press("enter")
+        await pilot.pause(0.05)
+        assert selector._renaming is None
+        assert store.get(zeta.id).title == "重命名后"    # type: ignore[union-attr]
+
+        # ctrl+d 删除高亮的会话
+        before = len(store.list())
+        index = [i for i, s in enumerate(selector._visible()) if s.id == unnamed.id][0]
+        listing.highlighted = index
+        await pilot.press("ctrl+d")
+        await pilot.pause(0.05)
+        assert len(store.list()) == before - 1
+        assert store.get(unnamed.id) is None
+
+        # enter 恢复高亮的那条(并关闭选择器)
+        index = [i for i, s in enumerate(selector._visible()) if s.id == alpha.id][0]
+        listing.highlighted = index
+        await pilot.press("enter")
+        await pilot.pause(0.1)
+        assert not isinstance(app.screen, tui_mod.SessionSelector)
+        assert app._session is not None and app._session.id == alpha.id
+
+
+@pytest.mark.asyncio
+async def test_session_selector_escape_cancels(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        store = app._session_store()
+        store.create("只有一个")
+        current = app._session.id if app._session else None
+
+        app._command("/resume")
+        await pilot.pause(0.1)
+        assert isinstance(app.screen, tui_mod.SessionSelector)
+        await pilot.press("ctrl+r")                      # 进重命名态
+        await pilot.pause(0.05)
+        await pilot.press("escape")                      # 第一次 escape:只退出重命名
+        await pilot.pause(0.05)
+        assert isinstance(app.screen, tui_mod.SessionSelector)
+        await pilot.press("escape")                      # 第二次:关面板
+        await pilot.pause(0.1)
+        assert not isinstance(app.screen, tui_mod.SessionSelector)
+        assert (app._session.id if app._session else None) == current
+
+
+@pytest.mark.asyncio
+async def test_modal_blocks_app_level_shortcuts(tmp_path, monkeypatch):
+    """模态打开时 App 级快捷键必须让位 —— 否则 pi 选择器的 ctrl+d/t/u/l/o 全被抢。"""
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        app._session_store().create("x")
+        app._command("/resume")
+        await pilot.pause(0.1)
+        assert isinstance(app.screen, tui_mod.SessionSelector)
+
+        thinking, expanded = app._show_thinking, app._expanded
+        await pilot.press("ctrl+t")                       # 传输里是 App 的折叠思考块
+        await pilot.press("ctrl+o")                       # App 的展开工具输出
+        await pilot.pause(0.05)
+        assert app._show_thinking == thinking
+        assert app._expanded == expanded
+        assert isinstance(app.screen, tui_mod.SessionSelector)   # 也没被 ctrl+c 之类关掉
+
+        # 关掉模态后 App 快捷键恢复
+        await pilot.press("escape")
+        await pilot.pause(0.1)
+        await pilot.press("ctrl+t")
+        await pilot.pause(0.05)
+        assert app._show_thinking != thinking

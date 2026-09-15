@@ -909,6 +909,76 @@ async def test_editor_history_records_chat_but_not_commands(tmp_path, monkeypatc
         assert editor._history == ["你好"]
 
 
+# ── kill-ring(pi 的 ctrl+y / alt+y)─────────────────────
+
+
+def test_kill_ring_push_prepend_accumulate_rotate():
+    ring = tui_mod.KillRing()
+    assert ring.peek() is None and len(ring) == 0
+    ring.push("two", prepend=True, accumulate=False)
+    ring.push("one ", prepend=True, accumulate=True)      # 连续 kill → 合并到前面
+    assert ring.peek() == "one two" and len(ring) == 1
+    ring.push("", prepend=False, accumulate=False)        # 空文本不入环
+    assert len(ring) == 1
+    ring.push("tail", prepend=False, accumulate=False)
+    assert ring.peek() == "tail"
+    ring.rotate()                                         # yank-pop 轮换
+    assert ring.peek() == "one two"
+    ring.rotate()
+    assert ring.peek() == "tail"                          # 两条时来回转
+
+
+@pytest.mark.asyncio
+async def test_kill_ring_yank_pop_and_accumulate(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        editor = await _editor_with(app, pilot, "one two")
+
+        await pilot.press("ctrl+w")                      # kill "two"
+        await pilot.pause(0.05)
+        assert editor.text == "one "
+        await pilot.press("ctrl+w")                      # 连续 kill → 与上一条合并
+        await pilot.pause(0.05)
+        assert editor.text == "" and len(editor._kill_ring) == 1
+        await pilot.press("ctrl+y")                      # yank 回合并后的一整段
+        await pilot.pause(0.05)
+        assert editor.text == "one two"
+
+        # 两次不连续的 kill → 两条;alt+y 在环里轮换
+        editor._kill_ring = tui_mod.KillRing()
+        editor.load_text("AAA BBB")
+        editor.move_cursor((0, len("AAA BBB")))
+        await pilot.press("ctrl+w")                      # kill "BBB"
+        await pilot.pause(0.05)
+        await pilot.press("ctrl+a")                      # 非 kill/yank 键 → 断开合并
+        await pilot.pause(0.05)
+        await pilot.press("ctrl+k")                      # kill 到行尾("AAA ")
+        await pilot.pause(0.05)
+        assert editor.text == "" and len(editor._kill_ring) == 2
+        await pilot.press("ctrl+y")
+        await pilot.pause(0.05)
+        assert editor.text == "AAA "
+        await pilot.press("alt+y")                       # 换成环里的上一条
+        await pilot.pause(0.05)
+        assert editor.text == "BBB"
+        await pilot.press("alt+y")
+        await pilot.pause(0.05)
+        assert editor.text == "AAA "                     # 两条来回轮换
+
+        # 中间接了别的键就不是 yank-pop 了
+        await pilot.press("left")
+        await pilot.pause(0.05)
+        await pilot.press("alt+y")
+        await pilot.pause(0.05)
+        assert editor.text == "AAA "
+
+
 # ── `!` / `!!` 手动 bash ───────────────────────────────
 
 

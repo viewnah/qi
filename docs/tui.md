@@ -189,7 +189,6 @@ qi 用 `priority=True` 抢过来以匹配 pi 语义(`ctrl+d` 非空时仍自己�
 | 键 | pi 用途 | qi 缺什么 |
 | --- | --- | --- |
 | `ctrl+n` / `ctrl+r` | 会话列表过滤 / 重命名会话 | 无会话选择器 UI(pi 里这两个键只在那面板内生效);`/name` 可改名 |
-| `ctrl+y` / `alt+y` | kill-ring 的 yank / yank-pop | Textual 无 kill-ring,`ctrl+y` 仍是它的 redo |
 | `ctrl+v` | 粘贴图片 | 无图片输入,目前只会粘文本 |
 
 ### 补全与 bash 模式(对齐 pi 的 autocomplete / `handleBashCommand`)
@@ -229,6 +228,7 @@ qi 用 Textual 的 `TextArea` 做成 pi 的编辑器,补齐了这些键(其余�
 | `alt+d` | 删后一个词 | `deleteWordForward` |
 | `ctrl+-` | 撤销 | `undo`(pi 不用 `ctrl+z` —— 那个是挂起) |
 | `ctrl+w` / `ctrl+u` / `ctrl+k` / `alt+backspace` | 删词 / 删到行首 / 删到行尾 | 同名 action(Textual 自带) |
+| `ctrl+y` / `alt+y` | kill-ring 的 yank / yank-pop(删掉的文本进环、连续删合并) | `tui.editor.yank` / `tui.editor.yankPop` |
 | `ctrl+v` | 粘贴(含括号粘贴,多行可用) | 文本部分对齐 |
 
 实现注记:
@@ -241,6 +241,10 @@ qi 用 Textual 的 `TextArea` 做成 pi 的编辑器,补齐了这些键(其余�
   `终端高 - (编辑器当前行数 + 上下边框 + footer)` 动态算 —— 编辑器长高时 transcript 让位,
   否则 inline 区域会把输入框挤掉。
 - `enter` 是提升到 priority 的绑定(`TextArea` 原生会把 enter 插成换行,必须先抢)。
+- **kill-ring**(`KillRing`,对齐 pi 的 `kill-ring.js`):在 `Editor` 覆写 Textual 的删除
+  action,按「删前/删后文本求差」拿到真正删掉的段进环;`ctrl+y` 粘回、`alt+y` 轮换。
+  已知差异:`ctrl+k` 在行尾/空行时 Textual 走「并下一行 / 删整行」,这两支不进环
+  (pi 会推一个 `\n`)。
 
 qi 的输入层是**多行编辑器**(见下面「输入层」一节):`/` 与 `@` 补全、参数补全、输入历史、
 `!` bash 模式、消息队列都已落地。

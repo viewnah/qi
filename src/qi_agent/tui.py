@@ -304,7 +304,8 @@ HOTKEYS_TEXT = """\
   alt+b / alt+f、alt+←/→、ctrl+←/→  按词移动
   ctrl+w / alt+backspace  删前一个词
   alt+d                   删后一个词
-  ctrl+u / ctrl+k        删到行首 / 删到行尾
+  ctrl+u / ctrl+k        删到行首 / 删到行尾(删掉的文本进 kill-ring)
+  ctrl+y / alt+y          yank 回最近删掉的文本 / 在 kill-ring 里轮换
   ctrl+-                  撤销
   ctrl+v                  粘贴(支持多行 / 括号粘贴)
 
@@ -330,7 +331,7 @@ HOTKEYS_TEXT = """\
   ctrl+z                  挂起(回到 shell,fg 回来)
 
 尚未对齐(pi 有,qi 缺能力或驱动不了):
-  ctrl+n 会话列表过滤   ctrl+r 重命名会话   ctrl+y/alt+y kill-ring 的 yank
+  ctrl+n 会话列表过滤   ctrl+r 重命名会话
   ctrl+v 粘贴图片(现在只会粘文本)
 """
 
@@ -712,6 +713,49 @@ class CompactionBlock(Vertical):
 # ── App ─────────────────────────────────────────────────
 
 
+def _removed_text(before: str, after: str) -> str:
+    """单次连续删除时,before → after 被删掉的那一段(最长公共前/后缀之外的局部)。"""
+    start = 0
+    limit = min(len(before), len(after))
+    while start < limit and before[start] == after[start]:
+        start += 1
+    end_b, end_a = len(before), len(after)
+    while end_b > start and end_a > start and before[end_b - 1] == after[end_a - 1]:
+        end_b -= 1
+        end_a -= 1
+    return before[start:end_b]
+
+
+class KillRing:
+    """Emacs 风格的 kill-ring(对齐 pi-tui 的 `kill-ring.js`)。
+
+    `push` 带 `accumulate` 时与最近一条合并(连续 kill 接成一段),`prepend` 区分
+    向前/向后删除;`rotate` 供 yank-pop 轮换旧条目。
+    """
+
+    def __init__(self) -> None:
+        self._ring: list[str] = []
+
+    def push(self, text: str, *, prepend: bool, accumulate: bool) -> None:
+        if not text:
+            return
+        if accumulate and self._ring:
+            last = self._ring.pop()
+            self._ring.append(text + last if prepend else last + text)
+        else:
+            self._ring.append(text)
+
+    def peek(self) -> str | None:
+        return self._ring[-1] if self._ring else None
+
+    def rotate(self) -> None:
+        if len(self._ring) > 1:
+            self._ring.insert(0, self._ring.pop())
+
+    def __len__(self) -> int:
+        return len(self._ring)
+
+
 class Editor(TextArea):
     """多行编辑器(对齐 pi 的 `pi-tui/components/editor.js` 键位)。
 
@@ -721,13 +765,20 @@ class Editor(TextArea):
       · ctrl+b/f。alt+b/f、alt+←/→、alt+d = 光标词移动/删词(pi 的别名)
       · ctrl+- = 撤销(pi `tui.editor.undo`;Textual 默认把 undo 绑在 ctrl+z,
         而 ctrl+z 在 pi 里是挂起,所以改绑到 pi 的键)
-    未实现:kill-ring 的 yank/yank-pop(ctrl+y / alt+y)—— Textual 没有 kill-ring,
-    ctrl+y 仍是它默认的 redo。
+
+    kill-ring(pi 的 `kill-ring.js`):`ctrl+k` / `ctrl+u` / `ctrl+w`(alt+backspace)/
+    `alt+d` 删掉的文本进环,连续删会接成一段;`ctrl+y` yank 回来,`alt+y` 在环里轮换。
+    差异(已知):ctrl+k 在行尾/空行时 Textual 走的是「并下一行 / 删整行」,
+    这两支不进 kill-ring(pi 会推一个 `\n`)。
 
     输入历史(pi 的 `addToHistory` / `navigateHistory`):无补全面板时 `↑` 取回上一条
     提交过的文本(对话与 `!` bash,内置命令不记),`↓` 往回走;首次翻历史时留住当前
     草稿,手动改动即退出浏览。
     """
+
+    KILL_KEYS = frozenset({"ctrl+k", "ctrl+u", "ctrl+w", "alt+backspace",
+                           "alt+d", "alt+delete"})
+    YANK_KEYS = frozenset({"ctrl+y", "alt+y"})
 
     class Submitted(Message):
         """Enter 提交。"""
@@ -778,6 +829,8 @@ class Editor(TextArea):
         Binding("alt+b", "cursor_word_left", show=False),
         Binding("alt+f", "cursor_word_right", show=False),
         Binding("alt+d", "delete_word_right", show=False),
+        Binding("ctrl+y", "yank", "粘回删掉的文本", show=False),
+        Binding("alt+y", "yank_pop", "轮换删掉的文本", show=False),
         Binding("ctrl+-", "undo", show=False),
     ]
 
@@ -791,8 +844,15 @@ class Editor(TextArea):
         self._history_index = -1          # -1 = 没在翻历史
         self._history_draft: str | None = None
         self._history_applied: str | None = None   # 历史/草稿刚写回去的文本
+        # kill-ring(pi 的 kill-ring.js):连续 kill 合并、yank-pop 轮换
+        self._kill_ring = KillRing()
+        self._last_action: str | None = None       # "kill" / "yank" / None
+        self._last_yank: tuple[int, int] | None = None
 
     async def _on_key(self, event: events.Key) -> None:
+        # 除了 kill/yank 系列,任何键都打断「连续 kill 合并」与 yank-pop(pi 同款)
+        if event.key not in self.KILL_KEYS and event.key not in self.YANK_KEYS:
+            self._last_action = None
         # TextArea 在 tab_behavior="indent" 下会把 escape 当「换焦点」、tab 当「缩进」
         # 并 stop 事件;补全面板开着时这三个键要归补全(pi 的 tui.input.tab / select.*)。
         panel_open = bool(getattr(self.app, "_completions_open", False))
@@ -832,6 +892,66 @@ class Editor(TextArea):
 
     def action_submit(self) -> None:
         self.post_message(self.Submitted(self.text))
+
+    # -- kill-ring(对齐 pi 的 deleteToStartOfLine / deleteWord… / yank)----
+    def _push_kill(self, deleted: str, *, prepend: bool) -> None:
+        self._kill_ring.push(deleted, prepend=prepend,
+                             accumulate=self._last_action == "kill")
+        self._last_action = "kill"
+
+    def _kill(self, action: str, *, prepend: bool) -> None:
+        """执行 Textual 的删除动作,并把真正删掉的文本推入 kill-ring。"""
+        before = self.text
+        getattr(super(), action)()
+        self._push_kill(_removed_text(before, self.text), prepend=prepend)
+
+    def action_delete_to_start_of_line(self) -> None:
+        self._kill("action_delete_to_start_of_line", prepend=True)
+
+    def action_delete_to_end_of_line(self) -> None:
+        self._kill("action_delete_to_end_of_line", prepend=False)
+
+    def action_delete_word_left(self) -> None:
+        self._kill("action_delete_word_left", prepend=True)
+
+    def action_delete_word_right(self) -> None:
+        self._kill("action_delete_word_right", prepend=False)
+
+    def action_yank(self) -> None:
+        """ctrl+y:把 kill-ring 最近一条粘回光标处(pi 的 tui.editor.yank)。"""
+        text = self._kill_ring.peek()
+        if text is None:
+            return
+        start = self._text_offset_at_cursor()
+        self.insert(text)
+        self._last_yank = (start, start + len(text))
+        self._last_action = "yank"
+
+    def action_yank_pop(self) -> None:
+        """alt+y:紧跟在 yank 之后,把刚粘的那段换成环里的上一条(pi 的 yankPop)。"""
+        if self._last_action != "yank" or len(self._kill_ring) <= 1 or self._last_yank is None:
+            return
+        start, end = self._last_yank
+        text = self.text
+        self.replace("", self._offset_to_location(text, start),
+                     self._offset_to_location(text, end))
+        self._kill_ring.rotate()
+        replacement = self._kill_ring.peek() or ""
+        self.insert(replacement)
+        self._last_yank = (start, start + len(replacement))
+        self._last_action = "yank"
+
+    def _text_offset_at_cursor(self) -> int:
+        """光标在纯文本里的字符偏移(不能叫 `_cursor_offset`:与 TextArea 内部同名)。"""
+        row, col = self.cursor_location
+        lines = self.text.split("\n")
+        return sum(len(line) + 1 for line in lines[:row]) + col
+
+    @staticmethod
+    def _offset_to_location(text: str, offset: int) -> tuple[int, int]:
+        offset = max(0, min(offset, len(text)))
+        row = text.count("\n", 0, offset)
+        return row, offset - text.rfind("\n", 0, offset) - 1
 
     # -- 输入历史(对齐 pi 的 editor.addToHistory / navigateHistory)------
     def add_to_history(self, text: str) -> None:

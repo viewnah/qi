@@ -5,6 +5,8 @@ stream(): 一次用户输入 → 事件(CLI/TUI/HTTP 共享的 consumer 源)。
 
 from __future__ import annotations
 
+import json
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
@@ -52,6 +54,7 @@ class RuntimeConfig:
 # 落盘工具结果的字符上限。tools/ 内置工具已自行截断(200 行 / 50k 字符),
 # 但插件工具可能不截断——落盘前再过一道上限,避免单个工具撑破会话文件。
 MAX_TOOL_ENTRY_CHARS = 8000
+MAX_TOOL_DETAILS_CHARS = 8000    # 与 result 同档:插件不该让会话文件无界增长
 
 
 class QiRuntime:
@@ -359,10 +362,18 @@ class QiRuntime:
         result = event.text or ""
         if len(result) > MAX_TOOL_ENTRY_CHARS:
             result = result[:MAX_TOOL_ENTRY_CHARS] + "…(落盘已截断)"
+        # 插件能给的结构可能很大(一份查询结果、一棵文件树)。同样封顶,
+        # 但**换成可渲染的标记**而不是切字符串 —— 切 JSON 会得到非法 JSON。
+        details = data.get("details")
+        if details is not None:
+            encoded = json.dumps(details, ensure_ascii=False)
+            if len(encoded) > MAX_TOOL_DETAILS_CHARS:
+                details = {"_truncated": True, "_full_chars": len(encoded)}
         self.sessions.append(session, {
             "type": "tool", "agent": agent, "tool": event.tool,
             "args": (pending or {}).get("args", {}),
             "status": data.get("status"), "duration_ms": data.get("duration_ms"),
             "exit_code": data.get("exit_code"), "error": data.get("error"),
+            "details": details,
             "result": result,
         })

@@ -130,6 +130,15 @@ class ToolOutcome:
     duration_ms: int = 0
     exit_code: int | None = None        # 仅进程型工具有意义
     error: str | None = None            # 机器可读原因: unknown_tool|tool_error|exception|timeout|denied
+    details: dict | None = None         # 给**客户端**看的自由结构;不进 LLM 上下文
+
+    # `details` 是插件与 UI 之间**唯一的**下行通道(见 docs/web.md §16)。
+    # 为什么需要它:`result` 是给模型看的散文,UI 不该去解析它;而
+    # status/duration_ms/exit_code 只够画一个状态点,画不了插件自己的东西
+    # (todo 清单、查询结果、进度……)。给它一个开放字典,宿主就不必为每个插件改接口。
+    #
+    # 约定:想画结构化 UI 时放 `details["ui"]`,词汇表见 docs/web.md §16.2;
+    # 不认识 `ui` 的客户端会退回"折叠显示原始 JSON",所以**永不会白屏或报错**。
 
     @property
     def ok(self) -> bool:

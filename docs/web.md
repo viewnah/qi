@@ -600,3 +600,112 @@ AG-UI 把类型放在 payload 的 `type` 里,于是 `switch (ev.type)` 能被**�
   丢掉"读改压缩历史"、切 provider 就断。qi 一律 `store: false` + 每轮自己发完整历史。
 - **不引客户端插件模块图**(dsh 路线):要加载器 + 版本钉 + 信任模型,而且插件仍绑死
   宿主内部组件 API。扩展性留给"数据层 `details` + 声明式 UI 词汇表" —— 尚未做,记在 §7 待定。
+
+## 16. 插件怎么渲染:数据契约(2026-09 实现)
+
+### 16.1 问题:`details` 曾经到不了前端
+
+插件想显示自己的东西(todo 清单、查询结果、进度……)时,`result` 是**给模型看的散文**,
+UI 不该去解析它;而 `status`/`duration_ms`/`exit_code` 只够画一个状态点。
+
+`ToolOutcome` 本来就没有自由结构字段,而且 `runner` 里 `tool_end` 的 `data` 是**硬编码的 4 个键**:
+
+```python
+data={"status": …, "duration_ms": …, "exit_code": …, "error": …}
+# 插件就算自己造了 details,也**到这一行就被扔掉** —— 而且毫无报错
+```
+
+修法是把 `details` 打通(加法,不动任何事件 kind / 端点 / schema 版本):
+
+| 层 | 改动 |
+| --- | --- |
+| `models.ToolOutcome` | 加 `details: dict \| None = None` |
+| `runner` → `tool_end.data` | 加 `"details": outcome.details`(就是上面那一行) |
+| `runtime._persist_tool` | 落盘 `details`,并封顶 `MAX_TOOL_DETAILS_CHARS`(超限换成 `{"_truncated": True, "_full_chars": n}` —— **切 JSON 会得到非法 JSON,比截断更糟**) |
+| `web/agui.py` | **不用改**:`tool_end.data` 整包进 `TOOL_CALL_RESULT.metadata["qi.tool"]` |
+| 前端 | `ToolRowData.details` + 渲染器(§16.2) |
+
+### 16.2 词汇表 `details["ui"]`(v1)
+
+插件输出数据,宿主实现渲染。**`ui` 是可选字段**;不写它就退回"折叠显示原始 JSON"。
+
+```json
+{"ui_version": 1, "ui": [
+  {"type": "list", "items": [
+    {"label": "读需求", "state": "done"},
+    {"label": "写实现", "state": "active", "note": "第 3 个文件"},
+    {"label": "补测试", "state": "pending"}
+  ]},
+  {"type": "kv", "rows": [["模型", "deepseek-chat"], ["耗时", "1.2s"]]},
+  {"type": "progress", "value": 2, "max": 5, "label": "已完成"},
+  {"type": "code", "lang": "python", "text": "print(1)"},
+  {"type": "note", "text": "只读查询,未做任何写操作"}
+]}
+```
+
+| `type` | 字段 | 渲染 |
+| --- | --- | --- |
+| `list` | `items[].{label, state?: "done"\|"active"\|"pending", note?}` | 勾选列表(形符 ✓/▸/○,**不单靠颜色**) |
+| `kv` | `rows: [键, 值][]` | 键值对(等宽值,右对齐) |
+| `progress` | `{value, max, label?}` | 进度条 + `2 / 5` |
+| `code` | `{text, lang?}` | 等宽证据块 |
+| `note` | `{text}` | 一行说明 |
+
+**两条硬规则**(由实现保证,也由测试锁定):
+
+1. **不认识的 `type` 必须退回原始 JSON,不能丢弃。** 插件可能比宿主新;丢掉会让
+   "插件发了东西但没人看见"变成不可诊断的问题。
+2. **有 `details` 但没 `ui` → 折叠显示整个 details 的 JSON。** 所以插件即使完全
+   不碰词汇表,也**永远有东西可看**。
+
+### 16.3 为什么是数据契约,不是代码契约
+
+三种成熟做法摆在一起:
+
+| | 扩展点性质 | 谁渲染 | qi 是否跟 |
+| --- | --- | --- | --- |
+| **dsh** | **代码**:插件 UI 打进客户端模块图(真 React 组件 + slot/projection) | 宿主认识该插件 | ❌ 要引入客户端模块加载器 + 版本钉 + 信任模型,而且插件仍绑死宿主内部组件 API |
+| **pi → pi-web** | **声明式方法集**:`ctx.ui.*` 经 `extension_ui_request` 桥接(9 个 method,双向) | 宿主实现固定方法集 | 部分借鉴(**已由 pi 验证可行**) |
+| **AG-UI** | **事件**:`Custom{name,value}` / `ActivitySnapshot{activityType,content}` / `metadata` | 宿主按协议解释 | ✅ 借**形状** |
+| **qi** | **数据**:`details["ui"]` 词汇表 | 宿主实现固定词汇表 | 本条 |
+
+核心区别:**扩展点放在数据层,插件就永远不用改 API**。宿主加新节点类型是宿主的新特性,
+所有已存在的插件立刻可用;插件用旧节点类型在新宿主上照常工作。
+
+### 16.4 能力协商
+
+`/api/meta` 的 `capabilities` 里:
+
+| 键 | 含义 |
+| --- | --- |
+| `ag_ui` | 事件形状是 AG-UI |
+| `ui_v1` | 认 `details["ui"]` 的 v1 词汇表 |
+
+两个都缺也可以干活 —— 插件最保守的写法是只发 `details` 不带 `ui`,任何客户端都能折叠成
+JSON 显示。**降级路径永远存在,所以插件不必探测宿主版本也能安全输出。**
+
+### 16.5 只有读,没有交互
+
+本词汇表是**只读渲染**。要让用户在面板上点一下回传(比如 todo 打勾),需要一条**上行通道**
+(web → 宿主 → 插件),qi 现在**没有**。AG-UI 用 `interrupt` 做、pi 用 `extension_ui_input` 做,
+都是各自协议的一部分 —— qi 要做的话是新契约,不在本次范围内。
+
+### 16.6 插件侧怎么写
+
+```python
+from qi_agent.models import ToolOutcome
+
+async def run(args, ctx):
+    return ToolOutcome(
+        result="已更新 3 项任务",          # 模型可见文本:照旧,不要塞结构化数据
+        details={                          # 客户端可见:自由结构
+            "ui_version": 1,
+            "ui": [{"type": "list", "items": [
+                {"label": t["text"], "state": t["state"]} for t in todos
+            ]}],
+        },
+    )
+```
+
+`details` 不进 LLM 上下文(`result` 才进),所以放多大的结构都不会污染提示词 ——
+但仍受 `MAX_TOOL_DETAILS_CHARS` 约束,免得会话文件无界增长。

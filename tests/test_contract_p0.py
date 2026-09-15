@@ -116,6 +116,83 @@ async def test_tool_end_carries_structured_status(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_plugin_details_reach_the_event(tmp_path):
+    """**插件唯一的 UI 下行通道**:`ToolOutcome.details` 必须原样到达 `tool_end.data`。
+
+    这条测试守着一个具体的坑:`runner` 里 `tool_end` 的 `data` 原本是**硬编码的 4 个键**,
+    于是插件就算自己造了 `details`,`runner` 也在那一行把它扔了 ——
+    表现是"插件写了结构化数据,界面上什么都没有",而且毫无报错。
+    """
+    catalog = _catalog()
+    payload = {"ui": [
+        {"type": "list", "items": [
+            {"label": "读需求", "state": "done"},
+            {"label": "写实现", "state": "active"},
+        ]},
+        {"type": "kv", "rows": [["模型", "x"]]},
+    ]}
+    async def _plugin(args, ctx):
+        # 工具执行必须是 async(ToolExecutor 契约),不是可选的风格问题
+        return ToolOutcome(result="ok", details=payload)
+
+    catalog.register(Tool("plugin_tool", "插件工具", {"type": "object", "properties": {}}, _plugin))
+    unit = _agent_unit(tmp_path, catalog)
+    ctx = ToolContext(agent_name=unit.name, workdir=tmp_path)
+    llm = StubLLM([
+        _tool_call("plugin_tool", {}),
+        ChatResponse(text="做完了"),
+    ])
+    runner = AgentRunner(unit, catalog, llm, RunnerSettings(max_turns=5), tool_ctx=ctx)
+    events = [e async for e in runner.run("做点事")]
+
+    end = next(e for e in events if e.kind == "tool_end")
+    assert end.data["details"] == payload, "插件的 details 在 runner 里被丢掉了"
+    # 没有 details 的工具仍然是 None —— 不因为这次改动多出一个空字典
+    assert "details" in end.data
+
+
+@pytest.mark.asyncio
+async def test_details_are_persisted_with_a_cap(tmp_path, monkeypatch):
+    """落盘要带 details(否则刷新后插件 UI 消失),并且**有上限**。
+
+    上限换的是**可渲染的标记**而不是切字符串 —— 切 JSON 会得到非法 JSON,
+    前端解析失败会把整条工具卡弄坏,比截断更糟。
+
+    这里直接测落盘策略本身:`runner → event` 那一段由上面
+    `test_plugin_details_reach_the_event` 覆盖;两者合起来才是完整链路。
+    走不到端到端是因为内置 `general` agent 的工具清单是**列举**的(不是 `["*"]`),
+    插件工具进不去那个循环 —— 这是插件机制的事,与 details 无关。
+    """
+    from qi_agent.models import AgentEvent
+    from qi_agent.runtime import MAX_TOOL_DETAILS_CHARS
+
+    big = {"ui": [{"type": "note", "text": "x" * 40000}]}
+    event = AgentEvent(kind="tool_end", tool="big_tool", text="ok",
+                       data={"status": TOOL_OK, "duration_ms": 1, "exit_code": None,
+                             "error": None, "details": big})
+    sessions = SessionStore(root=tmp_path / "sessions")
+    session = sessions.create("落盘 details")
+    rt = _runtime(tmp_path, monkeypatch, StubLLM([]), sessions)
+
+    rt._persist_tool(session, "w", event, {"args": {}})   # noqa: SLF001
+
+    entry = session.visible_entries()[-1]
+    assert entry["type"] == "tool"
+    assert entry["details"] == {
+        "_truncated": True,
+        "_full_chars": len(json.dumps(big, ensure_ascii=False)),
+    }
+    assert len(json.dumps(big, ensure_ascii=False)) > MAX_TOOL_DETAILS_CHARS
+
+    # 小到不超限的 details 必须原样落盘
+    small = {"ui": [{"type": "note", "text": "ok"}]}
+    event_small = AgentEvent(kind="tool_end", tool="t", text="ok",
+                             data={"status": TOOL_OK, "details": small})
+    rt._persist_tool(session, "w", event_small, {"args": {}})   # noqa: SLF001
+    assert session.visible_entries()[-1]["details"] == small
+
+
+@pytest.mark.asyncio
 async def test_unknown_tool_is_structured_error(tmp_path):
     """未知工具:status=error 且 error 可机器判定,不再靠解析 'Error: ' 前缀。"""
     catalog = _catalog()

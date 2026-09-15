@@ -9,6 +9,7 @@
  * (它们是证据,不是答案),结论永远展开。
  */
 import { useState } from "react";
+import type { UiNode } from "../api/types";
 import { IconChevronDownOutline14 } from "./icons";
 import type {
   ErrorRow,
@@ -20,6 +21,104 @@ import type {
   ToolRowData,
   YouRow,
 } from "../state/turn";
+
+// ── 插件 UI:声明式词汇表 + 必不准少的 JSON 兜底 ─────────────
+//
+// 这是"插件不用改 API 就能渲染"的落点(见 docs/web.md §16)。插件把
+// `details["ui"]` 写成词汇表里的节点,宿主负责画;宿主加新节点类型时,
+// 所有已存在的插件立刻可用。
+//
+// **一条硬规则**:不认识的节点必须退回原始 JSON,不能丢弃。丢掉会让
+// "插件发了东西但没人看见"变成不可诊断的问题。空 ui 亦然。
+
+/** 单个词汇表节点。
+ *
+ * 入参声明为 `UiNode` 而不是 `unknown`:这样 `switch` 是**穷尽检查**的 ——
+ * 词汇表加一个新节点类型,这里不补分支就编译不过。`default` 分支仍然保留,
+ * 因为运行期随时可能收到**旧宿主不认识的**节点(插件可能比宿主新),
+ * 那种情况必须退回 JSON 显示,而不是丢弃。
+ */
+function UiNodeView({ node }: { node: UiNode }) {
+  switch (node.type) {
+    case "list": {
+      const items = node.items ?? [];
+      return (
+        <ul className="ui-list">
+          {items.map((it, i) => {
+            const state = it.state ?? "pending";
+            return (
+              <li key={i} className="ui-list__item">
+                {/* 状态不单靠颜色:形状本身也不同(✓ / ▸ / ○) */}
+                <span className="ui-list__mark" data-state={state}>
+                  {state === "done" ? "✓" : state === "active" ? "▸" : "○"}
+                </span>
+                <span className="ui-list__label" data-state={state}>
+                  {it.label}
+                </span>
+                {it.note ? <span className="ui-list__note">{it.note}</span> : null}
+              </li>
+            );
+          })}
+        </ul>
+      );
+    }
+    case "kv": {
+      const rows = node.rows ?? [];
+      return (
+        <dl className="ui-kv">
+          {rows.map((pair, i) => (
+            <div key={i} className="ui-kv__pair">
+              <dt>{String(pair[0] ?? "")}</dt>
+              <dd>{String(pair[1] ?? "")}</dd>
+            </div>
+          ))}
+        </dl>
+      );
+    }
+    case "progress": {
+      const max = node.max > 0 ? node.max : 1;
+      const pct = Math.max(0, Math.min(100, (node.value / max) * 100));
+      return (
+        <div className="ui-progress">
+          <div className="meter__bar">
+            <div className="meter__fill" data-warn={pct > 75} style={{ width: `${pct}%` }} />
+          </div>
+          <div className="meter__note">
+            {node.label ? `${node.label} · ` : ""}
+            {node.value} / {max}
+          </div>
+        </div>
+      );
+    }
+    case "code":
+      return <pre className="evidence">{node.text}</pre>;
+    case "note":
+      return <div className="ui-note">{node.text}</div>;
+    default:
+      // 运行期可能收到比宿主新的节点类型。原样显示 JSON。**不丢**。
+      return <pre className="evidence">{JSON.stringify(node, null, 2)}</pre>;
+  }
+}
+
+/**
+ * 工具的结构化详情。
+ *
+ * 优先渲染 `details.ui`(声明式词汇表,docs/web.md §16.2);没有 `ui` 就把整个
+ * details 折叠成 JSON。两条路都不会白屏 —— 这是这个扩展点能"永远不改 API"的前提。
+ */
+function Details({ details }: { details: Record<string, unknown> }) {
+  const ui = details.ui;
+  if (Array.isArray(ui)) {
+    return (
+      <div className="ui">
+        {ui.map((node, i) => (
+          <UiNodeView key={i} node={node} />
+        ))}
+      </div>
+    );
+  }
+  return <pre className="evidence">{JSON.stringify(details, null, 2)}</pre>;
+}
 
 /** 行外壳:细线 + 行体。 */
 function RowShell({
@@ -199,6 +298,8 @@ function Tool({ row }: { row: ToolRowData }) {
     >
       {open ? (
         <>
+          {/* 插件给的结构化详情排在最前:它是给人看的,result 是给模型的 */}
+          {row.details ? <Details details={row.details} /> : null}
           {args ? (
             <pre className="evidence">{JSON.stringify(row.args, null, 2)}</pre>
           ) : null}

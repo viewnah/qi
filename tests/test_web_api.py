@@ -156,6 +156,31 @@ def _paired(events: list[dict], start: str, end: str, id_key: str) -> None:
     assert open_ids == [], f"这些 {start} 没有 {end}:{open_ids}"
 
 
+# ── AG-UI:插件的 details 下行通道 ────────────────────────────
+
+def test_tool_details_survive_the_agui_layer():
+    """`tool_end.data.details` 必须原样出现在 `TOOL_CALL_RESULT.metadata["qi.tool"]`。
+
+    这是插件 UI 通道的**最后一跳**:runner 已经把 details 放进 data(见
+    test_contract_p0 的 test_plugin_details_reach_the_event),这里确认 AG-UI
+    映射层没有把它丢掉 —— 两处都通,插件才真的能渲染。
+    """
+    from qi_agent.models import AgentEvent, TOOL_OK
+    from qi_agent.web.agui import AguiTranslator
+
+    payload = {"ui": [{"type": "list", "items": [{"label": "写实现", "state": "active"}]}]}
+    t = AguiTranslator(thread_id="s", run_id="r")
+    t.feed(AgentEvent(kind="tool_start", tool="todo", data={"args": {}}))
+    frames = t.feed(AgentEvent(kind="tool_end", tool="todo", text="ok",
+                               data={"status": TOOL_OK, "duration_ms": 3,
+                                     "exit_code": None, "error": None,
+                                     "details": payload}))
+    result = next(f for f in frames if f["type"] == "TOOL_CALL_RESULT")
+    assert result["metadata"]["qi.tool"]["details"] == payload
+    # 结构化结果仍与 status/duration 同处一个 metadata 槽(不是自造新字段)
+    assert result["metadata"]["qi.tool"]["status"] == TOOL_OK
+
+
 # ── AG-UI:线格式 ──────────────────────────────────────────
 
 @pytest.mark.asyncio

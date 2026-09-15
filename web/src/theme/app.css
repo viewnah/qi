@@ -1100,3 +1100,40 @@
   justify-content: flex-end;
   gap: 8px;
 }
+
+/* ── 插件 UI 词汇表(details["ui"],见 docs/web.md §16.2)────────────
+   插件输出数据、宿主实现渲染。样式上刻意保持"证据块"的语汇:
+   等宽、细边、无阴影、状态不单靠颜色。 */
+
+.ui { display: flex; flex-direction: column; gap: 10px; }
+
+.ui-list { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+
+.ui-list__item { display: flex; align-items: baseline; gap: 8px; font-size: 13px; line-height: 20px; }
+
+.ui-list__mark { flex: none; font-size: 11px; }
+.ui-list__mark[data-state="done"] { color: var(--dsw-alias-state-success); }
+.ui-list__mark[data-state="active"] { color: var(--dsw-alias-state-business-primary); }
+.ui-list__mark[data-state="pending"] { color: var(--dsw-alias-label-caption); }
+
+.ui-list__label { color: var(--dsw-alias-label-primary); min-width: 0; }
+.ui-list__label[data-state="done"] { color: var(--dsw-alias-label-tertiary); text-decoration: line-through; }
+.ui-list__label[data-state="active"] { font-weight: 500; }
+
+.ui-list__note {
+  margin-left: auto;
+  color: var(--dsw-alias-label-caption);
+  font-family: var(--ds-font-family-code);
+  font-size: 11px;
+}
+
+.ui-kv { display: flex; flex-direction: column; gap: 4px; margin: 0; }
+
+.ui-kv__pair { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 12px; font-size: 12px; line-height: 18px; }
+
+.ui-kv__pair dt { color: var(--dsw-alias-label-caption); }
+.ui-kv__pair dd { margin: 0; color: var(--dsw-alias-label-primary); font-family: var(--ds-font-family-code); text-align: right; word-break: break-all; }
+
+.ui-progress { display: flex; flex-direction: column; gap: 5px; }
+
+.ui-note { color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 19px; }

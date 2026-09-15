@@ -157,6 +157,45 @@ describe("工具流", () => {
   });
 });
 
+describe("插件的 details(唯一 UI 下行通道)", () => {
+  const base: AguiEvent[] = [
+    { type: "TOOL_CALL_START", toolCallId: "c1", toolCallName: "todo" },
+    { type: "TOOL_CALL_ARGS", toolCallId: "c1", delta: "{}" },
+    { type: "TOOL_CALL_END", toolCallId: "c1" },
+  ];
+
+  it("metadata[qi.tool].details 落到工具行上", () => {
+    const details = { ui: [{ type: "list", items: [{ label: "写实现", state: "active" }] }] };
+    const s = run(...base, {
+      type: "TOOL_CALL_RESULT",
+      messageId: "tm1",
+      toolCallId: "c1",
+      content: "ok",
+      metadata: { "qi.tool": { status: "ok", details } },
+    });
+    const tool = s.rows.find((r) => r.kind === "tool") as ToolRowData;
+    expect(tool.details).toEqual(details);
+  });
+
+  it("没有 details 时是 null(不造空对象)", () => {
+    const s = run(...base, {
+      type: "TOOL_CALL_RESULT",
+      messageId: "tm1",
+      toolCallId: "c1",
+      content: "ok",
+      metadata: { "qi.tool": { status: "ok" } },
+    });
+    expect((s.rows.find((r) => r.kind === "tool") as ToolRowData).details).toBeNull();
+  });
+
+  it("历史回放也带上 details(否则刷新后插件 UI 消失)", () => {
+    const rows = fromEntries([
+      { type: "tool", tool: "todo", status: "ok", details: { ui: [] } },
+    ]);
+    expect((rows[0] as ToolRowData).details).toEqual({ ui: [] });
+  });
+});
+
 describe("结束与错误", () => {
   it("RUN_FINISHED 收掉所有 live 并带出 usage", () => {
     const s = run(...write("好了"), {

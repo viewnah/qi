@@ -64,6 +64,8 @@ export interface ToolRowData {
   exitCode: number | null;
   error: string | null;
   result: string;
+  /** 插件给客户端看的自由结构;渲染见 Rows.tsx 的 `Details`。 */
+  details: Record<string, unknown> | null;
 }
 
 export interface NoteRow {
@@ -221,6 +223,7 @@ export function fromEntries(entries: Entry[]): Row[] {
           exitCode: typeof e.exit_code === "number" ? e.exit_code : null,
           error: e.error ?? null,
           result: e.result ?? "",
+          details: e.details ?? null,
         });
         break;
       case "compaction":
@@ -398,6 +401,7 @@ export function reduce(state: TurnState, ev: AguiEvent): TurnState {
             exitCode: null,
             error: null,
             result: "",
+            details: null,
           },
         ],
       };
@@ -425,6 +429,10 @@ export function reduce(state: TurnState, ev: AguiEvent): TurnState {
       if (!key) return state;
       const meta = asRecord(ev.metadata?.[QI_CUSTOM.toolMeta]);
       const status = asStr(meta.status, "ok");
+      // 插件唯一的 UI 下行通道。这一条不加,details 就只在后端活着、到前端被丢。
+      const details = Object.keys(asRecord(meta.details)).length > 0
+        ? asRecord(meta.details)
+        : null;
       return {
         ...state,
         rows: patchByKey(state.rows, key, (row) =>
@@ -440,6 +448,7 @@ export function reduce(state: TurnState, ev: AguiEvent): TurnState {
                   typeof meta.exit_code === "number" ? meta.exit_code : null,
                 error: typeof meta.error === "string" ? meta.error : null,
                 result: ev.content,
+                details,
               }
             : row,
         ),

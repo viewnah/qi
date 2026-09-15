@@ -74,7 +74,11 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
             auth_required=bool(password),
             static_ready=STATIC_DIR.is_dir(),
             capabilities={"sse": True, "streaming": True, "cancel": True,
-                          "auth_write": True, "config_read": True, "trajectory": True},
+                          "auth_write": True, "config_read": True, "trajectory": True,
+                          # 扩展面:插件据这两个开关决定要不要发结构化 UI。
+                          # `ag_ui` = 事件形状是 AG-UI;`ui_v1` = 认 details["ui"] 的词汇表
+                          # (见 docs/web.md §16.2)。缺哪个都退回"折叠显示原始 JSON"。
+                          "ag_ui": True, "ui_v1": True},
         )
 
     @app.get("/api/health")

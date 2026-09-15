@@ -60,6 +60,8 @@ export interface Entry {
  exit_code?: number | null;
  error?: string | null;
  result?: string;
+ /** 插件给客户端看的自由结构(见 QiToolMeta)。回放时也要带上。 */
+ details?: Record<string, unknown> | null;
  // dispatch
  agent?: string | null;
  display_name?: string | null;
@@ -123,6 +125,42 @@ export interface SkillInfo {
  description: string;
  source: string;
  path: string;
+}
+
+/**
+ * `TOOL_CALL_RESULT.metadata["qi.tool"]` —— qi 的工具结构化结果。
+ *
+ * `details` 是**插件唯一的 UI 下行通道**(docs/web.md §16):开放字典,
+ * 宿主不为任何具体插件改接口。
+ */
+export interface QiToolMeta {
+  status?: string;
+  duration_ms?: number;
+  exit_code?: number | null;
+  error?: string | null;
+  details?: Record<string, unknown> | null;
+}
+
+/**
+ * `details["ui"]` 的词汇表(v1)。
+ *
+ * 这是**声明式**的:插件输出数据,宿主实现渲染。好处是插件永不改 API,
+ * 而宿主加新组件类型时所有已存在的插件立刻可用。
+ *
+ * 遇到不认识的 `type`,渲染方必须**退回原始 JSON**而不是丢弃 —— 否则
+ * "插件发了东西但没人看见"会变成不可诊断的问题。
+ */
+export type UiNode =
+  | { type: "list"; items: { label: string; state?: "done" | "active" | "pending"; note?: string }[] }
+  | { type: "kv"; rows: [string, string][] }
+  | { type: "progress"; value: number; max: number; label?: string }
+  | { type: "code"; lang?: string; text: string }
+  | { type: "note"; text: string };
+
+/** `details["ui"]` 的载荷形状。`ui_version` 用于将来做兼容判断。 */
+export interface UiPayload {
+  ui_version?: number;
+  ui: UiNode[];
 }
 
 export interface SkillList {

@@ -130,7 +130,11 @@ class AgentRunner:
                                      data={"status": outcome.status,
                                            "duration_ms": outcome.duration_ms,
                                            "exit_code": outcome.exit_code,
-                                           "error": outcome.error})
+                                           "error": outcome.error,
+                                           # 插件/工具给客户端看的自由结构。
+                                           # 这一行以前不存在 —— 于是插件就算自己造了
+                                           # details 也**到这一行就被扔掉**(见 docs/web.md §16)。
+                                           "details": outcome.details})
                     msgs.append(ChatMessage(role="tool", content=outcome.result,
                                             tool_call_id=call.id))
                 if turn >= self.settings.max_turns - 1:

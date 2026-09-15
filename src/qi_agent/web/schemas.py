@@ -8,7 +8,10 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
-CONTRACT_VERSION = "1"
+#: AG-UI 改造是**破坏性**的:事件形状、传输形态(单 POST)、续传机制全变了,
+#: 所以升到 2。前端此刻仍声明 "1" → 会走它自己的显式报错分支(而不是白屏),
+#: 这是**刻意**的过渡状态:报错比坏页面好。前端跟上后两侧一起改成 "2"。
+CONTRACT_VERSION = "2"
 
 APP_NAME = "qi-web"
 
@@ -32,19 +35,6 @@ class SessionCreate(BaseModel):
 
 class SessionRename(BaseModel):
     title: str = Field(min_length=1)
-
-
-class TurnRequest(BaseModel):
-    text: str = Field(min_length=1)
-    agent: str | None = None
-
-
-class TurnAccepted(BaseModel):
-    """一轮已受理。`from_seq` 是客户端应当开始读事件的位置(0 = 从头)。"""
-
-    run_id: str
-    session_id: str
-    from_seq: int = 0
 
 
 class SessionSummary(BaseModel):
@@ -124,13 +114,6 @@ class AuthWrite(BaseModel):
     """写入 provider 凭证。key 只在请求体里出现,不进日志。"""
 
     key: str = Field(min_length=1)
-
-
-class Conflict(BaseModel):
-    """409:同一会话已有活跃 run(前端应提示"正在运行",而不是静默失败)。"""
-
-    detail: str
-    run_id: str | None = None
 
 
 class SkillInfo(BaseModel):

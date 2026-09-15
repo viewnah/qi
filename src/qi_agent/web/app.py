@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+import uuid
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -19,9 +20,9 @@ from ..auth import AuthStore, resolve_key
 from ..config import ConfigError, load_config, resolve_default_model, resolve_router_model
 from ..loader import LoadError
 from ..registry import AgentRegistry
-from . import schemas
+from . import agui, schemas
 from .security import check_credentials, check_host, mask_key
-from .state import HEARTBEAT_S, RunBusy, WebState, comment, frame
+from .state import RunBusy, WebState
 
 STATIC_DIR = Path(__file__).parent / "static"
 DEFAULT_WINDOW = 200          # 会话明细默认窗口(渐进恢复:老会话不因细节太多而卡住)
@@ -85,7 +86,8 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
         return schemas.SessionSummary(
             id=session.id, title=session.title, created_at=session.created_at,
             cwd=session.cwd, message_count=session.message_count,
-            running=web.active_run(session.id) is not None, path=str(session.path),
+            # `is_busy` 已是 bool —— 早先写成 `is not None` 是错的(永远为 True)
+            running=web.is_busy(session.id), path=str(session.path),
         )
 
     def detail(session, limit: int, before: int | None) -> schemas.SessionDetail:
@@ -97,7 +99,7 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
         return schemas.SessionDetail(
             id=session.id, title=session.title, created_at=session.created_at,
             cwd=session.cwd, path=str(session.path),
-            running=web.active_run(session.id) is not None,
+            running=web.is_busy(session.id),
             total_entries=len(entries), entries=entries[start:end], skipped=start,
         )
 
@@ -136,72 +138,85 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
 
     @app.delete("/api/sessions/{sid}", status_code=204, dependencies=[Depends(guard)])
     async def delete_session(sid: str) -> None:
-        if web.active_run(sid) is not None:
+        if web.is_busy(sid):
             raise HTTPException(status_code=409, detail="会话正在运行,先停止再删除")
         if not web.sessions.delete(sid):
             raise HTTPException(status_code=404, detail="会话不存在")
 
-    # ── 执行一轮 + SSE ────────────────────────────────────
-    @app.post("/api/sessions/{sid}/turn", response_model=schemas.TurnAccepted,
-              status_code=202, dependencies=[Depends(guard)])
-    async def post_turn(sid: str, body: schemas.TurnRequest) -> schemas.TurnAccepted:
-        session = web.sessions.get(sid)
-        if session is None:
-            raise HTTPException(status_code=404, detail="会话不存在")
-        try:
-            run = web.start_run(session, body.text, body.agent)
-        except RunBusy as busy:
-            raise HTTPException(status_code=409, detail={
-                "detail": "该会话已有活跃 run", "run_id": busy.run_id}) from busy
-        return schemas.TurnAccepted(run_id=run.run_id, session_id=sid, from_seq=0)
-        # from_seq 恒为 0:客户端随后 GET /events?run_id=… 重放**整轮**。
-        # 不做"从当前 seq 开始":run 可能在 POST 返回前就发了几条事件,那几条会丢。
+    # ── AG-UI:单次 POST,响应即流 ──────────────────────────────
+    #
+    # 这是 docs/web.md 记的**破坏性替换**:旧的 `POST /turn`(202)+ `POST /cancel`
+    # + `GET /events`(两跳、带 `event:`/`id:`、`snapshot` 收尾)已全部移除。
+    #
+    # 三条硬约束来自**官方编码器**(`@ag-ui/encoder@0.0.59` 的 `encodeSSE`),
+    # 不是文档转述:只有 `data:` 行、没有 `event:`、没有 `id:`;类型在 JSON 的 `type` 里。
+    #
+    # 于是三个东西一起没了(取舍记录在文档里):
+    #   · `?run_id=` 重放已完成轮 —— 流就是这次响应,没有"晚连上来"的客户端;
+    #   · `?from=` 断线续传 —— 没有可续的流;AG-UI 的答案本是"重发 RunAgentInput";
+    #   · `id:` 游标 —— 没有任何消费者了(实测过原生 EventSource 会回传
+    #     `Last-Event-ID` 而 qi 不读它,留着只会误导)。
+    #
+    # 取消也不再需要单独的端点:客户端 abort 请求 → ASGI 取消生成器 →
+    # `runtime.stream()` 被 CancelledError 打断。
+    @app.post("/api/ag-ui", dependencies=[Depends(guard)])
+    async def ag_ui(request: Request, body: dict = Body(...)) -> StreamingResponse:
+        """AG-UI 协议端点:POST `RunAgentInput` → `text/event-stream`。
 
-    @app.post("/api/sessions/{sid}/cancel", status_code=202, dependencies=[Depends(guard)])
-    async def cancel_turn(sid: str) -> dict:
-        if not web.cancel_run(sid):
-            raise HTTPException(status_code=409, detail="没有正在运行的 run")
-        return {"cancelled": True, "session_id": sid}
-
-    @app.get("/api/sessions/{sid}/events", dependencies=[Depends(guard)])
-    async def events(sid: str, request: Request, run_id: str | None = Query(None),
-                     from_seq: int = Query(0, alias="from", ge=0)) -> StreamingResponse:
-        """SSE 事件流。
-
-        每代以 **snapshot** 开头(客户端的权威起点,不带 `id:` 以免与 seq 撞号),
-        其后是目标 run 的事件;run 结束后发 `run.finished` 并**关闭**连接——
-        客户端重连会拿到包含落盘结果的新快照。这就是 docs/web.md §8.2 记的
-        "每代 opening snapshot 原子替换"。
-
-        `?run_id=` 可指向**已完成**的 run 并把它重放一遍:否则客户端晚一步连上来
-        (异步任务很快就跑完)就只能看到快照,拿不到事件流。
+        `threadId` = qi 的 session id(qi 的 fork 会**新建会话文件**,所以每个分支
+        天然是一条独立 thread,与 AG-UI 的线性 thread 模型不冲突);
+        `runId` 由客户端提供,原样回显在 `RUN_STARTED` 里。
         """
-        session = web.sessions.get(sid)
+        try:
+            inp = agui.RunAgentInput.parse(body)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if not inp.thread_id:
+            raise HTTPException(status_code=422, detail="RunAgentInput.threadId 不能为空")
+        session = web.sessions.get(inp.thread_id)
         if session is None:
-            raise HTTPException(status_code=404, detail="会话不存在")
-        target = web.run_by_id(run_id) if run_id else web.active_run(sid)
+            raise HTTPException(status_code=404, detail=f"会话不存在: {inp.thread_id}")
+        text = inp.last_user_text()
+        if not text.strip():
+            raise HTTPException(status_code=422, detail="messages 里没有 user 内容")
+        try:
+            web.begin(session.id)               # 会话级串行:两个 POST 不得往同一文件追加
+        except RunBusy as busy:
+            raise HTTPException(status_code=409, detail="该会话已有活跃 run") from busy
+
+        run_id = inp.run_id or uuid.uuid4().hex[:12]
+        translator = agui.AguiTranslator(thread_id=session.id, run_id=run_id)
+        entries = session.visible_entries()
 
         async def gen():
-            yield comment("qi-web sse open")
-            yield frame("snapshot", detail(session, DEFAULT_WINDOW, None).model_dump())
-            run = target
-            if run is None:
-                while True:                        # 空闲:只发心跳,保持连接可用
-                    if await request.is_disconnected():
-                        return
-                    yield comment("idle")
-                    await asyncio.sleep(HEARTBEAT_S)
-            seen = max(from_seq, run.first_seq)
-            while True:
-                if await request.is_disconnected():
-                    return
-                for item in run.items_from(seen):
-                    seen = item["seq"] + 1
-                    yield frame(item["kind"], item["payload"], item["seq"])
-                if run.done:
-                    return
-                if not await run.wait_more(seen):
-                    yield comment("ping")
+            try:
+                # RUN_STARTED 必须是流的第一帧(AG-UI 生命周期边界),
+                # 紧接着把历史与状态作为权威起点推给客户端 —— 这是 qi 自己的决定:
+                # AG-UI 不强制快照,但 qi 的 UI 靠它重建整屏。
+                for frame in translator.start():
+                    yield agui.encode(frame)
+                yield agui.encode(agui.messages_snapshot(entries))
+                yield agui.encode(agui.state_snapshot({
+                    "cwd": session.cwd, "title": session.title,
+                }))
+                async for ev in web.runtime_for(web.session_cwd(session)).stream(
+                        text, session, agent_override=inp.agent):
+                    for frame in translator.feed(ev):
+                        yield agui.encode(frame)
+                # 流正常结束:补收尾(万一最后一帧还开着文本/思考)
+                for frame in translator.finish_open():
+                    yield agui.encode(frame)
+            except asyncio.CancelledError:
+                # 客户端 abort(Stop 按钮)/ 掉线。**不能吞**:要让 ASGI 看见取消,
+                # 否则连接不释放。收尾帧也发不出去(连接已断),所以只记一句日志。
+                for frame in translator.finish_open():
+                    yield agui.encode(frame)
+                raise
+            except Exception as exc:  # noqa: BLE001 一律转 RUN_ERROR,不断连
+                yield agui.encode(translator.run_error(
+                    f"{type(exc).__name__}: {exc}", code=type(exc).__name__))
+            finally:
+                web.end(session.id)             # 必须在 finally:否则一次异常就永久卡住
 
         return StreamingResponse(gen(), media_type="text/event-stream", headers={
             "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no",

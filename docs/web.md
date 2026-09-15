@@ -48,7 +48,7 @@ qi 的 core 与宿主同一个包,这层桥用 `runtime.stream()` 一个异步�
 
 ## 3. HTTP 宿主(v2)
 
-```
+```text
 qi web                          # 起本地服务;默认 127.0.0.1 + 端口配置 + 可选密码
 ▼
 FastAPI/Starlette + uvicorn     # 复用 hikqin server.py 思路
@@ -139,7 +139,7 @@ qi 又必须表达 success/error/warning、diff 增删、agent 身份与工具�
 | 令牌纪律 | `tokens.css` 是唯一色值来源;组件出现 `#rrggbb` 即回归失败(§11 第 1 条,已可自动拦截) |
 | 工具卡片 | **状态标题 + 内收正文**,折叠只按行数(不用 `⏺` 子弹行——那是 Claude Code 的形态) |
 | 双视图 | 同一事件族驱动**对话视图**与**轨迹视图**两个 target,各自持有 display model、互不导入 |
-| 重连 | 逻辑 seq 区间校验 + 每代 opening snapshot 原子替换 + `page()` 修 gap;不用 `Last-Event-ID` 续传 |
+| 重连 | ~~逻辑 seq 区间校验 + 每代 snapshot 原子替换 + `page()` 修 gap~~ **已随 AG-UI 改造作废**(§15):单 POST 之下"流就是这次响应",重连语义变成"重发一个 `RunAgentInput`" |
 | 主题容错 | 坏主题跳过整文件、未知键跳过并告警、主题名不得越出主题目录、一个坏主题不阻塞启动 |
 
 ### 8.3 不采纳
@@ -403,40 +403,74 @@ qi web                           # → http://127.0.0.1:30142
 **不安全的组合拒启**:`--hostname` 非回环且无口令 → 直接退出并给出修复步骤。
 暴露出去的是一个能执行高权限操作的 agent,不是静态站点。
 
-### 14.2 已实现的 `/api` v1
+### 14.2 已实现的 `/api`(契约 v2)
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
+| POST | `/api/ag-ui` | **AG-UI 协议端点**:单次 POST `RunAgentInput` → `text/event-stream`。已有活跃 run → **409** |
 | GET | `/api/meta` | 契约号 + 能力开关 + 默认 cwd(前端据此降级) |
 | GET | `/api/health` | 存活(**免鉴权**,给反代探活) |
 | GET/POST | `/api/sessions` | 列表 / 新建(新建写 `cwd`) |
 | GET/PATCH/DELETE | `/api/sessions/{id}` | 窗口明细(`limit`/`before`) / 改名 / 删除 |
-| POST | `/api/sessions/{id}/turn` | 提交一轮 → 202 `{run_id}`;已有活跃 run → **409** |
-| POST | `/api/sessions/{id}/cancel` | 取消当前 run(→ `run.finished: cancelled`) |
-| GET | `/api/sessions/{id}/events` | **SSE**;`?run_id=` 可重放**已完成**的 run |
 | GET | `/api/agents` / `/api/config` | agent 清单 / 模型与检查项(凭证**只回掩码**) |
-| GET | `/api/skills` / `/api/plugins` | 顶层技能清单(六层来源 + settings 追加)/ 已装载插件名 |
+| GET | `/api/skills` / `/api/plugins` | 顶层技能清单 / 已装载插件名 |
 | POST/DELETE | `/api/auth/{provider}` | 写/清凭证;必须带 `X-Qi-Confirm: yes`(**428** 否则) |
 
-> 路由**围绕 session**、不围绕 agent(对比 §3 的草图):分派器可能在mid-turn 换 agent,
-> 把 run 挂在 agent 上站不住。`/api/meta` 是降级入口(`contract` + `capabilities` + `default_cwd`);
-> `/api/health` 是唯一免鉴权的(给反代探活)。
+三处**已移除**(契约 v1 → v2 的破坏性改动,见 §15):`POST /sessions/{id}/turn`、
+`POST /sessions/{id}/cancel`、`GET /sessions/{id}/events`。取消改由**客户端断开**表达
+(单 POST 之下"流就是这次响应"),所以不需要端点。
 
-### 14.3 SSE 契约(前端依赖它)
+> 路由**围绕 session**、不围绕 agent(对比 §3 的草图):分派器可能中途换 agent,
+> 把 run 挂在 agent 上站不住。**只有 `/api/health` 免鉴权**。
 
-```text
-(1) : qi-web sse open            ← 开场注释帧
-(2) event: snapshot              ← 每代的**权威起点**(不带 id,避免与 seq 撞号)
-(3) event: <kind>  id: <seq>     ← 事件,按真实因果顺序
-(4) event: run.finished          ← 结束,随后**关闭连接**
+### 14.3 AG-UI 契约(前端依赖它)
+
+参照物是**官方编码器**而不是文档:`@ag-ui/encoder@0.0.59`(发布自
+`github.com/ag-ui-protocol/ag-ui`)的
+
+```js
+encodeSSE(event) { return `data: ${JSON.stringify(event)}\n\n`; }
+getContentType() { return "text/event-stream"; }
 ```
 
-- 断线重连:带 `?from=<seq>` 补齐;`?run_id=` 可重放整轮(含已完成的)。
-- 空闲会话:发 `snapshot` 后只发心跳注释帧保活。
-- 无活跃 run 时**不会**推事件;客户端靠 `snapshot` 重建(落盘结果才是权威)。
+于是三条硬约束:
 
-前端用 **fetch + ReadableStream** 而不是 `EventSource`:后者不能带鉴权头、也没法中途 abort
-(也避开了 cookie 会话,为将来的桌面壳留路)。
+```text
+data: {"type":"RUN_STARTED","threadId":"…","runId":"…"}
+data: {"type":"MESSAGES_SNAPSHOT","messages":[…]}
+data: {"type":"STATE_SNAPSHOT","snapshot":{…}}
+data: {"type":"CUSTOM","name":"qi.history","value":{"entries":[…]}}
+data: {"type":"TEXT_MESSAGE_START","messageId":"msg_1","role":"assistant"}
+data: {"type":"TEXT_MESSAGE_CONTENT","messageId":"msg_1","delta":"先"}
+data: {"type":"TEXT_MESSAGE_END","messageId":"msg_1"}
+data: {"type":"RUN_FINISHED","outcome":{"type":"success"}}
+```
+
+1. **只有 `data:` 行,没有 `event:`、没有 `id:`。** 类型在 JSON 的 `type` 里,所以消费方
+   不能用 `addEventListener("…")`,只能 `onmessage` + 分支 `type`。
+2. **`RunAgentInput.messages` 带完整历史** —— AG-UI 天然是"客户端拥有状态"的模型,
+   与 qi 的「session = 本地 JSONL 树」一致。因此**重连语义 = 重发一个 `RunAgentInput`**,
+   而不是 `id:`/`Last-Event-ID` 续传。
+3. **qi 独有概念走 `Custom{name, value}`**(AG-UI 的协议级扩展点),不污染标准事件。
+
+映射表(实现在 `src/qi_agent/web/agui.py`):
+
+| qi | AG-UI |
+| --- | --- |
+| `dispatch` / `opening` / `compaction_*` / `branch` | `CUSTOM{name:"qi.*"}` |
+| `thinking_delta` | `REASONING_*`(`THINKING_*` 在 AG-UI 已弃用) |
+| `text_delta` | `TEXT_MESSAGE_START → CONTENT* → END` |
+| `tool_start` | `TOOL_CALL_START` + **一条** `TOOL_CALL_ARGS` + `TOOL_CALL_END`(qi 此刻已有完整参数) |
+| `tool_end` | `TOOL_CALL_RESULT`(结构化结果挂 `metadata["qi.tool"]`) |
+| `agent_end` | `RUN_FINISHED{outcome}`(usage 挂 `metadata["qi.usage"]`) |
+| `error` | `RUN_ERROR` |
+
+两点是 qi 自己补的:
+
+- **`qi.history`**:`MESSAGES_SNAPSHOT` 只装"会进对话的消息",装不下
+  `dispatch`/`tool`/`custom(assistant_narration)`。不给这一份,刷新之后轨迹就只剩对话
+  —— 而那正是 qi 一直要避免的"直播与回放不一致"。走 `CUSTOM`,严格客户端会忽略它。
+- **`RUN_STARTED` 之后紧跟快照**:AG-UI 不强制快照,但 qi 的 UI 靠它重建整屏。
 
 ### 14.4 实测证据(真实模型,非 stub)
 
@@ -474,11 +508,11 @@ queue-steer 语义 / headless RPC / UI 插件拆包。
 
 ```bash
 # 宿主 + 协议层(python)
-.venv/bin/python -m pytest -q          # 324 项
+.venv/bin/python -m pytest -q          # 322 项
 
 # 前端
 cd web
-npm test                               # 37 项(vitest)
+npm test                               # 28 项(vitest)
 npm run typecheck                      # tsc --noEmit(含测试文件)
 npm run check:design                   # 两个门禁:check-design + check-dsh-tokens
 npm run check:tokens                   # 只跑 dsh 令牌保真(需要 data/deepseek-harness 或 DSH_REPO)
@@ -502,3 +536,67 @@ npm run build                          # 产出 → src/qi_agent/web/static/
 测试只覆盖**纯函数**(切帧/归约/契约)——不引 jsdom 与组件快照:组件渲染的问题靠肉眼看更快,
 而真正的风险集中在“事件怎么变成视图”这段逻辑上。构建产物里不会混入测试代码
 (测试不被入口引用,Vite 不打包;产物体积已核对不变)。
+
+## 15. AG-UI 改造 + 前端重做(2026-09,破坏性)
+
+### 15.1 决定
+
+把 `/api` 的事件契约**换成 AG-UI**,并且**推翻**之前那套照 dsh `HeroShell`/`InputBar`
+逐条复刻的版式,改由自己设计。三条一起变的:
+
+| 层 | 改前 | 改后 |
+| --- | --- | --- |
+| 传输 | 两跳:`POST /turn` → 202,再 `GET /events` | **单次 POST `RunAgentInput`,响应就是流** |
+| 帧 | `id:` + `event:` + `data:`(命名事件) | **只有 `data:`**,类型在 JSON 的 `type` 里 |
+| 续传 | `?from=<seq>` + 每代 `snapshot` 原子替换 | **没有续传**:重连 = 重发一个 `RunAgentInput` |
+| 版式 | 复刻 dsh 的 hero + 输入卡 | 三栏(会话 / 工作台 / **遥测**)+ **行语言** |
+
+### 15.2 为什么接受"没有续传"
+
+这是本次最需要记账的取舍。单 POST 之下"流就是这次响应",于是:
+
+- `POST /turn` 那两跳存在的唯一理由(事件可能在 POST 返回前就发出)消失了;
+- `Run` 类、追加式事件日志、`seq`、`?run_id=` 重放、`POST /cancel` **一起消失**,
+  `web/state.py` 从 208 行缩到 ~110 行,只剩 cwd→runtime 缓存 + 会话级忙闲闸门;
+- 代价:掉线时**那次 run 的在途输出会丢**。已落盘的消息还在,重发即可继续。
+
+AG-UI 的答案本来就是"重发 `RunAgentInput`"(它把 `messages` 放在请求体里),
+所以这不是缺失,而是模型不同 —— **会话归客户端,不是归服务端**。
+
+### 15.3 为什么保留配色令牌层
+
+版式全部重做,但 `--dsw-*` 那 90 条**留着**:它们刚做过逐条对拍 dsh 源文件、
+对比度由 dsh 验过。从零自造一套色板只会更差、且无法验证。所以
+**色板当底座、版式自己设计**,两个门禁(`check-design` / `check-dsh-tokens`)继续通过。
+
+### 15.4 版式的三条设计判断
+
+qi 是**多 agent 分派 harness**,不是聊天软件。转录的本质是**因果轨迹**
+(决策 → 思考 → 动作 → 结论),不是对称交谈。由此:
+
+1. **行,不是气泡。** 气泡把"过程"和"结论"渲染成同类东西,结论被过程淹没。每行一种
+   tone,左缘细线承担身份色,机器味儿的一律等宽 —— 读者能扫着跳过过程只读结论。
+   `final`/`narration`/`opening` 三种 tone 是 qi 自己的区分,视觉权重不同。
+2. **三栏,不是两栏。** 新增**遥测栏**:分派链与理由、上下文占用、动作计数、环境。
+   聊天界面普遍不告诉你"它为什么这么做"和"还剩多少上下文" —— 对 harness 来说这是一等公民。
+3. **活动条贴着输入框,不在页面底边。** 想知道的是"**此刻**在干什么",那信息属于手边;
+   底边状态条离视线最远,却承载最需要即时可见的东西。
+
+其余:过程可折叠、**结论不可折叠**;空态是"工作台"不是广告牌;工具行折叠态**恰好一行**;
+状态不单靠颜色(带 ✓/✗)。
+
+### 15.5 前端为什么用 discriminated union
+
+AG-UI 把类型放在 payload 的 `type` 里,于是 `switch (ev.type)` 能被**穷尽检查** ——
+漏一个分支就编译不过。旧方案是"读 SSE 的 `event:` 名 + 手写 kind 表",做不到这一点:
+后端加一个 kind,前端只会**静默丢掉**(§14.7 记的那次 4 个 kind 就是这样漏的)。
+`contract.test.ts` 继续做变异验证:在 `agui.py` 里加一个没声明的类型必须变红。
+
+### 15.6 明确不做
+
+- **不宣称"兼容 AG-UI"**:协议仍是 0.0.59、无协议级版本、无日期化冻结规范、
+  CopilotKit 主导无基金会归属。借的是**形状**,不是身份。
+- **不用 AG-UI 的服务端状态模型**:`previous_response_id` / `conv_...` 会让 fork 静默串历史、
+  丢掉"读改压缩历史"、切 provider 就断。qi 一律 `store: false` + 每轮自己发完整历史。
+- **不引客户端插件模块图**(dsh 路线):要加载器 + 版本钉 + 信任模型,而且插件仍绑死
+  宿主内部组件 API。扩展性留给"数据层 `details` + 声明式 UI 词汇表" —— 尚未做,记在 §7 待定。

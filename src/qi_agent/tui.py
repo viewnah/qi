@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -164,6 +165,129 @@ class Candidate(NamedTuple):
 
 ARG_COMPLETION_COMMANDS = ("/model", "/thinking", "/login")
 """参数补全(对齐 pi 的 `getArgumentCompletions`):这些命令的第一个参数给候选。"""
+
+PATH_DELIMITERS = (" ", "\t", '"', "'", "=")
+"""`@路径` token 的分隔符(对齐 pi autocomplete 的 PATH_DELIMITERS)。"""
+
+
+def _which_fd() -> str | None:
+    """`fd` 可执行文件路径(补全走全树搜索用);没装就回退扫目录。"""
+    import shutil as _shutil
+
+    return _shutil.which("fd")
+
+
+def _is_token_start(text: str, index: int) -> bool:
+    return index == 0 or text[index - 1] in PATH_DELIMITERS
+
+
+def _last_delimiter(text: str) -> int:
+    for i in range(len(text) - 1, -1, -1):
+        if text[i] in PATH_DELIMITERS:
+            return i
+    return -1
+
+
+def _unclosed_quote_start(text: str) -> int | None:
+    """未闭合的 `"` 的起点(在引号里继续补)。"""
+    inside = False
+    start: int | None = None
+    for i, char in enumerate(text):
+        if char == '"':
+            inside = not inside
+            start = i if inside else None
+    return start if inside else None
+
+
+def _at_prefix(text: str) -> tuple[int, str, bool] | None:
+    """从光标前的文本里取出 `@路径` 片段。
+
+    返回 `(起始偏移, @ 后的原始查询, 是否带引号)`。对齐 pi 的 extractAtPrefix +
+    extractQuotedPrefix:`@"带 空格"` 与未闭合的 `@"…` 都算带引号。
+    """
+    quote = _unclosed_quote_start(text)
+    if quote is not None:
+        if quote > 0 and text[quote - 1] == "@" and _is_token_start(text, quote - 1):
+            return quote - 1, text[quote + 1:], True
+        return None
+    start = _last_delimiter(text) + 1
+    if text[start:start + 1] == "@":
+        return start, text[start + 1:], False
+    return None
+
+
+def _completion_value(display: str, is_dir: bool, quoted: bool) -> str:
+    """`@` 候选写回编辑器的文本:带空格(或已在引号里)就补上成对引号。"""
+    path = display + ("/" if is_dir else "")
+    if quoted or " " in path:
+        return f'@"{path}"'
+    return f"@{path}"
+
+
+def _fd_pattern(query: str) -> str:
+    """`@a/b` → fd 正则 `a[\\/]b`(pi 的 buildFdPathQuery)。"""
+    trailing = query.endswith("/")
+    segments = [re.escape(part) for part in query.strip("/").split("/") if part]
+    pattern = "[\\\\/]".join(segments)
+    return pattern + "[\\\\/]" if trailing else pattern
+
+
+def _fd_candidates(base: Path, query: str) -> list[tuple[str, bool]]:
+    """用 fd 走全树(快、尊重 .gitignore);返回 `(相对路径, 是否目录)`,目录优先。"""
+    fd = _which_fd()
+    if not fd:
+        return []
+    args = [fd, "--base-directory", str(base), "--max-results", "100",
+            "--type", "f", "--type", "d", "--follow", "--hidden",
+            "--exclude", ".git", "--exclude", ".git/*", "--exclude", ".git/**"]
+    if query:
+        if "/" in query:
+            args.append("--full-path")
+        args.append(_fd_pattern(query))
+    try:
+        proc = subprocess.run(args, capture_output=True, text=True, timeout=5, check=False)
+    except (OSError, subprocess.SubprocessError):   # fd 挂了不该弄崩补全
+        return []
+    if proc.returncode != 0:
+        return []
+    out: list[tuple[str, bool]] = []
+    for line in proc.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        is_dir = line.endswith("/")
+        rel = line[:-1] if is_dir else line
+        if rel == ".git" or rel.startswith(".git/") or "/.git/" in rel:
+            continue
+        out.append((rel, is_dir))
+    out.sort(key=lambda item: (not item[1], item[0].lower()))
+    return out
+
+
+def _scan_candidates(base: Path, query: str) -> list[tuple[str, bool]]:
+    """没装 fd 时的回退:只扫 query 所在的一层目录(目录优先、默认不列隐藏文件)。"""
+    query_path = Path(query) if query else Path("")
+    if query.endswith("/") or query == "":
+        directory, stem = base / query_path, ""
+    else:
+        directory, stem = base / query_path.parent, query_path.name
+    show_hidden = stem.startswith(".")
+    try:
+        entries = sorted(directory.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+    except OSError:
+        return []
+    out: list[tuple[str, bool]] = []
+    for entry in entries:
+        if entry.name.startswith(".") and not show_hidden:
+            continue
+        if not entry.name.startswith(stem):
+            continue
+        try:
+            display = entry.relative_to(base).as_posix()
+        except ValueError:                    # query 指到 cwd 外面(如 @/tmp/x):用绝对路径
+            display = entry.as_posix()
+        out.append((display, entry.is_dir()))
+    return out
 
 BASH_PREVIEW_LINES = 20
 """bash 输出折叠时的预览行数(对齐 pi 的 BashExecutionComponent)。"""
@@ -2167,13 +2291,13 @@ class QiTui(App):
                 start = row_start + len(cmd) + 1
                 return items, start, row_start + col
 
-        # 2) 文件补全:当前 token 以 @ 开头
-        token_start = max(before.rfind(" ") + 1, before.rfind("\t") + 1, 0)
-        token = before[token_start:]
-        if not token.startswith("@"):
+        # 2) 文件补全:`@路径` 或 `@"带空格的路径"`(pi 的 PATH_DELIMITERS / 引号规则)
+        match = _at_prefix(before)
+        if match is None:
             return [], 0, 0
-        items = [Candidate(value, label) for value, label in self._file_candidates(token[1:])]
-        return items, row_start + token_start, row_start + col
+        start, raw, quoted = match
+        items = self._file_candidates(raw, quoted=quoted)
+        return items, row_start + start, row_start + col
 
     def _argument_candidates(self, cmd: str, prefix: str) -> list[Candidate]:
         """`/model` `/thinking` `/login` 的第一个参数候选。"""
@@ -2199,37 +2323,19 @@ class QiTui(App):
             return []               # 已完整匹配
         return out[:COMPLETION_ROWS]
 
-    def _file_candidates(self, query: str) -> list[tuple[str, str]]:
-        """按 `@` 后的相对路径列目录(目录优先,以 `/` 结尾)。
+    def _file_candidates(self, query: str, *, quoted: bool = False) -> list[Candidate]:
+        """`@` 后的路径候选:优先 fd 全树搜索(pi 同款),没装 fd 就扫当前目录一层。
 
-        没装 fd 也能用:直接扫描目录,不做 .gitignore 过滤(pi 用 fd)。
+        `quoted` = 已在 `@"…"` 里:候选也补上成对引号,带空格的路径同理。
         """
-        if self._rt is None:
-            return []
-        base = Path(self._rt.cwd)
-        query_path = Path(query) if query else Path("")
-        if query.endswith("/") or query == "":
-            directory, stem = base / query_path, ""
-        else:
-            directory, stem = base / query_path.parent, query_path.name
-        show_hidden = stem.startswith(".")
-        try:
-            entries = sorted(directory.iterdir(),
-                             key=lambda p: (p.is_file(), p.name.lower()))
-        except OSError:
-            return []
-        out: list[tuple[str, str]] = []
-        for entry in entries:
-            if entry.name.startswith(".") and not show_hidden:
-                continue
-            if not entry.name.startswith(stem):
-                continue
-            if len(out) >= COMPLETION_ROWS:
-                break
-            rel = entry.relative_to(base).as_posix()
-            is_dir = entry.is_dir()
-            value = f"@{rel}" + ("/" if is_dir else "")
-            out.append((value, rel + ("/" if is_dir else "")))
+        base = Path(self._rt.cwd) if self._rt is not None else Path.cwd()
+        found = _fd_candidates(base, query) or _scan_candidates(base, query)
+        out: list[Candidate] = []
+        for display, is_dir in found[:COMPLETION_ROWS]:
+            name = display.rsplit("/", 1)[-1]
+            label = name + ("/" if is_dir else "")
+            out.append(Candidate(_completion_value(display, is_dir, quoted), label,
+                                 "" if display == name else display))
         return out
 
     def _refresh_completions(self) -> None:
@@ -2283,16 +2389,24 @@ class QiTui(App):
             return
         panel = self.query_one("#completions", OptionList)
         index = panel.highlighted if panel.highlighted is not None else 0
-        value = candidates[min(index, len(candidates) - 1)].value
+        picked = candidates[min(index, len(candidates) - 1)]
+        value, label = picked.value, picked.label
         editor = self.query_one("#editor", Editor)
         text = editor.text
-        # 命令补全补一个空格(pi 同款:`/name `),目录补全保留 `/` 继续往下补
-        suffix = " " if value.startswith("/") else ""
+        # 命令补一个空格(pi 同款:`/name `);文件补一个空格;`@目录/` 与参数补全不补
+        if value.startswith("/"):
+            suffix = " "
+        elif value.startswith("@"):
+            suffix = "" if label.endswith("/") else " "
+        else:
+            suffix = ""            # 参数补全(/model、/thinking、/login)
         new_text = text[:start] + value + suffix + text[end:]
         editor.load_text(new_text)
         cursor = start + len(value) + len(suffix)
+        if value.endswith('"') and label.endswith("/"):
+            cursor -= 1          # 引号内继续补:光标停在收尾引号前
         editor.move_cursor(self._offset_to_location(new_text, cursor))
-        if value.endswith("/"):
+        if label.endswith("/"):
             self._refresh_completions()
         else:
             self._close_completions()

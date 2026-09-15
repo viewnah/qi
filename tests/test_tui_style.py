@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -638,6 +639,7 @@ async def test_completion_candidates_commands_and_files(tmp_path, monkeypatch):
     _tui_env(tmp_path, monkeypatch)
     monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
     monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+    monkeypatch.setattr(tui_mod, "_which_fd", lambda: None)   # 锁住「没装 fd」回退路径
 
     app = QiTui(palette=PALETTE)
     async with app.run_test(size=(100, 30)) as pilot:
@@ -657,9 +659,74 @@ async def test_completion_candidates_commands_and_files(tmp_path, monkeypatch):
         values = [c.value for c in app._completion_candidates()[0]]
         assert "@subdir/" in values and "@alpha.py" in values
 
+        await _editor_with(app, pilot, "@=")             # `=` 也是分隔符,不再当 token 继续匹配
+        assert app._completion_candidates()[0] == []
+
         await _editor_with(app, pilot, "普通文本")        # 没有触发词
         assert app._completion_candidates()[0] == []
         assert app._completions_open is False
+
+
+@pytest.mark.asyncio
+async def test_file_completion_fd_quotes_and_recursive(tmp_path, monkeypatch):
+    """fd 全树搜索(可跨目录)+ 带空格路径自动补成对引号(pi 的 buildCompletionValue)。"""
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    fd = tmp_path / "fake-fd"
+    fd.write_text(
+        f"#!{sys.executable}\n"
+        "import sys\n"
+        "tail = sys.argv[-1]\n"
+        "if '[' not in tail:\n"
+        "    tail = ''\n"
+        "if not tail:\n"
+        "    print('sub/'); print('sub/dir with space/')\n"
+        "    print('sub/dir with space/y.md'); print('a.py')\n"
+        "elif tail.endswith('y'):\n"
+        "    print('sub/dir with space/y.md')\n"
+        "elif 'space' in tail:\n"
+        "    print('sub/dir with space/')\n"
+        "else:\n"
+        "    print('sub/'); print('sub/dir with space/')\n",
+        encoding="utf-8")
+    fd.chmod(0o755)
+    monkeypatch.setattr(tui_mod, "_which_fd", lambda: str(fd))
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+
+        await _editor_with(app, pilot, "@")             # fd 结果也是目录优先
+        cands = app._completion_candidates()[0]
+        assert [c.value for c in cands][:2] == ["@sub/", '@"sub/dir with space/"']
+        assert cands[1].label == "dir with space/"       # 嵌套项 label 只给末段
+        assert cands[1].detail == "sub/dir with space"
+
+        await _editor_with(app, pilot, "@sub/")          # 嵌套一层;带空格自动加引号
+        assert [c.value for c in app._completion_candidates()[0]] == [
+            "@sub/", '@"sub/dir with space/"']
+
+        await _editor_with(app, pilot, '@"sub/dir with space/y')   # 引号内继续补
+        cands = app._completion_candidates()[0]
+        assert [c.value for c in cands] == ['@"sub/dir with space/y.md"']
+
+        # 接受带空格的文件:引号闭合 + 补一个空格
+        editor = await _editor_with(app, pilot, "@\"sub/dir with space/y")
+        await pilot.press("tab")
+        await pilot.pause(0.05)
+        assert editor.text == '@"sub/dir with space/y.md" '
+
+        # 目录:不补空格,光标停在收尾引号前继续往下补
+        editor = await _editor_with(app, pilot, '@"sub/dir with space/')
+        assert [c.value for c in app._completion_candidates()[0]] == [
+            '@"sub/dir with space/"']
+        await pilot.press("tab")
+        await pilot.pause(0.05)
+        assert editor.text == '@"sub/dir with space/"'
+        assert editor.cursor_location == (0, len(editor.text) - 1)
 
 
 @pytest.mark.asyncio
@@ -669,6 +736,7 @@ async def test_tab_applies_completion(tmp_path, monkeypatch):
     _tui_env(tmp_path, monkeypatch)
     monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
     monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+    monkeypatch.setattr(tui_mod, "_which_fd", lambda: None)
 
     app = QiTui(palette=PALETTE)
     async with app.run_test(size=(100, 30)) as pilot:
@@ -685,7 +753,7 @@ async def test_tab_applies_completion(tmp_path, monkeypatch):
         editor = await _editor_with(app, pilot, "@al")
         await pilot.press("tab")
         await pilot.pause(0.05)
-        assert editor.text == "@alpha.py"
+        assert editor.text == "@alpha.py "               # 文件补完带一个空格(pi 同款)
 
         # 面板没开时 tab 仍然是缩进(pi 的 tab 是补全,但没候选时不该吃掉输入)
         editor = await _editor_with(app, pilot, "")

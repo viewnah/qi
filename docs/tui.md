@@ -77,6 +77,7 @@ qi · auto                                 ← footer 3:状态行
 | `/clone [名字]` | 把当前分支复制成新会话 |
 | `/compact [提示]` | 压缩上下文:把旧消息压成结构化摘要(可给一句关注点) |
 | `/model [p/m]` | 当前模型 / 切换模型(等同 ctrl+l / ctrl+p) |
+| `/scoped-models` | 挑 Ctrl+P 轮换哪些模型(模态勾选;空 = 全部,写回 `settings.enabledModels`) |
 | `/export [file]` | 导出会话 JSONL(默认 `./qi-<id>.jsonl`;**pi 默认导出 HTML** —— qi 无 HTML 导出器) |
 | `/import <file>` | 从 JSONL 导入并切换会话(重名给提示,不静默覆盖) |
 | `/copy` | 复制最后一条回答到剪贴板(OSC 52) |
@@ -149,7 +150,6 @@ qi 与 pi 的差异(已落档):
 
 | pi 命令 | 缺什么 |
 | --- | --- |
-| `/scoped-models` | Ctrl+P 轮换清单(qi 现在轮完 models.json 里全部) |
 | `/settings` | TUI 内设置面板 |
 | `/share` | GitHub gist 分享 |
 | `/trust` | 项目信任门控(qi 只有 `defaultProjectTrust` 字段,没有信任判定) |

@@ -37,7 +37,7 @@ from textual.containers import Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import OptionList, Static, TextArea
+from textual.widgets import OptionList, SelectionList, Static, TextArea
 from textual.widgets.option_list import Option
 
 from .auth import AuthStore
@@ -48,7 +48,7 @@ from .loader import LoadError
 from .registry import ToolCatalog
 from .runtime import MAX_TOOL_ENTRY_CHARS, QiRuntime
 from .session import SessionStore
-from .settings import double_escape_action
+from .settings import SettingsError, double_escape_action, set_value
 from .theme import (
     Palette,
     format_cwd_line,
@@ -80,6 +80,7 @@ qi TUI 命令(实现状态以本表为准)
   /session           会话信息(文件/ID/消息数/模型/用量)
   /thinking [级别]   思考级别(off|minimal|low|medium|high|xhigh|max;等同 shift+tab)
   /model [p/m]       当前模型 / 切换模型(等同 ctrl+l)
+  /scoped-models     挑 Ctrl+P 轮换哪些模型(空 = 全部)
   /export [文件]     导出会话 JSONL(默认 ./qi-<id>.jsonl)
   /compact [提示]    压缩上下文:把旧消息压成摘要(可给一句关注点)
   /import <文件>     从 JSONL 导入并切换会话
@@ -105,11 +106,11 @@ qi TUI 命令(实现状态以本表为准)
   /quit              退出
 
  计划中(对齐 pi,需先给后端加能力)
-  /scoped-models /settings /share /trust
+  /settings /share /trust
 """
 
 PLANNED_COMMANDS = frozenset({
-    "/scoped-models", "/settings", "/share", "/trust",
+    "/settings", "/share", "/trust",
 })
 """pi 有、qi 暂未实现的命令 —— 单独提示“计划中”,不冒充“未知命令”。"""
 
@@ -127,6 +128,7 @@ TUI_COMMANDS: dict[str, str] = {
     "/fork": "从某条用户消息 fork 出新会话",
     "/clone": "复制当前分支为新会话",
     "/model": "当前/切换模型",
+    "/scoped-models": "挑 Ctrl+P 轮换的模型",
     "/thinking": "思考级别(off|minimal|low|medium|high)",
     "/export": "导出会话 JSONL",
     "/import": "从 JSONL 导入会话",
@@ -1094,6 +1096,72 @@ class ModelSelector(PickerScreen):
                          current=current)
 
 
+class ScopedModelsSelector(ModalScreen[list[str] | None]):
+    """`/scoped-models`:挑 Ctrl+P 轮换哪些模型(对齐 pi 的 ScopedModelsSelectorComponent)。
+
+    返回选中的 `provider/model` 列表;取消返回 None。**全选 = 空列表** = 轮换全部,
+    与 pi 的「scopedModels 为空则用全部」语义一致。
+    """
+
+    BINDINGS = [
+        ("escape", "dismiss(None)", "取消"),
+        Binding("ctrl+s", "save", "保存", show=False),
+        Binding("ctrl+a", "pick_all", "全选", show=False),
+        Binding("ctrl+x", "pick_none", "全不选", show=False),
+        Binding("ctrl+p", "toggle_provider", "切换该 provider", show=False),
+    ]
+
+    def __init__(self, options: list[tuple[str, str]], enabled: list[str]) -> None:
+        super().__init__()
+        self._options = options          # (provider/model, provider)
+        self._enabled = enabled
+
+    def compose(self) -> ComposeResult:
+        from textual.widgets.selection_list import Selection
+
+        known = {value for value, _ in self._options}
+        chosen = {v for v in self._enabled if v in known} or known   # 空 = 全部
+        selections = [Selection(value, value, value in chosen) for value, _ in self._options]
+        with Vertical(id="model-box"):
+            yield Static("Ctrl+P 轮换哪些模型(space 勾选 · ctrl+s 保存 · ctrl+a 全选 · "
+                         "ctrl+x 全不选 · ctrl+p 切换 provider · escape 取消)",
+                         id="model-hint")
+            yield SelectionList[str](*selections, id="scoped-list")
+
+    def on_mount(self) -> None:
+        self.query_one("#scoped-list", SelectionList).focus()
+
+    def _listing(self) -> SelectionList[str]:
+        return self.query_one("#scoped-list", SelectionList)
+
+    def action_save(self) -> None:
+        picked = list(self._listing().selected)
+        everything = [value for value, _ in self._options]
+        # 全选 = 不限,回写空列表(pi:空 scopedModels = 轮换全部)
+        self.dismiss([] if len(picked) == len(everything) else picked)
+
+    def action_pick_all(self) -> None:
+        self._listing().select_all()
+
+    def action_pick_none(self) -> None:
+        self._listing().deselect_all()
+
+    def action_toggle_provider(self) -> None:
+        listing = self._listing()
+        if not self._options:
+            return
+        index = listing.highlighted if listing.highlighted is not None else 0
+        provider = self._options[min(index, len(self._options) - 1)][1]
+        targets = [value for value, prov in self._options if prov == provider]
+        selected = set(listing.selected)
+        if all(value in selected for value in targets):
+            for value in targets:
+                listing.deselect(value)
+        else:
+            for value in targets:
+                listing.select(value)
+
+
 class QiTui(App):
     TITLE = "qi"
     SUB_TITLE = "多 agent · auto 分派"
@@ -1116,6 +1184,8 @@ class QiTui(App):
     #footer { height: auto; width: 1fr; background: transparent; scrollbar-size: 0 0; }
     /* 模型选择器(ctrl+l):模态,只在需要时出现 */
     ModelSelector { align: center middle; }
+    ScopedModelsSelector { align: center middle; }
+    #scoped-list { background: transparent; height: auto; max-height: 60%; }
     #model-box { width: 64; max-height: 70%; background: $surface; border: round $primary;
                  padding: 0 1; }
     #model-hint { color: $text-muted; }
@@ -1743,6 +1813,8 @@ class QiTui(App):
                         return
                     provider, model = matches[0]
                 self._switch_model(provider, model)
+        elif cmd == "/scoped-models":
+            self.action_scoped_models()
         elif cmd == "/thinking":
             if not arg:
                 lines = [f"当前: {self._thinking_level}",
@@ -2103,8 +2175,54 @@ class QiTui(App):
     def action_cycle_model_back(self) -> None:
         self._cycle_model(-1)
 
-    def _cycle_model(self, step: int) -> None:
+    def _enabled_models(self) -> list[str]:
+        """`settings.enabledModels`(空 = 不限,即轮换 models.json 里全部)。"""
+        raw = getattr(getattr(self._rt, "settings", None), "enabledModels", None) or []
+        return [str(value) for value in raw]
+
+    def _cycle_options(self) -> list[tuple[str, str, bool]]:
+        """Ctrl+P 轮换用的清单:`enabledModels` 非空时只在这些模型里转(pi 的 scopedModels)。"""
         options = self._model_options()
+        enabled = set(self._enabled_models())
+        if not enabled:
+            return options
+        scoped = [item for item in options if f"{item[0]}/{item[1]}" in enabled]
+        return scoped or options          # 配置过时的空集:回退到全部,别把轮换卡死
+
+    def _cycle_labels(self) -> list[str]:
+        """Ctrl+P 会轮换到的模型标签(`provider/model`)。"""
+        return [f"{provider}/{model}" for provider, model, _ in self._cycle_options()]
+
+    def action_scoped_models(self) -> None:
+        """/scoped-models:挑 Ctrl+P 轮换哪些模型(对齐 pi 的 `/scoped-models`)。"""
+        options = [(f"{provider}/{model}", provider)
+                   for provider, model, _ in self._model_options()]
+        if not options:
+            self._flash("models.json 里没有可选模型")
+            return
+
+        def picked(values: list[str] | None) -> None:
+            if values is not None:
+                self._save_scoped_models(values)
+
+        self.push_screen(ScopedModelsSelector(options, self._enabled_models()), picked)
+
+    def _save_scoped_models(self, values: list[str]) -> None:
+        """写回 `settings.enabledModels`(全局设置,对齐 pi 的 app.models.save)。"""
+        if self._rt is None:
+            return
+        try:
+            set_value("user", "enabledModels", values, self._rt.cwd)
+        except (OSError, SettingsError) as exc:
+            self._note(f"保存失败: {exc}", "error")
+            self._scroll_end()
+            return
+        self._rt.settings.enabledModels = values
+        self._flash("Ctrl+P 轮换全部模型" if not values
+                    else f"Ctrl+P 在 {len(values)} 个模型里轮换")
+
+    def _cycle_model(self, step: int) -> None:
+        options = self._cycle_options()
         if not options:
             self._flash("models.json 里没有可选模型")
             return

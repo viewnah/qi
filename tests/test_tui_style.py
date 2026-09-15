@@ -7,6 +7,7 @@ footer 真的取到了 pi 调色板里的颜色。像素级对齐由人工比对
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import sys
 import time
@@ -311,8 +312,12 @@ async def test_tui_command_surface(tmp_path, monkeypatch):
         app._command("/thinking")            # 已实现:列出当前级别 + 可选值
         assert "当前: off" in notes[-1][0] and "xhigh" in notes[-1][0]
 
-        app._command("/scoped-models")       # pi 有、qi 未实现 → “计划中”
-        assert "计划中" in notes[-1][0]
+        app._command("/scoped-models")       # 已实现:弹出 Ctrl+P 轮换清单
+        await pilot.pause(0.1)
+        assert isinstance(app.screen, tui_mod.ScopedModelsSelector)
+        await pilot.press("escape")
+        await pilot.pause(0.1)
+        assert not isinstance(app.screen, tui_mod.ScopedModelsSelector)
 
         app._command("/changelog")
         assert "CHANGELOG" in notes[-1][0]
@@ -1638,3 +1643,62 @@ async def test_quiet_startup_hides_banner(tmp_path, monkeypatch):
         await pilot.pause(0.1)
         assert app._quiet_startup is True
         assert not app.query_one("#log").children           # 启动头(含 shortcuts 提示)没写
+
+
+# ── /scoped-models(pi 的 Ctrl+P 轮换清单)─────────────────
+
+
+@pytest.mark.asyncio
+async def test_scoped_models_saves_and_limits_cycling(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        assert app._rt is not None
+        app._rt.cfg = _fake_cfg()                        # alpha/m1,m2 + beta/m3
+        assert app._cycle_labels() == ["alpha/m1", "alpha/m2", "beta/m3"]
+
+        app._command("/scoped-models")                   # 命令不再提示「计划中」
+        await pilot.pause(0.1)
+        selector = app.screen
+        assert isinstance(selector, tui_mod.ScopedModelsSelector)
+        listing = selector.query_one("#scoped-list", tui_mod.SelectionList)
+        assert listing.option_count == 3
+        assert len(listing.selected) == 3                # 未配置 = 全选
+
+        listing.deselect("alpha/m2")
+        await pilot.press("ctrl+s")                      # 保存 → 只剩 m1/m3
+        await pilot.pause(0.1)
+        assert not isinstance(app.screen, tui_mod.ScopedModelsSelector)
+        assert app._rt.settings.enabledModels == ["alpha/m1", "beta/m3"]
+        assert app._cycle_labels() == ["alpha/m1", "beta/m3"]
+
+        persisted = json.loads((tmp_path / "home" / "settings.json").read_text(encoding="utf-8"))
+        assert persisted["enabledModels"] == ["alpha/m1", "beta/m3"]
+
+        # ctrl+p 只在勾选的模型里转
+        app._model = dataclasses.replace(MODEL, provider="alpha", model="m1")
+        app.action_cycle_model()
+        assert (app._model.provider, app._model.model) == ("beta", "m3")
+        app.action_cycle_model()
+        assert (app._model.provider, app._model.model) == ("alpha", "m1")
+
+        # escape 取消:不改内存也不落盘
+        app._command("/scoped-models")
+        await pilot.pause(0.1)
+        await pilot.press("escape")
+        await pilot.pause(0.1)
+        assert app._rt.settings.enabledModels == ["alpha/m1", "beta/m3"]
+
+        # 全选保存 → 回写空列表(空 = 不限,pi 同款)
+        app._command("/scoped-models")
+        await pilot.pause(0.1)
+        await pilot.press("ctrl+a")
+        await pilot.press("ctrl+s")
+        await pilot.pause(0.1)
+        assert app._rt.settings.enabledModels == []
+        assert app._cycle_labels() == ["alpha/m1", "alpha/m2", "beta/m3"]

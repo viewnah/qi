@@ -9,7 +9,13 @@
  */
 import { describe, expect, it } from "vitest";
 import type { AguiEvent, Entry } from "../api/types";
-import { emptyTurn, fromEntries, hydrate, reduce, withUserMessage } from "./turn";
+import {
+  emptyTurn,
+  fromEntries,
+  hydrate,
+  reduce,
+  withUserMessage,
+} from "./turn";
 import type { Row, SayRow, ToolRowData } from "./turn";
 
 /** 按序归约,返回终态。 */
@@ -63,22 +69,20 @@ describe("文本流", () => {
 
 describe("tone 重新定性(qi 的核心区分)", () => {
   it("宣布了工具调用的那条是**过程**", () => {
-    const s = run(
-      ...write("我先看一下"),
-      {
-        type: "CUSTOM",
-        name: "qi.narration",
-        value: { step: 1, tool_calls: ["ls"], is_final: false },
-      },
-    );
+    const s = run(...write("我先看一下"), {
+      type: "CUSTOM",
+      name: "qi.narration",
+      value: { step: 1, tool_calls: ["ls"], is_final: false },
+    });
     expect(sayOf(s.rows)?.tone).toBe("narration");
   });
 
   it("没有工具调用的那条是**结论**", () => {
-    const s = run(
-      ...write("这是结论"),
-      { type: "CUSTOM", name: "qi.narration", value: { step: 2, tool_calls: [] } },
-    );
+    const s = run(...write("这是结论"), {
+      type: "CUSTOM",
+      name: "qi.narration",
+      value: { step: 2, tool_calls: [] },
+    });
     expect(sayOf(s.rows)?.tone).toBe("final");
   });
 });
@@ -109,7 +113,11 @@ describe("工具流", () => {
   it("Start+Args+End 之后仍是 running(执行结果在 RESULT)", () => {
     const s = run(...toolEvents);
     const tool = s.rows.find((r) => r.kind === "tool") as ToolRowData;
-    expect(tool).toMatchObject({ tool: "ls", status: "running", args: { path: "." } });
+    expect(tool).toMatchObject({
+      tool: "ls",
+      status: "running",
+      args: { path: "." },
+    });
   });
 
   it("RESULT 把状态与结构化结果填回去(metadata 里的 qi.tool)", () => {
@@ -119,7 +127,12 @@ describe("工具流", () => {
       toolCallId: "c1",
       content: "d home",
       metadata: {
-        "qi.tool": { status: "ok", duration_ms: 12, exit_code: null, error: null },
+        "qi.tool": {
+          status: "ok",
+          duration_ms: 12,
+          exit_code: null,
+          error: null,
+        },
       },
     });
     const tool = s.rows.find((r) => r.kind === "tool") as ToolRowData;
@@ -138,7 +151,9 @@ describe("工具流", () => {
       content: "boom",
       metadata: { "qi.tool": { status: "error", error: "tool_error" } },
     });
-    expect((s.rows.find((r) => r.kind === "tool") as ToolRowData).status).toBe("error");
+    expect((s.rows.find((r) => r.kind === "tool") as ToolRowData).status).toBe(
+      "error",
+    );
   });
 });
 
@@ -165,16 +180,39 @@ describe("结束与错误", () => {
 describe("历史回放", () => {
   const entries: Entry[] = [
     { type: "session", id: "s1", title: "t" },
-    { type: "dispatch", agent: "general", display_name: "qi", confidence: 0.9, source: "rule" },
+    {
+      type: "dispatch",
+      agent: "general",
+      display_name: "qi",
+      confidence: 0.9,
+      source: "rule",
+    },
     { type: "message", role: "user", content: "看下目录" },
-    { type: "custom", custom_type: "assistant_narration", content: "我先看一下" },
-    { type: "tool", tool: "ls", args: { path: "." }, status: "ok", duration_ms: 3, result: "d home" },
+    {
+      type: "custom",
+      custom_type: "assistant_narration",
+      content: "我先看一下",
+    },
+    {
+      type: "tool",
+      tool: "ls",
+      args: { path: "." },
+      status: "ok",
+      duration_ms: 3,
+      result: "d home",
+    },
     { type: "message", role: "assistant", content: "这是一个项目" },
   ];
 
   it("把五类 entry 映射成行(叙述与工具卡不能丢)", () => {
     const rows = fromEntries(entries);
-    expect(rows.map((r) => r.kind)).toEqual(["route", "you", "say", "tool", "say"]);
+    expect(rows.map((r) => r.kind)).toEqual([
+      "route",
+      "you",
+      "say",
+      "tool",
+      "say",
+    ]);
     // 叙述必须是 narration,不能与结论同级 —— 否则扫读会失效
     expect(sayOf(rows)?.tone).toBe("narration");
   });

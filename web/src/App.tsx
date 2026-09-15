@@ -32,7 +32,8 @@ function currentAction(turn: TurnState): string {
   for (let i = rows.length - 1; i >= 0; i -= 1) {
     const row = rows[i];
     if (!row) continue;
-    if (row.kind === "tool" && row.status === "running") return `执行 ${row.tool}`;
+    if (row.kind === "tool" && row.status === "running")
+      return `执行 ${row.tool}`;
     if (row.kind === "think" && row.live) return "思考中";
     if (row.kind === "say" && row.live) return "生成回答";
     if (row.kind === "route") return "已分派";
@@ -100,7 +101,11 @@ export function App() {
       const detail = await api.session(id);
       setSessionId(detail.id);
       setTitle(detail.title);
-      setTurn({ ...emptyTurn, rows: fromEntries(detail.entries), phase: "idle" });
+      setTurn({
+        ...emptyTurn,
+        rows: fromEntries(detail.entries),
+        phase: "idle",
+      });
     } catch (err) {
       setFatal(describe(err));
     }
@@ -109,7 +114,10 @@ export function App() {
   const createSession = useCallback(
     async (first?: string) => {
       try {
-        const created = await api.createSession("", meta?.default_cwd || undefined);
+        const created = await api.createSession(
+          "",
+          meta?.default_cwd || undefined,
+        );
         await refreshSessions();
         setSessionId(created.id);
         setTitle(created.title);
@@ -124,26 +132,35 @@ export function App() {
   );
 
   /** 真正发起一轮:单次 POST,响应就是流。 */
-  const sendTo = useCallback((id: string, text: string) => {
-    abortRef.current?.();
-    setTurn((prev) => withUserMessage(prev, text));
-    abortRef.current = run(id, text, {
-      onEvent: (ev) => setTurn((prev) => reduce(prev, ev)),
-      onClose: () => {
-        setTurn((prev) => ({ ...prev, phase: prev.phase === "running" ? "ok" : prev.phase }));
-        void refreshSessions();
-      },
-      onError: (err) => {
-        setTurn((prev) => reduce(prev, { type: "RUN_ERROR", message: describe(err) }));
-      },
-    });
-  }, [refreshSessions]);
+  const sendTo = useCallback(
+    (id: string, text: string) => {
+      abortRef.current?.();
+      setTurn((prev) => withUserMessage(prev, text));
+      abortRef.current = run(id, text, {
+        onEvent: (ev) => setTurn((prev) => reduce(prev, ev)),
+        onClose: () => {
+          setTurn((prev) => ({
+            ...prev,
+            phase: prev.phase === "running" ? "ok" : prev.phase,
+          }));
+          void refreshSessions();
+        },
+        onError: (err) => {
+          setTurn((prev) =>
+            reduce(prev, { type: "RUN_ERROR", message: describe(err) }),
+          );
+        },
+      });
+    },
+    [refreshSessions],
+  );
 
   const send = useCallback(() => {
     const text = draft.trim();
     if (!text) return;
     setDraft("");
-    if (sessionId) sendTo(sessionId, text); else void createSession(text);
+    if (sessionId) sendTo(sessionId, text);
+    else void createSession(text);
   }, [createSession, draft, sendTo, sessionId]);
 
   const stop = useCallback(() => {
@@ -156,7 +173,11 @@ export function App() {
   const contextWindow = 0; // 模型窗口目前不在 /api/config 里,取不到就不画占用条
 
   return (
-    <div className="shell" data-rail="open" data-tele={tele ? "open" : "closed"}>
+    <div
+      className="shell"
+      data-rail="open"
+      data-tele={tele ? "open" : "closed"}
+    >
       <aside className="rail">
         <Rail
           sessions={sessions}
@@ -164,7 +185,9 @@ export function App() {
           busy={running}
           onSelect={(id) => void openSession(id)}
           onCreate={() => void createSession()}
-          onOpenSettings={() => setView((v) => (v === "settings" ? "work" : "settings"))}
+          onOpenSettings={() =>
+            setView((v) => (v === "settings" ? "work" : "settings"))
+          }
           themeLabel={themeLabel(theme)}
           onCycleTheme={() => setTheme((m) => cycleTheme(m))}
         />
@@ -200,7 +223,11 @@ export function App() {
               <div className="blank">
                 <div className="blank__inner">
                   <div className="notice notice--error">{fatal}</div>
-                  <button type="button" className="btn" onClick={() => window.location.reload()}>
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => window.location.reload()}
+                  >
                     重新加载
                   </button>
                 </div>
@@ -221,7 +248,9 @@ export function App() {
                     <span className="fact">工具可折叠</span>
                     <span className="fact">思考可选展开</span>
                     {agentsCount(config) > 0 ? (
-                      <span className="fact">{agentsCount(config)} 个可用 agent</span>
+                      <span className="fact">
+                        {agentsCount(config)} 个可用 agent
+                      </span>
                     ) : null}
                   </div>
                 </div>
@@ -252,7 +281,11 @@ export function App() {
       </main>
 
       <aside className="tele" hidden={!tele}>
-        <Telemetry turn={turn} model={config?.default_model ?? null} contextWindow={contextWindow} />
+        <Telemetry
+          turn={turn}
+          model={config?.default_model ?? null}
+          contextWindow={contextWindow}
+        />
       </aside>
     </div>
   );

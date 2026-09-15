@@ -42,7 +42,10 @@ export function Telemetry({
 }) {
   const routes = turn.rows.filter((r) => r.kind === "route").slice(-6);
   const tools = countTools(turn.rows);
-  const total = typeof turn.usage.total_tokens === "number" ? turn.usage.total_tokens : null;
+  const total =
+    typeof turn.usage.total_tokens === "number"
+      ? turn.usage.total_tokens
+      : null;
   const ratio =
     total !== null && contextWindow ? Math.min(1, total / contextWindow) : null;
 
@@ -58,7 +61,11 @@ export function Telemetry({
         ) : (
           <div className="meter">
             <div className="meter__bar">
-              <div className="meter__fill" data-warn={ratio > 0.75} style={{ width: `${ratio * 100}%` }} />
+              <div
+                className="meter__fill"
+                data-warn={ratio > 0.75}
+                style={{ width: `${ratio * 100}%` }}
+              />
             </div>
             <div className="meter__note">
               {total} / {contextWindow} tokens · {(ratio * 100).toFixed(1)}%
@@ -85,7 +92,9 @@ export function Telemetry({
                     {r.source} {Math.round(r.confidence * 100)}%
                   </span>
                 </div>
-                {r.reasoning ? <div className="route-card__why">{r.reasoning}</div> : null}
+                {r.reasoning ? (
+                  <div className="route-card__why">{r.reasoning}</div>
+                ) : null}
               </div>
             ) : null,
           )
@@ -103,7 +112,11 @@ export function Telemetry({
           <dt>思考</dt>
           <dd>{thinkingChars(turn.rows)} 字</dd>
           <dt>LLM 调用</dt>
-          <dd>{typeof turn.usage.llm_calls === "number" ? turn.usage.llm_calls : "—"}</dd>
+          <dd>
+            {typeof turn.usage.llm_calls === "number"
+              ? turn.usage.llm_calls
+              : "—"}
+          </dd>
         </dl>
       </div>
 

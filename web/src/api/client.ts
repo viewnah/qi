@@ -96,7 +96,9 @@ export const api = {
     }),
 
   deleteSession: (id: string) =>
-    request<void>(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }),
+    request<void>(`/api/sessions/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
 
   agents: () => request<AgentList>("/api/agents"),
 
@@ -133,7 +135,10 @@ export const api = {
  *
  * @returns 已完成的 JSON 载荷 + 尚未完整、留给下次的尾巴
  */
-export function parseFrames(buffer: string): { payloads: string[]; rest: string } {
+export function parseFrames(buffer: string): {
+  payloads: string[];
+  rest: string;
+} {
   const payloads: string[] = [];
   let rest = buffer;
   for (;;) {
@@ -147,7 +152,8 @@ export function parseFrames(buffer: string): { payloads: string[]; rest: string 
       const colon = line.indexOf(":");
       if (colon < 0) continue;
       const field = line.slice(0, colon);
-      if (field === "data") dataLines.push(line.slice(colon + 1).replace(/^ /, ""));
+      if (field === "data")
+        dataLines.push(line.slice(colon + 1).replace(/^ /, ""));
     }
     if (dataLines.length > 0) payloads.push(dataLines.join("\n"));
   }
@@ -191,11 +197,15 @@ export function run(
     try {
       const res = await fetch("/api/ag-ui", {
         method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+        },
         body: JSON.stringify(body),
         signal: controller.signal,
       });
-      if (!res.ok || !res.body) throw new ApiError(res.status, await detailOf(res));
+      if (!res.ok || !res.body)
+        throw new ApiError(res.status, await detailOf(res));
       handlers.onOpen?.();
       const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
       let buffer = "";

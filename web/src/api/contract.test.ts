@@ -71,20 +71,30 @@ describe("契约号", () => {
 
   it("AG-UI 改造是破坏性的,所以契约号必须是 2", () => {
     // 这条断言的意义:如果谁把版本号改回 1,说明他以为形状没变。
-    expect(/CONTRACT_VERSION = "([^"]+)"/.exec(read("src/qi_agent/web/schemas.py"))?.[1]).toBe("2");
+    expect(
+      /CONTRACT_VERSION = "([^"]+)"/.exec(
+        read("src/qi_agent/web/schemas.py"),
+      )?.[1],
+    ).toBe("2");
   });
 });
 
 describe("事件类型两侧对齐", () => {
   it("后端能发的 AG-UI 类型全部被处理或显式忽略", () => {
-    const sources = [read("src/qi_agent/web/agui.py"), read("src/qi_agent/web/app.py")].join("\n");
+    const sources = [
+      read("src/qi_agent/web/agui.py"),
+      read("src/qi_agent/web/app.py"),
+    ].join("\n");
     // agui.py 里事件类型只出现在 `"type": "XXX"` 或 `_base("XXX")` 两种位置
     const emitted = new Set<string>();
-    for (const m of sources.matchAll(/_base\("([A-Z_]+)"\)/g)) emitted.add(m[1] as string);
-    for (const m of sources.matchAll(/"type": "([A-Z_]+)"/g)) emitted.add(m[1] as string);
-    expect(emitted.size, "刮不到任何事件类型,说明 agui.py 的写法变了,守卫已失效").toBeGreaterThan(
-      8,
-    );
+    for (const m of sources.matchAll(/_base\("([A-Z_]+)"\)/g))
+      emitted.add(m[1] as string);
+    for (const m of sources.matchAll(/"type": "([A-Z_]+)"/g))
+      emitted.add(m[1] as string);
+    expect(
+      emitted.size,
+      "刮不到任何事件类型,说明 agui.py 的写法变了,守卫已失效",
+    ).toBeGreaterThan(8);
 
     const known = new Set([...HANDLED, ...IGNORED_BY_DESIGN]);
     const unaccounted = [...emitted].filter((t) => !known.has(t)).sort();
@@ -95,7 +105,10 @@ describe("事件类型两侧对齐", () => {
   });
 
   it("声明清单里的每一项都能在后端找到出处(清单不许留陈迹)", () => {
-    const sources = [read("src/qi_agent/web/agui.py"), read("src/qi_agent/web/app.py")].join("\n");
+    const sources = [
+      read("src/qi_agent/web/agui.py"),
+      read("src/qi_agent/web/app.py"),
+    ].join("\n");
     for (const t of HANDLED.filter((x) => !IGNORED_BY_DESIGN.includes(x))) {
       // CUSTOM 由 applyCustom 组装,不在 _base 里,单独断言
       if (t === "CUSTOM") {
@@ -113,7 +126,9 @@ describe("事件类型两侧对齐", () => {
     const ts = read("web/src/api/types.ts");
     for (const name of QI_CUSTOM_NAMES) {
       expect(py, `后端不发的 CUSTOM 名字:${name}`).toContain(`"${name}"`);
-      expect(ts, `前端不认识但后端会发的 CUSTOM:${name}`).toContain(`"${name}"`);
+      expect(ts, `前端不认识但后端会发的 CUSTOM:${name}`).toContain(
+        `"${name}"`,
+      );
     }
   });
 });

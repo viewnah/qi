@@ -45,7 +45,13 @@ function RowShell({
 }
 
 function Caret({ open }: { open: boolean }) {
-  return <IconChevronDownOutline14 className="disclose__caret" size={11} data-open={open} />;
+  return (
+    <IconChevronDownOutline14
+      className="disclose__caret"
+      size={11}
+      data-open={open}
+    />
+  );
 }
 
 // ── 你的输入 ──────────────────────────────────────────────
@@ -87,7 +93,9 @@ function Route({ row }: { row: RouteRow }) {
         </>
       }
     >
-      {open && row.reasoning ? <div className="row__text">{row.reasoning}</div> : null}
+      {open && row.reasoning ? (
+        <div className="row__text">{row.reasoning}</div>
+      ) : null}
     </RowShell>
   );
 }
@@ -191,13 +199,19 @@ function Tool({ row }: { row: ToolRowData }) {
     >
       {open ? (
         <>
-          {args ? <pre className="evidence">{JSON.stringify(row.args, null, 2)}</pre> : null}
+          {args ? (
+            <pre className="evidence">{JSON.stringify(row.args, null, 2)}</pre>
+          ) : null}
           {row.result ? (
-            <pre className={`evidence${row.status === "error" ? " evidence--error" : ""}`}>
+            <pre
+              className={`evidence${row.status === "error" ? " evidence--error" : ""}`}
+            >
               {row.result}
             </pre>
           ) : null}
-          {row.error ? <div className="row__text">错误原因:{row.error}</div> : null}
+          {row.error ? (
+            <div className="row__text">错误原因:{row.error}</div>
+          ) : null}
         </>
       ) : null}
     </RowShell>
@@ -211,7 +225,9 @@ function Note({ row }: { row: NoteRow }) {
     <RowShell kind="note">
       <b className="note__tag">{row.label}</b>
       <span className="row__rule" />
-      {row.detail ? <span className="note__tail">{row.detail.slice(0, 60)}</span> : null}
+      {row.detail ? (
+        <span className="note__tail">{row.detail.slice(0, 60)}</span>
+      ) : null}
     </RowShell>
   );
 }

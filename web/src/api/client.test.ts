@@ -31,7 +31,9 @@ describe("parseFrames", () => {
     const first = parseFrames('data: {"type":"TEXT_MESSAGE_CONT');
     expect(first.payloads).toEqual([]);
     const second = parseFrames(first.rest + 'ENT","delta":"你"}\n\n');
-    expect(second.payloads).toEqual(['{"type":"TEXT_MESSAGE_CONTENT","delta":"你"}']);
+    expect(second.payloads).toEqual([
+      '{"type":"TEXT_MESSAGE_CONTENT","delta":"你"}',
+    ]);
   });
 
   it("按 SSE 规范把多行 data 用 \\n 连接", () => {

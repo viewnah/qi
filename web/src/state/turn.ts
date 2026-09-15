@@ -79,7 +79,14 @@ export interface ErrorRow {
   text: string;
 }
 
-export type Row = YouRow | RouteRow | ThinkRow | SayRow | ToolRowData | NoteRow | ErrorRow;
+export type Row =
+  | YouRow
+  | RouteRow
+  | ThinkRow
+  | SayRow
+  | ToolRowData
+  | NoteRow
+  | ErrorRow;
 
 export interface TurnState {
   rows: Row[];
@@ -306,7 +313,14 @@ export function reduce(state: TurnState, ev: AguiEvent): TurnState {
         ids: { ...state.ids, [ev.messageId]: key },
         rows: [
           ...state.rows,
-          { kind: "say", key, agent: null, text: "", live: true, tone: "final" },
+          {
+            kind: "say",
+            key,
+            agent: null,
+            text: "",
+            live: true,
+            tone: "final",
+          },
         ],
       };
     }
@@ -419,7 +433,9 @@ export function reduce(state: TurnState, ev: AguiEvent): TurnState {
                 ...row,
                 status: status === "error" ? "error" : "ok",
                 durationMs:
-                  typeof meta.duration_ms === "number" ? meta.duration_ms : null,
+                  typeof meta.duration_ms === "number"
+                    ? meta.duration_ms
+                    : null,
                 exitCode:
                   typeof meta.exit_code === "number" ? meta.exit_code : null,
                 error: typeof meta.error === "string" ? meta.error : null,
@@ -534,7 +550,9 @@ function applyCustom(
             kind: "note",
             key: nextKey("note"),
             label:
-              asStr(value.phase) === "start" ? "正在压缩上下文" : "上下文已压缩",
+              asStr(value.phase) === "start"
+                ? "正在压缩上下文"
+                : "上下文已压缩",
             detail: "",
           },
         ],

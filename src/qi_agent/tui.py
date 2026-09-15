@@ -125,6 +125,7 @@ TUI_COMMANDS: dict[str, str] = {
     "/fork": "从某条用户消息 fork 出新会话",
     "/clone": "复制当前分支为新会话",
     "/model": "当前/切换模型",
+    "/thinking": "思考级别(off|minimal|low|medium|high)",
     "/export": "导出会话 JSONL",
     "/import": "从 JSONL 导入会话",
     "/reload": "重载 agents/插件/配置",

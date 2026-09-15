@@ -1,82 +1,52 @@
 /**
- * SSE 切帧测试。
+ * 切帧测试。
  *
- * 这是手写的协议解析:服务端按 `\n\n` 分帧,心跳是 `: ...` 注释行。
- * 解析错了的表现是"页面偶尔少一条事件"或"流卡住",极难现场排查,所以逐条锁住行为。
+ * AG-UI 的编码器只写 `data:`(`encodeSSE` = `` `data: ${JSON.stringify(e)}\n\n` ``),
+ * 所以这里主要验证两件事:
+ *   1. 不依赖 `event:` —— 类型在 JSON 里,切帧只看 `data:`;
+ *   2. **半帧不能丢** —— 网络分块会从任意位置切断,尾巴必须原样留下次拼。
  */
 import { describe, expect, it } from "vitest";
 import { parseFrames } from "./client";
 
 describe("parseFrames", () => {
-  it("解析一帧(带 id/event/data)", () => {
-    const raw = 'id: 7\nevent: text_delta\ndata: {"kind":"text_delta"}\n\n';
-    const { frames, rest } = parseFrames(raw);
-    expect(rest).toBe("");
-    expect(frames).toEqual([
-      { id: 7, event: "text_delta", data: '{"kind":"text_delta"}' },
-    ]);
+  it("取出一条完整的 data 帧", () => {
+    const r = parseFrames('data: {"type":"RUN_STARTED"}\n\n');
+    expect(r.payloads).toEqual(['{"type":"RUN_STARTED"}']);
+    expect(r.rest).toBe("");
   });
 
-  it("一次到达多帧时按顺序全部产出", () => {
-    const raw =
-      ": qi-web sse open\n\n" +
-      'event: snapshot\ndata: {"id":"abc"}\n\n' +
-      'id: 0\nevent: dispatch\ndata: {"kind":"dispatch"}\n\n';
-    const { frames, rest } = parseFrames(raw);
-    expect(rest).toBe("");
-    expect(frames.map((f) => f.event)).toEqual(["snapshot", "dispatch"]);
-    expect(frames[0]?.id).toBeUndefined(); // 快照故意不带 id(避免与 seq 撞号)
-    expect(frames[1]?.id).toBe(0);
+  it("一次切出多帧", () => {
+    const r = parseFrames('data: {"a":1}\n\ndata: {"b":2}\n\n');
+    expect(r.payloads).toEqual(['{"a":1}', '{"b":2}']);
   });
 
-  it("半帧留在 rest 里,下次拼接后继续解析(跨 TCP 分片)", () => {
-    const first = 'id: 1\nevent: text_delta\ndata: {"te';
-    const { frames, rest } = parseFrames(first);
-    expect(frames).toEqual([]);
-    expect(rest).toBe(first); // 原样保留,不能丢字节
-
-    const { frames: done } = parseFrames(rest + 'xt":"hi"}\n\n');
-    expect(done).toEqual([
-      { id: 1, event: "text_delta", data: '{"text":"hi"}' },
-    ]);
+  it("忽略注释帧(心跳),但保留半帧", () => {
+    const r = parseFrames(': qi-web sse open\n\ndata: {"a":');
+    expect(r.payloads).toEqual([]);
+    expect(r.rest).toBe('data: {"a":');
   });
 
-  it("心跳/注释帧不产出条目", () => {
-    const { frames, rest } = parseFrames(": ping\n\n: idle\n\n");
-    expect(frames).toEqual([]);
-    expect(rest).toBe("");
+  it("半帧在下次拼接后完整取出", () => {
+    const first = parseFrames('data: {"type":"TEXT_MESSAGE_CONT');
+    expect(first.payloads).toEqual([]);
+    const second = parseFrames(first.rest + 'ENT","delta":"你"}\n\n');
+    expect(second.payloads).toEqual(['{"type":"TEXT_MESSAGE_CONTENT","delta":"你"}']);
   });
 
-  it("多行 data 用换行拼回(SSE 规范)", () => {
-    const raw = "event: x\ndata: line1\ndata: line2\n\n";
-    const { frames } = parseFrames(raw);
-    expect(frames[0]?.data).toBe("line1\nline2");
+  it("按 SSE 规范把多行 data 用 \\n 连接", () => {
+    // 官方编码器不会这么写,但规范允许。不处理的话会把载荷静默截断。
+    const r = parseFrames("data: line1\ndata: line2\n\n");
+    expect(r.payloads).toEqual(["line1\nline2"]);
   });
 
-  it("`data:` 无空格也接受;数据内的冒号不被截断", () => {
-    const raw = 'event: x\ndata:{"url":"http://127.0.0.1:30142"}\n\n';
-    const { frames } = parseFrames(raw);
-    expect(frames[0]?.data).toBe('{"url":"http://127.0.0.1:30142"}');
+  it("容忍 `event:` 字段(SSE 允许,AG-UI 不写)但不据此丢帧", () => {
+    const r = parseFrames('event: CUSTOM\ndata: {"type":"CUSTOM"}\n\n');
+    expect(r.payloads).toEqual(['{"type":"CUSTOM"}']);
   });
 
-  it("没有 event 行时默认 event=message(不产出空帧)", () => {
-    const { frames } = parseFrames('data: {"a":1}\n\n');
-    expect(frames).toEqual([
-      { id: undefined, event: "message", data: '{"a":1}' },
-    ]);
-  });
-
-  it("只有注释与字段、没有 data 的帧不产出条目", () => {
-    const { frames } = parseFrames("id: 3\nevent: text_delta\n\n");
-    expect(frames).toEqual([]);
-  });
-
-  it("空输入是恒等(不会崩、不会产出)", () => {
-    expect(parseFrames("")).toEqual({ frames: [], rest: "" });
-  });
-
-  it("非数字 id 得到 NaN —— 已知且无害(前端不用 id 续传,用的是 ?from=)", () => {
-    const { frames } = parseFrames("id: not-a-number\nevent: x\ndata: {}\n\n");
-    expect(Number.isNaN(frames[0]?.id as number)).toBe(true);
+  it("data 冒号后的一个空格被去掉(规范要求)", () => {
+    const r = parseFrames('data:{"a":1}\n\n');
+    expect(r.payloads).toEqual(['{"a":1}']);
   });
 });

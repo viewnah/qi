@@ -1,19 +1,25 @@
 /**
- * API 客户端:唯一允许与 `/api` 说话的地方。
+ * API 客户端:唯一允许与宿主说话的地方。
  *
- * 两条刻意的约束(为将来的桌面端/Tauri 留路,见 docs/web.md §8.2):
- *   1. **不依赖 cookie 会话** —— 口令走 `Authorization` 头,浏览器会为同源请求
- *      自动复用 Basic 凭证;换到 `dsh-app://` 之类的壳里也不会因为 origin 不同而失效。
- *   2. **SSE 用 fetch + ReadableStream,不用 EventSource** —— 后者无法带自定义头,
- *      也没法在中途 abort。代价是要自己切帧(见 `parseFrames`)。
+ * 两条刻意的约束(为将来的桌面壳留路,见 docs/web.md):
+ *   1. **不依赖 cookie 会话** —— 口令走 `Authorization` 头,换到别的 origin 的壳里也不失效。
+ *   2. **不用 `EventSource`** —— 它不能带自定义头、也不能中途 abort(Stop 按钮靠后者)。
+ *      代价是要自己切帧。AG-UI 的编码器只写 `data:` 行(`encodeSSE` =
+ *      `` `data: ${JSON.stringify(e)}\n\n` ``),所以切帧比通用 SSE 还简单;
+ *      但仍按 SSE 规范处理"多行 data 用 \n 连接",以免将来编码器变化就静默截断。
+ *
+ * **与改造前的关键差别**:一次运行是**单次 POST**,响应**就是**流。
+ * 不再有"POST 拿 run_id → 再 GET /events"的两跳,也就没有"晚连上来的客户端"这件事。
  */
 import { CONTRACT_VERSION } from "./types";
 import type {
-  AgentEvent,
   AgentInfo,
+  AgentList,
+  AguiEvent,
   ConfigView,
   Meta,
   PluginList,
+  RunAgentInput,
   SessionDetail,
   SessionList,
   SessionSummary,
@@ -80,15 +86,8 @@ export const api = {
       body: JSON.stringify({ title, cwd: cwd ?? null }),
     }),
 
-  session: (id: string, opts: { limit?: number; before?: number } = {}) => {
-    const q = new URLSearchParams();
-    if (opts.limit !== undefined) q.set("limit", String(opts.limit));
-    if (opts.before !== undefined) q.set("before", String(opts.before));
-    const suffix = q.toString() ? `?${q}` : "";
-    return request<SessionDetail>(
-      `/api/sessions/${encodeURIComponent(id)}${suffix}`,
-    );
-  },
+  session: (id: string) =>
+    request<SessionDetail>(`/api/sessions/${encodeURIComponent(id)}`),
 
   renameSession: (id: string, title: string) =>
     request<SessionSummary>(`/api/sessions/${encodeURIComponent(id)}`, {
@@ -97,25 +96,11 @@ export const api = {
     }),
 
   deleteSession: (id: string) =>
-    request<void>(`/api/sessions/${encodeURIComponent(id)}`, {
-      method: "DELETE",
-    }),
+    request<void>(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" }),
 
-  turn: (id: string, text: string, agent?: string | null) =>
-    request<{ run_id: string; session_id: string; from_seq: number }>(
-      `/api/sessions/${encodeURIComponent(id)}/turn`,
-      { method: "POST", body: JSON.stringify({ text, agent: agent ?? null }) },
-    ),
+  agents: () => request<AgentList>("/api/agents"),
 
-  cancel: (id: string) =>
-    request<{ cancelled: boolean }>(
-      `/api/sessions/${encodeURIComponent(id)}/cancel`,
-      {
-        method: "POST",
-      },
-    ),
-
-  agents: () => request<{ agents: AgentInfo[] }>("/api/agents"),
+  agentList: async (): Promise<AgentInfo[]> => (await api.agents()).agents,
 
   config: () => request<ConfigView>("/api/config"),
 
@@ -138,76 +123,79 @@ export const api = {
     }),
 };
 
-// ── SSE ───────────────────────────────────────────────────
+// ── 流式运行(AG-UI)─────────────────────────────────────
 
-export interface StreamHandlers {
-  onOpen?: () => void;
-  onEvent?: (ev: AgentEvent) => void;
-  onSnapshot?: (snapshot: SessionDetail) => void;
-  onFinished?: (status: string) => void;
-  onError?: (err: Error) => void;
-}
-
-interface Frame {
-  id?: number;
-  event: string;
-  data: string;
-}
-
-/** 切 SSE 帧。按 `\n\n` 分帧,帧内按行解析(`event:` / `data:` / `id:` / 注释)。 */
-export function parseFrames(buffer: string): { frames: Frame[]; rest: string } {
-  const frames: Frame[] = [];
+/**
+ * 按 `\n\n` 切帧,再按 SSE 规范从每帧里取 `data:`(多行用 `\n` 连接)。
+ *
+ * 刻意**不解析** `event:` —— AG-UI 的编码器不写它,事件类型在 JSON 的 `type` 里。
+ * 但如果将来编码器开始写(SSE 允许),这里也不会因此丢帧(只是忽略该字段)。
+ *
+ * @returns 已完成的 JSON 载荷 + 尚未完整、留给下次的尾巴
+ */
+export function parseFrames(buffer: string): { payloads: string[]; rest: string } {
+  const payloads: string[] = [];
   let rest = buffer;
   for (;;) {
     const idx = rest.indexOf("\n\n");
     if (idx < 0) break;
     const raw = rest.slice(0, idx);
     rest = rest.slice(idx + 2);
-    let event = "message";
-    let id: number | undefined;
     const dataLines: string[] = [];
     for (const line of raw.split("\n")) {
-      if (line.startsWith(":")) continue; // 心跳/注释
+      if (line.startsWith(":")) continue; // 注释/心跳:AG-UI 不用,但合法
       const colon = line.indexOf(":");
       if (colon < 0) continue;
       const field = line.slice(0, colon);
-      const value = line.slice(colon + 1).trimStart();
-      if (field === "event") event = value;
-      else if (field === "id") id = Number(value);
-      else if (field === "data") dataLines.push(value);
+      if (field === "data") dataLines.push(line.slice(colon + 1).replace(/^ /, ""));
     }
-    if (dataLines.length > 0)
-      frames.push({ id, event, data: dataLines.join("\n") });
+    if (dataLines.length > 0) payloads.push(dataLines.join("\n"));
   }
-  return { frames, rest };
+  return { payloads, rest };
+}
+
+export interface RunHandlers {
+  onEvent: (ev: AguiEvent) => void;
+  onOpen?: () => void;
+  /** 流正常结束(收到 RUN_FINISHED 或服务端关闭)。 */
+  onClose?: () => void;
+  onError?: (err: Error) => void;
 }
 
 /**
- * 订阅某会话的事件流。返回一个 abort 函数。
+ * 跑一轮:单次 POST `RunAgentInput`,响应就是 AG-UI 事件流。
  *
- * 服务端约定:每代以 `snapshot` 开头,run 结束后发 `run.finished` 并关闭连接。
- * 因此调用方在 `onFinished` 里重新拉一次会话明细即可拿到落盘结果(含叙述与工具卡)。
+ * 取消 = `abort()`。**不要**在服务端另开取消端点:单 POST 之下"客户端断开"
+ * 就是唯一的取消语义,而且它天然覆盖"过一会儿才发现"的情况。
+ *
+ * @param threadId qi 的 session id(AG-UI 的 `threadId`)。qi 的 fork 会新建会话文件,
+ *   所以每个分支天然是独立 thread,不需要额外映射。
+ * @param text 本轮用户输入。后端自己从会话 JSONL 取上下文,所以只送这一条。
+ * @returns abort 函数(交给 Stop 按钮)
  */
-export function stream(
-  sessionId: string,
-  handlers: StreamHandlers,
-  opts: { runId?: string; from?: number } = {},
+export function run(
+  threadId: string,
+  text: string,
+  handlers: RunHandlers,
+  opts: { agent?: string | null } = {},
 ): () => void {
   const controller = new AbortController();
-  const q = new URLSearchParams();
-  if (opts.runId) q.set("run_id", opts.runId);
-  if (opts.from) q.set("from", String(opts.from));
-  const suffix = q.toString() ? `?${q}` : "";
+  const body: RunAgentInput = {
+    threadId,
+    runId: crypto.randomUUID().replace(/-/g, "").slice(0, 12),
+    messages: [{ role: "user", content: text }],
+    forwardedProps: { agent: opts.agent ?? null },
+  };
 
   void (async () => {
     try {
-      const res = await fetch(
-        `/api/sessions/${encodeURIComponent(sessionId)}/events${suffix}`,
-        { signal: controller.signal, headers: { Accept: "text/event-stream" } },
-      );
-      if (!res.ok || !res.body) {
-        throw new ApiError(res.status, await detailOf(res));
-      }
+      const res = await fetch("/api/ag-ui", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      if (!res.ok || !res.body) throw new ApiError(res.status, await detailOf(res));
       handlers.onOpen?.();
       const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
       let buffer = "";
@@ -215,24 +203,25 @@ export function stream(
         const { value, done } = await reader.read();
         if (done) break;
         buffer += value;
-        const { frames, rest } = parseFrames(buffer);
+        const { payloads, rest } = parseFrames(buffer);
         buffer = rest;
-        for (const frame of frames) {
-          if (frame.event === "snapshot") {
-            handlers.onSnapshot?.(JSON.parse(frame.data) as SessionDetail);
+        for (const raw of payloads) {
+          let ev: AguiEvent;
+          try {
+            ev = JSON.parse(raw) as AguiEvent;
+          } catch {
+            // 单帧坏掉不该毁掉整条流:丢掉它,继续读。
             continue;
           }
-          if (frame.event === "run.finished") {
-            const payload = JSON.parse(frame.data) as { status: string };
-            handlers.onFinished?.(payload.status);
-            continue;
-          }
-          const ev = JSON.parse(frame.data) as AgentEvent;
-          handlers.onEvent?.(ev);
+          handlers.onEvent(ev);
         }
       }
+      handlers.onClose?.();
     } catch (err) {
-      if (!controller.signal.aborted) {
+      // abort 是**正常**路径(用户按了 Stop),不是错误。
+      if (controller.signal.aborted) {
+        handlers.onClose?.();
+      } else {
         handlers.onError?.(err instanceof Error ? err : new Error(String(err)));
       }
     }

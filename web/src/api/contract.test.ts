@@ -1,124 +1,119 @@
-/// <reference types="node" />
 /**
- * 跨语言契约守卫。
+ * 契约守卫:**后端能发出的 AG-UI 事件类型,前端必须全部处理**。
  *
- * 前端与宿主之间是**手写镜像**(TS 类型 ←→ pydantic 模型),最容易出的事故是
- * "宿主换了字段名 / 加了新事件,前端静默丢掉"。这类事故在运行时只表现为
- * "界面少了一块",很难定位。所以这里直接把两侧对起来比:
+ * 存在理由(它真的抓到过东西):旧协议下后端加了 4 个 kind 而前端没声明,
+ * 前端只是**静默丢掉**那些事件 —— 没有任何报错、没有测试变红,只是界面上少了东西。
+ * 那次是靠这个守卫才发现的。改造后换成 AG-UI,但风险形状完全一样:
+ * 后端多一个 `type`,前端 `switch` 走 default(或者干脆不处理)。
  *
- *   1. `CONTRACT_VERSION` 两侧必须一致;
- *   2. 真实的 `/api/meta` 响应(录下来的一手数据)必须满足 `Meta` 的必要字段;
- *   3. **后端发出的每一个事件 kind,前端要么处理、要么显式声明"按设计忽略"**。
- *
- * 第 3 条是重点:新增事件类型时这个测试会红,逼作者当场决定它该怎么渲染。
+ * 做法:从 python 侧源码里刮出所有 AG-UI 事件类型字面量,与前端声明的清单对拍。
+ * 这是**变异验证**:在 `agui.py` 里加一个没声明的新类型,这个测试必须变红并指名道姓。
  */
 import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { CONTRACT_VERSION, type Meta } from "./types";
 
-const read = (relative: string): string =>
-  readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8");
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+const read = (p: string) => readFileSync(resolve(ROOT, p), "utf8");
 
-/** 相对本文件(`web/src/api/`)的仓库根。 */
-const ROOT = "../../../";
+/** 前端 `reduce` 真正会渲染的类型。 */
+const HANDLED = [
+  "RUN_STARTED",
+  "RUN_FINISHED",
+  "RUN_ERROR",
+  "TEXT_MESSAGE_START",
+  "TEXT_MESSAGE_CONTENT",
+  "TEXT_MESSAGE_END",
+  "REASONING_START",
+  "REASONING_MESSAGE_START",
+  "REASONING_MESSAGE_CONTENT",
+  "REASONING_MESSAGE_END",
+  "REASONING_END",
+  "TOOL_CALL_START",
+  "TOOL_CALL_ARGS",
+  "TOOL_CALL_END",
+  "TOOL_CALL_RESULT",
+  "STATE_SNAPSHOT",
+  "MESSAGES_SNAPSHOT",
+  "CUSTOM",
+];
 
-describe("契约版本", () => {
-  it("与 python 侧 schemas.py 一致", () => {
-    const schemas = read(`${ROOT}src/qi_agent/web/schemas.py`);
-    const match = /CONTRACT_VERSION\s*=\s*"([^"]+)"/.exec(schemas);
-    expect(match, "schemas.py 里找不到 CONTRACT_VERSION").not.toBeNull();
-    expect(match?.[1]).toBe(CONTRACT_VERSION);
+/** 前端**按设计**不渲染的类型(有理由,不是漏掉)。 */
+const IGNORED_BY_DESIGN = [
+  "STEP_STARTED",
+  "STEP_FINISHED",
+  "STATE_DELTA",
+  "ACTIVITY_SNAPSHOT",
+  "ACTIVITY_DELTA",
+  "RAW",
+];
+
+/** qi 自己的 CUSTOM 名字:每一个都必须在 turn.ts 里有分支,否则会落到 default。 */
+const QI_CUSTOM_NAMES = [
+  "qi.history",
+  "qi.dispatch",
+  "qi.opening",
+  "qi.narration",
+  "qi.compaction",
+  "qi.branch",
+];
+
+describe("契约号", () => {
+  it("两侧的 CONTRACT_VERSION 一致", () => {
+    const py = read("src/qi_agent/web/schemas.py");
+    const ts = read("web/src/api/types.ts");
+    const host = /CONTRACT_VERSION = "([^"]+)"/.exec(py)?.[1];
+    const ui = /CONTRACT_VERSION = "([^"]+)"/.exec(ts)?.[1];
+    expect(host).toBeDefined();
+    expect(ui).toBe(host);
+  });
+
+  it("AG-UI 改造是破坏性的,所以契约号必须是 2", () => {
+    // 这条断言的意义:如果谁把版本号改回 1,说明他以为形状没变。
+    expect(/CONTRACT_VERSION = "([^"]+)"/.exec(read("src/qi_agent/web/schemas.py"))?.[1]).toBe("2");
   });
 });
 
-describe("/api/meta 的真实响应形状", () => {
-  // 一线实录:`qi web` + 真实配置下 curl /api/meta 的原始响应(未改一个字节)。
-  const RECORDED_META = `{
-    "app": "qi-web",
-    "contract": "1",
-    "version": "0.1.0",
-    "default_cwd": "/Users/hanwei/Desktop/qi",
-    "auth_required": false,
-    "static_ready": true,
-    "capabilities": {
-      "sse": true, "streaming": true, "cancel": true,
-      "auth_write": true, "config_read": true, "trajectory": true
-    }
-  }`;
-
-  it("必要字段齐全且契约号匹配(允许宿主新增字段)", () => {
-    const meta = JSON.parse(RECORDED_META) as Partial<Meta>;
-    expect(meta).toMatchObject({
-      app: "qi-web",
-      contract: CONTRACT_VERSION,
-      auth_required: false,
-      static_ready: true,
-    });
-    expect(typeof meta.version).toBe("string");
-    expect(typeof meta.default_cwd).toBe("string");
-    expect(meta.capabilities?.streaming).toBe(true);
-  });
-});
-
-describe("事件 kind 两侧对齐", () => {
-  /** 前端 `reduce` 会渲染的 kind。 */
-  const HANDLED = [
-    "dispatch",
-    "text_delta",
-    "assistant_message",
-    "text",
-    "tool_start",
-    "tool_end",
-    "opening",
-    "error",
-    "agent_end",
-  ];
-  /** 前端**按设计**不渲染的 kind(要么是传输层控制帧,要么已有别的投影)。 */
-  const IGNORED_BY_DESIGN = [
-    "agent_start", // 只表示"开始跑",没有可展示内容
-    "snapshot", // 由 client.ts 单独处理(重建条目列表)
-    "run.finished", // 由 client.ts 单独处理(收尾 + 重拉明细)
-    // 以下 4 个来自 TUI 线的三批提交(思考级别 d58e270 / 上下文压缩 3bfb676 /
-    // 会话树 e8398e5),**web 前端尚未跟进渲染**。这里显式登记,而不是让它们被
-    // 静默丢弃 —— 这个断言本来就是为这件事存在的(它红了,而且指名道姓)。
-    // 跟进方向(本次未做):thinking_delta → MessageView 的折叠思考块;
-    // compaction_start/end → 一条"已压缩"分隔条;branch → 轨迹视图。
-    "thinking_delta",
-    "compaction_start",
-    "compaction_end",
-    "branch",
-  ];
-
-  it("后端发出的 kind 全部被处理或显式忽略", () => {
-    const sources = [
-      read(`${ROOT}src/qi_agent/runner.py`),
-      read(`${ROOT}src/qi_agent/runtime.py`),
-    ].join("\n");
-    const emitted = new Set(
-      [...sources.matchAll(/kind="([a-z_.]+)"/g)].map((m) => m[1] as string),
+describe("事件类型两侧对齐", () => {
+  it("后端能发的 AG-UI 类型全部被处理或显式忽略", () => {
+    const sources = [read("src/qi_agent/web/agui.py"), read("src/qi_agent/web/app.py")].join("\n");
+    // agui.py 里事件类型只出现在 `"type": "XXX"` 或 `_base("XXX")` 两种位置
+    const emitted = new Set<string>();
+    for (const m of sources.matchAll(/_base\("([A-Z_]+)"\)/g)) emitted.add(m[1] as string);
+    for (const m of sources.matchAll(/"type": "([A-Z_]+)"/g)) emitted.add(m[1] as string);
+    expect(emitted.size, "刮不到任何事件类型,说明 agui.py 的写法变了,守卫已失效").toBeGreaterThan(
+      8,
     );
-    // 传输层那两个由 web 层产出,不在上面的两个文件里
-    const webLayer = read(`${ROOT}src/qi_agent/web/state.py`);
-    expect(webLayer).toContain('"run.finished"');
-    emitted.add("run.finished");
 
     const known = new Set([...HANDLED, ...IGNORED_BY_DESIGN]);
-    const unaccounted = [...emitted].filter((k) => !known.has(k)).sort();
+    const unaccounted = [...emitted].filter((t) => !known.has(t)).sort();
     expect(
       unaccounted,
-      `后端新增了未声明的 kind:${unaccounted.join(", ")}`,
+      `后端新增了未声明的 AG-UI 类型:${unaccounted.join(", ")} —— 请在 turn.ts 里处理,或加进 IGNORED_BY_DESIGN 并写明理由`,
     ).toEqual([]);
   });
 
   it("声明清单里的每一项都能在后端找到出处(清单不许留陈迹)", () => {
-    const sources = [
-      read(`${ROOT}src/qi_agent/runner.py`),
-      read(`${ROOT}src/qi_agent/runtime.py`),
-      read(`${ROOT}src/qi_agent/web/state.py`),
-    ].join("\n");
-    for (const kind of HANDLED.filter((k) => k !== "run.finished")) {
-      expect(sources, `前端声明处理 ${kind},但后端没发`).toContain(`"${kind}"`);
+    const sources = [read("src/qi_agent/web/agui.py"), read("src/qi_agent/web/app.py")].join("\n");
+    for (const t of HANDLED.filter((x) => !IGNORED_BY_DESIGN.includes(x))) {
+      // CUSTOM 由 applyCustom 组装,不在 _base 里,单独断言
+      if (t === "CUSTOM") {
+        expect(sources).toContain("CUSTOM");
+        continue;
+      }
+      expect(sources, `前端声明处理 ${t},但后端没发`).toMatch(
+        new RegExp(`_base\\("${t}"\\)|"type": "${t}"`),
+      );
+    }
+  });
+
+  it("qi 的 CUSTOM 名字在两侧一致(后端发 = 前端认)", () => {
+    const py = read("src/qi_agent/web/agui.py");
+    const ts = read("web/src/api/types.ts");
+    for (const name of QI_CUSTOM_NAMES) {
+      expect(py, `后端不发的 CUSTOM 名字:${name}`).toContain(`"${name}"`);
+      expect(ts, `前端不认识但后端会发的 CUSTOM:${name}`).toContain(`"${name}"`);
     }
   });
 });

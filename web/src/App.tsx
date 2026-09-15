@@ -1,46 +1,43 @@
 /**
- * 外壳:侧栏(280px) + 主区。首页照 dsh 的 `EmptyHero`:
- * 居中的 hero(品牌标 + headline) + 吸底的输入卡片(带 workspace chip)。
+ * 外壳:**左栏(会话) · 中栏(工作台) · 右栏(遥测)**。
  *
- * 与 dsh 的差别(按你的要求):
- *   · **标题换成 qi 自己的**(dsh 是 `hero.headline = "探索未至之境"` + 官方 brand mark);
- *   · **不做模式选择**(dsh 的 agent preset 卡片)—— qi 的分派是 auto/Dispatcher,
- *     首页只保留工作区 chip。
+ * 三条不变量(其余都是它们的推论):
  *
- * 两条沿用下来的设计决定:
- *   · `running` 是独立状态(不是 TurnState.status):用户消息先本地显示、再由服务端落盘,
- *     存在真实竞态,混在一起会让"快照到达时该不该覆盖本地条目"判断出错;
- *   · run 结束后以**落盘结果**为准(重拉会话明细),保证刷新前后一致。
+ * 1. **会话归客户端**。UI 不在流里传历史 —— 后端从本地 JSONL 取上下文。
+ *    所以重连语义就是"再发一次 run",不是续传。
+ * 2. **乐观先行**。用户消息立刻上屏,不等服务端落盘;`qi.history` 到达时
+ *    再用水合结果替换(它抓的是 run 开始前的 entries,所以 hydrate 会把
+ *    本轮输入补回去 —— 见 turn.ts 的 pendingUser)。
+ * 3. **流结束时以落盘为准**。run 结束后重拉会话明细,保证刷新前后一致。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError, ContractError, stream } from "./api/client";
+import { api, ApiError, ContractError, run } from "./api/client";
 import type { ConfigView, Meta, SessionSummary } from "./api/types";
-import { Composer } from "./components/Composer";
-import { HeroMark } from "./components/HeroMark";
-import { MessageStream } from "./components/MessageStream";
+import { Dock } from "./components/Dock";
+import { Rail } from "./components/Rail";
+import { RowView } from "./components/Rows";
 import { Settings } from "./components/Settings";
-import { Sidebar } from "./components/Sidebar";
-import { StatusBar, type Connection } from "./components/StatusBar";
-import { Trajectory } from "./components/Trajectory";
-import { WorkspaceChip, type WorkspaceOption } from "./components/WorkspaceChip";
+import { Telemetry } from "./components/Telemetry";
+import { HeroMark } from "./components/HeroMark";
 import { emptyTurn, fromEntries, reduce, withUserMessage } from "./state/turn";
 import type { TurnState } from "./state/turn";
-import { applyTheme, cycleTheme, readTheme } from "./theme/theme";
+import { applyTheme, cycleTheme, readTheme, themeLabel } from "./theme/theme";
 import type { ThemeMode } from "./theme/theme";
 
-interface SessionMeta {
-  id: string;
-  title: string;
-  cwd: string | null;
-}
+const PLACEHOLDER = "描述你想做的事。Enter 发送,Shift+Enter 换行";
 
-const PLACEHOLDER_HOME = "描述你想要构建的内容, / 调用指令, @ 文件或对话";
-const PLACEHOLDER_SESSION = "发消息或创建任务, / 调用指令, @ 文件或对话";
-
-/** 路径 → chip 标签(末段;纯分隔符回落到原串,dsh 的 `workspaceLabel` 同义)。 */
-function workspaceLabel(cwd: string): string {
-  const parts = cwd.split("/").filter(Boolean);
-  return parts.length > 0 ? (parts[parts.length - 1] as string) : cwd;
+/** 从转录尾行推出"此刻在干什么" —— 活动条要显示的那句话。 */
+function currentAction(turn: TurnState): string {
+  const rows = turn.rows;
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const row = rows[i];
+    if (!row) continue;
+    if (row.kind === "tool" && row.status === "running") return `执行 ${row.tool}`;
+    if (row.kind === "think" && row.live) return "思考中";
+    if (row.kind === "say" && row.live) return "生成回答";
+    if (row.kind === "route") return "已分派";
+  }
+  return "运行中";
 }
 
 export function App() {
@@ -49,19 +46,17 @@ export function App() {
   const [config, setConfig] = useState<ConfigView | null>(null);
   const [fatal, setFatal] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
-  const [session, setSession] = useState<SessionMeta | null>(null);
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [title, setTitle] = useState("");
   const [turn, setTurn] = useState<TurnState>(emptyTurn);
-  const [running, setRunning] = useState(false);
-  const [connection, setConnection] = useState<Connection>("idle");
-  const [view, setView] = useState<"chat" | "trajectory" | "settings">("chat");
-  const [workspace, setWorkspace] = useState<string | null>(null);
-  /** mark 的 hover 态挂在 App(而不是 HeroMark 内部),照 dsh:命中区是 hitbox */
-  const [markHovering, setMarkHovering] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [view, setView] = useState<"work" | "settings">("work");
+  const [tele, setTele] = useState(false);
   const abortRef = useRef<(() => void) | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const cwd = turn.host.cwd ?? meta?.default_cwd ?? "";
 
-  useEffect(() => {
-    applyTheme(theme);
-  }, [theme]);
+  useEffect(() => applyTheme(theme), [theme]);
 
   const describe = (err: unknown): string => {
     if (err instanceof ContractError) return err.message;
@@ -71,89 +66,17 @@ export function App() {
 
   const refreshSessions = useCallback(async () => {
     try {
-      const list = await api.sessions();
-      setSessions(list.sessions);
+      setSessions((await api.sessions()).sessions);
     } catch (err) {
       setFatal(describe(err));
     }
   }, []);
 
-  const reloadConfig = useCallback(async () => {
-    try {
-      setConfig(await api.config());
-    } catch (err) {
-      setFatal(describe(err));
-    }
-  }, []);
-
-  const subscribe = useCallback(
-    (id: string, runId?: string) => {
-      abortRef.current?.();
-      abortRef.current = stream(
-        id,
-        {
-          onOpen: () => setConnection("open"),
-          onSnapshot: (snapshot) => {
-            setSession({
-              id: snapshot.id,
-              title: snapshot.title,
-              cwd: snapshot.cwd,
-            });
-            // running 时不覆盖本地条目:用户消息此刻可能还没落盘(真实竞态)
-            setTurn((prev) =>
-              prev.status === "idle"
-                ? { ...fromEntries(snapshot.entries), status: "idle" }
-                : prev,
-            );
-          },
-          onEvent: (event) => setTurn((prev) => reduce(prev, event)),
-          onFinished: (status) => {
-            setRunning(false);
-            setTurn((prev) => ({
-              ...prev,
-              status:
-                status === "ok"
-                  ? "ok"
-                  : status === "cancelled"
-                    ? "cancelled"
-                    : "error",
-            }));
-            void refreshSessions();
-            void api.session(id).then((detail) => {
-              setTurn((prev) => ({
-                ...fromEntries(detail.entries),
-                usage: prev.usage,
-                status: prev.status,
-              }));
-            });
-          },
-          onError: (err) => {
-            setConnection("error");
-            setRunning(false);
-            setTurn((prev) =>
-              reduce(prev, {
-                seq: -1,
-                kind: "error",
-                agent: null,
-                tool: null,
-                text: describe(err),
-                data: {},
-              }),
-            );
-          },
-        },
-        { runId },
-      );
-    },
-    [refreshSessions],
-  );
-
+  // 首屏:先探契约(不匹配要显式报错,不白屏),再拉会话与配置。
   useEffect(() => {
     void (async () => {
       try {
-        const loaded = await api.meta();
-        setMeta(loaded);
-        setWorkspace(loaded.default_cwd || null);
+        setMeta(await api.meta());
         await refreshSessions();
         setConfig(await api.config());
       } catch (err) {
@@ -163,291 +86,180 @@ export function App() {
     return () => abortRef.current?.();
   }, [refreshSessions]);
 
-  const openSession = useCallback(
-    async (id: string) => {
-      setView("chat");
-      setConnection("idle");
-      try {
-        const detail = await api.session(id);
-        setSession({ id: detail.id, title: detail.title, cwd: detail.cwd });
-        setTurn({ ...fromEntries(detail.entries), status: "idle" });
-        setRunning(detail.running);
-        if (detail.running) subscribe(id);
-      } catch (err) {
-        setFatal(describe(err));
-      }
-    },
-    [subscribe],
-  );
+  // 新行到达时贴底(只在用户本来就在底部时 —— 否则会打断向上翻阅)
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    if (nearBottom) el.scrollTop = el.scrollHeight;
+  }, [turn.rows]);
 
-  const createSession = useCallback(
-    async (firstMessage?: string) => {
-      try {
-        const created = await api.createSession("", workspace ?? undefined);
-        await refreshSessions();
-        setSession({ id: created.id, title: created.title, cwd: created.cwd });
-        setTurn(emptyTurn);
-        if (firstMessage) {
-          setRunning(true);
-          setTurn((prev) => withUserMessage(prev, firstMessage));
-          const accepted = await api.turn(created.id, firstMessage);
-          subscribe(created.id, accepted.run_id);
-        }
-      } catch (err) {
-        setFatal(describe(err));
-      }
-    },
-    [refreshSessions, subscribe, workspace],
-  );
-
-  const send = useCallback(
-    async (text: string) => {
-      if (!session) {
-        await createSession(text); // 首页直接发:先建会话再跑
-        return;
-      }
-      setTurn((prev) => withUserMessage(prev, text));
-      setRunning(true);
-      try {
-        const accepted = await api.turn(session.id, text);
-        subscribe(session.id, accepted.run_id);
-      } catch (err) {
-        setRunning(false);
-        setTurn((prev) =>
-          reduce(prev, {
-            seq: -1,
-            kind: "error",
-            agent: null,
-            tool: null,
-            text: describe(err),
-            data: {},
-          }),
-        );
-      }
-    },
-    [createSession, session, subscribe],
-  );
-
-  const stop = useCallback(async () => {
-    if (!session) return;
+  const openSession = useCallback(async (id: string) => {
+    setView("work");
     try {
-      await api.cancel(session.id);
+      const detail = await api.session(id);
+      setSessionId(detail.id);
+      setTitle(detail.title);
+      setTurn({ ...emptyTurn, rows: fromEntries(detail.entries), phase: "idle" });
     } catch (err) {
       setFatal(describe(err));
     }
-  }, [session]);
+  }, []);
 
-  const rename = useCallback(
-    async (id: string, title: string) => {
-      await api.renameSession(id, title);
-      if (session?.id === id) setSession({ ...session, title });
-      await refreshSessions();
-    },
-    [refreshSessions, session],
-  );
-
-  const remove = useCallback(
-    async (id: string) => {
-      await api.deleteSession(id);
-      if (session?.id === id) {
-        setSession(null);
+  const createSession = useCallback(
+    async (first?: string) => {
+      try {
+        const created = await api.createSession("", meta?.default_cwd || undefined);
+        await refreshSessions();
+        setSessionId(created.id);
+        setTitle(created.title);
         setTurn(emptyTurn);
+        if (first) void sendTo(created.id, first);
+      } catch (err) {
+        setFatal(describe(err));
       }
-      await refreshSessions();
     },
-    [refreshSessions, session],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [meta, refreshSessions],
   );
 
-  /** 工作区候选:服务端默认 + 已有会话用过的目录(去重)。 */
-  const workspaces: WorkspaceOption[] = (() => {
-    const seen = new Map<string, WorkspaceOption>();
-    if (meta?.default_cwd) {
-      seen.set(meta.default_cwd, {
-        cwd: meta.default_cwd,
-        label: workspaceLabel(meta.default_cwd),
-      });
-    }
-    for (const item of sessions) {
-      if (item.cwd && !seen.has(item.cwd)) {
-        seen.set(item.cwd, { cwd: item.cwd, label: workspaceLabel(item.cwd) });
-      }
-    }
-    return [...seen.values()];
-  })();
+  /** 真正发起一轮:单次 POST,响应就是流。 */
+  const sendTo = useCallback((id: string, text: string) => {
+    abortRef.current?.();
+    setTurn((prev) => withUserMessage(prev, text));
+    abortRef.current = run(id, text, {
+      onEvent: (ev) => setTurn((prev) => reduce(prev, ev)),
+      onClose: () => {
+        setTurn((prev) => ({ ...prev, phase: prev.phase === "running" ? "ok" : prev.phase }));
+        void refreshSessions();
+      },
+      onError: (err) => {
+        setTurn((prev) => reduce(prev, { type: "RUN_ERROR", message: describe(err) }));
+      },
+    });
+  }, [refreshSessions]);
 
-  const lastDispatch = (() => {
-    for (let i = turn.items.length - 1; i >= 0; i -= 1) {
-      const item = turn.items[i];
-      if (item?.kind === "dispatch") return item.dispatch.data.display_name;
-    }
-    return null;
-  })();
+  const send = useCallback(() => {
+    const text = draft.trim();
+    if (!text) return;
+    setDraft("");
+    if (sessionId) sendTo(sessionId, text); else void createSession(text);
+  }, [createSession, draft, sendTo, sessionId]);
 
-  const isHome = turn.items.length === 0;
+  const stop = useCallback(() => {
+    abortRef.current?.();
+    abortRef.current = null;
+    setTurn((prev) => ({ ...prev, phase: "idle" }));
+  }, []);
+
+  const running = turn.phase === "running";
+  const contextWindow = 0; // 模型窗口目前不在 /api/config 里,取不到就不画占用条
 
   return (
-    <div className="shell">
-      <Sidebar
-        sessions={sessions}
-        current={session?.id ?? null}
-        busy={running}
-        onSelect={(id) => void openSession(id)}
-        onCreate={() => void createSession()}
-        onRename={(id, title) => void rename(id, title)}
-        onDelete={(id) => void remove(id)}
-        onOpenSettings={() => setView("settings")}
-      />
+    <div className="shell" data-rail="open" data-tele={tele ? "open" : "closed"}>
+      <aside className="rail">
+        <Rail
+          sessions={sessions}
+          current={sessionId}
+          busy={running}
+          onSelect={(id) => void openSession(id)}
+          onCreate={() => void createSession()}
+          onOpenSettings={() => setView((v) => (v === "settings" ? "work" : "settings"))}
+          themeLabel={themeLabel(theme)}
+          onCycleTheme={() => setTheme((m) => cycleTheme(m))}
+        />
+      </aside>
 
-      <main className="main">
+      <main className="work">
+        <header className="work__head">
+          <span className="work__title">{title || "新会话"}</span>
+          <span className="work__cwd" title={cwd}>
+            {cwd}
+          </span>
+          <span className="work__spacer" />
+          <button
+            type="button"
+            className="ghost"
+            aria-pressed={tele}
+            onClick={() => setTele((v) => !v)}
+            title="遥测:分派理由 / 上下文占用 / 动作计数"
+          >
+            遥测
+          </button>
+        </header>
+
         {view === "settings" ? (
           <Settings
             config={config}
-            onChanged={() => void reloadConfig()}
+            onChanged={() => void api.config().then(setConfig)}
             onError={setFatal}
           />
         ) : (
-          <>
-            {isHome ? null : (
-              /* dsh 的 header:标题行(titleRow) + tab 行(tabs) */
-              <div className="topbar">
-                <div className="topbar__row">
-                  <div className="topbar__title">
-                    {session?.title || "新会话"}
-                  </div>
-                  <div className="topbar__cwd mono">
-                    {session?.cwd ?? workspace ?? ""}
-                  </div>
-                </div>
-                <div className="tabs" role="tablist">
-                  <button
-                    type="button"
-                    className="tab"
-                    role="tab"
-                    aria-current={view === "chat"}
-                    onClick={() => setView("chat")}
-                  >
-                    对话
-                  </button>
-                  <button
-                    type="button"
-                    className="tab"
-                    role="tab"
-                    aria-current={view === "trajectory"}
-                    onClick={() => setView("trajectory")}
-                  >
-                    轨迹
-                  </button>
-                </div>
-              </div>
-            )}
-
+          <div className="work__body">
             {fatal ? (
-              <div className="stream">
-                <div className="stream__inner">
+              <div className="blank">
+                <div className="blank__inner">
                   <div className="notice notice--error">{fatal}</div>
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={() => window.location.reload()}
-                  >
+                  <button type="button" className="btn" onClick={() => window.location.reload()}>
                     重新加载
                   </button>
                 </div>
               </div>
-            ) : isHome ? (
-              /* 首页照 dsh:
-                   1. `.hero` 居中列(= dsh `scrollBody[data-phase=hero]`)
-                   2. `.hero__stack` = dsh 的 `composerStack.composerHero`
-                   3. `.hero__shell > .hero__inner` = HeroShell 的 `root > stack`
-                   4. `.hero__workspaceRow` 是**卡片的兄弟**(卡片上方),不是卡片里的 accessory
-                 这条嵌套是刻意的:workspace 行的间距来自 stack 的 `gap: 8px` + 自身
-                 `margin-top: 4px`,和 dsh 的 `composerHero` 一致。 */
-              <div className="hero">
-                <div className="hero__stack">
-                  <div className="hero__shell">
-                    <div className="hero__inner">
-                      <div className="hero__headline">
-                        {/* figma 34:10412: 34×25 的 mark 领着标题,gap 10 */}
-                        <span
-                          className="hero__markHitbox"
-                          onMouseEnter={() => {
-                            if (
-                              window.matchMedia(
-                                "(hover: hover) and (prefers-reduced-motion: no-preference)",
-                              ).matches
-                            ) {
-                              setMarkHovering(true);
-                            }
-                          }}
-                          onMouseLeave={() => setMarkHovering(false)}
-                        >
-                          <HeroMark hovering={markHovering} />
-                        </span>
-                        <span className="hero__titleGroup">
-                          {/* 独立元素:让标题文案与徽章各自可寻址 */}
-                          <span>今天想让我做什么?</span>
-                          <span className="hero__badge">预览版</span>
-                        </span>
-                      </div>
-                    </div>
+            ) : turn.rows.length === 0 ? (
+              // 空态:工作台,不是广告牌。给"这里有什么"的信息,不给装饰。
+              <div className="blank">
+                <div className="blank__inner">
+                  <span className="blank__mark">
+                    <HeroMark hovering={false} />
+                  </span>
+                  <div className="blank__title">说一句话,让 qi 去分派</div>
+                  <div className="blank__hint">
+                    一个路由把任务派给最合适的 agent,然后由它自己调工具做完。
                   </div>
-
-                  <div className="hero__workspaceRow">
-                    <WorkspaceChip
-                      workspace={workspace}
-                      workspaces={workspaces}
-                      disabled={fatal !== null}
-                      onPick={setWorkspace}
-                    />
+                  <div className="blank__facts">
+                    <span className="fact">agent 自动分派</span>
+                    <span className="fact">工具可折叠</span>
+                    <span className="fact">思考可选展开</span>
+                    {agentsCount(config) > 0 ? (
+                      <span className="fact">{agentsCount(config)} 个可用 agent</span>
+                    ) : null}
                   </div>
-
-                  <Composer
-                    disabled={fatal !== null}
-                    running={running}
-                    variant="hero"
-                    placeholder={PLACEHOLDER_HOME}
-                    model={config?.default_model ?? null}
-                    onSend={(text) => void send(text)}
-                    onStop={() => void stop()}
-                  />
                 </div>
               </div>
-            ) : view === "trajectory" ? (
-              <Trajectory turn={turn} />
             ) : (
-              <>
-                <MessageStream
-                  items={turn.items}
-                  onSuggestion={(text) => void send(text)}
-                />
-                <Composer
-                  disabled={false}
-                  running={running}
-                  variant="session"
-                  placeholder={PLACEHOLDER_SESSION}
-                  model={config?.default_model ?? null}
-                  onSend={(text) => void send(text)}
-                  onStop={() => void stop()}
-                />
-              </>
+              <div className="transcript" ref={scrollRef} data-transcript="">
+                <div className="transcript__inner">
+                  {turn.rows.map((row) => (
+                    <RowView key={row.key} row={row} />
+                  ))}
+                </div>
+              </div>
             )}
-          </>
-        )}
 
-        <StatusBar
-          model={config?.default_model ?? null}
-          agent={lastDispatch}
-          usage={turn.usage}
-          running={running}
-          connection={connection}
-          theme={theme}
-          onCycleTheme={() => setTheme((mode) => cycleTheme(mode))}
-          onToggleSettings={() =>
-            setView((v) => (v === "settings" ? "chat" : "settings"))
-          }
-          view={view}
-        />
+            <Dock
+              value={draft}
+              onChange={setDraft}
+              onSend={send}
+              onStop={stop}
+              running={running}
+              disabled={fatal !== null}
+              placeholder={PLACEHOLDER}
+              hint={config?.default_model ?? "未配置模型"}
+              current={currentAction(turn)}
+            />
+          </div>
+        )}
       </main>
+
+      <aside className="tele" hidden={!tele}>
+        <Telemetry turn={turn} model={config?.default_model ?? null} contextWindow={contextWindow} />
+      </aside>
     </div>
   );
+}
+
+/** 可用 agent 数只在空态用一次,单独抽出来避免在 JSX 里塞可选链。 */
+function agentsCount(config: ConfigView | null): number {
+  if (!config) return 0;
+  return config.checks.find((c) => c.name === "默认模型")?.ok ? 1 : 0;
 }

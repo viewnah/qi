@@ -383,3 +383,20 @@ def messages_snapshot(entries: list[dict]) -> dict:
 
 def state_snapshot(state: Any) -> dict:
     return {"type": "STATE_SNAPSHOT", "timestamp": _now_ms(), "snapshot": state or {}}
+
+
+def history_snapshot(entries: list[dict]) -> dict:
+    """qi 自己的**完整 entry 列表**。
+
+    为什么需要它:`MESSAGES_SNAPSHOT` 是 AG-UI 的形状,只能装"会进对话的消息"
+    (`role` 为 user/assistant 的那些)。而 qi 的轨迹还包括 `dispatch` / `tool` /
+    `custom(assistant_narration)` / `compaction` —— 它们**不在 messages 里**。
+
+    不给这一份,历史回放就会丢:刷新之后分派卡、工具卡、叙述全部消失,
+    只剩两段干巴巴的对话 —— 而这正是 qi 一直要避免的"直播与回放不一致"。
+
+    走 `CUSTOM`(AG-UI 的协议级扩展点):qi 自己的前端靠它重建整屏,
+    严格 AG-UI 客户端会直接忽略这个事件,不会报错。
+    """
+    return {"type": "CUSTOM", "timestamp": _now_ms(), "name": "qi.history",
+            "value": {"entries": entries}}

@@ -199,6 +199,9 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
                 yield agui.encode(agui.state_snapshot({
                     "cwd": session.cwd, "title": session.title,
                 }))
+                # qi 自己的完整 entry 列表:MESSAGES_SNAPSHOT 装不下 dispatch/tool/叙述,
+                # 不给这一份,刷新后轨迹就只剩对话(直播与回放不一致)。
+                yield agui.encode(agui.history_snapshot(entries))
                 async for ev in web.runtime_for(web.session_cwd(session)).stream(
                         text, session, agent_override=inp.agent):
                     for frame in translator.feed(ev):

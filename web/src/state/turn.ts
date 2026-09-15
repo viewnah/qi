@@ -430,9 +430,10 @@ export function reduce(state: TurnState, ev: AguiEvent): TurnState {
       const meta = asRecord(ev.metadata?.[QI_CUSTOM.toolMeta]);
       const status = asStr(meta.status, "ok");
       // 插件唯一的 UI 下行通道。这一条不加,details 就只在后端活着、到前端被丢。
-      const details = Object.keys(asRecord(meta.details)).length > 0
-        ? asRecord(meta.details)
-        : null;
+      const details =
+        Object.keys(asRecord(meta.details)).length > 0
+          ? asRecord(meta.details)
+          : null;
       return {
         ...state,
         rows: patchByKey(state.rows, key, (row) =>

@@ -165,7 +165,9 @@ describe("插件的 details(唯一 UI 下行通道)", () => {
   ];
 
   it("metadata[qi.tool].details 落到工具行上", () => {
-    const details = { ui: [{ type: "list", items: [{ label: "写实现", state: "active" }] }] };
+    const details = {
+      ui: [{ type: "list", items: [{ label: "写实现", state: "active" }] }],
+    };
     const s = run(...base, {
       type: "TOOL_CALL_RESULT",
       messageId: "tm1",
@@ -185,7 +187,9 @@ describe("插件的 details(唯一 UI 下行通道)", () => {
       content: "ok",
       metadata: { "qi.tool": { status: "ok" } },
     });
-    expect((s.rows.find((r) => r.kind === "tool") as ToolRowData).details).toBeNull();
+    expect(
+      (s.rows.find((r) => r.kind === "tool") as ToolRowData).details,
+    ).toBeNull();
   });
 
   it("历史回放也带上 details(否则刷新后插件 UI 消失)", () => {

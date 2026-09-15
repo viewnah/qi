@@ -40,6 +40,7 @@ from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, SelectionList, Static, TextArea
 from textual.widgets.option_list import Option
+from textual.worker import Worker, WorkerState
 
 from .auth import AuthStore
 from .cli import _load_registry
@@ -1947,7 +1948,7 @@ class QiTui(App):
         if self._session is None:
             self._session = self._session_store().create("tui", cwd=rt.cwd)
         override = None if self._auto else self._agent
-        self.run_worker(self._run(text, override), exclusive=False)
+        self.run_worker(self._run(text, override), exclusive=False, exit_on_error=False)
 
     # -- 事件循环 -------------------------------------------------------
     async def _run(self, text: str, override: str | None) -> None:
@@ -2029,6 +2030,10 @@ class QiTui(App):
                     self._usage["prompt_tokens"] += _as_int(usage.get("prompt_tokens"))
                     self._usage["completion_tokens"] += _as_int(usage.get("completion_tokens"))
                     self._refresh_footer()
+        except Exception as exc:  # noqa: BLE001 回合失败只报错:TUI 不能被一轮带崩
+            # 接的是 LLM(凭证/网络/流中断)、分派、落盘等**没被就地处理**的异常。
+            # 往上抛 = Textual 按 exit_on_error 直接退出 TUI,用户连再试一次的机会都没有。
+            self._note(f"回合失败:{type(exc).__name__}: {exc}", "error")
         finally:
             self._set_working(False)
             self._live = None
@@ -2037,6 +2042,19 @@ class QiTui(App):
             self._scroll_end()
             # 回合结束再抽队列(排队消息不并发跑,避免两个回合互踩同一会话)
             self.call_after_refresh(self._drain_queue)
+
+    def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
+        """worker 兜底:没被就地处理的异常只提示,不让 Textual 退出 TUI。
+
+        四个 run_worker 都传了 `exit_on_error=False` 且各自 try/except;这里是防
+        “以后新增的 worker 忘了兜”——宁可多一行提示,也不要整屏消失。
+        """
+        if event.state != WorkerState.ERROR:
+            return
+        error = getattr(event.worker, "error", None)
+        if error is not None:
+            self._note(f"后台任务失败:{type(error).__name__}: {error}", "error")
+            self._scroll_end()
 
     # -- 命令 -----------------------------------------------------------
     def _note(self, text: str, tone: str = "dim") -> None:
@@ -2124,7 +2142,8 @@ class QiTui(App):
             elif self._rt is None:
                 self._note("运行时不可用。", "error")
             else:
-                self.run_worker(self._compact_worker(arg), exclusive=False)
+                self.run_worker(self._compact_worker(arg), exclusive=False,
+                                exit_on_error=False)
                 self._scroll_end()
                 return
         elif cmd == "/session":
@@ -2745,7 +2764,7 @@ class QiTui(App):
         # 跳到了别的分支 → 把被放弃的那段压成摘要挂过来(否则切回来时上下文断了)
         if old_leaf and old_leaf not in target_branch_ids and self._rt is not None:
             self.run_worker(self._branch_summary_worker(session, source_branch, old_leaf, entry_id),
-                            exclusive=False)
+                            exclusive=False, exit_on_error=False)
 
     def _resolve_user_message(self, session, arg: str) -> str | None:
         """`/fork` 参数:1-based 序号,或 entry id(前缀)。
@@ -3124,7 +3143,8 @@ class QiTui(App):
         block = BashBlock(command, self._palette, excluded)
         self._bash_blocks.append(block)
         self._append(block)
-        self.run_worker(self._exec_bash(command, excluded, block), exclusive=False)
+        self.run_worker(self._exec_bash(command, excluded, block), exclusive=False,
+                        exit_on_error=False)
 
     async def _exec_bash(self, command: str, excluded: bool, block: BashBlock) -> None:
         """执行用户手敲的命令;`!` 会把「命令 + 输出」落成一条 user 消息供后续回合参考。"""

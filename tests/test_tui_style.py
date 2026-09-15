@@ -401,6 +401,74 @@ class SlowRuntime(FakeRuntime):
                          data={"step": 1, "tool_calls": []})
 
 
+class FailingRuntime(FakeRuntime):
+    """回合一开就抛 —— 复现 AuthenticationError 把 TUI 带走的那条路径。"""
+
+    async def stream(self, prompt, session, agent_override=None):
+        raise RuntimeError("AuthenticationError: Invalid 'Authorization' header or token")
+        yield AgentEvent(kind="agent_end")          # pragma: no cover - 只为成为异步生成器
+
+
+def _log_text(app) -> str:
+    """把 transcript 里所有 Static 的纯文本拼起来(断言错误提示真的进了屏)。"""
+    chunks: list[str] = []
+    for widget in app.query_one("#log").children:
+        content = getattr(widget, "content", None)
+        plain = getattr(content, "plain", None)    # _note 传的是 rich.Text
+        if plain:
+            chunks.append(plain)
+        elif isinstance(content, str):
+            chunks.append(content)
+    return "\n".join(chunks)
+
+
+@pytest.mark.asyncio
+async def test_turn_error_does_not_exit_tui(tmp_path, monkeypatch):
+    """一轮失败只提示、不退出:异常不能再从 worker 抛到 Textual。
+
+    回归:`litellm.AuthenticationError` 曾直接穿透 worker,Textual 把整个 TUI 关掉。
+    """
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FailingRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        app._submit("你好")
+        await app.workers.wait_for_complete()
+        await pilot.pause(0.1)
+
+        assert app._exit is False                 # 关键:界面没被异常带走
+        assert app._working is False              # 收尾照做(spinner 停掉)
+        shown = _log_text(app)
+        assert "回合失败" in shown and "AuthenticationError" in shown
+
+
+@pytest.mark.asyncio
+async def test_unhandled_worker_error_does_not_exit_tui(tmp_path, monkeypatch):
+    """兜底:新加的 worker 忘了 try/except 时,exit_on_error=False 也只提示不退出。"""
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        notes: list[tuple[str, str]] = []
+        app._note = lambda text, tone="dim": notes.append((text, tone))  # type: ignore[method-assign]
+
+        async def boom() -> None:
+            raise RuntimeError("worker 里的意外异常")
+
+        app.run_worker(boom(), exit_on_error=False)
+        await pilot.pause(0.2)
+        assert app._exit is False
+        assert any("后台任务失败" in text for text, _ in notes)
+
+
 @pytest.mark.asyncio
 async def test_escape_interrupts_running_turn(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)

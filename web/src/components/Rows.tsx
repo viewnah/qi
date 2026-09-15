@@ -55,7 +55,9 @@ function UiNodeView({ node }: { node: UiNode }) {
                 <span className="ui-list__label" data-state={state}>
                   {it.label}
                 </span>
-                {it.note ? <span className="ui-list__note">{it.note}</span> : null}
+                {it.note ? (
+                  <span className="ui-list__note">{it.note}</span>
+                ) : null}
               </li>
             );
           })}
@@ -81,7 +83,11 @@ function UiNodeView({ node }: { node: UiNode }) {
       return (
         <div className="ui-progress">
           <div className="meter__bar">
-            <div className="meter__fill" data-warn={pct > 75} style={{ width: `${pct}%` }} />
+            <div
+              className="meter__fill"
+              data-warn={pct > 75}
+              style={{ width: `${pct}%` }}
+            />
           </div>
           <div className="meter__note">
             {node.label ? `${node.label} · ` : ""}

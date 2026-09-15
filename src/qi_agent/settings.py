@@ -77,6 +77,11 @@ class QiSettings(BaseModel):
     quietStartup: bool = False
     defaultProjectTrust: str = "ask"
     doubleEscapeAction: str = "tree"
+    hideThinkingBlock: bool = False
+    # 编辑器左侧内边距:pi 默认 0,qi 视觉基线用 1
+    editorPaddingX: int = 1
+    outputPad: int = 1                      # 助手输出的左侧缩进(pi 默认 1)
+    autocompleteMaxVisible: int = 5         # 补全面板最多几行(pi 默认 5)
 
     # 会话 / 工具
     sessionDir: str | None = None

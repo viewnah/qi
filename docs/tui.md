@@ -48,6 +48,8 @@ qi · auto                                 ← footer 3:状态行
   `⠋…⠏ Working`(accent + muted)。
 - **markdown**:Rich `Markdown` 渲染,样式名字映射到 pi 的 `md*` 键;
   代码高亮用 pygments 主题但颜色取自 pi 的 `syntax*` 键(无底色)。
+- **settings 驱动**:`quietStartup` / `hideThinkingBlock` / `editorPaddingX` / `outputPad` /
+  `autocompleteMaxVisible` 已接(启动时落到控件上),见 [settings.md](settings.md) §3。
 - **分派行**:`● → <display_name> (source, 置信度)`,无底色,不加卡片。
 
 已知差异(Textual 与 pi 自研渲染器的边界,不做逐字节对齐):OSC133 zone 标记、

@@ -143,8 +143,11 @@ TUI_COMMANDS: dict[str, str] = {
 }
 """`/` 补全的候选(命令 → 说明);与 `_command` 的已实现分支一一对应。"""
 
-COMPLETION_ROWS = 8
-"""补全面板最多显示几行。"""
+COMPLETION_ROWS = 5
+"""补全面板默认最多*显示*几行(pi 的 `autocompleteMaxVisible` 默认 5);候选本身不裁。"""
+
+MAX_COMPLETION_ITEMS = 100
+"""候选条数上限(只是防病态目录/搜索,面板本身只显示 `COMPLETION_ROWS` 行并可滚动)。"""
 
 DOUBLE_ESCAPE_WINDOW = 0.5
 """空编辑器连按两次 escape 的判定窗口(秒);pi 用 500ms。"""
@@ -534,11 +537,11 @@ class UserMessage(Static):
 
 
 class AssistantMessage(Static):
-    """助手消息:无底色,markdown,左侧 1 空格 padding(pi outputPad=1)。"""
+    """助手消息:无底色,markdown,左侧 padding 来自 `settings.outputPad`(pi 默认 1)。"""
 
-    def __init__(self, palette: Palette) -> None:
+    def __init__(self, palette: Palette, pad: int = 1) -> None:
         super().__init__("", classes="msg assistant-msg")
-        self.styles.padding = (0, 1)
+        self.styles.padding = (0, pad)
         self.styles.background = "transparent"
         self.text = ""
 
@@ -1184,6 +1187,10 @@ class QiTui(App):
         self._last_answer = ""
         self._exit_armed = False
         self._last_escape = 0.0              # 双击 escape(pi 的 doubleEscapeAction)
+        # settings 驱动的界面参数(on_mount 里按实际设置覆盖)
+        self._output_pad = 1
+        self._completion_rows = COMPLETION_ROWS
+        self._quiet_startup = False
         # 补全(pi 的 autocomplete):候选列表 + 当前替换区间
         self._completions: list[Candidate] = []
         self._completions_open = False
@@ -1220,11 +1227,13 @@ class QiTui(App):
                 self._model = None
             self._thinking_level = normalize_thinking_level(
                 getattr(self._rt, "thinking_level", None))
+            self._apply_ui_settings()
             skills = sorted({s.name for unit in self._rt.registry.all() for s in unit.skills})
-            banner = self._renderer.banner(_version(), self._rt.registry.names, skills)
+            banner = None if self._quiet_startup else self._renderer.banner(
+                _version(), self._rt.registry.names, skills)
             if self._session is not None and self._session.branch():
                 self._replay_branch(self._session, banner=banner)   # 恢复历史(banner 在最上)
-            else:
+            elif banner is not None:
                 self._append(Static(banner, classes="msg"))
             if self._startup_note:
                 tone = "warning" if "不存在" in self._startup_note else "dim"
@@ -1241,6 +1250,24 @@ class QiTui(App):
             self.call_after_refresh(self._submit, self._initial_prompt)
 
     # -- 基础操作 -------------------------------------------------------
+    def _apply_ui_settings(self) -> None:
+        """把 settings 里已接的界面参数落到运行中的控件上(pi 的 settings-manager 同名 getter)。"""
+        settings = getattr(self._rt, "settings", None)
+
+        def number(name: str, default: int) -> int:
+            try:
+                value = int(getattr(settings, name, default))
+            except (TypeError, ValueError):
+                return default
+            return max(0, value)
+
+        self._quiet_startup = bool(getattr(settings, "quietStartup", False))
+        self._show_thinking = not bool(getattr(settings, "hideThinkingBlock", False))
+        self._output_pad = number("outputPad", 1)
+        self._completion_rows = max(1, number("autocompleteMaxVisible", COMPLETION_ROWS))
+        editor = self.query_one("#editor", Editor)
+        editor.styles.padding = (0, number("editorPaddingX", 1))
+
     def _append(self, widget) -> None:
         log = self.query_one("#log", VerticalScroll)
         if len(log.children):
@@ -1263,7 +1290,7 @@ class QiTui(App):
             return
         reserved = self._editor_rows(editor) + 2 + FOOTER_LINES
         if self._completions_open:
-            reserved += min(len(self._completions), COMPLETION_ROWS)
+            reserved += min(len(self._completions), self._completion_rows)
         log.styles.max_height = max(3, self.size.height - reserved)
 
     def _editor_rows(self, editor: Editor) -> int:
@@ -1534,13 +1561,13 @@ class QiTui(App):
                     self._scroll_end()
                 elif ev.kind == "text_delta":
                     if self._live is None:
-                        self._live = AssistantMessage(self._palette)
+                        self._live = AssistantMessage(self._palette, self._output_pad)
                         self._append(self._live)
                     self._live.append_delta(ev.text, renderer)
                     self._scroll_end()
                 elif ev.kind == "assistant_message":
                     if self._live is None:
-                        self._live = AssistantMessage(self._palette)
+                        self._live = AssistantMessage(self._palette, self._output_pad)
                         self._append(self._live)
                     self._live.set_text(ev.text, renderer)
                     self._live = None
@@ -2293,11 +2320,11 @@ class QiTui(App):
             if kind == "message" and entry.get("role") == "user":
                 self._append(UserMessage(str(entry.get("content") or ""), renderer, self._palette))
             elif kind == "message" and entry.get("role") == "assistant":
-                message = AssistantMessage(self._palette)
+                message = AssistantMessage(self._palette, self._output_pad)
                 message.set_text(str(entry.get("content") or ""), renderer)
                 self._append(message)
             elif kind == "custom" and entry.get("custom_type") == "assistant_narration":
-                message = AssistantMessage(self._palette)
+                message = AssistantMessage(self._palette, self._output_pad)
                 message.set_text(str(entry.get("content") or ""), renderer)
                 self._append(message)
             elif kind == "dispatch":
@@ -2441,7 +2468,7 @@ class QiTui(App):
                or c.value.rsplit("/", 1)[-1].lower().startswith(lowered)]
         if len(out) == 1 and out[0].value == prefix:
             return []               # 已完整匹配
-        return out[:COMPLETION_ROWS]
+        return out[:MAX_COMPLETION_ITEMS]
 
     def _file_candidates(self, query: str, *, quoted: bool = False) -> list[Candidate]:
         """`@` 后的路径候选:优先 fd 全树搜索(pi 同款),没装 fd 就扫当前目录一层。
@@ -2451,7 +2478,7 @@ class QiTui(App):
         base = Path(self._rt.cwd) if self._rt is not None else Path.cwd()
         found = _fd_candidates(base, query) or _scan_candidates(base, query)
         out: list[Candidate] = []
-        for display, is_dir in found[:COMPLETION_ROWS]:
+        for display, is_dir in found[:MAX_COMPLETION_ITEMS]:
             name = display.rsplit("/", 1)[-1]
             label = name + ("/" if is_dir else "")
             out.append(Candidate(_completion_value(display, is_dir, quoted), label,
@@ -2477,6 +2504,7 @@ class QiTui(App):
             tag = f"[{cand.source}] " if cand.source else ""
             text = f"{tag}{cand.label}" + (f"    {cand.detail}" if cand.detail else "")
             panel.add_option(Option(text, id=cand.value))
+        panel.styles.max_height = self._completion_rows
         panel.highlighted = 0
         panel.add_class("visible")
         self._completions_open = True

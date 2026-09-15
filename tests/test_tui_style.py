@@ -170,6 +170,7 @@ class FakeRuntime:
         self.cfg = None
         self.cwd = Path.cwd()
         self.registry = _FakeRegistry()
+        self.settings = QiSettings()
         # 与 QiRuntime 对齐的可写字段(思考级别相关)
         self.thinking_level = "off"
         self.llm_exec = SimpleNamespace(thinking_level="off", reasoning_dropped=False)
@@ -1584,3 +1585,56 @@ async def test_compact_command_and_block(tmp_path, monkeypatch):
         await pilot.pause(0.05)
         assert len(app._compaction_blocks) == 1
         assert "Goal" in app._compaction_blocks[0].body_plain or             "Goal" in app._compaction_blocks[0].summary
+
+
+# ── settings 驱动的界面参数 ────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_ui_settings_applied_to_widgets(tmp_path, monkeypatch):
+    """hideThinkingBlock / editorPaddingX / outputPad / autocompleteMaxVisible 真的生效。"""
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        assert app._rt is not None
+        app._rt.settings = QiSettings(hideThinkingBlock=True, editorPaddingX=0,
+                                      outputPad=0, autocompleteMaxVisible=3)
+        app._apply_ui_settings()
+
+        assert app._show_thinking is False                  # 思考块默认隐藏
+        assert app._output_pad == 0                         # 助手消息左侧不缩进
+        assert app._completion_rows == 3                    # 补全面板最多 3 行
+        editor = app.query_one("#editor", Editor)
+        assert editor.styles.padding.left == 0
+        assert editor.styles.padding.top == 0               # 只动左右
+
+        await _editor_with(app, pilot, "/")                 # 面板 max-height 跟着设置走
+        max_height = app.query_one("#completions").styles.max_height
+        assert max_height is not None and max_height.value == 3
+        candidates, _, _ = app._completion_candidates()
+        assert len(candidates) > 3                          # 候选本身不裁,面板滚动
+
+
+@pytest.mark.asyncio
+async def test_quiet_startup_hides_banner(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+
+    def quiet_runtime(*args, **kwargs):
+        runtime = FakeRuntime()
+        runtime.settings = QiSettings(quietStartup=True)
+        return runtime
+
+    monkeypatch.setattr(tui_mod, "QiRuntime", quiet_runtime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        assert app._quiet_startup is True
+        assert not app.query_one("#log").children           # 启动头(含 shortcuts 提示)没写

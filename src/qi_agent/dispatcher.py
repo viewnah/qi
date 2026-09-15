@@ -42,24 +42,51 @@ class Dispatcher:
         if m and self.registry.get(m.group(1)):
             return Decision(agent=m.group(1), confidence=1.0, source="mention",
                             reasoning="@点名直派")
-        if self.registry.names:
-            rule_hit: list[str] = []
-            for unit in self.registry.all():
-                for kw in unit.config.keywords:
-                    if kw and kw.lower() in text.lower():
-                        rule_hit.append(unit.name)
-                        break
-            unique = sorted(set(rule_hit))
-            if len(unique) == 1:
-                return Decision(agent=unique[0], confidence=1.0, source="rules",
-                                reasoning=f"keywords 命中 {unique[0]}")
-        if active_agent and self.registry.get(active_agent) and not self._new_task_signal(text):
+        unique = self._keyword_hits(text) if self.registry.names else []
+        if len(unique) == 1:
+            return Decision(agent=unique[0], confidence=1.0, source="rules",
+                            reasoning=f"keywords 命中 {unique[0]}")
+        # 多命中 = 歧义(或命中了其他 agent)→ 交 L3 Router 裁决,不让 sticky 截胡
+        if active_agent and self.registry.get(active_agent) \
+                and not self._new_task_signal(text, active_agent, unique):
             return Decision(agent=active_agent, confidence=0.9, source="sticky",
                             reasoning="延续当前 agent")
         return None
 
-    def _new_task_signal(self, text: str) -> bool:
-        return any(w in text for w in STICKY_NEW_TASK_WORDS)
+    def _keyword_hits(self, text: str) -> list[str]:
+        """L1 规则命中:返回命中的 agent 名(排序去重)。
+
+        ASCII keyword 按词边界匹配,避免 `review` 误命中 `code-reviewer` / `preview`;
+        中文(非 ASCII)keyword 无词边界概念,保持子串匹配。
+        """
+        text_lower = text.lower()
+        hit: list[str] = []
+        for unit in self.registry.all():
+            for kw in unit.config.keywords:
+                if self._kw_hit(kw, text_lower):
+                    hit.append(unit.name)
+                    break
+        return sorted(set(hit))
+
+    @staticmethod
+    def _kw_hit(kw: str, text_lower: str) -> bool:
+        kw = (kw or "").strip().lower()
+        if not kw:
+            return False
+        if kw.isascii():
+            return re.search(rf"(?<![a-z0-9]){re.escape(kw)}(?![a-z0-9])",
+                             text_lower) is not None
+        return kw in text_lower
+
+    def _new_task_signal(self, text: str, active_agent: str | None = None,
+                         rule_hit: list[str] | None = None) -> bool:
+        """③ 新任务信号:显式切换词 / @点名 / 其他 agent 的 keywords 命中(对齐 docs/dispatcher.md §3)。"""
+        if any(w in text for w in STICKY_NEW_TASK_WORDS):
+            return True
+        if MENTION_RE.match(text.strip()):
+            return True
+        hits = self._keyword_hits(text) if rule_hit is None else rule_hit
+        return any(name != active_agent for name in hits)
 
     # ── L3 Router(异步) ──
     async def decide_semantic(self, text: str, active_agent: str | None = None,

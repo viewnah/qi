@@ -212,6 +212,46 @@ def test_mention_and_keywords(tmp_path):
     assert d4 is not None and d4.agent == "writer" and d4.source == "sticky"
 
 
+def test_sticky_not_swallowing_other_agents_keywords(tmp_path):
+    """回归:active_agent 存在时,命中**其他** agent 的 keywords 必须交 Router,不被 sticky 吞掉。"""
+    catalog = make_catalog()
+    units = {}
+    for a, kws in (("writer", ["文档"]), ("code-analyst", ["review", "分析"])):
+        d = write_agent(tmp_path, a, extra={"keywords": kws})
+        units[a] = load_agent_dir(d, "user", catalog.names)
+    reg = AgentRegistry()
+    reg.register_all(units)
+    disp = Dispatcher(reg, router_llm=None)
+
+    # 命中 code-analyst 的 keyword,当前停在 writer → 不 sticky,直派/交Router 都行
+    d1 = disp.rule_decide("帮我 review 一下这段代码", active_agent="writer")
+    assert d1 is not None and d1.agent == "code-analyst" and d1.source == "rules"
+
+    # 命中两个 agent(歧义)→ 同样不 sticky
+    d2 = disp.rule_decide("帮我分析一下这个文档", active_agent="writer")
+    assert d2 is None, f"歧义输入应交给 Router,却得到 {d2.agent}/{d2.source}"
+
+    # 无 keywords 命中 → 仍沿用(既有行为不被破坏)
+    d3 = disp.rule_decide("继续", active_agent="writer")
+    assert d3 is not None and d3.agent == "writer" and d3.source == "sticky"
+
+
+def test_keyword_ascii_word_boundary(tmp_path):
+    """回归:ASCII keyword 按词边界匹配,`review` 不得命中 `code-reviewer` / `preview`。"""
+    catalog = make_catalog()
+    d = write_agent(tmp_path, "code-analyst", extra={"keywords": ["review"]})
+    reg = AgentRegistry()
+    reg.register_all({"code-analyst": load_agent_dir(d, "user", catalog.names)})
+    disp = Dispatcher(reg, router_llm=None)
+
+    # 子串包含但不是独立词 → 不命中
+    assert disp.rule_decide("你并没有把任务分配给 code-reviewer 啊") is None
+    assert disp.rule_decide("看看这个 preview 的效果") is None
+    # 独立词 → 命中
+    d1 = disp.rule_decide("帮我 review 这个文件")
+    assert d1 is not None and d1.source == "rules"
+
+
 @pytest.mark.asyncio
 async def test_router_decision(tmp_path):
     reg = make_registry(tmp_path, "writer", "code-analyst")

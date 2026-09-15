@@ -16,12 +16,13 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, ContractError, stream } from "./api/client";
 import type { ConfigView, Meta, SessionSummary } from "./api/types";
 import { Composer } from "./components/Composer";
+import { HeroMark } from "./components/HeroMark";
 import { MessageStream } from "./components/MessageStream";
 import { Settings } from "./components/Settings";
 import { Sidebar } from "./components/Sidebar";
 import { StatusBar, type Connection } from "./components/StatusBar";
 import { Trajectory } from "./components/Trajectory";
-import type { WorkspaceOption } from "./components/WorkspaceChip";
+import { WorkspaceChip, type WorkspaceOption } from "./components/WorkspaceChip";
 import { emptyTurn, fromEntries, reduce, withUserMessage } from "./state/turn";
 import type { TurnState } from "./state/turn";
 import { applyTheme, cycleTheme, readTheme } from "./theme/theme";
@@ -54,6 +55,8 @@ export function App() {
   const [connection, setConnection] = useState<Connection>("idle");
   const [view, setView] = useState<"chat" | "trajectory" | "settings">("chat");
   const [workspace, setWorkspace] = useState<string | null>(null);
+  /** mark 的 hover 态挂在 App(而不是 HeroMark 内部),照 dsh:命中区是 hitbox */
+  const [markHovering, setMarkHovering] = useState(false);
   const abortRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -352,30 +355,61 @@ export function App() {
                 </div>
               </div>
             ) : isHome ? (
-              /* 首页照 dsh:HeroShell 的 root/stack/headline,输入卡片在同一个居中块里 */
+              /* 首页照 dsh:
+                   1. `.hero` 居中列(= dsh `scrollBody[data-phase=hero]`)
+                   2. `.hero__stack` = dsh 的 `composerStack.composerHero`
+                   3. `.hero__shell > .hero__inner` = HeroShell 的 `root > stack`
+                   4. `.hero__workspaceRow` 是**卡片的兄弟**(卡片上方),不是卡片里的 accessory
+                 这条嵌套是刻意的:workspace 行的间距来自 stack 的 `gap: 8px` + 自身
+                 `margin-top: 4px`,和 dsh 的 `composerHero` 一致。 */
               <div className="hero">
                 <div className="hero__stack">
-                  <div className="hero__headline">
-                    <span className="hero__titleGroup">
-                      <span>qi</span>
-                      <span>今天想让我做什么?</span>
-                    </span>
-                    <span className="hero__badge">预览版</span>
+                  <div className="hero__shell">
+                    <div className="hero__inner">
+                      <div className="hero__headline">
+                        {/* figma 34:10412: 34×25 的 mark 领着标题,gap 10 */}
+                        <span
+                          className="hero__markHitbox"
+                          onMouseEnter={() => {
+                            if (
+                              window.matchMedia(
+                                "(hover: hover) and (prefers-reduced-motion: no-preference)",
+                              ).matches
+                            ) {
+                              setMarkHovering(true);
+                            }
+                          }}
+                          onMouseLeave={() => setMarkHovering(false)}
+                        >
+                          <HeroMark hovering={markHovering} />
+                        </span>
+                        <span className="hero__titleGroup">
+                          {/* 独立元素:让标题文案与徽章各自可寻址 */}
+                          <span>今天想让我做什么?</span>
+                          <span className="hero__badge">预览版</span>
+                        </span>
+                      </div>
+                    </div>
                   </div>
-                  <div className="hero__body">
-                    <Composer
-                      disabled={fatal !== null}
-                      running={running}
-                      variant="hero"
-                      placeholder={PLACEHOLDER_HOME}
-                      model={config?.default_model ?? null}
-                      workspaces={workspaces}
+
+                  <div className="hero__workspaceRow">
+                    <WorkspaceChip
                       workspace={workspace}
-                      onPickWorkspace={setWorkspace}
-                      onSend={(text) => void send(text)}
-                      onStop={() => void stop()}
+                      workspaces={workspaces}
+                      disabled={fatal !== null}
+                      onPick={setWorkspace}
                     />
                   </div>
+
+                  <Composer
+                    disabled={fatal !== null}
+                    running={running}
+                    variant="hero"
+                    placeholder={PLACEHOLDER_HOME}
+                    model={config?.default_model ?? null}
+                    onSend={(text) => void send(text)}
+                    onStop={() => void stop()}
+                  />
                 </div>
               </div>
             ) : view === "trajectory" ? (
@@ -392,9 +426,6 @@ export function App() {
                   variant="session"
                   placeholder={PLACEHOLDER_SESSION}
                   model={config?.default_model ?? null}
-                  workspaces={workspaces}
-                  workspace={workspace}
-                  onPickWorkspace={setWorkspace}
                   onSend={(text) => void send(text)}
                   onStop={() => void stop()}
                 />

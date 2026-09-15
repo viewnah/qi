@@ -318,53 +318,101 @@ pre,
  cursor: not-allowed;
 }
 
-/* ── 首页 hero(照 dsh `HeroShell.module.css` 逐条端口)──────────── */
+/* ── 首页 hero ─────────────────────────────────────────────────────────
+   逐条取自 dsh(数值、属性顺序、注释里的 figma 依据都不改):
+     · HeroShell.module.css       .root / .stack / .headline / .titleGroup / .previewBadge
+                                  / .fishHitbox / .fish / @keyframes hero-fish-swim
+     · EmptyHero.tsx              .workspace / .folder / .workspaceLabel / .chevron
+     · ConversationRoot.module.css  .composerHero / .heroWorkspaceRow
+   dsh 的类名带槽位语义(`.fish`、`.workspace`),qi 统一加 `hero__` 前缀。 */
 
+/* = dsh `[data-phase='hero'] .scrollBody`:整列在滚动体里居中 */
 .hero {
  flex: 1;
  display: flex;
  flex-direction: column;
+ justify-content: center;
+ min-width: 0;
+ min-height: 0;
+ overflow-y: auto;
+}
+
+/* = dsh `.composerHero` —— hero 壳 + workspace 行 + 卡片三行同宽同间距。
+   用 flex 居中而不是 absolute+transform:transform 会把 position:fixed 的
+   后代(弹层/模态)变成相对自己的包含块,dsh 的注释专门记了这一点。 */
+.hero__stack {
+ align-self: center;
+ display: flex;
+ flex-direction: column;
+ /* figma 75:8208 三行之间画的是 12;workspace 行用自身 margin-top 补到卡上方 8 */
+ gap: 8px;
+ /* 居中盒内部的脚底留白,让整块略高于几何中心 */
+ padding-bottom: 32px;
+ /* 卡片上限 + 两侧 clearance:hero 卡片与吸底卡片在任何视口下等宽 */
+ width: min(
+  calc(var(--dsh-composer-card-max-width) + 2 * var(--dsh-composer-side-clearance)),
+  100%
+ );
+ z-index: 1;
+}
+
+/* = dsh HeroShell `.root`。dsh 还写了 `height: 100%`,但那是在一个内容高度的
+   flex 父级里,百分比高度会算成 auto —— 空操作,故不抄。 */
+.hero__shell {
+ display: flex;
  align-items: center;
  justify-content: center;
  min-width: 0;
- height: 100%;
  padding: 0 24px;
 }
 
-/* 与输入卡片**同宽同间距**:首页的 hero 与输入框是一个居中块 */
-.hero__stack {
- width: 100%;
- max-width: var(--dsh-composer-card-max-width);
+/* = dsh HeroShell `.stack`:与输入卡片同宽;glow 可以画出两侧 */
+.hero__inner {
  display: flex;
  flex-direction: column;
  align-items: stretch;
+ /* figma 75:8208:标题块 / workspace / 卡片之间 12 */
  gap: 12px;
+ width: 100%;
+ max-width: var(--dsh-composer-card-max-width);
  overflow: visible;
 }
 
-/* dsh: 26px / 500 / 32px,gap 12px 10px,内部是 flex 行 */
+/* figma 34:10411:mark + 标题,gap 10,居中;26/32 wt500 */
 .hero__headline {
  display: flex;
+ /* 溢出驱动:mark 与标题组是两个换行单元,放得下就同排居中;
+    挤了就 mark 自己占一行。没有断点。 */
  flex-wrap: wrap;
- justify-content: center;
+ column-gap: 10px;
+ /* 换行后 mark 独占一行,比并排的 10px 多留一点空气,
+    让它读作「标题上方的标」而不是被挤扁的行内字形 */
+ row-gap: 12px;
  align-items: center;
- gap: 12px 10px;
+ justify-content: center;
  font-size: 26px;
- font-weight: 500;
  line-height: 32px;
+ font-weight: 500;
  color: var(--dsw-alias-label-primary);
 }
 
+/* 标题文本 + 徽章作为**一个**换行单元:标题不会从中间断开、把徽章
+   留在半截文字旁边。徽章放不下时整组换到下面一行居中;
+   放得下时组是内容宽度,居中就是空操作,上标贴着标题。 */
 .hero__titleGroup {
  display: flex;
  flex-wrap: wrap;
  justify-content: center;
  align-items: center;
- gap: 4px 7px;
+ /* 上标离标题 7 */
+ column-gap: 7px;
+ row-gap: 4px;
  min-width: 0;
 }
 
-/* 「预览版」徽章:0.5px 边 + 品牌浅底 + 代码字体 */
+/* 「预览版」徽章(dsh `.previewBadge`):单行、等宽字体、上标位。
+   字体用 dsh 的 `--ds-font-family-code`,**不是** `--dsw-font-mono` ——
+   两者栈不同,dsh 这一套刻意没有裸 monospace 兜底。 */
 .hero__badge {
  align-self: flex-start;
  margin-top: 2px;
@@ -373,19 +421,195 @@ pre,
  border-radius: 24px;
  background: var(--dsw-alias-state-business-tertiary);
  color: var(--dsw-alias-label-primary-bluish);
- font-family: var(--dsw-font-mono);
+ font-family: var(--ds-font-family-code);
  font-size: 12px;
- font-weight: 500;
  line-height: 18px;
+ font-weight: 500;
  white-space: nowrap;
 }
 
-.hero__body {
+/* 让 hover 检测留在一个静止的盒子上,而 mark 在盒内动;
+   hover 规则打在 hitbox 上,所以换任何 slot 占用者都会一起摇 */
+.hero__markHitbox {
+ display: inline-flex;
+ flex: none;
+ align-items: center;
+ justify-content: center;
+}
+
+/* 形变的曲线会略微顶出 viewBox 边缘,裁掉会把尾巴切一半。
+   mark 与标题同一个主墨色。 */
+.hero__mark {
+ display: block;
+ overflow: visible;
+ transform-origin: 50% 60%;
+ color: var(--dsw-alias-label-primary);
+}
+
+/* hover 摇摆:绕身体中心缓慢来回 —— 头(左半)抬起,再带一点反倾落回,
+   像踩水。负角 = 头抬起(head 是左半;原点 50% 60%)。 */
+@keyframes qi-hero-mark-swim {
+ 0%,
+ 100% {
+  transform: none;
+ }
+
+ 35% {
+  transform: rotate(-4deg) translate(-0.4px, -0.9px);
+ }
+
+ 70% {
+  transform: rotate(1.6deg) translate(0.3px, 0.2px);
+ }
+}
+
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+ .hero__markHitbox:hover .hero__mark {
+  animation: qi-hero-mark-swim 1.6s ease-in-out infinite;
+ }
+}
+
+/* = dsh `.heroWorkspaceRow`:卡片**上方**的兄弟行。
+   figma 画的是 px 8;左侧 +12 让 chip 的文件夹字形与卡片内部控件对齐;
+   右侧保持 16,让尾部的 preset 槽位不贴到卡片边缘。 */
+.hero__workspaceRow {
+ display: flex;
+ align-items: center;
+ gap: 2px;
+ min-width: 0;
+ margin-top: 4px;
+ padding: 0 16px 0 20px;
+}
+
+/* 菜单锚点:chip 下方 4px(dsh Menu `.list` 的 `top: calc(100% + 4px)`) */
+.hero__workspaceAnchor {
  position: relative;
+ display: inline-flex;
+ min-width: 0;
+}
+
+/* 文件夹 + 标签 + 下箭头 —— 静止时透明,只在 hover / 展开时上底色。
+   溢出驱动降级、无断点:标签带省略号一路缩到零,于是文件夹与箭头始终
+   紧贴着剩下的文字 —— 全文本、省略文本、或没有文本。 */
+.hero__workspace {
+ display: inline-flex;
+ align-items: center;
+ gap: 4px;
+ max-width: min(100%, 360px);
+ min-height: 28px;
+ padding: 0 8px;
+ border: none;
+ border-radius: 16px;
+ background: transparent;
+ color: var(--dsw-alias-label-primary);
+ font-size: 13px;
+ line-height: 20px;
+ font-weight: 500;
+ cursor: pointer;
+}
+
+.hero__workspace:not(:disabled):hover,
+.hero__workspace[aria-expanded="true"] {
+ background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* 锁定态(绑定的引导状态):静态回显 —— 无 hover 反馈、无指针手势;
+   标签保持全对比度。 */
+.hero__workspace:disabled {
+ cursor: default;
+}
+
+.hero__folder {
+ flex: none;
+ color: var(--dsw-alias-label-primary);
+}
+
+.hero__workspaceLabel {
+ min-width: 0;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+
+.hero__chevron {
+ flex: none;
+ color: var(--dsw-alias-label-caption);
+}
+
+/* 工作区弹层。dsh 这里是 `Menu` 原语(portal 定位);qi 只做锚在 chip 下方的面板,
+   但用 dsh Menu 的面板参数:r20、`--dsw-specific-menu` 底、l1 描边、
+   prominent 阴影、4px 内衬,条目 min-h 40 / r10 / pad 8-10 / 14-22 主墨。 */
+.hero__menu {
+ position: absolute;
+ top: calc(100% + 4px);
+ left: 0;
+ z-index: 100;
+ box-sizing: border-box;
  display: flex;
  flex-direction: column;
- gap: 12px;
+ gap: 0;
+ min-width: 300px;
+ max-width: 360px;
+ padding: 4px;
+ border: 0;
+ border-radius: 20px;
+ background: var(--dsw-specific-menu);
+ --dsw-elevation-stroke-color: var(--dsw-alias-border-l1);
+ box-shadow: var(--dsw-elevation-prominent);
+}
+
+.hero__pathInput {
+ box-sizing: border-box;
+ width: 100%;
+ height: 40px;
+ padding: 8px 10px;
+ border: none;
+ border-radius: 10px;
+ outline: none;
+ background: transparent;
+ color: var(--dsw-alias-label-primary);
+ font-family: var(--ds-font-family-code);
+ font-size: 12px;
+ line-height: 22px;
+}
+
+.hero__pathInput::placeholder {
+ color: var(--dsw-alias-label-caption);
+}
+
+.hero__menuItem {
+ display: flex;
+ align-items: center;
+ gap: 8px;
+ width: 100%;
+ min-height: 40px;
+ padding: 8px 10px;
+ border: none;
+ border-radius: 10px;
+ background: transparent;
+ color: var(--dsw-alias-label-primary);
+ font-size: 14px;
+ line-height: 22px;
+ text-align: left;
+ cursor: pointer;
+}
+
+.hero__menuItem:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.hero__menuItemLabel {
+ flex: 1;
  min-width: 0;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+
+.hero__menuSep {
+ height: 1px;
+ margin: 4px 10px;
+ background: var(--dsw-alias-border-l1);
 }
 
 /* ── 消息流(照 dsh `ConversationRoot.scrollBody` + `MessageItem`)── */
@@ -702,78 +926,11 @@ pre,
  line-height: 24px;
 }
 
-/* workspace chip 行(dsh accessory:padding 10px 12px 0) */
-.composer__accessory {
- display: flex;
- align-items: center;
- gap: 8px;
- padding: 10px 12px 0;
-}
-
-/* workspace chip 本体:min-height 28、radius 16、13px/500 */
-.workspace-chip {
- display: inline-flex;
- align-items: center;
- gap: 4px;
- max-width: min(100%, 360px);
- min-height: 28px;
- padding: 0 8px;
- border: none;
- border-radius: 16px;
- background: none;
- color: var(--dsw-alias-label-primary);
- font-size: 13px;
- font-weight: 500;
- line-height: 20px;
-}
-
-.workspace-chip:hover,
-.workspace-chip[aria-expanded="true"] {
- background: var(--dsw-alias-interactive-bg-hover);
-}
-
-.workspace-chip__label {
- overflow: hidden;
- text-overflow: ellipsis;
- white-space: nowrap;
- min-width: 0;
-}
-
-.workspace-chip__chevron {
- flex: none;
- color: var(--dsw-alias-label-caption);
-}
-
-/* 工作区弹层(dsh `.modalInput`:44px 高、radius 22、0.5px 边) */
-.composer__menu {
- display: flex;
- flex-wrap: wrap;
- align-items: center;
- gap: 8px;
- padding: 8px 12px 0;
-}
-
-.composer__pathInput {
- box-sizing: border-box;
- flex: 1;
- min-width: 12rem;
- height: 44px;
- padding: 7px 14px;
- border: 0.5px solid var(--dsw-alias-border-l4);
- border-radius: 22px;
- background: none;
- color: var(--dsw-alias-label-primary);
- font-size: 14px;
- font-weight: 400;
- line-height: 22px;
- outline: none;
-}
-
-.composer__pathInput::placeholder {
- color: var(--dsw-alias-label-caption);
-}
-
-/* 输入框:dsh padding 4px 8px 0 14px,光标用品牌蓝 */
+/* 输入区。dsh 这里是 `.scroll > .grow > contenteditable` 一对:外层限高兼滚动,
+   内层撑出草稿高度。qi 用单个 `<textarea>` 兼作滚动体,**这个行内 flex 壳必须留着** ——
+   自动长高的 JS 是给 textarea 写 `style.height`,而 `flex: 1` 在**列**容器里是
+   `flex-basis: 0%`,会压过显式 height:那样 textarea 永远只有 min-height、长不高。
+   在行容器里 `flex: 1` 管的是宽度,高度就归 JS。 */
 .composer__inner {
  display: flex;
  align-items: flex-end;
@@ -786,7 +943,7 @@ pre,
  flex: 1;
  min-height: 36px;
  max-height: var(--dsh-composer-text-max-height);
- padding: 4px 8px 0 14px;
+ padding: 4px 12px 0 14px;
  border: 0;
  background: transparent;
  color: var(--dsw-alias-label-primary);
@@ -813,7 +970,7 @@ pre,
  min-height: var(--dsh-hero-input-min-height);
 }
 
-/* 底部工具栏:tools / modes / trailing */
+/* 底部工具栏:tools 在左,trailing(模型位 + 发送)在右 */
 .composer__row {
  display: flex;
  flex-wrap: wrap;
@@ -824,8 +981,10 @@ pre,
  padding: 2px 8px 6px;
 }
 
-.composer__tools,
-.composer__modes {
+/* figma 75:8208 画的是 + 与模式 chip 之间 16、Plan / Read-only 之间 4;
+   两处都定为 12,让药丸形 chip 读起来是独立控件而不偏离 + 控件。
+   qi 没有模式 chip,这里只剩「＋」,gap 保留以便将来对齐。 */
+.composer__tools {
  display: flex;
  align-items: center;
  gap: 12px;
@@ -881,7 +1040,7 @@ pre,
 }
 
 /* 发送:34×34 品牌蓝圆钮,上移 2px(dsh 原样) */
-.composer__send {
+.composer__primary {
  display: grid;
  place-items: center;
  flex: none;
@@ -889,16 +1048,16 @@ pre,
  height: 34px;
  border-radius: var(--dsw-radius-pill);
  background: var(--dsw-alias-button-info-fill);
- color: var(--dsw-static-neutral-00);
+ color: var(--dsw-alias-label-inverse);
  transform: translateY(-2px);
  transition: background-color 0.1s;
 }
 
-.composer__send:hover:not(:disabled) {
+.composer__primary:hover:not(:disabled) {
  background: var(--dsw-alias-button-info-hover);
 }
 
-.composer__send:disabled {
+.composer__primary:disabled {
  opacity: 0.4;
  cursor: default;
 }

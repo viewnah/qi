@@ -8,7 +8,8 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
-    "check:design": "node scripts/check-design.mjs",
+    "check:design": "node scripts/check-design.mjs && node scripts/check-dsh-tokens.mjs",
+    "check:tokens": "node scripts/check-dsh-tokens.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -7,7 +7,7 @@
 import { useState } from "react";
 import type { ToolView } from "../state/turn";
 
-/** 工具 → 类别(对应 tokens 里的 `--qi-tool-*`)。未列出的插件工具用中性点。 */
+/** 工具 → 类别。点色用 `--dsw-*` 令牌(见 app.css `.tool__dot--*`)。未列出的插件工具用中性点。 */
 const TOOL_KIND: Record<string, "read" | "write" | "exec" | "web" | "task"> = {
   read: "read",
   ls: "read",

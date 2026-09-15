@@ -83,7 +83,54 @@
   --dsw-static-red-600: #ec1313;
   --dsw-static-red-900: #3a2222;
 
-  /* ── ② 语义别名(dsh `--dsw-alias-*`;浅色 / 深色)───────────────── */
+
+  /* 以下是 dsh 有、而 qi 早先只抄了子集时漏掉的原始色板(纯值,主题无关)。
+     补全的理由:漏掉的色板会让下面引它的语义令牌无法落地,而"少抄"与"抄错"
+     在门禁里长得一样 —— 见 `scripts/check-dsh-tokens.mjs`。 */
+  --dsw-static-amber-600: #dd8629;
+  --dsw-static-blue-100: #dbeafe;
+  --dsw-static-blue-300: #93c5fd;
+  --dsw-static-blue-450: #4d93f8;
+  --dsw-static-blue-500: #3b82f6;
+  --dsw-static-blue-50: #eff6ff;
+  --dsw-static-blue-50p: #eaf3ff;
+  --dsw-static-blue-600: #2563eb;
+  --dsw-static-blue-75: #e5f0ff;
+  --dsw-static-blue-800: #1e40af;
+  --dsw-static-blue-900: #0e3074;
+  --dsw-static-blue-950: #172554;
+  --dsw-static-deepseek-300: #b7c8fe;
+  --dsw-static-deepseek-450: #5686fe;
+  --dsw-static-deepseek-600: #4868b2;
+  --dsw-static-deepseek-700-delete: #2f4c8f;
+  --dsw-static-deepseek-900: #283142;
+  --dsw-static-neutral-00: #ffffff;
+  --dsw-static-neutral-1000: #000000;
+  --dsw-static-neutral-100: #f5f5f5;
+  --dsw-static-neutral-150: #ededed;
+  --dsw-static-neutral-250: #dcdcdc;
+  --dsw-static-neutral-400: #a2a4a6;
+  --dsw-static-neutral-500: #7f8287;
+  --dsw-static-neutral-50: #fafafa;
+  --dsw-static-neutral-800: #292929;
+  --dsw-static-neutral-850: #212123;
+  --dsw-static-neutral-900: #0f0f0f;
+  --dsw-static-red-50: #fef2f2;
+
+  /* ── ② 语义别名(dsh `--dsw-alias-*`)─────────────────────────────
+     **机械转录**自 dsh 的
+     `packages/client/ui-theme/src/styles/design-platform.css`
+     (`body` = 浅色,`body[data-ds-dark-theme]` = 深色)。
+     声明顺序**就是 dsh 的顺序**,便于与源文件逐行对读。
+     dsh 用两个块表达明暗,qi 用 `light-dark()` 合成一行(两者等价,见文件头)。
+     浅色与深色取值相同的键就写成单值,不写 `light-dark(x, x)`。
+
+     唯一由门禁强制的事:`scripts/check-dsh-tokens.mjs` 会把这里的 90 条
+     alias/specific 与 dsh 源文件逐条对拍(两个主题都比)。
+     它存在的直接原因 —— 手抄子集漏掉了 34 条,并且抄错了 6 条的值,其中
+     `button-info-fill`(首页发送按钮的底色)明暗两值**整个抄反**、
+     `button-info-hover` 又被写成了与 fill 相同(浅色下没有 hover 态)。 */
+
   --dsw-alias-bg-base: light-dark(
     var(--dsw-static-neutral-bluish-00),
     var(--dsw-static-neutral-bluish-950)
@@ -100,46 +147,72 @@
     var(--dsw-static-neutral-bluish-00),
     var(--dsw-static-neutral-bluish-800)
   );
+  --dsw-alias-bg-mask-1: light-dark(
+    #0000003d,
+    #00000080
+  );
+  --dsw-alias-bg-mask-2: light-dark(
+    #0000001f,
+    #00000033
+  );
+  --dsw-alias-bg-mask-3: #0000007a;
+  --dsw-alias-bg-mask-photo: #000000e0;
+  --dsw-alias-bg-mask-drop: light-dark(
+    #ffffffb2,
+    #272730b2
+  );
   --dsw-alias-bg-module-platform: light-dark(
     var(--dsw-static-neutral-bluish-60),
     var(--dsw-static-neutral-bluish-800)
   );
-  --dsw-alias-bg-skeleton: light-dark(#0000000a, #ffffff14);
-  --dsw-alias-bg-mask-1: light-dark(#0000003d, #00000080);
-  --dsw-alias-bg-mask-2: light-dark(#0000001f, #00000033);
-
-  --dsw-alias-border-l1: light-dark(#0000000a, #ffffff0f);
-  --dsw-alias-border-l2: light-dark(#0000001a, #ffffff1f);
-  --dsw-alias-border-l3: light-dark(#0000001f, #ffffff29);
-  --dsw-alias-border-l4: light-dark(#00000029, #ffffff33);
-  --dsw-alias-border-inverted: light-dark(#00000000, #ffffff0f);
-
-  --dsw-alias-label-primary: light-dark(
+  --dsw-alias-bg-multi-select: light-dark(
+    var(--dsw-static-neutral-bluish-60),
+    var(--dsw-static-neutral-850)
+  );
+  --dsw-alias-bg-overlay: light-dark(
+    var(--dsw-static-neutral-bluish-150),
+    var(--dsw-static-neutral-bluish-700)
+  );
+  --dsw-alias-bg-skeleton: light-dark(
+    #0000000a,
+    #ffffff14
+  );
+  --dsw-alias-border-inverted2: light-dark(
+    #00000000,
+    #ffffff14
+  );
+  --dsw-alias-border-inverted: light-dark(
+    #00000000,
+    #ffffff0f
+  );
+  --dsw-alias-border-l1: light-dark(
+    #0000000a,
+    #ffffff0f
+  );
+  --dsw-alias-border-l2-darkmode-thin: light-dark(
+    #0000001a,
+    #ffffff0f
+  );
+  --dsw-alias-border-l2: light-dark(
+    #0000001a,
+    #ffffff1f
+  );
+  --dsw-alias-border-l3: light-dark(
+    #0000001f,
+    #ffffff29
+  );
+  --dsw-alias-border-l4: light-dark(
+    #00000029,
+    #ffffff33
+  );
+  --dsw-alias-brand-primary-invert: light-dark(
     var(--dsw-static-neutral-bluish-1000),
     var(--dsw-static-neutral-bluish-50)
   );
-  --dsw-alias-label-secondary: light-dark(
-    var(--dsw-static-neutral-bluish-700),
-    var(--dsw-static-neutral-bluish-300)
+  --dsw-alias-brand-primary-new-colorprimary-new-color: light-dark(
+    #4176e6,
+    var(--dsw-static-deepseek-450)
   );
-  --dsw-alias-label-tertiary: light-dark(
-    var(--dsw-static-neutral-bluish-600),
-    var(--dsw-static-neutral-bluish-400)
-  );
-  --dsw-alias-label-caption: light-dark(
-    var(--dsw-static-neutral-bluish-400),
-    var(--dsw-static-neutral-bluish-600)
-  );
-  --dsw-alias-label-dimmed: light-dark(
-    var(--dsw-static-neutral-bluish-200),
-    var(--dsw-static-neutral-bluish-750)
-  );
-  --dsw-alias-label-primary-foreground: light-dark(
-    var(--dsw-static-neutral-bluish-00),
-    var(--dsw-static-neutral-bluish-1000)
-  );
-  --dsw-alias-label-primary-bluish: light-dark(#0e3074, #f9fafb);
-
   --dsw-alias-brand-primary: light-dark(
     var(--dsw-static-neutral-bluish-1000),
     var(--dsw-static-neutral-bluish-50)
@@ -148,72 +221,9 @@
     var(--dsw-static-neutral-bluish-1000),
     var(--dsw-static-neutral-bluish-50)
   );
-  --dsw-alias-brand-primary-invert: light-dark(
-    var(--dsw-static-neutral-bluish-1000),
-    var(--dsw-static-neutral-bluish-50)
-  );
-
-  --dsw-alias-state-business-primary: light-dark(
-    var(--dsw-static-deepseek-500),
-    var(--dsw-static-deepseek-400)
-  );
-  --dsw-alias-state-success: light-dark(
-    var(--dsw-static-green-500),
-    var(--dsw-static-green-400)
-  );
-  --dsw-alias-state-warning: light-dark(
-    var(--dsw-static-amber-500),
-    var(--dsw-static-amber-400)
-  );
-  --dsw-alias-state-error: light-dark(
-    var(--dsw-static-red-500),
-    var(--dsw-static-red-400)
-  );
-  --dsw-alias-state-business-tertiary: light-dark(
-    var(--dsw-static-deepseek-100),
-    var(--dsw-static-deepseek-800)
-  );
-  --dsw-alias-state-error-primary: light-dark(
-    var(--dsw-static-red-400),
-    var(--dsw-static-red-600)
-  );
-  --dsw-alias-state-success-bg: light-dark(
-    var(--dsw-static-green-100),
-    var(--dsw-static-green-900)
-  );
-  --dsw-alias-state-warning-bg: light-dark(
-    var(--dsw-static-amber-100),
-    var(--dsw-static-amber-900)
-  );
-  --dsw-alias-state-error-bg: light-dark(
-    var(--dsw-static-red-100),
-    var(--dsw-static-red-900)
-  );
-
-  --dsw-alias-interactive-bg-hover: light-dark(#2631480f, #ffffff14);
-  --dsw-alias-interactive-bg-hover-accent: light-dark(#26314824, #ffffff3d);
-  --dsw-alias-interactive-bg-hover-danger: light-dark(#ec13130d, #f25a5a26);
-  --dsw-alias-interactive-bg-hover-solid: light-dark(
-    var(--dsw-static-neutral-bluish-75),
-    var(--dsw-static-neutral-bluish-850)
-  );
-  --dsw-alias-interactive-bg-active: light-dark(#2631481a, #ffffff24);
-
-  --dsw-alias-button-primary-fill: light-dark(
-    var(--dsw-static-neutral-bluish-1000),
-    var(--dsw-static-neutral-bluish-50)
-  );
-  --dsw-alias-button-primary-hover: light-dark(
-    var(--dsw-static-neutral-bluish-100),
-    var(--dsw-static-neutral-bluish-750)
-  );
-  --dsw-alias-button-primary-dimmed: light-dark(
-    var(--dsw-static-neutral-bluish-100),
-    var(--dsw-static-neutral-bluish-750)
-  );
   --dsw-alias-button-contrast-fill: light-dark(
-    var(--dsw-static-neutral-bluish-50),
-    var(--dsw-static-neutral-bluish-700)
+    var(--dsw-static-neutral-bluish-700),
+    var(--dsw-static-neutral-bluish-50)
   );
   --dsw-alias-button-elevated-fill: light-dark(
     var(--dsw-static-neutral-bluish-00),
@@ -227,6 +237,10 @@
     var(--dsw-static-neutral-bluish-75),
     var(--dsw-static-neutral-bluish-800)
   );
+  --dsw-alias-button-ghost-active-border: light-dark(
+    var(--dsw-static-neutral-bluish-500),
+    var(--dsw-static-neutral-bluish-600)
+  );
   --dsw-alias-button-ghost-active-fill: light-dark(
     var(--dsw-static-neutral-bluish-100),
     var(--dsw-static-neutral-bluish-750)
@@ -235,19 +249,118 @@
     var(--dsw-static-neutral-bluish-150),
     var(--dsw-static-neutral-bluish-700)
   );
-  --dsw-alias-button-ghost-active-border: light-dark(
-    var(--dsw-static-neutral-bluish-500),
-    var(--dsw-static-neutral-bluish-600)
-  );
   --dsw-alias-button-info-fill: light-dark(
-    var(--dsw-static-deepseek-400),
-    var(--dsw-static-deepseek-500)
+    var(--dsw-static-deepseek-500),
+    var(--dsw-static-deepseek-400)
   );
   --dsw-alias-button-info-hover: light-dark(
     var(--dsw-static-deepseek-400),
     var(--dsw-static-deepseek-500)
   );
-
+  --dsw-alias-button-primary-dimmed: light-dark(
+    var(--dsw-static-neutral-bluish-100),
+    var(--dsw-static-neutral-bluish-750)
+  );
+  --dsw-alias-button-primary-fill: var(--dsw-alias-brand-primary);
+  --dsw-alias-button-primary-hover: light-dark(
+    var(--dsw-static-neutral-bluish-750),
+    var(--dsw-static-neutral-bluish-100)
+  );
+  --dsw-alias-button-tool-bar-fill-invisible: #1f1f1f5c;
+  --dsw-alias-button-tool-bar-fill: #54555780;
+  --dsw-alias-button-tool-bar-hover: #54555799;
+  --dsw-alias-interactive-bg-active: light-dark(
+    #2631481a,
+    #ffffff24
+  );
+  --dsw-alias-interactive-bg-hover-accent: light-dark(
+    #26314824,
+    #ffffff3d
+  );
+  --dsw-alias-interactive-bg-hover-danger: light-dark(
+    #ec13130d,
+    #f25a5a26
+  );
+  --dsw-alias-interactive-bg-hover-solid: light-dark(
+    var(--dsw-static-neutral-bluish-75),
+    var(--dsw-static-neutral-bluish-800)
+  );
+  --dsw-alias-interactive-bg-hover: light-dark(
+    #2631480f,
+    #ffffff14
+  );
+  --dsw-alias-label-caption: light-dark(
+    var(--dsw-static-neutral-bluish-400),
+    var(--dsw-static-neutral-bluish-600)
+  );
+  --dsw-alias-label-dimmed: light-dark(
+    var(--dsw-static-neutral-bluish-200),
+    var(--dsw-static-neutral-bluish-750)
+  );
+  --dsw-alias-label-primary-bluish: light-dark(
+    var(--dsw-static-blue-900),
+    var(--dsw-static-neutral-bluish-50)
+  );
+  --dsw-alias-label-primary-dimmed: light-dark(
+    var(--dsw-static-neutral-bluish-950),
+    var(--dsw-static-neutral-bluish-100)
+  );
+  --dsw-alias-label-primary-foreground: light-dark(
+    var(--dsw-static-neutral-bluish-00),
+    var(--dsw-static-neutral-bluish-1000)
+  );
+  --dsw-alias-label-primary-inverted: light-dark(
+    var(--dsw-static-neutral-bluish-00),
+    var(--dsw-static-neutral-bluish-800)
+  );
+  --dsw-alias-label-primary: light-dark(
+    var(--dsw-static-neutral-bluish-1000),
+    var(--dsw-static-neutral-bluish-50)
+  );
+  --dsw-alias-label-secondary: light-dark(
+    var(--dsw-static-neutral-bluish-700),
+    var(--dsw-static-neutral-bluish-300)
+  );
+  --dsw-alias-label-tertiary: light-dark(
+    var(--dsw-static-neutral-bluish-600),
+    var(--dsw-static-neutral-bluish-400)
+  );
+  --dsw-alias-link: light-dark(
+    var(--dsw-static-deepseek-500),
+    var(--dsw-static-deepseek-400)
+  );
+  --dsw-alias-markdown-citation: light-dark(
+    var(--dsw-static-neutral-bluish-100),
+    var(--dsw-static-neutral-bluish-800)
+  );
+  --dsw-alias-markdown-code-block-banner: light-dark(
+    var(--dsw-static-neutral-bluish-50),
+    var(--dsw-static-neutral-bluish-850)
+  );
+  --dsw-alias-markdown-code-block: light-dark(
+    var(--dsw-static-neutral-bluish-50),
+    var(--dsw-static-neutral-bluish-900)
+  );
+  --dsw-alias-markdown-code-segment-selected: light-dark(
+    var(--dsw-static-neutral-bluish-00),
+    var(--dsw-static-neutral-bluish-800)
+  );
+  --dsw-alias-markdown-code-segment-unselected: light-dark(
+    var(--dsw-static-neutral-bluish-75),
+    var(--dsw-static-neutral-bluish-900)
+  );
+  --dsw-alias-markdown-inline-code: light-dark(
+    var(--dsw-static-neutral-50),
+    var(--dsw-static-neutral-800)
+  );
+  --dsw-alias-markdown-placeholder: light-dark(
+    var(--dsw-static-neutral-bluish-60),
+    var(--dsw-static-neutral-bluish-850)
+  );
+  --dsw-alias-markdown-tag: light-dark(
+    var(--dsw-static-neutral-bluish-75),
+    var(--dsw-static-neutral-bluish-850)
+  );
   --dsw-alias-scrollbar-bg-l1: light-dark(
     var(--dsw-static-neutral-200),
     var(--dsw-static-neutral-700)
@@ -256,51 +369,134 @@
     var(--dsw-static-neutral-200),
     var(--dsw-static-neutral-600)
   );
+  --dsw-alias-scrollbar-hover-l1: light-dark(
+    var(--dsw-static-neutral-300),
+    var(--dsw-static-neutral-600)
+  );
   --dsw-alias-scrollbar-hover-l2: light-dark(
     var(--dsw-static-neutral-300),
     var(--dsw-static-neutral-550)
   );
-
-  /* ── ③ 场景令牌(dsh `--dsw-specific-*`)───────────────────────── */
-  --dsw-specific-sidebar-fill: light-dark(
-    var(--dsw-static-neutral-bluish-50),
-    var(--dsw-static-neutral-bluish-900)
+  --dsw-alias-state-business-primary: light-dark(
+    var(--dsw-static-deepseek-500),
+    var(--dsw-static-deepseek-400)
   );
-  --dsw-specific-selector: light-dark(
-    var(--dsw-static-neutral-bluish-60),
-    var(--dsw-static-neutral-bluish-800)
+  --dsw-alias-state-business-tertiary: light-dark(
+    var(--dsw-static-deepseek-100),
+    var(--dsw-static-deepseek-800)
   );
-  --dsw-specific-input-major: light-dark(
-    var(--dsw-static-neutral-bluish-00),
-    var(--dsw-static-neutral-bluish-850)
+  --dsw-alias-state-error-primary: light-dark(
+    var(--dsw-static-red-600),
+    var(--dsw-static-red-400)
   );
-  --dsw-specific-menu: light-dark(
-    var(--dsw-static-neutral-bluish-00),
-    var(--dsw-static-neutral-bluish-800)
+  --dsw-alias-state-error-secondary: var(--dsw-static-red-400);
+  --dsw-alias-state-success-primary: var(--dsw-static-green-500);
+  --dsw-alias-state-success-secondary: var(--dsw-static-green-400);
+  --dsw-alias-state-success-tertiary: light-dark(
+    var(--dsw-static-green-100),
+    var(--dsw-static-green-900)
   );
-  --dsw-specific-tip: light-dark(
-    var(--dsw-static-neutral-bluish-60),
-    var(--dsw-static-neutral-bluish-800)
+  --dsw-alias-state-warn-label: var(--dsw-static-amber-600);
+  --dsw-alias-state-warn-primary: var(--dsw-static-amber-500);
+  --dsw-alias-state-warn-secondary: var(--dsw-static-amber-400);
+  --dsw-alias-state-warn-tertiary: light-dark(
+    var(--dsw-static-amber-100),
+    var(--dsw-static-amber-900)
   );
-  --dsw-specific-sidebar-nav-item-hover: light-dark(
-    var(--dsw-static-neutral-bluish-75),
-    var(--dsw-static-neutral-bluish-850)
-  );
-  --dsw-specific-sidebar-nav-item-active: light-dark(
-    var(--dsw-static-neutral-bluish-100),
+  --dsw-alias-toast-bg: light-dark(
+    var(--dsw-static-neutral-bluish-800),
     var(--dsw-static-neutral-bluish-750)
   );
-  --dsw-specific-sidebar-nav-item-active-accent: light-dark(
-    var(--dsw-static-deepseek-100),
-    var(--dsw-static-neutral-bluish-800)
+  --dsw-alias-tooltip-bg: light-dark(
+    var(--dsw-static-neutral-bluish-850),
+    var(--dsw-static-neutral-bluish-750)
+  );
+
+  /* ── ③ 场景令牌(dsh `--dsw-specific-*`)───────────────────────── */
+
+  --dsw-specific-bubble-highlight: light-dark(
+    var(--dsw-static-deepseek-200),
+    var(--dsw-static-neutral-bluish-750)
   );
   --dsw-specific-bubble: light-dark(
     var(--dsw-static-deepseek-50),
     var(--dsw-static-neutral-bluish-850)
   );
-  --dsw-specific-bubble-highlight: light-dark(
-    var(--dsw-static-deepseek-200),
+  --dsw-specific-input-major: light-dark(
+    var(--dsw-static-neutral-bluish-00),
+    var(--dsw-static-neutral-bluish-850)
+  );
+  --dsw-specific-login-input: light-dark(
+    var(--dsw-static-neutral-bluish-50),
+    var(--dsw-static-neutral-bluish-900)
+  );
+  --dsw-specific-menu: var(--dsw-alias-bg-layer-3);
+  --dsw-specific-selector: light-dark(
+    var(--dsw-static-neutral-bluish-60),
+    var(--dsw-static-neutral-bluish-800)
+  );
+  --dsw-specific-sidebar-fill: light-dark(
+    var(--dsw-static-neutral-bluish-50),
+    var(--dsw-static-neutral-bluish-900)
+  );
+  --dsw-specific-sidebar-nav-item-active-accent: light-dark(
+    var(--dsw-static-deepseek-100),
+    var(--dsw-static-neutral-bluish-800)
+  );
+  --dsw-specific-sidebar-nav-item-active: light-dark(
+    var(--dsw-static-neutral-bluish-100),
     var(--dsw-static-neutral-bluish-750)
+  );
+  --dsw-specific-sidebar-nav-item-hover: light-dark(
+    var(--dsw-static-neutral-bluish-75),
+    var(--dsw-static-neutral-bluish-850)
+  );
+  --dsw-specific-tip: light-dark(
+    var(--dsw-static-neutral-bluish-60),
+    var(--dsw-static-neutral-bluish-800)
+  );
+
+
+  /* ── qi 自有的语义键(dsh **没有**对应的键)───────────────────────
+     `label-inverse` —— 填充底上的反色墨。dsh 在 `InputBar.module.css` 里直接写
+     `color: #fff`(注释明说“静态白、不是前景 token,两个主题下都白”)。qi 的
+     色值纪律不允许 app.css 出现具体色值,所以落成一个语义别名:值与 dsh 的
+     `#fff` 等价,不走 `light-dark`。
+     它同时修掉一个既有缺陷:app.css 原来引用的是 `--dsw-static-neutral-00`,
+     这个 token **不存在**(只有 `-bluish-00`),于是发送箭头的颜色从未解析,
+     一直在继承父级墨色。已由 Chrome 实测确认(现为 `rgb(255,255,255)`)。
+
+     下面这 6 个 —— qi 给状态色起的名字。dsh 那边叫 `state-success-primary` /
+     `state-warn-primary` / `state-error-primary` 等,但**取值并不一一相等**
+     (qi 这套浅/深各自配一对,dsh 有些键两主题同值),`-bg` 那两个在 dsh 里更是
+     根本没有对应物,所以不能简单等价替换。
+     它们只被消息流/工具行/轨迹用到,**不在首页路径上**;统一到 dsh 的命名与取值
+     需要同时改 app.css 的十几处使用点,是独立的一步,尚未做。
+     `check-dsh-tokens.mjs` 会把这 7 个键列为"qi 自有令牌"如实报出,不作为失败。 */
+  --dsw-alias-label-inverse: var(--dsw-static-neutral-bluish-00);
+  --dsw-alias-state-success: light-dark(
+    var(--dsw-static-green-500),
+    var(--dsw-static-green-400)
+  );
+  --dsw-alias-state-success-bg: light-dark(
+    var(--dsw-static-green-100),
+    var(--dsw-static-green-900)
+  );
+  --dsw-alias-state-warning: light-dark(
+    var(--dsw-static-amber-500),
+    var(--dsw-static-amber-400)
+  );
+  --dsw-alias-state-warning-bg: light-dark(
+    var(--dsw-static-amber-100),
+    var(--dsw-static-amber-900)
+  );
+  --dsw-alias-state-error: light-dark(
+    var(--dsw-static-red-500),
+    var(--dsw-static-red-400)
+  );
+  --dsw-alias-state-error-bg: light-dark(
+    var(--dsw-static-red-100),
+    var(--dsw-static-red-900)
   );
 
   /* ── 形状与阴影(dsh 全局 corner-shape + 三档阴影)─────────────── */
@@ -315,17 +511,17 @@
   --dsw-shadow-lv2: 0 4px 12px 0 #00000005, 0 2px 8px 0 #0000000a;
   --dsw-shadow-lv3:
     0 0 1px 0 #00000033, 0 0 4px 0 #00000005, 0 12px 32px 0 #00000014;
-  /* dsh 的卡片细边**不是 border**,而是用 box-shadow 画的 0.5px 环(Retina 上才真是半像素):
-     `--dsw-elevation-stroke: 0 0 0 .5px var(--dsw-elevation-stroke-color)` */
-  --dsw-elevation-stroke: 0 0 0 0.5px var(--dsw-elevation-stroke-color);
-  --dsw-elevation-soft:
-    var(--dsw-elevation-stroke), 0 4px 16px 0 #00000008, 0 0 24px 0 #00000008;
+  /* 阴影**只在这里给默认描边色**,三档 elevation 本身逐元素声明(见文件末尾
+     “elevation 逐元素声明”),原因写在那一节。 */
   --dsw-elevation-stroke-color: var(--dsw-alias-border-l4);
 
   /* ── 字体阶梯(dsh `--dsw-font-*`)────────────────────────────── */
+  /* dsh `base.css` 原样(含尾部的 'Helvetica Neue', Helvetica, Arial ——
+     之前抄漏了这三个,非 macOS 上回落顺序会与 dsh 不同)。 */
   --dsw-font-family:
     -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial,
+    sans-serif;
   --dsw-font-mono:
     ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 
@@ -366,4 +562,29 @@
   --dsh-hero-input-min-height: 52px;
   --dsh-scrollbar-width: 8px;
   --dsh-content-font-size: 14px;
+
+  /* 代码字体:dsh 的 `--ds-font-family-code` 原样。刻意**不复用** `--dsw-font-mono`
+     ——dsh 的两套栈不同(这一套没有裸 `monospace` 兜底,否则 Windows 中文回落到宋体)。 */
+  --ds-font-family-code:
+    "SF Mono", "JetBrains Mono", "Fira Code", Consolas, "Liberation Mono",
+    Menlo, Courier, "PingFang SC", "Microsoft YaHei";
+}
+
+/* ── elevation 逐元素声明(dsh `gradient-shadow-text.css` 的原样做法)─────
+   dsh 把三档 elevation 声明在 `body, body *` 上,**不是**只声明一次在 `:root`。
+   原因是 var() 在声明元素上就替换完了:继承下去的字符串里已经烘焙好
+   `--dsw-elevation-stroke-color` 当时的值,组件再重绑这个变量不会生效。
+   例:输入卡片要 `border-l2`(比菜单的 l1 重一档),若 elevation 只在 :root 声明,
+   卡片实际吃到的是 :root 的 `border-l4` —— 描边静默偏浅。qi 用 `*` 覆盖
+   `body *`(qi 没有 dsh 那层 body 依赖)。 */
+*,
+*::before,
+*::after {
+  --dsw-elevation-stroke: 0 0 0 0.5px var(--dsw-elevation-stroke-color);
+  --dsw-elevation-panel:
+    var(--dsw-elevation-stroke), 0 3px 8px 0 #00000008, 0 0 16px 0 #00000005;
+  --dsw-elevation-prominent:
+    var(--dsw-elevation-stroke), 0 3px 8px 0 #0000000a, 0 0 20px 0 #0000000d;
+  --dsw-elevation-soft:
+    var(--dsw-elevation-stroke), 0 4px 16px 0 #00000008, 0 0 24px 0 #00000008;
 }

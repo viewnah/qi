@@ -8,11 +8,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 import shutil
+import signal
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -235,16 +239,15 @@ def root_callback(
     if thinking is not None and thinking.strip().lower() not in THINKING_LEVELS:
         console.print(f"[red]未知思考级别: {thinking}(可选 {"/".join(THINKING_LEVELS)}）[/red]")
         raise typer.Exit(code=2)
-    from .runtime import HEADLESS_MAX_TURNS, QiRuntime
-    from .runner import stop_after_turns
+    from .runtime import QiRuntime
     from .config import ConfigError as _CfgErr
     from .loader import LoadError as _LoadErr
     try:
-        # 轮次政策:headless 才给上限(对齐 pi 的 shouldStopAfterTurn 谓词);
-        # 交互式不传 = 不限轮次,靠 escape / 客户端断开中断
+        # 轮次:qi 自己**不设上限**(对齐 pi —— 核心循环与 print 模式都没有 maxTurns)。
+        # `RunnerSettings.stop_after` 是留给嵌入方的钩子(qi 生产代码不用它,
+        # 与 pi 定义了却从不实现 `shouldStopAfterTurn` 同形)。
         runtime = QiRuntime(skills_enabled=not no_skills,
                             thinking_level=thinking,
-                            stop_after=stop_after_turns(HEADLESS_MAX_TURNS),
                             extra_skill_paths=[Path(p) for p in (skill or [])])
     except _LoadErr as exc:
         console.print(f"[red]装载失败:[/red] {escape(str(exc))}")
@@ -304,11 +307,78 @@ def root_callback(
             elif verbose and ev.kind == "opening":
                 err_console.print(f"[bold]{escape(ev.text)}[/bold]")
 
-    asyncio.run(_run())
+    _run_headless(_run())
     # provider 拒了 reasoning_effort:已经自动降级重试,但要告知(否则用户以为级别生效了)
     client = getattr(runtime, "llm_exec", None)
     if isinstance(client, ThinkingLLMClient) and client.reasoning_dropped:
         err_console.print("[yellow]提示:该 provider 不接受 reasoning_effort,已按不思考运行[/yellow]")
+
+
+def _run_headless(coro) -> None:
+    """无头执行:装退出信号处理器,并把 Ctrl-C 收敛成 130。
+
+    Ctrl-C 不经过信号处理器(asyncio 自己把主任务取消掉,子进程由 `run_shell` 的
+    finally 回收),但 Python 默认会带上 traceback 并以 1 退出 —— 惯例是 130。
+    抽成函数是为了可测(见 tests/test_interrupt.py)。
+    """
+    restore = _install_exit_signal_handlers()
+    try:
+        asyncio.run(coro)
+    except KeyboardInterrupt:
+        raise typer.Exit(code=_exit_code_for(signal.SIGINT)) from None
+    finally:
+        restore()
+
+
+# ── 无头运行的退出信号(对齐 pi 的 print 模式)──────────────────
+#
+# pi 在 print 模式下注册 SIGTERM /(非 Windows)SIGHUP:收到就 killTrackedDetachedChildren()
+# 再以 143 / 129 退出。qi 少了轮次上限之后,这一层就是“无头被卡住”的主要兔底;
+# 另外它补的是一条没有 Python 异常可依托的路径 —— 进程被 kill,清理代码不会自然跑到。
+#
+# SIGINT 不在这里:Python 默认转 KeyboardInterrupt → asyncio 取消主任务 →
+# `run_shell` 的 finally 回收子进程组(见 tools/shell.py)。
+
+_EXIT_CODE_BY_SIGNAL: dict[int, int] = {signal.SIGTERM: 143, signal.SIGHUP: 129}
+
+
+def _exit_code_for(signum: int) -> int:
+    """128 + 信号号(对齐 pi:143 = 128+15、129 = 128+1)。
+
+    `signum` 已经是 int(信号处理器收到的也是 `signal.Signals`,IntEnum 子类),
+    所以直接相加 —— 不需要 `int()` 包一层。
+    """
+    return _EXIT_CODE_BY_SIGNAL.get(signum, 128 + signum)
+
+
+def _install_exit_signal_handlers() -> Callable[[], None]:
+    """装 SIGTERM/SIGHUP 处理器:先回收在跑的子进程组,再按信号码退出。
+
+    返回“恢复原处理器”的回调(CLI 跑完就走,但测试/嵌入方需要干净收尾)。
+    """
+    from .tools.shell import kill_live_children
+
+    signals = [signal.SIGTERM]
+    if hasattr(signal, "SIGHUP"):        # Windows 没有 SIGHUP
+        signals.append(signal.SIGHUP)
+    previous: dict[int, Any] = {}
+
+    def handler(signum: int, _frame: object) -> None:
+        kill_live_children()             # 同步:信号处理器里不能 await
+        raise SystemExit(_exit_code_for(signum))
+
+    for sig in signals:
+        try:
+            previous[sig] = signal.signal(sig, handler)
+        except (ValueError, OSError):    # 非主线程/平台不支持 → 跳过于净
+            pass
+
+    def restore() -> None:
+        for sig, old in previous.items():
+            with contextlib.suppress(ValueError, OSError, TypeError):
+                signal.signal(sig, old)
+
+    return restore
 
 
 def _cmd_export(session_id: str, out: Path) -> None:

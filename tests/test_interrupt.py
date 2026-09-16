@@ -15,7 +15,9 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -27,7 +29,7 @@ from qi_agent.loader import load_agent_dir  # noqa: E402
 from qi_agent.models import ToolOutcome  # noqa: E402
 from qi_agent.registry import ToolCatalog  # noqa: E402
 from qi_agent.runner import AgentRunner, RunnerSettings, stop_after_turns  # noqa: E402
-from qi_agent.runtime import HEADLESS_MAX_TURNS, QiRuntime, RuntimeConfig  # noqa: E402
+from qi_agent.runtime import QiRuntime, RuntimeConfig  # noqa: E402
 from qi_agent.session import SessionStore  # noqa: E402
 from qi_agent.tools import ToolContext, register_builtin_tools  # noqa: E402
 
@@ -135,13 +137,30 @@ async def test_stop_after_predicate_reports_limit(tmp_path):
 
 
 def test_turn_policy_shape():
-    """runner 里不再有任何"上限数字":轮次是嵌入方的谓词(默认无);headless 用工厂。"""
+    """runner 里不再有任何"上限数字":轮次是嵌入方的谓词,默认无,qi 自己不设。"""
     assert RunnerSettings().stop_after is None            # 默认不限
     assert not hasattr(RunnerSettings(), "max_turns")     # 数字字段已彻底移除
     assert RuntimeConfig(workdir=Path(".")).timeout_s == 600.0
     assert not hasattr(RuntimeConfig(workdir=Path(".")), "max_turns")
-    assert stop_after_turns(HEADLESS_MAX_TURNS)(HEADLESS_MAX_TURNS - 1) is False
-    assert stop_after_turns(HEADLESS_MAX_TURNS)(HEADLESS_MAX_TURNS) is True
+    assert stop_after_turns(3)(2) is False
+    assert stop_after_turns(3)(3) is True
+
+
+def test_qi_itself_imposes_no_turn_cap():
+    """对齐 pi:qi 自己的运行时默认**不设**轮次上限(钩子留着,但没人传)。
+
+    pi 同形:`shouldStopAfterTurn` 定义在 pi-agent-core,pi-coding-agent 从不实现它。
+    """
+    import inspect
+
+    assert inspect.signature(QiRuntime.__init__).parameters["stop_after"].default is None
+    # 生产代码里不该出现“谁给 qi 自己安了个上限”的调用
+    import qi_agent.cli as cli_mod
+    import qi_agent.runtime as runtime_mod
+
+    for module in (cli_mod, runtime_mod):
+        source = inspect.getsource(module)
+        assert "stop_after=stop_after_turns(" not in source, module.__name__
 
 
 # ── 2. 协作式中断 ─────────────────────────────────────────
@@ -266,7 +285,148 @@ async def test_runtime_persists_partial_text_on_hard_cancel(tmp_path, monkeypatc
     assert "半截" in saved[-1]["content"]
 
 
-# ── 4. 工具层响应中断 ─────────────────────────────────────
+# ── 4. 工具层响应中断 ────────────────────────────────────
+
+def _no_orphan(pattern: str) -> None:
+    """该进程应该已经不在(用独特命令名避免和别的测试撞上)。"""
+    import subprocess
+
+    found = subprocess.run(["pgrep", "-f", pattern], capture_output=True, text=True).stdout.strip()
+    assert not found, f"逃逸的进程: {found}"
+
+
+@pytest.mark.asyncio
+async def test_task_cancel_reaps_child(tmp_path):
+    """**SIGINT(Ctrl-C)那条路径也不能留孤儿**。
+
+    Ctrl-C 不经过协作信号:Python 默认转 KeyboardInterrupt → asyncio 取消主任务 →
+    `run_shell` 的 `await` 直接被 CancelledError 打断。旧实现的 finally 只取消 watcher,
+    子进程(独立进程组)就没人管了。
+    """
+    from qi_agent.tools import _bash
+
+    marker = "sleep 31337"
+    ctx = ToolContext(agent_name="t", workdir=tmp_path)
+    task = asyncio.ensure_future(
+        _bash({"command": f"{marker} & echo 起; wait", "timeout": 60}, ctx))
+    await asyncio.sleep(0.3)                       # 命令已经跑起来
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0.2)
+    _no_orphan(marker)
+
+
+@pytest.mark.asyncio
+async def test_kill_live_children_reaps_from_outside(tmp_path):
+    """信号处理器要能**同步**回收在跑的命令(那里不能 await)。"""
+    from qi_agent.tools import _bash
+    from qi_agent.tools.shell import _LIVE_CHILDREN, kill_live_children
+
+    marker = "sleep 31338"
+    ctx = ToolContext(agent_name="t", workdir=tmp_path)
+    task = asyncio.ensure_future(
+        _bash({"command": f"{marker} & echo 起; wait", "timeout": 60}, ctx))
+    await asyncio.sleep(0.3)
+    assert _LIVE_CHILDREN, "在跑的命令应该被登记(否则信号来了找不到它)"
+
+    kill_live_children()
+    outcome = await asyncio.wait_for(task, timeout=5)      # 被杀 → 很快返回
+    assert outcome.exit_code not in (0, None)
+    await asyncio.sleep(0.2)
+    _no_orphan(marker)
+    assert not _LIVE_CHILDREN, "杀完要除名,否则 pid 复用时会误杀"
+
+
+# ── 5. 退出信号(对齐 pi 的 print 模式)────────────────────
+
+def test_exit_code_matches_pi():
+    """128 + 信号号:pi 的 print 模式用 143(SIGTERM)/129(SIGHUP)。"""
+    import signal as signal_mod
+
+    from qi_agent.cli import _exit_code_for
+
+    assert _exit_code_for(signal_mod.SIGTERM) == 143
+    assert _exit_code_for(signal_mod.SIGHUP) == 129
+    assert _exit_code_for(signal_mod.SIGUSR1) == 128 + signal_mod.SIGUSR1
+
+
+def _installed_handler(sig: int) -> Callable[[int, Any], None]:
+    """取当前信号处理器并断言可调用(typeshed 的返回是 `Handlers | Callable | None`)。"""
+    import signal as signal_mod
+    from typing import cast
+
+    handler = signal_mod.getsignal(sig)
+    assert callable(handler)
+    return cast("Callable[[int, Any], None]", handler)
+
+
+def test_exit_signal_handlers_install_and_restore():
+    """装上 SIGTERM/SIGHUP 处理器,并能恢复原样(测试/嵌入方要干净收尾)。"""
+    import signal as signal_mod
+
+    from qi_agent.cli import _install_exit_signal_handlers
+
+    before = signal_mod.getsignal(signal_mod.SIGTERM)
+    restore = _install_exit_signal_handlers()
+    try:
+        handler = _installed_handler(signal_mod.SIGTERM)
+        assert handler is not before
+        with pytest.raises(SystemExit) as excinfo:
+            handler(signal_mod.SIGTERM, None)                  # 直接当普通函数调用
+        assert excinfo.value.code == 143
+    finally:
+        restore()
+    assert signal_mod.getsignal(signal_mod.SIGTERM) is before
+
+
+def test_run_headless_maps_ctrl_c_to_130():
+    """Ctrl-C:不打 traceback、退出码 130(与 143/129 同属 128+n);信号处理器要恢复。"""
+    import signal as signal_mod
+
+    import typer
+
+    from qi_agent.cli import _run_headless
+
+    before = signal_mod.getsignal(signal_mod.SIGTERM)
+
+    async def boom() -> None:
+        raise KeyboardInterrupt
+
+    with pytest.raises(typer.Exit) as excinfo:
+        _run_headless(boom())
+    assert excinfo.value.exit_code == 130
+    assert signal_mod.getsignal(signal_mod.SIGTERM) is before       # finally 里恢复
+
+
+@pytest.mark.asyncio
+async def test_sigterm_handler_reaps_running_command(tmp_path):
+    """端到端:SIGTERM 处理器真的会把在跑的命令组带走(无头被 kill 时的兜底)。"""
+    import signal as signal_mod
+
+    from qi_agent.cli import _install_exit_signal_handlers
+    from qi_agent.tools import _bash
+    from qi_agent.tools.shell import _LIVE_CHILDREN
+
+    marker = "sleep 31339"
+    ctx = ToolContext(agent_name="t", workdir=tmp_path)
+    task = asyncio.ensure_future(
+        _bash({"command": f"{marker} & echo 起; wait", "timeout": 60}, ctx))
+    await asyncio.sleep(0.3)
+    assert _LIVE_CHILDREN
+
+    restore = _install_exit_signal_handlers()
+    handler = _installed_handler(signal_mod.SIGTERM)
+    try:
+        with pytest.raises(SystemExit):
+            handler(signal_mod.SIGTERM, None)
+    finally:
+        restore()
+
+    await asyncio.wait_for(task, timeout=5)
+    await asyncio.sleep(0.2)
+    _no_orphan(marker)
+
 
 @pytest.mark.asyncio
 async def test_bash_abort_reaps_process_group(tmp_path):

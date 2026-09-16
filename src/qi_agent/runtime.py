@@ -55,11 +55,6 @@ class RuntimeConfig:
     confidence_min: float = 0.6
 
 
-#: headless 的轮次上限(交互式不传 stop_after,不限)。交互式有人盯着、随时能不能中断;
-#: headless 没人盯,没有上限就可能一直烧。
-HEADLESS_MAX_TURNS = 60
-
-
 # 落盘工具结果的字符上限。tools/ 内置工具已自行截断(200 行 / 50k 字符),
 # 但插件工具可能不截断——落盘前再过一道上限,避免单个工具撑破会话文件。
 MAX_TOOL_ENTRY_CHARS = 8000
@@ -89,8 +84,8 @@ class QiRuntime:
         self.cfg, self.config_files = load_config(self.cwd)
         self.settings, self.settings_files = load_settings(self.cwd)
         self.runtime_cfg = runtime_cfg or RuntimeConfig(workdir=self.cwd)
-        # 轮次政策由嵌入方给(对齐 pi 的 shouldStopAfterTurn):None = 不限(headless 传
-        # stop_after_turns(HEADLESS_MAX_TURNS);交互式不传,靠 escape 中断)
+        # 轮次政策由嵌入方给(对齐 pi 的 shouldStopAfterTurn):None = 不限
+        # (qi 自己不设上限 —— 钩子留着但生产代码不传,同 pi 定义了却不实现它)
         self.stop_after = stop_after
         self.workdir = self.runtime_cfg.workdir
         # 基座:项目 .qi/SYSTEM.md > ~/.qi/agent/SYSTEM.md;都没有则空串

@@ -151,14 +151,14 @@ qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt
 
 ### 轮次与中断(无头 vs 交互式)
 
-| | 轮次上限 | 中断方式 |
+| | 轮次上限 | 中断 / 兔底 |
 | --- | --- | --- |
 | 交互式(TUI / Web) | **无** —— runner 里根本没有“最多几轮”的概念(对齐 pi) | TUI `escape`、Web 客户端断开(ASGI 取消) |
-| 无头(`-p` / `--mode json`) | 嵌入方给谓词 `stop_after_turns(HEADLESS_MAX_TURNS = 60)`(没人盯着、没人能按 escape,防跑飞) | `SIGINT`(`asyncio.run` 取消 → 半截回答仍会落盘) |
+| 无头(`-p` / `--mode json`) | **也无** —— pi 的 print 模式同样不限轮次 | 退出码都是 `128+n`:`SIGTERM`/`SIGHUP` → 回收在跑的子进程组 + `exit(143/129)`(对齐 pi 的 `killTrackedDetachedChildren`);`SIGINT`(Ctrl-C)→ asyncio 取消主任务 → `run_shell` 的 finally 回收 + `exit(130)`,不打 traceback;两条路径的半截回答都会落盘 |
 
-谓词到点会输出一条 `error` 事件「达到轮次上限 N,已停止」。交互式靠**自动压缩**管住上下文体积。
-形态与 pi 一致:`shouldStopAfterTurn` 是个**谓词钩子**(每轮结束问一次嵌入方),不是 `maxTurns` 数字;
-pi-coding-agent 自己从不实现它。
+轮次钩子 `RunnerSettings.stop_after` 与 pi 的 `shouldStopAfterTurn` 同形(每轮结束问一次嵌入方),
+但 **qi 自己从不传它** —— pi-coding-agent 也从不实现那个钩子。“无头会不会跑飞”靠的是上面的信号 + 自动压缩,
+而不是一个拍脑袋的数字。
 
 ## 9. 二期
 

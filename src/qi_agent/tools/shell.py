@@ -142,6 +142,18 @@ def _kill_tree(proc: asyncio.subprocess.Process) -> None:
     proc.kill()
 
 
+# 在跑的子进程组(pid → 进程)。信号处理器里必须**同步**回收,所以用模块级登记表
+# (pi 的 `trackDetachedChildPids` 同形);asyncio 单线程,普通 dict 就够,不需要锁。
+_LIVE_CHILDREN: dict[int, asyncio.subprocess.Process] = {}
+
+
+def kill_live_children() -> None:
+    """杀掉当前所有在跑的子进程组 —— 供**同步**调用者用(信号处理器不能 await)。"""
+    for pid, proc in list(_LIVE_CHILDREN.items()):
+        _LIVE_CHILDREN.pop(pid, None)      # 先除名:pid 可能被复用,别误杀别人
+        _kill_tree(proc)
+
+
 async def _teardown(proc: asyncio.subprocess.Process, comm: asyncio.Future) -> None:
     """超时/中断后的回收:先停读取、再按进程组杀、最后 wait。
 
@@ -166,6 +178,9 @@ async def run_shell(config: ShellConfig, command: str, *, cwd: Path,
 
     `abort` 置位时不等命令自己退出:立即按**进程组**回收并返回 `aborted=True`。
     没有这一步,一个 `sleep 300` 就会把 escape 拖成好几分钟的“没反应”。
+
+    异常/被取消时也**不会留孤儿**:收尾在 `finally` 里做(tools 的调用者被
+    `Task.cancel()`、SIGINT 让 asyncio 取消主任务,都会走到这里)。
     """
     if config.command_via_stdin:
         argv = [config.shell, *config.args]
@@ -192,6 +207,7 @@ async def run_shell(config: ShellConfig, command: str, *, cwd: Path,
             await proc.stdin.drain()
         proc.stdin.close()
 
+    _LIVE_CHILDREN[proc.pid] = proc
     comm = asyncio.ensure_future(proc.communicate())
     watch = asyncio.ensure_future(abort.wait()) if abort is not None else None
     try:
@@ -199,13 +215,17 @@ async def run_shell(config: ShellConfig, command: str, *, cwd: Path,
         done, _pending = await asyncio.wait(waiters, timeout=timeout,
                                            return_when=asyncio.FIRST_COMPLETED)
         if not done:                                    # 超时:拿不到退出码
-            await _teardown(proc, comm)
             return ShellResult(text="", exit_code=None, timed_out=True)
         if watch is not None and watch in done and comm not in done:
-            await _teardown(proc, comm)                 # 中断:同样整组回收
-            return ShellResult(text="", exit_code=None, aborted=True)
+            return ShellResult(text="", exit_code=None, aborted=True)   # 中断
         out, _ = comm.result()
     finally:
+        # 还在跑 = 超时 / 中断 / **被取消** / 异常。不能只处理前两者:调用方的任务被
+        # cancel(escape 强制终止、Ctrl-C 让 asyncio 取消主任务)时不会有人回来杀它。
+        # `_kill_tree` 是同步的,所以即使下面的 await 又被取消,进程也已经死了。
+        if proc.returncode is None:
+            await _teardown(proc, comm)
+        _LIVE_CHILDREN.pop(proc.pid, None)
         if watch is not None:
             watch.cancel()
             with contextlib.suppress(Exception, asyncio.CancelledError):

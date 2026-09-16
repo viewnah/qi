@@ -24,6 +24,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..abort import AbortSignal
+
 # PowerShell 调用参数(照搬 pi):不加载 profile、非交互、绕过执行策略
 POWERSHELL_ARGS = ("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command")
 
@@ -47,6 +49,7 @@ class ShellResult:
     text: str
     exit_code: int | None = None
     timed_out: bool = False
+    aborted: bool = False      # 用户中断(进程组已回收),与超时分开报
 
 
 def is_windows() -> bool:
@@ -139,12 +142,30 @@ def _kill_tree(proc: asyncio.subprocess.Process) -> None:
     proc.kill()
 
 
+async def _teardown(proc: asyncio.subprocess.Process, comm: asyncio.Future) -> None:
+    """超时/中断后的回收:先停读取、再按进程组杀、最后 wait。
+
+    顺序同旧实现(取消 communicate → kill → wait):只 kill 不 wait 的话,transport
+    会拖到事件循环关闭后才被 GC,触发 "Event loop is closed" 的 unraisable 异常。
+    """
+    if not comm.done():
+        comm.cancel()
+    with contextlib.suppress(Exception, asyncio.CancelledError):
+        await comm
+    _kill_tree(proc)
+    with contextlib.suppress(Exception):
+        await proc.wait()
+
+
 async def run_shell(config: ShellConfig, command: str, *, cwd: Path,
-                    timeout: float) -> ShellResult:
+                    timeout: float, abort: AbortSignal | None = None) -> ShellResult:
     """执行一条命令,返回 `(输出文本, 退出码)`。
 
     命令以**参数**或 **stdin** 交给解析出的 shell 二进制,不走 `shell=True`,
     所以执行器不会随平台漂移到 cmd.exe。stdin 用 DEVNULL:命令读不到 TUI 的按键。
+
+    `abort` 置位时不等命令自己退出:立即按**进程组**回收并返回 `aborted=True`。
+    没有这一步,一个 `sleep 300` 就会把 escape 拖成好几分钟的“没反应”。
     """
     if config.command_via_stdin:
         argv = [config.shell, *config.args]
@@ -171,15 +192,23 @@ async def run_shell(config: ShellConfig, command: str, *, cwd: Path,
             await proc.stdin.drain()
         proc.stdin.close()
 
+    comm = asyncio.ensure_future(proc.communicate())
+    watch = asyncio.ensure_future(abort.wait()) if abort is not None else None
     try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        _kill_tree(proc)
-        # 必须回收:只 kill 不 wait 的话,transport 会拖到事件循环关闭后才被 GC,
-        # 触发 "Event loop is closed" 的 unraisable 异常(测试里会报资源警告)。
-        with contextlib.suppress(Exception):
-            await proc.wait()
-        # 超时拿不到退出码:由调用方用 error 字段给出机器可读原因
-        return ShellResult(text="", exit_code=None, timed_out=True)
+        waiters = {comm} if watch is None else {comm, watch}
+        done, _pending = await asyncio.wait(waiters, timeout=timeout,
+                                           return_when=asyncio.FIRST_COMPLETED)
+        if not done:                                    # 超时:拿不到退出码
+            await _teardown(proc, comm)
+            return ShellResult(text="", exit_code=None, timed_out=True)
+        if watch is not None and watch in done and comm not in done:
+            await _teardown(proc, comm)                 # 中断:同样整组回收
+            return ShellResult(text="", exit_code=None, aborted=True)
+        out, _ = comm.result()
+    finally:
+        if watch is not None:
+            watch.cancel()
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await watch
 
     return ShellResult(text=out.decode("utf-8", errors="replace"), exit_code=proc.returncode)

@@ -45,6 +45,7 @@ from textual.widgets import Input, OptionList, SelectionList, Static, TextArea
 from textual.widgets.option_list import Option
 from textual.worker import Worker, WorkerState
 
+from .abort import AbortSignal
 from .auth import AuthStore
 from .cli import _load_registry
 from .config import ConfigError, ResolvedModel, resolve_default_model, resolve_model
@@ -349,6 +350,10 @@ SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇",
 """pi 的 loader 帧(pi-tui `loader.js`)。"""
 
 SPINNER_INTERVAL = 0.08
+
+#: escape 的协作式中断宽限期:工具若不理中断信号(插件/长命令),到点就强制终止。
+#: 有了它,escape 永远不会变成“死键”——这是相对 pi(纯协作)多出来的一道兜底。
+INTERRUPT_GRACE_S = 3.0
 """pi 的 loader 间隔 80ms。"""
 
 FOOTER_LINES = 3
@@ -1598,6 +1603,7 @@ class QiTui(App):
         self._working = False
         self._frame = 0
         self._frame_timer = None
+        self._abort: AbortSignal | None = None   # 当前回合的中断信号(escape 用)
         self._expanded = False
         self._live: AssistantMessage | None = None
         self._tool_blocks: list[tuple[ToolBlock, str, str]] = []  # (块, 工具名, 输出)
@@ -1960,9 +1966,14 @@ class QiTui(App):
         runtime, session = self._rt, self._session
         self._live = None
         renderer = self._renderer
+        # 中断信号按**回合**建:工具层靠它杀进程,收尾后清掉(不会串到下个回合)
+        abort = AbortSignal()
+        self._abort = abort
         self._set_working(True)
+        interrupted = False
         try:
-            async for ev in runtime.stream(text, session, agent_override=override):
+            async for ev in runtime.stream(text, session, agent_override=override,
+                                           abort=abort):
                 if ev.kind == "dispatch":
                     self._shown_name = str(ev.data.get("display_name") or ev.agent or "?")
                     self._append(Static(renderer.dispatch_line(ev.agent, ev.data), classes="msg"))
@@ -2038,11 +2049,16 @@ class QiTui(App):
             # 往上抛 = Textual 按 exit_on_error 直接退出 TUI,用户连再试一次的机会都没有。
             self._note(f"回合失败:{type(exc).__name__}: {exc}", "error")
         finally:
+            interrupted = abort.aborted
+            if self._abort is abort:
+                self._abort = None
             self._set_working(False)
             self._live = None
             self._live_thinking = None
             self._report_reasoning_dropped()
             self._scroll_end()
+            if interrupted:
+                self._flash("已中断")
             # 回合结束再抽队列(排队消息不并发跑,避免两个回合互踩同一会话)
             self.call_after_refresh(self._drain_queue)
 
@@ -2432,16 +2448,32 @@ class QiTui(App):
         self._flash(f"思考级别: {self._thinking_level}{notice}")
 
     def action_interrupt(self) -> None:
-        """escape:中断当前回合(对齐 pi 的 app.interrupt)。排队消息退回编辑器。"""
+        """escape:中断当前回合。
+
+        第一次按是**协作式**(对齐 pi 的 app.interrupt):置位信号,runner 走到正常收尾
+        —— 未执行的工具补上“已中断”结果、半截回答照常落盘。宽限期内没收尾(工具不理信号)
+        则强制终止;再按一次也是立即强制。
+        """
         if not self._working:
             return
+        signal = self._abort
+        if signal is not None and not signal.aborted:
+            signal.abort()
+            if self._queue_count():
+                self._restore_queue()
+            self._flash("正在中断…(再按 escape 强制终止)")
+            grace = INTERRUPT_GRACE_S
+            self.set_timer(grace, functools.partial(self._force_cancel, signal))
+            return
+        self._force_cancel(signal)
+
+    def _force_cancel(self, signal: AbortSignal | None) -> None:
+        """兜底硬取消:工具不理会中断信号时用(宽限期到点,或用户再按一次 escape)。"""
+        if self._abort is not signal or not self._working:
+            return                     # 已经收尾,或已经是另一个回合
         self.workers.cancel_all()
         self._set_working(False)
-        self._live = None
-        if self._queue_count():
-            self._restore_queue()
-        else:
-            self._flash("已中断")
+        self._flash("已强制终止")
 
     def action_clear_or_exit(self) -> None:
         """ctrl+c:清空编辑器;连按两次退出 —— 对齐 pi 的 app.clear/app.exit。"""

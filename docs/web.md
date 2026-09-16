@@ -420,6 +420,12 @@ qi web                           # → http://127.0.0.1:30142
 `POST /sessions/{id}/cancel`、`GET /sessions/{id}/events`。取消改由**客户端断开**表达
 (单 POST 之下"流就是这次响应"),所以不需要端点。
 
+取消的**收尾语义**(后端):客户端断开 → ASGI 取消生成器 → `CancelledError`。
+`runtime.stream()` 会先就地把**已流式输出但还没落盘**的助手文本写成 message entry,
+再把 `CancelledError` 抛给 ASGI —— 否则直播里用户已经看过的半截回答在刷新后就消失了
+(直播与回放不一致)。这条路径无法“先收尾再取消”(服务端只观测到取消,不是信号),
+所以 Web 不走 TUI 那条协作式 `AbortSignal`。
+
 > 路由**围绕 session**、不围绕 agent(对比 §3 的草图):分派器可能中途换 agent,
 > 把 run 挂在 agent 上站不住。**只有 `/api/health` 免鉴权**。
 

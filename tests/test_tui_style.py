@@ -7,6 +7,7 @@ footer 真的取到了 pi 调色板里的颜色。像素级对齐由人工比对
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import json
 import sys
@@ -182,7 +183,7 @@ class FakeRuntime:
     async def summarize_branch_for_jump(self, session, source_branch, from_id, target_id):
         return None
 
-    async def stream(self, prompt, session, agent_override=None):
+    async def stream(self, prompt, session, agent_override=None, abort=None):
         PROMPTS.append(prompt)
         yield AgentEvent(kind="dispatch", agent="general", text="qi (router, 0.90)",
                          data={"confidence": 0.9, "source": "router", "agent": "general",
@@ -391,20 +392,39 @@ def _fake_cfg():
     })
 
 
-class SlowRuntime(FakeRuntime):
-    """文本先流式出来,然后卡住 —— 用来测 escape 中断。"""
+async def _blocked_until(gate: asyncio.Event, abort) -> None:
+    """等 gate;给了中断信号时,信号先到就提前返回(替身也要遵守协作式中断契约)。"""
+    waiters = {asyncio.ensure_future(gate.wait())}
+    if abort is not None:
+        waiters.add(asyncio.ensure_future(abort.wait()))
+    _done, pending = await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+    for task in pending:
+        task.cancel()
+        with contextlib.suppress(Exception, asyncio.CancelledError):
+            await task
 
-    async def stream(self, prompt, session, agent_override=None):
+
+class SlowRuntime(FakeRuntime):
+    """文本先流式出来,然后卡住 —— 用来测 escape 中断。
+
+    中断是**协作式**的,所以替身也得听信号:真实 QiRuntime 在流式途中被 abort 时会立刻收尾。
+    没有信号才落到 5s 睡眠(旧行为,给不测中断的用例当“永远跑不完”用)。
+    """
+
+    async def stream(self, prompt, session, agent_override=None, abort=None):
         yield AgentEvent(kind="text_delta", agent="general", text="开始……")
-        await asyncio.sleep(5)
-        yield AgentEvent(kind="assistant_message", agent="general", text="不该到这一步",
-                         data={"step": 1, "tool_calls": []})
+        if abort is None:
+            await asyncio.sleep(5)
+        else:
+            await asyncio.wait_for(abort.wait(), timeout=5)
+        yield AgentEvent(kind="agent_end", agent="general", text="开始……",
+                         data={"aborted": True})
 
 
 class FailingRuntime(FakeRuntime):
     """回合一开就抛 —— 复现 AuthenticationError 把 TUI 带走的那条路径。"""
 
-    async def stream(self, prompt, session, agent_override=None):
+    async def stream(self, prompt, session, agent_override=None, abort=None):
         raise RuntimeError("AuthenticationError: Invalid 'Authorization' header or token")
         yield AgentEvent(kind="agent_end")          # pragma: no cover - 只为成为异步生成器
 
@@ -1139,14 +1159,21 @@ async def test_editor_border_color_tracks_bash_mode(tmp_path, monkeypatch):
 
 
 class BlockingRuntime(FakeRuntime):
-    """回合卡在 gate 上 —— 让"回合进行中"的断言完全可控(不靠 sleep 抢时间)。"""
+    """回合卡在 gate 上 —— 让"回合进行中"的断言完全可控(不靠 sleep 抢时间)。
+
+    escape 走协作式中断,所以 gate 与信号赛跑:谁先到都算数。
+    """
 
     gate: asyncio.Event | None = None
 
-    async def stream(self, prompt, session, agent_override=None):
+    async def stream(self, prompt, session, agent_override=None, abort=None):
         PROMPTS.append(prompt)
         if BlockingRuntime.gate is not None:
-            await BlockingRuntime.gate.wait()
+            await _blocked_until(BlockingRuntime.gate, abort)
+        if abort is not None and abort.aborted:
+            yield AgentEvent(kind="agent_end", agent="general", text="",
+                             data={"aborted": True})
+            return
         yield AgentEvent(kind="assistant_message", agent="general", text=f"echo:{prompt}",
                          data={"step": 1, "tool_calls": []})
         yield AgentEvent(kind="agent_end", agent="general", text="", data={"usage": {}})

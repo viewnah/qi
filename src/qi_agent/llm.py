@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast, runtime_checkable
 
@@ -163,8 +163,12 @@ async def chat_as_stream(llm: LLMClient, messages: list[ChatMessage],
 
 async def stream_llm(llm: LLMClient, messages: list[ChatMessage],
                      tools: list[dict] | None = None,
-                     temperature: float | None = None) -> AsyncIterator[LLMDelta]:
-    """统一调用入口:实现方有 `astream()` 就流式,否则用 chat 合成单块。"""
+                     temperature: float | None = None) -> AsyncGenerator[LLMDelta, None]:
+    """统一调用入口:实现方有 `astream()` 就流式,否则用 chat 合成单块。
+
+    返回**异步生成器**(而非裸 AsyncIterator):调用方需要在中断时 `aclose()` 它,
+    把底层请求就地关掉。
+    """
     astream = getattr(llm, "astream", None)
     if astream is None:
         async for delta in chat_as_stream(llm, messages, tools, temperature):

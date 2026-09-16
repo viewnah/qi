@@ -8,10 +8,14 @@ system_prompt 的拼装在 `system_prompt.py`(对齐 pi 的 core/system-prompt.j
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import itertools
 import time
-from dataclasses import dataclass, field
+from collections.abc import AsyncGenerator
+from dataclasses import dataclass, field, replace
 
-from .llm import ChatMessage, LLMClient, ToolCallOut, stream_llm
+from .abort import AbortSignal
+from .llm import ChatMessage, LLMClient, LLMDelta, ToolCallOut, stream_llm
 from .models import TOOL_ERROR, TOOL_OK, AgentEvent, AgentUnit, ToolOutcome
 from .registry import Tool, ToolCatalog, ToolError
 from .system_prompt import build_system_prompt
@@ -19,7 +23,8 @@ from .system_prompt import build_system_prompt
 
 @dataclass
 class RunnerSettings:
-    max_turns: int = 60
+    # 0 = **不限轮次**(交互式默认,对齐 pi);headless 由 runtime 给具体上限
+    max_turns: int = 0
     timeout_s: float = 600.0
 
 
@@ -33,6 +38,47 @@ def _accumulate_usage(total: dict, usage: dict | None) -> None:
     for key, value in (usage or {}).items():
         if isinstance(value, int) and not isinstance(value, bool):
             total[key] = total.get(key, 0) + value
+
+
+async def _iter_until_abort(iterator: AsyncGenerator[LLMDelta, None],
+                           abort: AbortSignal | None) -> AsyncGenerator[LLMDelta, None]:
+    """把 LLM 流包一层:`abort` 置位就**立即**收尾,不等下一个 token。
+
+    只检查“两次 delta 之间”是不够的:流卡住时下一片可能迟到几十秒,escape 会看起来没反应。
+    所以每片都与同一个 watcher 任务赛跑。
+    """
+    if abort is None:
+        async for item in iterator:
+            yield item
+        return
+    it = iterator                                # 异步生成器本身就是迭代器,无需 __aiter__
+    watcher = asyncio.ensure_future(abort.wait())
+    try:
+        while not watcher.done():
+            nxt = asyncio.ensure_future(it.__anext__())
+            done, _pending = await asyncio.wait({nxt, watcher},
+                                                return_when=asyncio.FIRST_COMPLETED)
+            if watcher in done:                     # 中断优先于“再等一片”
+                nxt.cancel()
+                with contextlib.suppress(Exception, asyncio.CancelledError):
+                    await nxt
+                return
+            try:
+                yield nxt.result()
+            except StopAsyncIteration:
+                return
+    finally:
+        watcher.cancel()
+        with contextlib.suppress(Exception, asyncio.CancelledError):
+            await watcher
+        with contextlib.suppress(Exception, asyncio.CancelledError):
+            await it.aclose()
+
+
+def _interrupted_outcome() -> ToolOutcome:
+    """未执行就被中断的工具调用,补一条结果 —— 不让 `tool_calls` 悬空(pi 同款)。"""
+    return ToolOutcome(status=TOOL_ERROR, error="aborted",
+                       result="操作已中断(用户中止本回合)")
 
 
 class AgentRunner:
@@ -49,8 +95,15 @@ class AgentRunner:
     def _tools(self) -> list[Tool]:
         return self.catalog.resolve(self.unit.tools)
 
-    async def run(self, user_input: str, history: list[ChatMessage] | None = None):
-        """执行一轮用户输入,产出事件。history 为会话上下文(system 已在其中则跳过)。"""
+    async def run(self, user_input: str, history: list[ChatMessage] | None = None,
+                  abort: AbortSignal | None = None):
+        """执行一轮用户输入,产出事件。
+
+        `history` 为会话上下文(system 已在其中则跳过)。
+        `abort` 为协作式中断信号(见 abort.py):置位后本轮**干净收尾**——未执行的工具
+        调用补上「已中断」结果、已有文本照常产出、照常发 `agent_end`(data 里带 `aborted`)。
+        `max_turns <= 0` 表示不限轮次(交互式默认,对齐 pi)。
+        """
         tools = self._tools()
         msgs: list[ChatMessage] = []
         if history is None or not any(m.role == "system" for m in history):
@@ -66,15 +119,19 @@ class AgentRunner:
         last_text = ""
         usage_total: dict = {}
         turns_used = 0
+        aborted = False
+        limit = self.settings.max_turns
+        turns = range(limit) if limit > 0 else itertools.count()
         schemas = [t.to_llm_schema() for t in tools] or None
         try:
-            for turn in range(self.settings.max_turns):
+            for turn in turns:
                 acc_text = ""
                 acc_thinking = ""
                 tool_calls: list[ToolCallOut] = []
                 usage: dict = {}
                 async with asyncio.timeout(self.settings.timeout_s):
-                    async for delta in stream_llm(self.llm, msgs, tools=schemas):
+                    async for delta in _iter_until_abort(
+                            stream_llm(self.llm, msgs, tools=schemas), abort):
                         if delta.reasoning:
                             # 思考内容:与回答分开流式(pi 的 thinking block)
                             acc_thinking += delta.reasoning
@@ -90,6 +147,10 @@ class AgentRunner:
                             tool_calls = delta.tool_calls
                             usage = delta.usage
                 turns_used = turn + 1
+                # 流式途中被中断:半截的 tool_calls 参数不可信,一律丢(pi 对截断消息同处理)
+                if abort is not None and abort.aborted:
+                    aborted = True
+                    tool_calls = []
                 _accumulate_usage(usage_total, usage)
                 msgs.append(ChatMessage(role="assistant", content=acc_text,
                                         tool_calls=tool_calls))
@@ -106,7 +167,12 @@ class AgentRunner:
                 for call in tool_calls:
                     yield AgentEvent(kind="tool_start", agent=self.unit.name,
                                      tool=call.name, data={"args": call.args})
-                    outcome = await self._execute(tools, call)
+                    if abort is not None and abort.aborted:
+                        # 剩下的调用一律不跑:补结果而不是默默消失,否则两边记录不一致
+                        aborted = True
+                        outcome = _interrupted_outcome()
+                    else:
+                        outcome = await self._execute(tools, call, abort)
                     # 结构化结果:前端工具卡片靠 status/duration_ms/exit_code 渲染,
                     # 不再解析 text 前缀;text 仍是模型可见的原文(与旧版一致)。
                     yield AgentEvent(kind="tool_end", agent=self.unit.name, tool=call.name,
@@ -121,25 +187,32 @@ class AgentRunner:
                                            "details": outcome.details})
                     msgs.append(ChatMessage(role="tool", content=outcome.result,
                                             tool_call_id=call.id))
-                if turn >= self.settings.max_turns - 1:
+                if aborted:
+                    break
+                if limit > 0 and turn >= limit - 1:
                     yield AgentEvent(kind="error", agent=self.unit.name,
-                                     text=f"达到最大轮次 {self.settings.max_turns},已停止")
-            else:
-                yield AgentEvent(kind="error", agent=self.unit.name, text="达到最大轮次")
+                                     text=f"达到最大轮次 {limit},已停止")
         except asyncio.TimeoutError:
             yield AgentEvent(kind="error", agent=self.unit.name,
                              text=f"执行超时(>{self.settings.timeout_s:.0f}s)")
         if last_text:
             yield AgentEvent(kind="text", agent=self.unit.name, text=last_text)
+        end_data: dict = {"messages": [m.to_dict() for m in msgs[1:]],
+                          "usage": {"turns": turns_used, **usage_total}}
+        if aborted:
+            end_data["aborted"] = True
         yield AgentEvent(kind="agent_end", agent=self.unit.name, text=last_text,
-                         data={"messages": [m.to_dict() for m in msgs[1:]],
-                               "usage": {"turns": turns_used, **usage_total}})
+                         data=end_data)
 
-    async def _execute(self, tools: list[Tool], call: ToolCallOut) -> ToolOutcome:
+    async def _execute(self, tools: list[Tool], call: ToolCallOut,
+                       abort: AbortSignal | None = None) -> ToolOutcome:
         """执行一次工具调用,返回**结构化**结果。
 
         计时在统一入口做,所以所有工具(含插件工具)都自动带上 duration_ms,不必各自上报。
         工具返回 `str`(旧约定)视为 `ok`;返回 `ToolOutcome` 则采用其 status/exit_code。
+
+        `abort` 是**每回合**的信号,而 `tool_ctx` 跨回合复用 —— 所以用副本带上它,
+        不会把一个回合的中断状态串到下一个回合(工具层靠它杀进程:见 tools/shell.py)。
         """
         started = time.perf_counter_ns()
 
@@ -150,8 +223,11 @@ class AgentRunner:
         if tool is None:
             return ToolOutcome(status=TOOL_ERROR, error="unknown_tool",
                                result=f"Error: 未知工具 {call.name}", duration_ms=elapsed_ms())
+        ctx = self.tool_ctx
+        if abort is not None and ctx is not None:
+            ctx = replace(ctx, abort=abort)
         try:
-            raw = await tool.execute(call.args, self.tool_ctx)
+            raw = await tool.execute(call.args, ctx)
         except ToolError as exc:
             return ToolOutcome(status=TOOL_ERROR, error="tool_error",
                                result=f"Error: {exc}", duration_ms=elapsed_ms())

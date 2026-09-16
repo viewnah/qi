@@ -5,6 +5,7 @@ stream(): 一次用户输入 → 事件(CLI/TUI/HTTP 共享的 consumer 源)。
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 from dataclasses import dataclass, field
@@ -25,6 +26,7 @@ from .compaction import (
     summarize_branch,
     summary_context_message,
 )
+from .abort import AbortSignal
 from .config import ResolvedModel, load_config, resolve_default_model, resolve_router_model
 from .dispatcher import Decision, Dispatcher
 from .llm import (
@@ -47,15 +49,27 @@ from .tools import ToolContext, register_builtin_tools
 @dataclass
 class RuntimeConfig:
     workdir: Path
-    max_turns: int = 60
+    # 0 = **不限轮次**(交互式 TUI/Web 的默认,对齐 pi:没有轮次上限,靠 escape 中断);
+    # headless(`-p` / `--mode json`)由 cli 传 HEADLESS_MAX_TURNS 设上限,防 CI 跑飞。
+    max_turns: int = 0
     timeout_s: float = 600.0
     confidence_min: float = 0.6
+
+
+#: headless 的轮次上限(交互式不限)。交互式有人盯着、随时能不能中断;
+#: headless 没人盯,没有上限就可能一直烧。
+HEADLESS_MAX_TURNS = 60
 
 
 # 落盘工具结果的字符上限。tools/ 内置工具已自行截断(200 行 / 50k 字符),
 # 但插件工具可能不截断——落盘前再过一道上限,避免单个工具撑破会话文件。
 MAX_TOOL_ENTRY_CHARS = 8000
 MAX_TOOL_DETAILS_CHARS = 8000    # 与 result 同档:插件不该让会话文件无界增长
+
+
+def _salvaged(final_text: str, partial: str) -> str:
+    """收尾用哪段文本:正常结束用 `agent_end` 的全文,被硬取消时用流式累计的半截。"""
+    return final_text if final_text else partial
 
 
 class QiRuntime:
@@ -255,8 +269,14 @@ class QiRuntime:
         self.sessions.append(session, entry)
         return entry
 
-    async def stream(self, text: str, session: Session, agent_override: str | None = None):
-        """处理一轮用户输入,产出事件。agent_override=manual(--agent / /agent)。"""
+    async def stream(self, text: str, session: Session, agent_override: str | None = None,
+                     abort: AbortSignal | None = None):
+        """处理一轮用户输入,产出事件。agent_override=manual(--agent / /agent)。
+
+        `abort` 透传给 runner(协作式中断,见 abort.py)。即使被**硬取消**
+        (`CancelledError`:web 的客户端 abort、TUI 的强制终止),本方法也会先把已有文本
+        落盘再往上抛 —— 否则用户看过的半截回答在会话文件里消失(直播与回放不一致)。
+        """
         # 旧会话首次被使用时回填 cwd(只写一次);新会话在 create(cwd=…) 时已带
         self.sessions.ensure_cwd(session, self.cwd)
         async for event in self._maybe_auto_compact(session):
@@ -321,27 +341,42 @@ class QiRuntime:
         self.sessions.append(session, {"type": "message", "role": "user",
                                        "content": text, "agent_id": unit.name})
         final_text = ""
+        partial = ""
         pending_tool: dict | None = None
-        async for event in runner.run(text, history):
-            if event.kind == "agent_end":
-                final_text = event.text
-            elif event.kind == "tool_start":
-                pending_tool = {"tool": event.tool, "args": event.data.get("args") or {}}
-            elif event.kind == "tool_end":
-                self._persist_tool(session, unit.name, event, pending_tool)
-                pending_tool = None
-            elif event.kind == "assistant_message" and event.text and event.data.get("tool_calls"):
-                # 宣布了工具调用的助手消息是"过程"而非最终回答 → 立刻落成 custom entry。
-                # **立即**落盘而不缓冲到下一轮:否则它将被写在它触发的工具卡片**之后**,
-                # 回放顺序就变成"工具卡 → 叙述",与真实因果相反。
-                # 不带工具调用那条由回合末尾的 message entry 代表,所以不会重复。
-                self._persist_narration(session, unit.name, event.text)
-            yield event
+        try:
+            async for event in runner.run(text, history, abort=abort):
+                if event.kind == "agent_end":
+                    final_text = event.text
+                elif event.kind == "text_delta":
+                    # 当前轮的增量:硬取消发生在 assistant_message 之前时,就靠它抢救半截回答
+                    partial += event.text or ""
+                elif event.kind == "assistant_message":
+                    partial = event.text or ""        # 该轮的权威全文
+                    if event.text and event.data.get("tool_calls"):
+                        # 宣布了工具调用的助手消息是"过程"而非最终回答 → 立刻落成 custom entry。
+                        # **立即**落盘而不缓冲到下一轮:否则它将被写在它触发的工具卡片**之后**,
+                        # 回放顺序就变成"工具卡 → 叙述",与真实因果相反。
+                        # 不带工具调用那条由回合末尾的 message entry 代表,所以不会重复。
+                        self._persist_narration(session, unit.name, event.text)
+                elif event.kind == "tool_start":
+                    pending_tool = {"tool": event.tool, "args": event.data.get("args") or {}}
+                elif event.kind == "tool_end":
+                    self._persist_tool(session, unit.name, event, pending_tool)
+                    pending_tool = None
+                yield event
+        except asyncio.CancelledError:
+            # 硬取消:收尾不做任何 await(已在取消状态),只做同步落盘
+            self._persist_final(session, unit.name, _salvaged(final_text, partial))
+            raise
 
         # 助手侧在回合结束后落盘(与旧版一致;tool 往返已在上方单独落盘)
+        self._persist_final(session, unit.name, final_text)
+
+    def _persist_final(self, session: Session, agent: str, text: str) -> None:
+        """回合末尾的助手消息(正常结束与中断收尾共用)。"""
         self.sessions.append(session, {"type": "message", "role": "assistant",
-                                       "content": final_text or "(无文本输出)",
-                                       "agent_id": unit.name})
+                                       "content": text or "(无文本输出)",
+                                       "agent_id": agent})
 
     def _persist_narration(self, session: Session, agent: str, text: str) -> None:
         """落盘"工具调用之前"的助手叙述(custom entry,**不进对话上下文**)。

@@ -14,6 +14,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..abort import AbortSignal
 from ..models import TOOL_ERROR, TOOL_OK, ToolOutcome
 from ..registry import Tool, ToolError
 from .shell import (
@@ -39,6 +40,7 @@ class ToolContext:
     data_sources: list = field(default_factory=list)
     ask: AskFn | None = None             # async (text)->str|None,供 clarify 用
     shell_path: str | None = None        # settings.shellPath:显式指定 bash(对齐 pi)
+    abort: AbortSignal | None = None     # 本回合的中断信号(runner 按回合注入)
 
     def guard(self, p: str | Path) -> Path:
         """路径必须落在 workdir 内(防越界,对齐 hikqin validate_path 思想)。"""
@@ -201,6 +203,9 @@ async def _edit(args: dict, ctx: ToolContext) -> str:
 
 def _shell_outcome(result: ShellResult, timeout: float) -> ToolOutcome:
     """两个 shell 工具共用的结果收敛 —— 文本形态与旧版**逐字一致**。"""
+    if result.aborted:
+        return ToolOutcome(status=TOOL_ERROR, error="aborted",
+                           result="操作已中断(用户中止本回合)")
     if result.timed_out:
         return ToolOutcome(status=TOOL_ERROR, error="timeout",
                            result=f"命令超时(>{timeout:.0f}s),已终止")
@@ -228,7 +233,8 @@ async def _bash(args: dict, ctx: ToolContext) -> ToolOutcome:
         config = resolve_shell_config(ctx.shell_path)
     except ShellError as exc:
         raise ToolError(str(exc)) from None
-    result = await run_shell(config, command, cwd=ctx.workdir, timeout=timeout)
+    result = await run_shell(config, command, cwd=ctx.workdir, timeout=timeout,
+                             abort=ctx.abort)
     return _shell_outcome(result, timeout)
 
 
@@ -247,7 +253,7 @@ async def _powershell(args: dict, ctx: ToolContext) -> ToolOutcome:
     except ShellError as exc:
         raise ToolError(str(exc)) from None
     result = await run_shell(config, POWERSHELL_UTF8_PREFIX + command,
-                             cwd=ctx.workdir, timeout=timeout)
+                             cwd=ctx.workdir, timeout=timeout, abort=ctx.abort)
     return _shell_outcome(result, timeout)
 
 

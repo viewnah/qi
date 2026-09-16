@@ -182,7 +182,7 @@ qi 与 pi 的差异(已落档):
 
 | 键 | qi 行为 | pi 的 action |
 | --- | --- | --- |
-| `escape` | 中断当前回合(取消 worker) | `app.interrupt` |
+| `escape` | 中断当前回合:**协作式**(置位 AbortSignal,runner 干净收尾 —— 未执行的工具补上“已中断”结果、半截回答照常落盘);再按一次、或 3s 宽限期到点仍未收尾 → `cancel_all()` 强制终止 | `app.interrupt` |
 | `escape` ×2 | 空编辑器连按两次(500ms 内):按 `settings.doubleEscapeAction` 开 `/tree` 或 `/fork`(默认 `tree`) | `getDoubleEscapeAction` |
 | `ctrl+c` | 清空输入框;再按一次退出 | `app.clear` + `app.exit` |
 | `ctrl+d` | 输入框为空时退出;非空删右侧字符 | `app.exit` |

@@ -19,7 +19,7 @@ from qi_agent.llm import ChatResponse, ToolCallOut, usage_to_dict
 from qi_agent.loader import load_agent_dir
 from qi_agent.models import TOOL_ERROR, TOOL_OK, AgentEvent, ToolOutcome
 from qi_agent.registry import Tool, ToolCatalog
-from qi_agent.runner import AgentRunner, RunnerSettings, _accumulate_usage
+from qi_agent.runner import AgentRunner, RunnerSettings, _accumulate_usage, stop_after_turns
 from qi_agent.session import SessionStore
 from qi_agent.tools import ToolContext, _bash, register_builtin_tools
 
@@ -104,7 +104,7 @@ async def test_tool_end_carries_structured_status(tmp_path):
         _tool_call("grep", {"pattern": "hello", "path": "a.txt"}),
         ChatResponse(text="找到了"),
     ])
-    runner = AgentRunner(unit, catalog, llm, RunnerSettings(max_turns=5), tool_ctx=ctx)
+    runner = AgentRunner(unit, catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)), tool_ctx=ctx)
     events = [e async for e in runner.run("找 hello")]
 
     end = next(e for e in events if e.kind == "tool_end")
@@ -142,7 +142,7 @@ async def test_plugin_details_reach_the_event(tmp_path):
         _tool_call("plugin_tool", {}),
         ChatResponse(text="做完了"),
     ])
-    runner = AgentRunner(unit, catalog, llm, RunnerSettings(max_turns=5), tool_ctx=ctx)
+    runner = AgentRunner(unit, catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)), tool_ctx=ctx)
     events = [e async for e in runner.run("做点事")]
 
     end = next(e for e in events if e.kind == "tool_end")
@@ -198,7 +198,7 @@ async def test_unknown_tool_is_structured_error(tmp_path):
     catalog = _catalog()
     unit = _agent_unit(tmp_path, catalog)
     llm = StubLLM([_tool_call("nope", {}), ChatResponse(text="继续")])
-    runner = AgentRunner(unit, catalog, llm, RunnerSettings(max_turns=5),
+    runner = AgentRunner(unit, catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)),
                          tool_ctx=ToolContext(agent_name=unit.name, workdir=tmp_path))
     events = [e async for e in runner.run("用不存在的工具")]
     end = next(e for e in events if e.kind == "tool_end")
@@ -213,7 +213,7 @@ async def test_tool_error_is_tagged_tool_error(tmp_path):
     catalog = _catalog()
     unit = _agent_unit(tmp_path, catalog)
     llm = StubLLM([_tool_call("read", {"path": "/etc/hostname"}), ChatResponse(text="好的")])
-    runner = AgentRunner(unit, catalog, llm, RunnerSettings(max_turns=5),
+    runner = AgentRunner(unit, catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)),
                          tool_ctx=ToolContext(agent_name=unit.name, workdir=tmp_path))
     events = [e async for e in runner.run("读目录外的文件")]
     end = next(e for e in events if e.kind == "tool_end")
@@ -297,7 +297,7 @@ async def test_agent_end_reports_accumulated_usage(tmp_path):
         ChatResponse(text="完成",
                      usage={"prompt_tokens": 20, "completion_tokens": 7, "total_tokens": 27}),
     ])
-    runner = AgentRunner(unit, catalog, llm, RunnerSettings(max_turns=5),
+    runner = AgentRunner(unit, catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)),
                          tool_ctx=ToolContext(agent_name=unit.name, workdir=tmp_path))
     events = [e async for e in runner.run("找 hello")]
 
@@ -520,7 +520,7 @@ async def test_custom_tool_returning_tool_outcome_is_respected(tmp_path):
     unit = _agent_unit(tmp_path, catalog)
 
     llm = StubLLM([_tool_call("custom", {}), ChatResponse(text="继续")])
-    runner = AgentRunner(unit, catalog, llm, RunnerSettings(max_turns=5),
+    runner = AgentRunner(unit, catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)),
                          tool_ctx=ToolContext(agent_name=unit.name, workdir=tmp_path))
     events = [e async for e in runner.run("调用自定义工具")]
 

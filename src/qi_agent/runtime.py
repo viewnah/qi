@@ -10,7 +10,7 @@ import json
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable
 
 from . import paths
 from .auth import AuthStore
@@ -49,14 +49,13 @@ from .tools import ToolContext, register_builtin_tools
 @dataclass
 class RuntimeConfig:
     workdir: Path
-    # 0 = **不限轮次**(交互式 TUI/Web 的默认,对齐 pi:没有轮次上限,靠 escape 中断);
-    # headless(`-p` / `--mode json`)由 cli 传 HEADLESS_MAX_TURNS 设上限,防 CI 跑飞。
-    max_turns: int = 0
+    # 轮次政策不在这里:它现在是 `QiRuntime(stop_after=…)` 的谓词(对齐 pi 的
+    # shouldStopAfterTurn),见 RunnerSettings。
     timeout_s: float = 600.0
     confidence_min: float = 0.6
 
 
-#: headless 的轮次上限(交互式不限)。交互式有人盯着、随时能不能中断;
+#: headless 的轮次上限(交互式不传 stop_after,不限)。交互式有人盯着、随时能不能中断;
 #: headless 没人盯,没有上限就可能一直烧。
 HEADLESS_MAX_TURNS = 60
 
@@ -82,6 +81,7 @@ class QiRuntime:
                  disable_router: bool = False,
                  skills_enabled: bool = True,
                  thinking_level: str | None = None,
+                 stop_after: Callable[[int], bool] | None = None,
                  extra_skill_paths: Iterable[Path] | None = None):
         self.cwd = Path(cwd) if cwd else Path.cwd()
         # 旧版扁平布局 → ~/.qi/agent/(幂等;显式设了 QI_AGENT_HOME 时不动)
@@ -89,6 +89,9 @@ class QiRuntime:
         self.cfg, self.config_files = load_config(self.cwd)
         self.settings, self.settings_files = load_settings(self.cwd)
         self.runtime_cfg = runtime_cfg or RuntimeConfig(workdir=self.cwd)
+        # 轮次政策由嵌入方给(对齐 pi 的 shouldStopAfterTurn):None = 不限(headless 传
+        # stop_after_turns(HEADLESS_MAX_TURNS);交互式不传,靠 escape 中断)
+        self.stop_after = stop_after
         self.workdir = self.runtime_cfg.workdir
         # 基座:项目 .qi/SYSTEM.md > ~/.qi/agent/SYSTEM.md;都没有则空串
         # (空串 = 用 system_prompt.py 里的代码内默认基座,见 docs/system-prompt.md)
@@ -330,8 +333,8 @@ class QiRuntime:
                              data={"suggestions": unit.config.opening.suggestions})
 
         runner = AgentRunner(unit, self.catalog, self.llm_exec,
-                             RunnerSettings(max_turns=self.runtime_cfg.max_turns,
-                                            timeout_s=self.runtime_cfg.timeout_s),
+                             RunnerSettings(timeout_s=self.runtime_cfg.timeout_s,
+                                            stop_after=self.stop_after),
                              tool_ctx=self._tool_ctx(unit.name, unit),
                              base_prompt=self.base_prompt)
         # 顺序要紧:先取上下文(不含本轮),再把 user 消息立即落盘。

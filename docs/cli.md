@@ -153,11 +153,12 @@ qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt
 
 | | 轮次上限 | 中断方式 |
 | --- | --- | --- |
-| 交互式(TUI / Web) | **不限**(`max_turns = 0`,对齐 pi:没有轮次上限) | TUI `escape`、Web 客户端断开(ASGI 取消) |
-| 无头(`-p` / `--mode json`) | `HEADLESS_MAX_TURNS = 60`(没人盯着、没人能按 escape,防跑飞) | `SIGINT`(`asyncio.run` 取消 → 半截回答仍会落盘) |
+| 交互式(TUI / Web) | **无** —— runner 里根本没有“最多几轮”的概念(对齐 pi) | TUI `escape`、Web 客户端断开(ASGI 取消) |
+| 无头(`-p` / `--mode json`) | 嵌入方给谓词 `stop_after_turns(HEADLESS_MAX_TURNS = 60)`(没人盯着、没人能按 escape,防跑飞) | `SIGINT`(`asyncio.run` 取消 → 半截回答仍会落盘) |
 
-到点会输出一条 `error` 事件「达到最大轮次 N,已停止」。交互式靠**自动压缩**管住上下文体积。
-注:`max_turns` / `timeout_s` 目前**不是 settings.json 字段**(写死在 `runtime.py`),要改得改代码。
+谓词到点会输出一条 `error` 事件「达到轮次上限 N,已停止」。交互式靠**自动压缩**管住上下文体积。
+形态与 pi 一致:`shouldStopAfterTurn` 是个**谓词钩子**(每轮结束问一次嵌入方),不是 `maxTurns` 数字;
+pi-coding-agent 自己从不实现它。
 
 ## 9. 二期
 

@@ -235,15 +235,16 @@ def root_callback(
     if thinking is not None and thinking.strip().lower() not in THINKING_LEVELS:
         console.print(f"[red]未知思考级别: {thinking}(可选 {"/".join(THINKING_LEVELS)}）[/red]")
         raise typer.Exit(code=2)
-    from .runtime import HEADLESS_MAX_TURNS, QiRuntime, RuntimeConfig
+    from .runtime import HEADLESS_MAX_TURNS, QiRuntime
+    from .runner import stop_after_turns
     from .config import ConfigError as _CfgErr
     from .loader import LoadError as _LoadErr
     try:
-        # headless 保留轮次上限(没人盯着、没人能按 escape):交互式不限轮次,靠中断(对齐 pi)
+        # 轮次政策:headless 才给上限(对齐 pi 的 shouldStopAfterTurn 谓词);
+        # 交互式不传 = 不限轮次,靠 escape / 客户端断开中断
         runtime = QiRuntime(skills_enabled=not no_skills,
                             thinking_level=thinking,
-                            runtime_cfg=RuntimeConfig(workdir=Path.cwd(),
-                                                      max_turns=HEADLESS_MAX_TURNS),
+                            stop_after=stop_after_turns(HEADLESS_MAX_TURNS),
                             extra_skill_paths=[Path(p) for p in (skill or [])])
     except _LoadErr as exc:
         console.print(f"[red]装载失败:[/red] {escape(str(exc))}")

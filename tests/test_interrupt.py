@@ -1,8 +1,9 @@
 """轮次语义(不限/上限)+ 协作式中断(对齐 pi)。
 
 覆盖:
-  1. `max_turns = 0` = **不限轮次**(交互式默认,对齐 pi);有上限时才报"达到最大轮次"
-  2. headless 保留上限(`HEADLESS_MAX_TURNS`),交互式默认 0
+  1. runner **没有轮次上限**(对齐 pi):要停就靠嵌入方给的 `stop_after` 谓词(hook 形态,
+     不是数字字段),`stop_after_turns(n)` 是它的常用形状
+  2. 谓词生效时报“达到轮次上限 N”;不传就一直跑
   3. 协作式中断:未执行的工具调用补上"已中断"结果(不让 tool_calls 悬空)、保留半截文本、
      照常发 agent_end 并在 data 里标记 aborted
   4. 硬取消(asyncio.Task.cancel)时,runtime.stream 仍把半截回答落盘
@@ -25,7 +26,7 @@ from qi_agent.llm import ChatMessage, ChatResponse, LLMDelta, ToolCallOut  # noq
 from qi_agent.loader import load_agent_dir  # noqa: E402
 from qi_agent.models import ToolOutcome  # noqa: E402
 from qi_agent.registry import ToolCatalog  # noqa: E402
-from qi_agent.runner import AgentRunner, RunnerSettings  # noqa: E402
+from qi_agent.runner import AgentRunner, RunnerSettings, stop_after_turns  # noqa: E402
 from qi_agent.runtime import HEADLESS_MAX_TURNS, QiRuntime, RuntimeConfig  # noqa: E402
 from qi_agent.session import SessionStore  # noqa: E402
 from qi_agent.tools import ToolContext, register_builtin_tools  # noqa: E402
@@ -99,12 +100,12 @@ async def _collect(agen) -> list:
 # ── 1. 轮次语义 ───────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_max_turns_zero_means_unlimited(tmp_path):
-    """0 = 不限轮次(交互式默认,对齐 pi):该跑多少轮就跑多少轮,不报"达到最大轮次"。"""
+async def test_no_predicate_means_no_turn_limit(tmp_path):
+    """不传 `stop_after` = 没有轮次上限(对齐 pi:核心循环不管轮数):该跑多少轮跑多少轮。"""
     script = [ChatResponse(text="", tool_calls=[_tool_call(i)]) for i in range(8)]
     script.append(ChatResponse(text="终于做完了"))
     llm = ScriptedLLM(script)
-    runner = _runner(tmp_path, llm, RunnerSettings(max_turns=0))
+    runner = _runner(tmp_path, llm, RunnerSettings())     # 无 stop_after
 
     events = [e async for e in runner.run("干活")]
     assert not [e for e in events if e.kind == "error"], "不限轮次不该出现轮次上限报错"
@@ -115,23 +116,32 @@ async def test_max_turns_zero_means_unlimited(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_max_turns_cap_still_reported(tmp_path):
-    """有上限时行为不变:到点报错停下(headless 靠它防跑飞)。"""
+async def test_stop_after_predicate_reports_limit(tmp_path):
+    """给了谓词就按谓词停:每轮结束问一次嵌入方(pi 的 shouldStopAfterTurn 语义)。"""
     script = [ChatResponse(text="", tool_calls=[_tool_call(i)]) for i in range(5)]
     llm = ScriptedLLM(script)
-    runner = _runner(tmp_path, llm, RunnerSettings(max_turns=2))
+    seen: list[int] = []
 
+    def policy(turns: int) -> bool:
+        seen.append(turns)
+        return turns >= 2
+
+    runner = _runner(tmp_path, llm, RunnerSettings(stop_after=policy))
     events = [e async for e in runner.run("干活")]
     errors = [e.text for e in events if e.kind == "error"]
-    assert any("达到最大轮次 2" in t for t in errors), errors
+    assert any("达到轮次上限 2" in t for t in errors), errors
     assert llm.calls == 2
+    assert seen == [1, 2], "谓词应在每轮结束后被问到(不是预先算一个区间)"
 
 
-def test_interactive_unlimited_headless_capped():
-    """策略常量:交互式默认 0(不限),headless 由 cli 传 HEADLESS_MAX_TURNS。"""
-    assert RuntimeConfig(workdir=Path(".")).max_turns == 0
-    assert HEADLESS_MAX_TURNS == 60
-    assert RunnerSettings().max_turns == 0
+def test_turn_policy_shape():
+    """runner 里不再有任何"上限数字":轮次是嵌入方的谓词(默认无);headless 用工厂。"""
+    assert RunnerSettings().stop_after is None            # 默认不限
+    assert not hasattr(RunnerSettings(), "max_turns")     # 数字字段已彻底移除
+    assert RuntimeConfig(workdir=Path(".")).timeout_s == 600.0
+    assert not hasattr(RuntimeConfig(workdir=Path(".")), "max_turns")
+    assert stop_after_turns(HEADLESS_MAX_TURNS)(HEADLESS_MAX_TURNS - 1) is False
+    assert stop_after_turns(HEADLESS_MAX_TURNS)(HEADLESS_MAX_TURNS) is True
 
 
 # ── 2. 协作式中断 ─────────────────────────────────────────
@@ -146,7 +156,7 @@ async def test_abort_during_tools_fills_remaining_results(tmp_path):
     calls = [ToolCallOut(id=f"c{i}", name="bash",
                         args={"command": "sleep 30", "timeout": 30}) for i in range(3)]
     llm = ScriptedLLM([ChatResponse(text="这就去", tool_calls=calls)])
-    runner = _runner(tmp_path, llm, RunnerSettings(max_turns=0), tools=["bash"])
+    runner = _runner(tmp_path, llm, RunnerSettings(), tools=["bash"])
     abort = AbortSignal()
 
     async def fire() -> None:
@@ -170,7 +180,7 @@ async def test_abort_during_tools_fills_remaining_results(tmp_path):
 async def test_abort_before_start_ends_cleanly(tmp_path):
     """“回车后立刻按 escape”:回合不能挂住、不能报错,且不能真的跑工具。"""
     llm = ScriptedLLM([ChatResponse(text="", tool_calls=[_tool_call(0, "bash")])])
-    runner = _runner(tmp_path, llm, RunnerSettings(max_turns=0), tools=["bash"])
+    runner = _runner(tmp_path, llm, RunnerSettings(), tools=["bash"])
     abort = AbortSignal()
     abort.abort()
 
@@ -187,7 +197,7 @@ async def test_abort_before_start_ends_cleanly(tmp_path):
 async def test_abort_mid_stream_keeps_partial_text(tmp_path):
     """流式途中中断:半截文本要留住,半截的 tool_calls 一律丢(参数不可信)。"""
     llm = StreamingLLM(["我在", "想……"], hang=True)
-    runner = _runner(tmp_path, llm, RunnerSettings(max_turns=0))
+    runner = _runner(tmp_path, llm, RunnerSettings())
     abort = AbortSignal()
 
     async def fire() -> None:
@@ -212,7 +222,7 @@ async def test_abort_signal_survives_no_abort_path(tmp_path):
     """没给信号时行为与旧版一致:正常的工具往返照跑。"""
     llm = ScriptedLLM([ChatResponse(text="", tool_calls=[_tool_call(0, "bash")]),
                        ChatResponse(text="done")])
-    runner = _runner(tmp_path, llm, RunnerSettings(max_turns=0))
+    runner = _runner(tmp_path, llm, RunnerSettings())
     events = [e async for e in runner.run("跑一下")]        # 不传 abort
     assert llm.calls == 2
     assert not [e for e in events if e.kind == "error"]

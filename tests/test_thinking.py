@@ -34,7 +34,7 @@ from qi_agent.llm import (
 from qi_agent.loader import load_agent_dir
 from qi_agent.models import AgentEvent
 from qi_agent.registry import ToolCatalog
-from qi_agent.runner import AgentRunner, RunnerSettings
+from qi_agent.runner import AgentRunner, RunnerSettings, stop_after_turns
 from qi_agent.theme import load_palette
 from qi_agent.tools import ToolContext, register_builtin_tools
 
@@ -177,7 +177,7 @@ def test_runner_emits_thinking_delta_and_keeps_answer_clean(tmp_path):
     catalog = ToolCatalog()
     register_builtin_tools(catalog)
     unit = _agent_unit(tmp_path, catalog)
-    runner = AgentRunner(unit, catalog, _ReasoningLLM(), RunnerSettings(max_turns=3),
+    runner = AgentRunner(unit, catalog, _ReasoningLLM(), RunnerSettings(stop_after=stop_after_turns(3)),
                          tool_ctx=ToolContext(agent_name=unit.name, workdir=tmp_path))
     events = asyncio.run(_collect(runner.run("问题")))
 

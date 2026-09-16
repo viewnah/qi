@@ -9,9 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import itertools
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field, replace
 
 from .abort import AbortSignal
@@ -23,9 +22,24 @@ from .system_prompt import build_system_prompt
 
 @dataclass
 class RunnerSettings:
-    # 0 = **不限轮次**(交互式默认,对齐 pi);headless 由 runtime 给具体上限
-    max_turns: int = 0
+    """一轮的旋钮。
+
+    `stop_after` 对齐 pi 的 `shouldStopAfterTurn`(**谓词**,不是数字):runner 自己没有
+    “最多几轮”的概念,只在每轮结束时问一次嵌入方“现在停吗”。没给就一直跑 —— pi 的核心
+    循环也是裸 `while (true)`,退出靠模型不再调工具 / 中断 / 这个谓词。
+    """
+
     timeout_s: float = 600.0
+    #: 每轮结束后调用,收到已完成的轮数;True = 优雅停(stop_after_turns(n) 是常用形状)
+    stop_after: Callable[[int], bool] | None = None
+
+
+def stop_after_turns(limit: int) -> Callable[[int], bool]:
+    """跑满 `limit` 轮就优雅停(pi 那个谓词钩子的常用形状)。
+
+    headless(`-p` / `--mode json`)用它做“防跑飞”;交互式不传,靠 `escape` 中断。
+    """
+    return lambda turns: turns >= limit
 
 
 def _accumulate_usage(total: dict, usage: dict | None) -> None:
@@ -102,7 +116,7 @@ class AgentRunner:
         `history` 为会话上下文(system 已在其中则跳过)。
         `abort` 为协作式中断信号(见 abort.py):置位后本轮**干净收尾**——未执行的工具
         调用补上「已中断」结果、已有文本照常产出、照常发 `agent_end`(data 里带 `aborted`)。
-        `max_turns <= 0` 表示不限轮次(交互式默认,对齐 pi)。
+        **runner 没有轮次上限**:要不要停由 `RunnerSettings.stop_after` 谓词决定(对齐 pi)。
         """
         tools = self._tools()
         msgs: list[ChatMessage] = []
@@ -119,12 +133,12 @@ class AgentRunner:
         last_text = ""
         usage_total: dict = {}
         turns_used = 0
+        turn = 0
         aborted = False
-        limit = self.settings.max_turns
-        turns = range(limit) if limit > 0 else itertools.count()
         schemas = [t.to_llm_schema() for t in tools] or None
         try:
-            for turn in turns:
+            while True:                      # 无轮次上限:退出靠模型停 / 中断 / stop_after(对齐 pi)
+                turn += 1
                 acc_text = ""
                 acc_thinking = ""
                 tool_calls: list[ToolCallOut] = []
@@ -146,7 +160,7 @@ class AgentRunner:
                         if delta.finished:
                             tool_calls = delta.tool_calls
                             usage = delta.usage
-                turns_used = turn + 1
+                turns_used = turn
                 # 流式途中被中断:半截的 tool_calls 参数不可信,一律丢(pi 对截断消息同处理)
                 if abort is not None and abort.aborted:
                     aborted = True
@@ -189,9 +203,13 @@ class AgentRunner:
                                             tool_call_id=call.id))
                 if aborted:
                     break
-                if limit > 0 and turn >= limit - 1:
+                # pi 的 shouldStopAfterTurn:每轮结束问一次嵌入方,而不是比较一个数字。
+                # 注意必须显式 break —— 旧实现靠 `for turn in range(limit)` 自然耗尽,
+                # 换成 `while True` 之后只发事件不退出会跑飞(有测试钉住这一条)。
+                if self.settings.stop_after is not None and self.settings.stop_after(turns_used):
                     yield AgentEvent(kind="error", agent=self.unit.name,
-                                     text=f"达到最大轮次 {limit},已停止")
+                                     text=f"达到轮次上限 {turns_used},已停止")
+                    break
         except asyncio.TimeoutError:
             yield AgentEvent(kind="error", agent=self.unit.name,
                              text=f"执行超时(>{self.settings.timeout_s:.0f}s)")

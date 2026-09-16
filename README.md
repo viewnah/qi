@@ -25,16 +25,16 @@ qi -p "分析这个仓库"
 qi "分析这个仓库"          # 进 TUI 并把这句话作为首条发出(对齐 pi 的 `pi "问题"`)
 ```
 
-零配置即可跑:框架内置了一个 `general`(兜底角色)与一份**基座系统提示词**,不需要先装任何 agent。
-想定制角色就装自己的 agent;想定制基座提示词就写 `.qi/SYSTEM.md`(见第 4 步)。
+零配置即可跑:框架内置了一个 `general`(兜底角色)与一份**代码内默认基座提示词**,不需要先装任何 agent。
+想定制角色就装自己的 agent;想定制基座提示词就写 `.qi/SYSTEM.md`(**整体替换**默认基座,注意第 3 步说的副作用)。
 
 ```bash
 # 4.(可选)装专职 agent 与自定义基座提示词
 qi agents import examples/agents/code-analyst   # 装专职角色(默认落在 ~/.qi/agent)
-vim .qi/SYSTEM.md                              # 项目级基座提示词(可提交共享)
+vim .qi/SYSTEM.md                              # 项目级基座提示词(整体替换默认基座;可提交共享)
 ```
 
-优先级:**项目 `.qi/agents/` > 用户 `~/.qi/agent/agents/` > 包内置**;**项目 `.qi/SYSTEM.md` > `~/.qi/agent/SYSTEM.md` > 包内置**。
+优先级:**项目 `.qi/agents/` > 用户 `~/.qi/agent/agents/` > 包内置**;**项目 `.qi/SYSTEM.md` > `~/.qi/agent/SYSTEM.md` > 代码内默认基座**。
 详见 [docs/system-prompt.md](docs/system-prompt.md) 与 [docs/agent-config.md](docs/agent-config.md)。
 
 `qi init` 交互流程与样式复刻 QwenPaw `init`:**Provider Configuration**(选已有/新建 → Base URL → API 类型 → API Key)→ **Add Models**(`Add a model?` 循环,含 reasoning/contextWindow/maxTokens)→ **Activate LLM Model**(选 provider → 选 model)。完整用法、选项与示例见 [docs/model-config.md §7](docs/model-config.md#7-qi-init-用法)。
@@ -45,7 +45,7 @@ vim .qi/SYSTEM.md                              # 项目级基座提示词(可提
 | --- | --- |
 | [PLAN.md](docs/PLAN.md) | 开发计划(v1/v2 阶段)与未决清单 |
 | [docs/agent-config.md](docs/agent-config.md) | agent = 自包含目录(agent.md / skills / assets / mcp.json / data_sources.json)、装载校验、MCP、数据源、导入导出 |
-| [docs/system-prompt.md](docs/system-prompt.md) | 系统提示词:基座层(内置 `SYSTEM.md` + 可选覆盖)+ 角色层(agent.md)分层与优先级 |
+| [docs/system-prompt.md](docs/system-prompt.md) | 系统提示词:代码内默认基座 + 可选 `SYSTEM.md` 整体替换 + 动态追加(工具清单 / 项目上下文 AGENTS.md / 技能 / 数据源 / 工作目录) |
 | [docs/tools.md](docs/tools.md) | ToolCatalog、内置 7 工具、tools 三态、bash 策略(与 pi 对齐:无命令级过滤) |
 | [docs/bash-allowlist.md](docs/bash-allowlist.md) | bash 策略**变更记录**:为何删掉首词白名单、与 pi(v0.85.1)的对照、可绕过的四种写法 |
 | [dispatcher.md](docs/dispatcher.md) | auto 模式:信号分层、分派管线、Router 契约、优先级 |
@@ -125,7 +125,8 @@ vim .qi/SYSTEM.md                              # 项目级基座提示词(可提
     ├── settings.json       # 默认模型 / skills 追加路径 / theme …
     ├── models.json         # providers / 模型(格式对齐 pi)
     ├── auth.json           # 凭证(0600,按 provider)
-    ├── SYSTEM.md           # 可选:覆盖基座提示词
+    ├── SYSTEM.md           # 可选:整体替换默认基座(见 system-prompt.md §3 副作用)
+    ├── AGENTS.md           # 可选:全局项目上下文(注入 <project_context>)
     ├── skills/<name>/      # 全局技能(qi 私有)
     ├── agents/<name>/      # 全局 agent
     ├── plugins/<name>/     # 本地目录插件通道
@@ -142,6 +143,11 @@ vim .qi/SYSTEM.md                              # 项目级基座提示词(可提
 
 > 旧版扁平布局(`~/.qi/models.json` 等)在启动时**自动迁移**到 `~/.qi/agent/`,
 > 只在目标不存在时搬,绝不覆盖。
+>
+> 提示词的两个入口不要混:`SYSTEM.md` **整体替换**默认基座(项目 > 全局 > 代码内默认);
+> `AGENTS.md` / `CLAUDE.md`(全局 `~/.qi/agent/` + 项目根及各级祖先,止于 git 根)则作为
+> `<project_context>` **追加**。两者与角色层、技能、数据源、工作目录的推出顺序见
+> [docs/system-prompt.md](docs/system-prompt.md)。
 
 ## 6. 安全总原则
 

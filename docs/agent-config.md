@@ -102,7 +102,7 @@ opening:
 ### 5.1 agent 私有
 
 - 框架**不随包发任何技能**;技能只存在于 agent 目录的 `skills/` 下,放了才有。
-- `skills/` 下每个 `SKILL.md` 自带 frontmatter(含 `description`);description 进入该 agent 的 system prompt(渐进披露),用时才加载 SKILL.md 全文。
+- `skills/` 下每个 `SKILL.md` 自带 frontmatter(含 `description`);description 进入该 agent 的 system prompt(渐进披露),用时才加载 SKILL.md 全文。注入形态是 pi 式 `<available_skills>` XML(name/description/location),location 为 SKILL.md 绝对路径;**没有 `read`/`bash` 可用的 agent 不注入技能块**(注入了也读不到)。
 - 同一 agent 的 `skills/` 内出现同名技能 → 启动报错。
 - 技能不与 agent 跨层合并:目录整体覆盖(见 §3)即整体替换,无混合状态。
 
@@ -259,7 +259,7 @@ qi agents import skill:path/to/skill   # 包装成私有技能进目标 agent
 | 覆盖规则 | 项目 > 用户 > 内置(静默覆盖,不警告);同层重复报错 |
 | 目录命名 | 隐藏目录 `.qi`(全局 `~/.qi`,项目 `.qi`),对齐 pi 的 `.pi` |
 | 内置内容 | 内置 1 个 `general` 兜底 agent(零配置可执行的前提);**不内置技能**;示例放 `examples/agents/`,不自动加载 |
-| 基座提示词 | 内置 `src/qi_agent/SYSTEM.md` + 可选覆盖 `<项目>/.qi/SYSTEM.md` > `~/.qi/agent/SYSTEM.md`;替换的是**基座层**,agent.md 正文作为**角色层**追加(见 [system-prompt.md](system-prompt.md)) |
+| 基座提示词 | **代码内默认**(`system_prompt.py`,按解析后的工具集生成「可用工具 / 指南」)+ 可选 `SYSTEM.md` **整体替换**(项目 > 全局);agent.md 正文作为**角色层**、`AGENTS.md`/`CLAUDE.md` 作为**项目上下文**、技能/数据源/工作目录均**动态追加**(见 [system-prompt.md](system-prompt.md)) |
 | 无内置技能 | 撤销"内置技能覆盖"问题(H4 moot) |
 | opening 字段 | v1 补充:message(agent 开场白,进会话历史)+ suggestions(UI 层快捷提问,不进历史) |
 | 执行参数 | model / temperature / max_turns 不进 agent.md;统一归全局配置(模型在 models.json,轮次/超时在 runtime) |

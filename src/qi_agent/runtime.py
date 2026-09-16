@@ -35,6 +35,7 @@ from .llm import (
     normalize_thinking_level,
 )
 from .loader import LoadError, load_all_agents, load_top_level_skills, resolve_base_prompt
+from .system_prompt import default_base_prompt
 from .models import AgentEvent
 from .registry import AgentRegistry, CapabilityRegistry, ToolCatalog, discover_plugins
 from .runner import AgentRunner, RunnerSettings
@@ -75,7 +76,8 @@ class QiRuntime:
         self.settings, self.settings_files = load_settings(self.cwd)
         self.runtime_cfg = runtime_cfg or RuntimeConfig(workdir=self.cwd)
         self.workdir = self.runtime_cfg.workdir
-        # 基座提示词:项目 .qi/SYSTEM.md > ~/.qi/agent/SYSTEM.md > 包内置(见 system.py)
+        # 基座:项目 .qi/SYSTEM.md > ~/.qi/agent/SYSTEM.md;都没有则空串
+        # (空串 = 用 system_prompt.py 里的代码内默认基座,见 docs/system-prompt.md)
         self.base_prompt, self.base_prompt_source = resolve_base_prompt(self.cwd)
         if session_store is not None:
             self.sessions = session_store
@@ -203,7 +205,8 @@ class QiRuntime:
         if not enabled or window <= 0:
             return
         # 用**重建后的上下文**估算,不是原始 entry 之和 —— 压缩过的内容不该再计入
-        tokens = messages_tokens(self._history(session)) + estimate_tokens(self.base_prompt)
+        base = self.base_prompt or default_base_prompt()   # 无自定义基座时按代码内默认计入
+        tokens = messages_tokens(self._history(session)) + estimate_tokens(base)
         if not should_compact(tokens, window, enabled=enabled, reserve_tokens=reserve):
             return
         yield AgentEvent(kind="compaction_start", text="正在自动压缩上下文…",

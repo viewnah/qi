@@ -403,35 +403,17 @@ def load_all_agents(cwd: Path | None = None, catalog_names: set[str] | None = No
     return units
 
 
-# ── 基座系统提示词(内置默认 + SYSTEM.md 覆盖) ─────────────────
+# ── 基座系统提示词(SYSTEM.md 覆盖) ─────────────────
 #
 # 层级(高 → 低):
 #     1. <项目>/.qi/SYSTEM.md      # 跟项目走,可提交共享
-#     2. ~/.qi/SYSTEM.md           # 全局
-#     3. src/qi_agent/SYSTEM.md    # 包内置默认(随 wheel 发布,永远存在)
+#     2. ~/.qi/agent/SYSTEM.md     # 全局
+#     3. (无覆盖)                  # 用代码内默认基座:qi_agent/system_prompt.py
 #
-# 语义(对齐 pi 的 SYSTEM.md,但分层不同):SYSTEM.md 替换的是**基座层**
-# (身份/环境/通用做法),不是整个 system prompt;**角色层**(agent.md 正文 +
-# 技能清单 + 数据源)始终追加在基座之后 —— 多 agent 语义不变:换 agent = 换角色层。
-# 基座层永远有内容,这是“零配置也能跑”的前提之一(另一个是内置 general)。
-
-# 包数据缺失时(裁剪安装/打包故障)的兜底文本,保证基座层不为空
-_FALLBACK_SYSTEM = (
-    "你是运行在 qi 框架中的 AI 助手。"
-    "完成任务优先使用工具;bash 只允许只读命令,需要落盘改动时用 write/edit;"
-    "需求不明确时用 clarify 提问,不要猜。"
-)
-
-
-def builtin_system_prompt() -> str:
-    """包内置基座提示词(`src/qi_agent/SYSTEM.md`);读取失败时返回兜底文本。"""
-    import importlib.resources as resources
-
-    try:
-        text = resources.files("qi_agent").joinpath(SYSTEM_FILE_NAME).read_text(encoding="utf-8")
-    except (FileNotFoundError, ModuleNotFoundError, OSError, UnicodeDecodeError):
-        return _FALLBACK_SYSTEM
-    return text.strip() or _FALLBACK_SYSTEM
+# 语义(对齐 pi 的 SYSTEM.md / customPrompt):SYSTEM.md **整体替换**默认基座。
+# qi 仍保留自己的一层区分:**角色层**(agent.md 正文 + 技能清单 + 数据源)、
+# 项目上下文、工作目录始终追加 —— 多 agent 语义不变:换 agent = 换角色层。
+# 副作用见 docs/system-prompt.md(自定义基座会丢掉默认的「可用工具 / 指南」)。
 
 
 def system_file_candidates(cwd: Path | None = None) -> list[tuple[Path, str]]:
@@ -443,9 +425,11 @@ def system_file_candidates(cwd: Path | None = None) -> list[tuple[Path, str]]:
 
 
 def resolve_base_prompt(cwd: Path | None = None) -> tuple[str, str]:
-    """解析基座提示词,返回 `(文本, 来源说明)`;来源取值 `project|user|builtin`。
+    """解析**自定义**基座,返回 `(文本, 来源说明)`;来源取值 `project|user|builtin`。
 
-    空文件/读取失败视为未配置,继续往下一层找(不静默降级为空提示词)。
+    文本为空串表示没有自定义基座 —— 调用方改用代码内默认
+    (`system_prompt.default_base_prompt()`),所以基座层永不为空。
+    空文件/读取失败视为未配置,继续往下一层找(不会静默降级成空提示词)。
     """
     for path, source in system_file_candidates(cwd):
         if not path.is_file():
@@ -456,4 +440,50 @@ def resolve_base_prompt(cwd: Path | None = None) -> tuple[str, str]:
             continue
         if text:
             return text, f"{source}:{path}"
-    return builtin_system_prompt(), "builtin"
+    return "", "builtin"
+
+
+# ── 项目上下文(AGENTS.md / CLAUDE.md,对齐 pi 的 project_context)────
+#
+# 每级目录按候选顺序取**第一个**命中的文件(顺序照搬 pi);全局(agent 目录)在最前,
+# 项目祖先链由远到近追加 —— 近者可覆盖远者的同义约定。
+# 与 pi 的两点差异:祖先链止于 **git 根**(qi 的 project_context_ancestors 约定,
+# 与 .agents/skills 的继承范围一致;pi 一路走到文件系统根),空文件视为未配置。
+
+CONTEXT_FILE_NAMES = ("AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD")
+
+
+def load_context_file_from_dir(directory: Path) -> tuple[Path, str] | None:
+    """目录内按候选顺序取第一个 AGENTS/CLAUDE 文件;空文件/读失败视为没有。"""
+    for name in CONTEXT_FILE_NAMES:
+        path = directory / name
+        try:
+            if not path.is_file():
+                continue
+            text = path.read_text(encoding="utf-8").strip()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if text:
+            return path, text
+    return None
+
+
+def load_project_context(cwd: Path | None = None) -> list[tuple[Path, str]]:
+    """项目上下文文件 `(路径, 正文)`:全局 → 远祖先 → 近祖先(含 cwd);按路径去重。"""
+    out: list[tuple[Path, str]] = []
+    seen: set[Path] = set()
+
+    def take(directory: Path) -> None:
+        found = load_context_file_from_dir(directory)
+        if found is None:
+            return
+        key = found[0].resolve(strict=False)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append(found)
+
+    take(paths.global_home())
+    for ancestor in reversed(paths.project_context_ancestors(cwd)):   # 远 → 近
+        take(ancestor)
+    return out

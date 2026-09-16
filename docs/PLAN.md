@@ -15,16 +15,16 @@
 ├── src/qi_agent/               # 包代码
 │   ├── __init__.py             # __version__
 │   ├── py.typed                # PEP 561
-│   ├── SYSTEM.md               # ⭐ 包内置基座系统提示词(进 wheel;可被 .qi/SYSTEM.md 覆盖)
 │   ├── builtin/agents/general/ # ⭐ 包内置兜底 agent(进 wheel;可被用户/项目同名覆盖)
 │   ├── cli.py                  # [project.scripts] qi → qi_agent.cli:main
 │   ├── config.py               # TOML 分层装载 + pydantic 校验
 │   ├── llm.py                  # LLMClient 协议 + 实现(N8 待定)
 │   ├── models.py               # AgentConfig/Tool/Message/事件类型
 │   ├── registry.py             # AgentRegistry / ToolCatalog / 插件能力注册表
-│   ├── loader.py               # agents 发现(内置/用户/项目)+ agent.md/技能解析 + 校验 + 基座提示词解析
+│   ├── loader.py               # agents 发现(内置/用户/项目)+ agent.md/技能解析 + 校验 + SYSTEM.md 解析 + AGENTS.md 项目上下文
 │   ├── tools/                  # 内置 7 工具(read/ls/find/grep/write/edit/bash)
 │   ├── runner.py               # AgentRunner(tool-loop)
+│   ├── system_prompt.py        # ⭐ 系统提示词构建:代码内默认基座 + 动态注入(工具清单/指南/AGENTS.md/技能/数据源/cwd)
 │   ├── dispatcher.py           # Router-LLM 分派
 │   ├── runtime.py              # AutoRuntime:manual/@点名/每轮重新路由/stream()
 │   ├── session.py              # JSONL 会话读写
@@ -128,6 +128,7 @@ packages = ["src/qi_agent"]
 | A8 | 全局目录层级 | `~/.qi/agent/` ↔ `<项目>/.qi` 配对(对齐 pi 的 `~/.pi/agent` ↔ `.pi`);旧扁平布局启动时自动迁移(不覆盖);`QI_AGENT_HOME` = agent 目录、`QI_CONFIG_DIR` = 名字空间根 |
 | A9 | 设置文件 | `settings.json` 两级深合并、数组整体替换;默认模型只属于 settings(`models.json` 里已不读取);字段清单与“仅存储未生效”清单见 [settings.md](settings.md);`qi config` 读写 |
 | A10 | 顶层技能 | 六级来源(低→高):`~/.agents/skills` → `~/.qi/agent/skills` → user `settings.skills` → 项目 `.agents/skills` 祖先链 → `<git根>/.qi/skills` → project `settings.skills`;agent 自带者最高;同层同名报错、跳层覆盖;排除项作用于整个发现集 |
+| A11 | 系统提示词 | 默认基座**代码内**(`system_prompt.py`,按解析后的工具集生成「可用工具 / 指南」);`SYSTEM.md` **整体替换**默认基座(项目 > 全局);之后动态追加角色层 → `<project_context>`(AGENTS.override.md > AGENTS.md > AGENTS.MD > CLAUDE.md > CLAUDE.MD,全局 + 祖先链至 git 根)→ `<available_skills>` XML(无 `read`/`bash` 则不注入)→ 数据源 → cwd。取消包内置 `SYSTEM.md`;自身文档索引未做。详见 [system-prompt.md](system-prompt.md) |
 
 ### 仍待定(v2 + 实现期)
 
@@ -136,7 +137,7 @@ packages = ["src/qi_agent"]
 - C3:headless RPC 协议细节 — v2
 - C4:db 插件工具名前缀/冲突策略 — v2 随首个插件定
 - 会话 JSONL entry 类型表具体字段(P3 定稿)
-- TUI 布局与 `/` 命令清单(P7 定稿,草案见 cli.md 或独立 tui 文档)
+- qi 自身文档索引注入:pi 在 prompt 尾部给 README/docs/examples 绝对路径 + 按主题指路(qi 版见 system-prompt.md §6);障碍是 `docs/` 不进 wheel,装入后路径不存在 —— 要么改打包(把 docs 打进 wheel),要么只在源码仓库里存在时注入
 - Router prompt 模板细节(dispatcher.md 草案之上微调)
 
 ## 5. 收口节奏

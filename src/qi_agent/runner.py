@@ -1,7 +1,8 @@
 """AgentRunner(P4):单 agent tool-loop,消费 ToolCatalog + LLMClient。
 
-system_prompt = 基座层(SYSTEM.md / 包内置)+ 角色层(正文 + include)
-                + 技能清单(渐进披露)+ 数据源上下文。
+system_prompt 的拼装在 `system_prompt.py`(对齐 pi 的 core/system-prompt.js):
+默认基座 / 自定义 SYSTEM.md → 角色层(正文 + include)+ 项目上下文 + 技能清单
++ 数据源 + 工作目录。这里只负责在跑之前把**解析后的工具集**和 cwd 递给它。
 """
 
 from __future__ import annotations
@@ -11,9 +12,9 @@ import time
 from dataclasses import dataclass, field
 
 from .llm import ChatMessage, LLMClient, ToolCallOut, stream_llm
-from .loader import builtin_system_prompt
 from .models import TOOL_ERROR, TOOL_OK, AgentEvent, AgentUnit, ToolOutcome
 from .registry import Tool, ToolCatalog, ToolError
+from .system_prompt import build_system_prompt
 
 
 @dataclass
@@ -32,25 +33,6 @@ def _accumulate_usage(total: dict, usage: dict | None) -> None:
     for key, value in (usage or {}).items():
         if isinstance(value, int) and not isinstance(value, bool):
             total[key] = total.get(key, 0) + value
-
-
-def build_system_prompt(unit: AgentUnit, base_prompt: str | None = None) -> str:
-    """拼出完整 system prompt:基座层 → 角色层 → 技能 → 数据源。
-
-    `base_prompt=None` 时用包内置基座提示词(调用方通常传入 `resolve_base_prompt()`
-    的结果,以计入项目/用户 `SYSTEM.md` 覆盖)。
-    """
-    base = (builtin_system_prompt() if base_prompt is None else base_prompt).strip()
-    parts = [base] if base else []
-    parts.append(unit.system_prompt or f"你是 {unit.config.name}。")
-    if unit.skills:
-        lines = "\n".join(f"- {s.name}: {s.description}" for s in unit.skills)
-        parts.append("可用技能(需要时用 read 读取其 SKILL.md 全文执行):\n" + lines)
-    if unit.data_sources:
-        lines = "\n".join(f"- {ds.id} ({ds.type}): {ds.description or ds.dsn}" for ds in unit.data_sources)
-        parts.append("可用数据源(db 工具需 data_source_id 属于以下清单):\n" + lines
-                     + "\n规则:先查 schema 确认表结构,只读查询,禁止写操作。")
-    return "\n\n".join(p for p in parts if p.strip())
 
 
 class AgentRunner:
@@ -72,8 +54,10 @@ class AgentRunner:
         tools = self._tools()
         msgs: list[ChatMessage] = []
         if history is None or not any(m.role == "system" for m in history):
-            msgs.append(ChatMessage(role="system",
-                                    content=build_system_prompt(self.unit, self.base_prompt)))
+            # 工具集与 cwd 都要在跑之前定下来:清单进 prompt,且决定技能能否被读取
+            msgs.append(ChatMessage(role="system", content=build_system_prompt(
+                self.unit, self.base_prompt, tools=tools,
+                cwd=self.tool_ctx.workdir if self.tool_ctx else None)))
         if history:
             msgs.extend(history)
         msgs.append(ChatMessage(role="user", content=user_input))

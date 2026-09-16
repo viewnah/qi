@@ -1,121 +1,184 @@
-# 系统提示词:基座层 + 角色层
+# 系统提示词:代码内默认 + 可选整体替换 + 动态追加
 
-> 状态:v1 已实现。相关文档:[agent-config.md](agent-config.md)(agent = 角色层)、
-> [dispatcher.md](dispatcher.md)(auto 分派)、[model-config.md](model-config.md)(模型)。
+> 状态:v2 已实现(对齐 pi 的 `core/system-prompt.js`)。相关文档:
+> [agent-config.md](agent-config.md)(agent = 角色层)、[dispatcher.md](dispatcher.md)(auto 分派)、
+> [model-config.md](model-config.md)(模型)、[PLAN.md](PLAN.md)(未决项)。
 
 ## 0. 一句话
 
-qi 的 system prompt 由**两层**拼成:**基座层**(框架级,永远存在)+ **角色层**(agent 级,可以有多个)。
-`SYSTEM.md` 覆盖基座层,不覆盖角色层。
+qi 的 system prompt = **基座**(代码内默认,或被 `SYSTEM.md` **整体替换**)
 
-## 1. 为什么要分层
++ 运行时**动态追加**:角色层 → 项目上下文 → 技能 → 数据源 → 工作目录。
 
-对齐 pi 时容易忽略一点:pi 里其实是**两个正交概念**:
+## 1. 结构(与 pi 的对照)
 
-| pi | 作用 | 语义 |
+pi 里其实是两个正交概念:编译进 dist 的**默认 prompt**(代码内字符串,永远存在)与
+`SYSTEM.md` / `APPEND_SYSTEM.md`(可选覆盖 / 追加)。qi v2 采用同一形态:
+
+| | pi 0.85.1 | qi v2 |
 | --- | --- | --- |
-| 内置默认 system prompt(编译进 dist) | 底座指令 | **永远存在**,不可缺失 |
-| `SYSTEM.md` / `APPEND_SYSTEM.md` | 替换 / 追加底座 | 可选覆盖 |
+| 默认基座 | 代码内字符串 + 运行时拼接 | `src/qi_agent/system_prompt.py`(同样代码内) |
+| 覆盖 | `SYSTEM.md` **整体替换**默认 prompt | 同左(`<项目>/.qi/SYSTEM.md` > `~/.qi/agent/SYSTEM.md`) |
+| 追加 | `APPEND_SYSTEM.md` | **不实现**(v1 决策保留;需要时用 `SYSTEM.md` 写全) |
+| 动态块 | 工具清单、条件化 guidelines、`<project_context>`、`<available_skills>`、cwd | 同左 + **数据源清单**(qi 独有)+ **角色层** |
+| 祖先链边界 | 走到文件系统根 | 止于 **git 根**(与 `.agents/skills` 的继承范围一致) |
+| 自身文档索引 | README/docs/examples 绝对路径 + 12 条指路 | **暂不注入**(见 §6) |
 
-qi 早期把"角色"完全外包给了 `agents/<name>/agent.md`,等于丢掉了"内置默认"那一档 ——
-结果 `~/.qi/agent/agents/` 为空时没有任何提示词可用,只能硬失败。分层就是把这个坑补上:
+qi 相对 pi 保留的唯一结构差异是**角色层**:`agent.md` 正文永远追加在基座之后,
+所以「换 agent = 换角色层」,auto 分派语义不变。
 
 ```text
-┌─ 基座层 ────────────────────────────────────────────┐
-│ 身份(运行在 qi 中)/ 环境(会话目录、工具、bash)          │
-│ 通用做法(先看再做、小步验证、不编造)/ 输出风格          │
-│ 来源:SYSTEM.md 覆盖 → 否则包内置                      │
-└──────────────────────────────────────────────────────┘
-┌─ 角色层 ────────────────────────────────────────────┐
-│ agent.md 正文(含 include 拼入的资产)                   │
-│ 私有技能清单(渐进披露)                                │
-│ 数据源清单(先 schema 后 query、只读)                   │
-└──────────────────────────────────────────────────────┘
+┌─ 基座 ─────────────────────────────────────────────┐
+│ 有 SYSTEM.md → 该文件正文(整体替换)                 │
+│ 无 → 代码内默认:身份 / 可用工具 / 指南 / 环境 / 做法  │
+└────────────────────────────────────────────────────┘
+┌─ 动态追加(两种情况都有)─────────────────────────────┐
+│ 角色层      agents/<name>/agent.md 正文(含 include)  │
+│ 项目上下文  <project_context>…AGENTS.md…            │
+│ 技能        <available_skills>…(有 read/bash 才注入)│
+│ 数据源      清单 + 先 schema 后 query、只读           │
+│ 工作目录    当前工作目录: <绝对路径>                  │
+└────────────────────────────────────────────────────┘
 ```
 
-**换 agent = 换角色层;基座层共享。** auto 分派语义不变。
+拼装入口:`qi_agent.system_prompt.build_system_prompt(unit, base_prompt, cwd=…, tools=…, context_files=…)`。
+`qi_agent.runner` 里同名可导入(向后兼容)。
 
-## 2. 基座层来源与优先级
+## 2. 基座来源与优先级
 
 | 优先级 | 位置 | 说明 |
 | --- | --- | --- |
 | 高 | `<项目>/.qi/SYSTEM.md` | 跟项目走,可提交共享 |
 | 中 | `~/.qi/agent/SYSTEM.md` | 全局,所有项目可用 |
-| 低 | `src/qi_agent/SYSTEM.md` | **包内置默认**,随 wheel 发布,永远存在 |
+| 低 | (无文件) | 代码内默认基座,永远存在 |
 
 规则:
 
-- 取**第一个非空**的文件;空文件/读取失败视为未配置,继续往下一层找(不会静默降级成空提示词)。
-- 包数据万一缺失(裁剪安装/打包故障),代码内有精简兜底文本,保证基座层永不为空。
-- 与 pi 的差异:pi 的 `SYSTEM.md` 替换**整个** system prompt;qi 只替换**基座层**,角色层照旧追加。
++ 取**第一个非空**的文件;空文件/读取失败视为未配置,继续往下一层找。
++ 都没有 → `resolve_base_prompt()` 返回 `("", "builtin")`,空串即「用代码内默认」;
+  基座层永不为空,不存在「零配置没提示词」的状态。
++ **与 pi 的差异(语义)**:pi 的 `SYSTEM.md` 替换整个默认 prompt,qi 也一样 ——
+  但 qi 的**角色层与动态块照旧追加**,所以不是「整条 prompt 只剩你的文件」。
 
-## 3. 用法
+## 3. 副作用:自定义基座会丢掉工具清单与指南
 
-### 3.1 用默认的(零配置)
+默认基座里的「可用工具」「指南」两块是**跟默认基座绑在一起**的(pi 同款行为):
+写了 `SYSTEM.md` 就等于接管基座,那两块不再出现。
 
-什么都不用做。`qi -p "你好"` 会用包内置基座提示词 + 内置 `general` 角色。
-
-### 3.2 全局覆盖
-
-```bash
-$EDITOR ~/.qi/agent/SYSTEM.md
-```
-
-```markdown
-你是我们团队的内部助手。
-
-## 约定
-- 代码风格遵循仓库 AGENTS.md;提交信息用中文。
-- 改动前先跑 `uv run pytest -q`。
-```
-
-### 3.3 项目覆盖(可提交,团队共享)
-
-```bash
-mkdir -p .qi && $EDITOR .qi/SYSTEM.md
-```
+代价是真实的,写自定义基座时请自己交代工具约定,例如:
 
 ```markdown
 你是本仓库(订单服务)的开发助手。
+
+可用工具:`read` / `ls` / `find` / `grep` / `edit` / `write` / `bash` / `clarify`。
+- `bash` 不做命令级过滤,行为由本仓库约定约束(见 docs/tools.md §4)。
+- 需求不明确时先用 `clarify` 提问。
 
 ## 本仓库环境
 - 跑测试:`uv run pytest -q`;起服务:`uv run uvicorn app:main --reload`
 - 数据库迁移在 `migrations/`,只允许新增文件,禁止改历史迁移。
 ```
 
-### 3.4 查看当前生效的是哪个
+动态块(角色层 / 项目上下文 / 技能 / 数据源 / 工作目录)**不受影响**,不用重复声明。
+
+## 4. 默认基座的内容
+
+代码内(见 `system_prompt.py` 的 `DEFAULT_IDENTITY` / `DEFAULT_ENVIRONMENT` / `DEFAULT_METHOD`):
+
++ **身份**:运行在 qi 框架中的 AI 助手;qi 是多 agent 框架,下面追加的角色说明才是此刻身份。
++ **可用工具**:按该 agent **解析后**的工具集逐行列出(name + description)。
+  清单即模型可调用的全集 —— 所以不写 pi 那句「你可能还有别的工具」:qi 不会给出清单外的工具。
++ **指南**:按实际工具集生成(pi 的条件化 guidelines)。当前规则:
+  有 `bash` 但没有 `grep`/`find`/`ls` 时提示「用 bash 做文件操作」;
+  恒定三条:结论先行、路径写清楚、与用户一致的语言(默认中文)。
++ **环境**:会话工作目录 + 「需要事实时才用工具」+ 需求不明确用 `clarify`。
++ **做法**:先看再做 / 小步验证 / 不编造 / 务实。
+
+**没有任何 bash 白名单文案**:bash 不做命令级过滤(见 [bash-allowlist.md](bash-allowlist.md)),
+提示词不得声称「只读」——`tests/test_system_prompt.py` 有防回归断言。
+
+## 5. 项目上下文(AGENTS.md)
+
+对齐 pi:每级目录按候选顺序取**第一个**命中的文件,注入 `<project_context>`:
+
+```text
+AGENTS.override.md > AGENTS.md > AGENTS.MD > CLAUDE.md > CLAUDE.MD
+```
+
+顺序 = **全局**(`~/.qi/agent/`)→ 项目祖先链**由远到近**(含 cwd);按路径去重。
+祖先链止于 git 根(`paths.project_context_ancestors`,与 `.agents/skills` 一致)。
+
++ 空文件视为未配置(与 `SYSTEM.md` 同一约定;pi 会注入空块)。
++ 显式关闭:程序接口传 `context_files=[]`(测试/嵌入方要确定性时用)。
++ 未实现:pi 的 `git worktree` 影子文件去重(嵌套 worktree 与主仓库同作用域时只取一份)。
+
+## 6. 技能与数据源
+
+技能清单是 pi 式的 XML(渐进披露:只给名字/描述/路径,正文用时再读):
+
+```xml
+<available_skills>
+  <skill>
+    <name>code-review-checklist</name>
+    <description>评审核对</description>
+    <location>/abs/path/code-review-checklist/SKILL.md</location>
+  </skill>
+</available_skills>
+```
+
++ 措辞随可用工具切换:有 `read` 就说「用 read 读取它的 SKILL.md 全文」,只有 `bash` 就说 bash。
++ **两者都没有 → 整块不注入**(注入了也读不到,只会诱导模型调用不存在的工具);pi 同款。
++ 相对路径以 SKILL.md 所在目录为基准解析,并在工具命令里用绝对路径。
+
+数据源是 qi 独有的一块:列出 `id (type)` + 「先查 schema 确认表结构,只读查询,禁止写操作」。
+
+**未决(见 [PLAN.md](PLAN.md))**:pi 会注入自身文档索引(README/docs/examples 绝对路径 + 12 条
+按主题指路)。qi 的 `docs/` 目前不进 wheel,注入会指向不存在的路径,故暂不实现。
+
+## 7. 用法
+
+### 7.1 用默认的(零配置)
+
+```bash
+qi -p "你好"     # 代码内默认基座 + 内置 general 角色
+```
+
+### 7.2 全局覆盖 / 项目覆盖
+
+```bash
+$EDITOR ~/.qi/agent/SYSTEM.md        # 全局
+mkdir -p .qi && $EDITOR .qi/SYSTEM.md  # 项目(可提交共享)
+```
+
+注意 §3:接管基座后请自己交代工具约定。
+
+### 7.3 查看与编程接口
 
 ```python
-# 编程接口
-from qi_agent.loader import resolve_base_prompt
+from qi_agent.loader import resolve_base_prompt, load_project_context
+
 text, source = resolve_base_prompt()      # source: "project:<path>" | "user:<path>" | "builtin"
+                                          # text == "" 表示用代码内默认基座
+load_project_context()                    # [(AGENTS.md 路径, 正文), …] 全局 → 远 → 近
+
+from qi_agent.system_prompt import default_base_prompt, build_system_prompt
+
+default_base_prompt(tools)                # 默认基座(传入解析后的工具集)
+build_system_prompt(unit, text or None, cwd=…, tools=…)   # 完整 prompt
 ```
 
-`QiRuntime` 实例上也直接可见:`rt.base_prompt` / `rt.base_prompt_source`。
+`QiRuntime` 实例上:`rt.base_prompt`(自定义基座,可能是 `""`)/ `rt.base_prompt_source`。
 
-## 4. 与角色层的关系(示例)
-
-```markdown
-# 基座层(SYSTEM.md 或内置)
-你是运行在 qi 框架中的 AI 助手。……(环境 + 通用做法)
-
-# 角色层(agents/writer/agent.md 正文)
-你是「文档工程师」。……(这个角色特有的职责与约束)
-
-# 角色层附加(技能 / 数据源,自动生成)
-可用技能(需要时用 read 读取其 SKILL.md 全文执行):
-- code-review-checklist: 评审核对
-```
-
-拼装入口:`qi_agent.runner.build_system_prompt(unit, base_prompt)`。
-
-## 5. 决策记录
+## 8. 决策记录
 
 | 决策 | 结论 |
 | --- | --- |
-| 基座层形态 | 包数据 Markdown(`src/qi_agent/SYSTEM.md`),非代码内联字符串;便于阅读/评审/改文案 |
-| 覆盖文件位置 | `<项目>/.qi/SYSTEM.md` + `~/.qi/agent/SYSTEM.md`(与 agents/plugins/sessions 的 `.qi` 约定一致) |
-| 语义 | 替换**基座层**(非整个 system prompt);角色层始终追加 |
+| 基座形态 | **代码内字符串**(`system_prompt.py`),按工具集动态生成「可用工具 / 指南」——v1 的包数据 Markdown 方案废弃(静态、无法按工具集变化) |
+| `SYSTEM.md` 语义 | **整体替换**默认基座(对齐 pi 的 customPrompt);角色层与动态块照旧追加 |
+| `APPEND_SYSTEM.md` | 不实现(pi 有);需要追加就写进 `SYSTEM.md` |
 | 空文件 | 视为未配置,继续向下找;不产生空基座 |
-| `APPEND_SYSTEM.md` | **v1 不实现**(pi 有);需要时叠加在基座层之后 |
-| 模板化 | **v1 不做占位符替换**(如 `{workdir}`);基座文本是静态的 |
+| 工具清单 | 列**解析后**的工具集(即模型可调用全集);不写 pi 的「可能还有其他工具」 |
+| 项目上下文 | `AGENTS.override.md > AGENTS.md > AGENTS.MD > CLAUDE.md > CLAUDE.MD`;全局 + 祖先链,止于 git 根;空文件跳过 |
+| 技能注入 | pi 式 XML(含 location);无 `read`/`bash` 则整块不注入 |
+| 自身文档索引 | 暂不注入(未随 wheel 发布),列入 PLAN 未决 |
+| 模板化 | 不做 `{{cwd}}` 之类的占位符;动态块由代码追加 |

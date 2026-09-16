@@ -132,8 +132,10 @@ def test_skills_discovery(tmp_path):
     assert [s.name for s in unit.skills] == ["checklist"]
     from qi_agent.runner import build_system_prompt
 
-    prompt = build_system_prompt(unit)
+    # 技能清单只在有能读 SKILL.md 的工具时注入(对齐 pi),所以这里给 read
+    prompt = build_system_prompt(unit, tools=catalog.resolve(["read"]))
     assert "checklist" in prompt and "评审核对" in prompt
+    assert "<available_skills>" in prompt
 
 
 # ── P4 runner(tool-loop) ─────────────────────────────────

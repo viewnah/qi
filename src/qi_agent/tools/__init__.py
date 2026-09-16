@@ -1,14 +1,12 @@
-"""内置 7 工具 + clarify(对齐 docs/tools.md):read/ls/find/grep/write/edit/bash。
+"""内置 8 工具 + clarify(对齐 docs/tools.md):read/ls/find/grep/write/edit/bash/powershell。
 
-安全:六个文件工具的路径限制在会话工作目录内。bash 与 pi 一致 —— **不做命令级过滤**
+安全:六个文件工具的路径限制在会话工作目录内。bash / powershell 与 pi 一致 —— **不做命令级过滤**
 (不筛子命令、不拦重定向),限制只来自工具级收窄(tools / disallowed_tools)或容器/VM。
 见 docs/tools.md §4 与 docs/bash-allowlist.md。
 """
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import fnmatch
 import os
 import re
@@ -18,6 +16,14 @@ from pathlib import Path
 
 from ..models import TOOL_ERROR, TOOL_OK, ToolOutcome
 from ..registry import Tool, ToolError
+from .shell import (
+    POWERSHELL_UTF8_PREFIX,
+    ShellError,
+    ShellResult,
+    resolve_powershell_config,
+    resolve_shell_config,
+    run_shell,
+)
 
 MAX_RESULT = 200          # 截断行数
 MAX_FILE_CHARS = 50_000   # read 默认截断字符
@@ -32,6 +38,7 @@ class ToolContext:
     workdir: Path                        # 会话工作目录(路径边界)
     data_sources: list = field(default_factory=list)
     ask: AskFn | None = None             # async (text)->str|None,供 clarify 用
+    shell_path: str | None = None        # settings.shellPath:显式指定 bash(对齐 pi)
 
     def guard(self, p: str | Path) -> Path:
         """路径必须落在 workdir 内(防越界,对齐 hikqin validate_path 思想)。"""
@@ -189,14 +196,26 @@ async def _edit(args: dict, ctx: ToolContext) -> str:
     return f"已编辑 {path}:替换 1 处,{len(old_text)}→{len(new_text)} 字符"
 
 
-# ── bash(与 pi 对齐:无命令级过滤) ────────────────────
+# ── 命令执行:bash / powershell(与 pi 对齐:真 shell + 无命令级过滤) ──
+
+
+def _shell_outcome(result: ShellResult, timeout: float) -> ToolOutcome:
+    """两个 shell 工具共用的结果收敛 —— 文本形态与旧版**逐字一致**。"""
+    if result.timed_out:
+        return ToolOutcome(status=TOOL_ERROR, error="timeout",
+                           result=f"命令超时(>{timeout:.0f}s),已终止")
+    rc = result.exit_code
+    if rc == 0:
+        return ToolOutcome(status=TOOL_OK, result=_truncate(result.text), exit_code=0)
+    return ToolOutcome(status=TOOL_ERROR, result=f"exit={rc}\n{_truncate(result.text)}", exit_code=rc)
 
 
 async def _bash(args: dict, ctx: ToolContext) -> ToolOutcome:
-    """bash 是唯一能上报退出码的工具。
+    """执行 bash 命令 —— 解析**真正的 bash**,不是系统默认 shell(对齐 pi)。
 
-    `result` 文本与旧版**逐字一致**(失败时保留 `exit=N` 前缀),模型看到的内容不变;
-    `status` / `exit_code` 是给 UI 工具卡片用的结构化字段。
+    `bash` 是唯一能上报退出码的工具:`result` 文本与旧版**逐字一致**(失败时保留
+    `exit=N` 前缀),模型看到的内容不变;`status` / `exit_code` 是给 UI 工具卡片用的
+    结构化字段。
 
     安全:与 pi 一致,内置 bash **不筛命令**。要收紧就在 agent 级摘工具
     (`disallowed_tools: [bash]`),要真边界就把进程放进容器/VM。
@@ -205,28 +224,31 @@ async def _bash(args: dict, ctx: ToolContext) -> ToolOutcome:
     if not command:
         raise ToolError("bash 需要 command")
     timeout = _num_arg(args, "timeout", float, 120.0)
-    proc = await asyncio.create_subprocess_shell(
-        command,
-        cwd=ctx.workdir,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
     try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
-        proc.kill()
-        # 必须回收:只 kill 不 wait 的话,transport 会拖到事件循环关闭后才被 GC,
-        # 触发 “Event loop is closed” 的 unraisable 异常(测试里会报资源警告)。
-        with contextlib.suppress(Exception):
-            await proc.wait()
-        # 超时拿不到退出码:用 error 字段给出机器可读原因
-        return ToolOutcome(status=TOOL_ERROR, error="timeout",
-                           result=f"命令超时(>{timeout:.0f}s),已终止")
-    text = out.decode("utf-8", errors="replace")
-    rc = proc.returncode
-    if rc == 0:
-        return ToolOutcome(status=TOOL_OK, result=_truncate(text), exit_code=0)
-    return ToolOutcome(status=TOOL_ERROR, result=f"exit={rc}\n{_truncate(text)}", exit_code=rc)
+        config = resolve_shell_config(ctx.shell_path)
+    except ShellError as exc:
+        raise ToolError(str(exc)) from None
+    result = await run_shell(config, command, cwd=ctx.workdir, timeout=timeout)
+    return _shell_outcome(result, timeout)
+
+
+async def _powershell(args: dict, ctx: ToolContext) -> ToolOutcome:
+    """Windows 原生通道:PowerShell(pi 的第 8 个工具)。
+
+    非 Windows **不**静默降级成 bash —— 那会给出“命令确实跑过了”的假象;
+    这里回一条能照做的错误(换 bash,或用 `pwsh -Command ...`)。
+    """
+    command = str(args.get("command", "")).strip()
+    if not command:
+        raise ToolError("powershell 需要 command")
+    timeout = _num_arg(args, "timeout", float, 120.0)
+    try:
+        config = resolve_powershell_config()
+    except ShellError as exc:
+        raise ToolError(str(exc)) from None
+    result = await run_shell(config, POWERSHELL_UTF8_PREFIX + command,
+                             cwd=ctx.workdir, timeout=timeout)
+    return _shell_outcome(result, timeout)
 
 
 # ── clarify(通用小工具,B4:v1 内置) ──────────────────
@@ -263,7 +285,9 @@ def register_builtin_tools(catalog) -> None:
     catalog.register(Tool("edit", "diff 精确编辑:old_text 必须唯一匹配后替换为 new_text。", _schema(
         {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}},
         ["path", "old_text", "new_text"]), _edit))
-    catalog.register(Tool("bash", "执行 shell 命令(工作目录=会话目录);输出截断 + timeout。", _schema(
+    catalog.register(Tool("bash", "执行 bash 命令(工作目录=会话目录);输出截断 + timeout。", _schema(
         {"command": {"type": "string"}, "timeout": {"type": "number"}}, ["command"]), _bash))
+    catalog.register(Tool("powershell", "执行 PowerShell 命令(仅 Windows;输出走 UTF-8)。", _schema(
+        {"command": {"type": "string"}, "timeout": {"type": "number"}}, ["command"]), _powershell))
     catalog.register(Tool("clarify", "向用户提出澄清问题,等待回答。拿不准需求时使用。", _schema(
         {"question": {"type": "string"}}, ["question"]), _clarify))

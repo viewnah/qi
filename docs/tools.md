@@ -8,7 +8,7 @@
 - 技能/资产是内容(跟 agent 走);工具是代码(全局一份)。
 - 技能加载**不需要专用工具**:真实文件系统路线下,agent 用自带 `read` 读 SKILL.md,渐进披露(描述进 system prompt,用时读全文)。
 
-## 2. v1 内置 7 个(对齐 pi core tools,除 powershell)
+## 2. v1 内置 8 个(对齐 pi core tools,含 powershell)
 
 | # | 工具 | 作用 | 实现要点 |
 | --- | --- | --- | --- |
@@ -18,9 +18,11 @@
 | 4 | `grep` | 文本搜索 | 路径 + 正则/关键字 + 行号 + 上下文;限制输出条数 |
 | 5 | `write` | 整写文件 | 新建/覆盖;返回写入字节数 |
 | 6 | `edit` | diff 精确编辑 | `old_text → new_text` 精确匹配替换;匹配到多处报错要求唯一化 |
-| 7 | `bash` | 执行命令 | 工作目录 = 会话 cwd;输出截断 + timeout;安全策略见 §4 |
+| 7 | `bash` | 执行命令 | 工作目录 = 会话 cwd;解析**真正的 bash**(非系统默认 shell);输出截断 + timeout;安全策略见 §4 |
+| 8 | `powershell` | 执行 PowerShell 命令 | **仅 Windows**(pi 同款);`pwsh.exe` 优先,回退 `powershell.exe`;参数与 UTF-8 前缀照搬 pi;非 Windows 给可照做的错误 |
 
-- pi 的第 8 个 `powershell` 是 Windows 专属,不进 v1;将来做 Windows 支持时由平台层适配。
+- `bash` 的 shell 解析顺序对齐 pi(`utils/shell.js`):`settings.shellPath` → Windows 上 Git Bash 已知路径 → PATH 上的 bash → Unix `/bin/bash` → `sh` 兜底。老版 WSL 的 `C:\Windows\System32\bash.exe` 只认 stdin,走 `-s` + 管道(pi 的 `commandTransport`)∘
+- 非 Windows 上 `powershell` **在册但不可用**:描述里明说“仅 Windows”,真调用时返回可照做的错误。与 pi 一致(pi 也是总是注册、调用时才报错)。
 - `edit` v1 即按 pi 的精确编辑方案实现(小改动不整写,避免覆盖)。
 
 ## 3. 工具接口与结果规范
@@ -46,6 +48,8 @@ class ToolResult:
 
 - **已定:内置 bash 不做命令级过滤**——不筛子命令、不拦重定向、不做只读 allowlist。与 pi 取向一致(`pi docs/security.md`:*A partial in-process sandbox would be easy to misunderstand as a security boundary*)。
 - 限制手段 = **工具级收窄**(对齐 pi 的 `--tools` / `defaultTools`):`tools` 三态 + `disallowed_tools`。连 bash 都不给就 `disallowed_tools: [bash]`,模型只剩文件工具。
+- **执行器是解析出来的真 shell**,不是系统默认 shell:`bash` 永远走 bash 系二进制(Windows 上找 Git Bash/PATH,Unix 上 `/bin/bash` → PATH → `sh`),Windows 原生走 `powershell`。`settings.shellPath` 可显式指定(对齐 pi)。旧实现用 `create_subprocess_shell`,在 Windows 上等于 cmd.exe――工具名叫 bash 却跑 cmd。
+- 子进程的 stdin 是 `DEVNULL`(对齐 pi 的 `ignore`):命令读不到 TUI 的按键;超时时按**进程组**回收(子进程不会逃逸成孤儿)。
 - 需要真边界时把 qi 整个进程放进容器/VM(对齐 pi `docs/containerization.md` 的路线)。
 - 已定:文件路径限制在会话目录内(防越界,`validate_path` 思想,参考 hikqin filesystem.py)。
   现状:该约束只覆盖 `read`/`ls`/`find`/`grep`/`write`/`edit` 六个文件工具,**bash 不受限**(与 pi 同为进程权限模型)。
@@ -58,8 +62,7 @@ class ToolResult:
 
 ## 5. 预留(二期)
 
-- 审批/确认机制(破坏性操作的交互式确认;需要时的位置是 bash 工具的执行前钩子)
-- Windows 平台 bash→powershell 适配
+- 审批/确认机制(破坏性操作的交互前钩子)
 
 MCP 已是 v1,见 [agent-config.md](agent-config.md) §8。
 
@@ -67,15 +70,16 @@ MCP 已是 v1,见 [agent-config.md](agent-config.md) §8。
 
 | 决策 | 结论 |
 | --- | --- |
-| v1 内置 | **7 个**:read / ls / find / grep / write / edit / bash(对齐 pi,去 powershell) |
+| v1 内置 | **8 个**:read / ls / find / grep / write / edit / bash / powershell(对齐 pi core tools) |
 | 命名分歧 | 文件名搜索用 `find`(跟 pi),不用 `glob`(hikqin) |
 | edit 方案 | v1 即 diff 精确编辑,不做整写简化版 |
 | tools 三态 | 省略 / `["*"]` = 全部;显式名单 = allowlist;未知名报错(对齐 Claude Code) |
 | denylist | `disallowed_tools` v1(Claude 同款;先 denylist 后 allowlist) |
 | clarify | v1 内置全局通用工具 |
 | bash 策略 | 与 pi 对齐:**无命令级过滤**;限制靠 `tools`/`disallowed_tools` 收窄或容器/VM;文件工具路径限会话目录 |
+| bash 执行器 | 解析**真 bash**(`shellPath` → Git Bash → PATH → `/bin/bash` → `sh`),不用系统默认 shell;Windows 原生走 `powershell` 工具 |
+| 老版 WSL | `C:\Windows\System32\bash.exe` 走 `-s` + stdin(照搬 pi 的 `commandTransport: stdin`) |
 
 ## 7. 待定决策
 
 - 审批交互形态(v2)
-- Windows powershell 适配时机

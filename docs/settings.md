@@ -39,6 +39,7 @@
 | `defaultProvider` | string | — | 默认 provider(**唯一来源**;`models.json` 里的同名键不参与) |
 | `defaultModel` | string | — | 默认模型 id,同上;缺任一项则启动失败并给出迁移命令 |
 | `sessionDir` | string | — | 会话目录;相对路径按**各自 settings.json 所在目录**解析,支持 `~`;项目优先于全局 |
+| `shellPath` | string | — | `bash` 用哪个 shell(对齐 pi);空 = 按平台解析:`shellPath` → Windows 上 Git Bash 已知路径 → PATH 的 bash → `/bin/bash` → `sh`。指向不存在的文件会直接报错(不静默回退)。见 [tools.md](tools.md) §2 |
 | `skills` | string[] | `[]` | 追加技能路径;支持 glob、`~`、相对路径与排除项(见 §4) |
 | `skillsEnabled` | boolean | `true` | qi 扩展:关闭技能自动发现(等价 pi 的 `--no-skills` CLI 开关) |
 | `doubleEscapeAction` | string | `tree` | 空编辑器连按两次 `escape`:`tree`(默认)/`fork`/`none`;非法值按 `tree`。见 [tui.md](tui.md) §2 |

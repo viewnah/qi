@@ -22,7 +22,7 @@
 │   ├── models.py               # AgentConfig/Tool/Message/事件类型
 │   ├── registry.py             # AgentRegistry / ToolCatalog / 插件能力注册表
 │   ├── loader.py               # agents 发现(内置/用户/项目)+ agent.md/技能解析 + 校验 + SYSTEM.md 解析 + AGENTS.md 项目上下文
-│   ├── tools/                  # 内置 7 工具(read/ls/find/grep/write/edit/bash)
+│   ├── tools/                  # 内置 8 工具(read/ls/find/grep/write/edit/bash/powershell)+ shell 解析
 │   ├── runner.py               # AgentRunner(tool-loop)
 │   ├── system_prompt.py        # ⭐ 系统提示词构建:代码内默认基座 + 动态注入(工具清单/指南/AGENTS.md/技能/数据源/cwd)
 │   ├── dispatcher.py           # Router-LLM 分派
@@ -73,7 +73,7 @@ packages = ["src/qi_agent"]
 | 进 wheel | 不进 wheel |
 | --- | --- |
 | `qi_agent/*` 代码、py.typed | docs/、examples/(仓库内容) |
-| 内置 7 工具、CLI/TUI/MCP 代码 | sdk/(独立产品) |
+| 内置 8 工具、CLI/TUI/MCP 代码 | sdk/(独立产品) |
 | 无任何 agent/技能数据(零内置) | 运行时 ~/.qi 数据(永不打包) |
 
 安装后:`pip install qi-agent` → `qi` 命令可用,`~/.qi/` 首次运行创建;web 前端(v2)按 web.md 走**独立 UI 插件包**,不进本 wheel。
@@ -85,7 +85,7 @@ packages = ["src/qi_agent"]
 | P1 骨架 | pyproject、包结构、配置装载(TOML 分层 + pydantic)、models 解析 | `qi doctor` 能读配置/模型并报错 |
 | P2 内容装载 | agents 目录发现(2 层)、agent.md/技能解析、**装载校验器**(import 复用同款) | `qi agents list/show` 输出正确;坏包报错 |
 | P3 会话 | JSONL 格式、sessions 读写与命令 | `-c/--session` 续聊;`sessions list/show/rm` 可用 |
-| P4 执行内核 | LLMClient、AgentRunner(tool-loop)、内置 7 工具、ToolContext、结果截断 | manual(`--agent`)单 agent 完整跑通含 write/edit |
+| P4 执行内核 | LLMClient、AgentRunner(tool-loop)、内置 8 工具、ToolContext、结果截断 | manual(`--agent`)单 agent 完整跑通含 write/edit |
 | P5 Dispatcher | registry → Router-LLM 结构化分派 + general 兜底 + `@` 点名 | auto 模式多 agent 端到端正确分派 |
 | P6 CLI | cli.md 全命令面落地 | 命令与文档一致 |
 | P7 TUI | textual 消息流 + dispatch 卡片 + 状态栏 + `/` 命令 | 交互会话流畅 |
@@ -113,7 +113,7 @@ packages = ["src/qi_agent"]
 | A3/N1 | frontmatter 语法 | YAML(对齐 Agent Skills/Claude) |
 | A4/N8 | LLM 接入 | litellm(统一多 provider) |
 | A5 | 会话 JSONL entry 类型 | 消息/工具结果/分派/状态/自定义 五类(P3 定格式);**`tool` 类与 header `cwd` 已于 P0 契约补丁落地**,见 [web.md §13](web.md#13-p0-契约改动记录2026-09) |
-| A6/N7 | bash 安全 | **与 pi 对齐:无命令级过滤**(旧的首词白名单已删除);限制靠 `tools`/`disallowed_tools` 收窄或容器/VM;文件工具路径限会话目录 |
+| A6/N7 | bash 安全 | **与 pi 对齐:无命令级过滤**(旧的首词白名单已删除);限制靠 `tools`/`disallowed_tools` 收窄或容器/VM;文件工具路径限会话目录。执行器为**解析出的真 bash**(`shellPath` → Git Bash → PATH → `/bin/bash` → `sh`),Windows 原生另备 `powershell` 工具 |
 | B1/N3 | sessions 位置 | 全局 `~/.qi/agent/sessions/`(对齐 pi) |
 | B2/N4 | mcp_servers 省略默认 | **默认无、必须显式声明**(凭证敏感);tools 仍"省略=全部" |
 | B3/N5 | disallowed_tools | v1 做(denylist,Claude 同款) |

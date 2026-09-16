@@ -122,7 +122,8 @@ class QiRuntime:
     def _tool_ctx(self, agent_name: str, unit) -> ToolContext:
         return ToolContext(agent_name=agent_name, workdir=self.workdir,
                            data_sources=unit.data_sources,
-                           ask=self._ask)
+                           ask=self._ask,
+                           shell_path=self.settings.shellPath)
 
     async def _ask(self, question: str) -> str | None:
         """clarify:headless 默认无可交互输入。"""

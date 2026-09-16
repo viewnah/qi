@@ -46,7 +46,7 @@ vim .qi/SYSTEM.md                              # 项目级基座提示词(整体
 | [PLAN.md](docs/PLAN.md) | 开发计划(v1/v2 阶段)与未决清单 |
 | [docs/agent-config.md](docs/agent-config.md) | agent = 自包含目录(agent.md / skills / assets / mcp.json / data_sources.json)、装载校验、MCP、数据源、导入导出 |
 | [docs/system-prompt.md](docs/system-prompt.md) | 系统提示词:代码内默认基座 + 可选 `SYSTEM.md` 整体替换 + 动态追加(工具清单 / 项目上下文 AGENTS.md / 技能 / 数据源 / 工作目录) |
-| [docs/tools.md](docs/tools.md) | ToolCatalog、内置 7 工具、tools 三态、bash 策略(与 pi 对齐:无命令级过滤) |
+| [docs/tools.md](docs/tools.md) | ToolCatalog、内置 8 工具(含 Windows 的 powershell)、tools 三态、bash 策略(真 bash + 无命令级过滤) |
 | [docs/bash-allowlist.md](docs/bash-allowlist.md) | bash 策略**变更记录**:为何删掉首词白名单、与 pi(v0.85.1)的对照、可绕过的四种写法 |
 | [dispatcher.md](docs/dispatcher.md) | auto 模式:信号分层、分派管线、Router 契约、优先级 |
 | [docs/model-config.md](docs/model-config.md) | `models.json`(对齐 pi:`providers` / `baseUrl` / `api` / `models`);默认模型 default / 分派 router;凭证 auth store + 约定 env + apiKey 引用 |
@@ -90,7 +90,7 @@ vim .qi/SYSTEM.md                              # 项目级基座提示词(整体
 | 数据源 | 实例在 agent `data_sources.json`(私有,凭证 env);**插件消费型配置**:插件缺席不装载 | agent-config.md §9 / plugins.md |
 | 导入导出 | import = 拷贝 + 复用装载校验器 + 明文凭证扫描;export 产物可直接 import | agent-config.md §10 |
 | 工具 | 代码全局注册 ToolCatalog;**tools 三态**:省略或 `*` = 全部,名单 = allowlist;未知名报错 | tools.md |
-| 内置工具(v1) | 7 个:read / ls / find / grep / write / edit(diff 精确)/ bash(对齐 pi,去 powershell) | tools.md §2 |
+| 内置工具(v1) | 8 个:read / ls / find / grep / write / edit(diff 精确)/ bash(真 bash)/ powershell(仅 Windows) | tools.md §2 |
 | 模型 | 全局 `models.json`:`defaultProvider/defaultModel`(执行)/ `routerProvider/routerModel`(分派);agent 不声明模型 | model-config.md |
 | 插件 | pip 包(entry point `qi.plugins`)+ 本地目录双通道;register():add_tool / provides_config / provides_types | plugins.md |
 | 运行 | auto 默认(Dispatcher **每轮**分派,不做会话亲和);`--agent` manual;`@` 点名 | cli.md |

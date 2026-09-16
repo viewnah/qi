@@ -108,12 +108,18 @@ def test_default_base_prompt_lists_resolved_tools() -> None:
 
 
 def test_guidelines_follow_available_tools() -> None:
-    """对齐 pi:有 bash 但没有 grep/find/ls 时才提示用 bash 做文件操作。"""
-    assert "用 bash 做文件操作:列目录、搜索、找文件" in build_guidelines(["read", "bash"])
-    assert "用 bash 做文件操作:列目录、搜索、找文件" not in build_guidelines(["read", "bash", "grep"])
-    assert "用 bash 做文件操作:列目录、搜索、找文件" not in build_guidelines(["read"])
-    # 无条件的两条一直在
-    for names in (["read"], ["read", "bash", "grep"]):
+    """对齐 pi:有 shell 但没有 grep/find/ls 时才提示用 shell 做文件操作,按组合分三种措辞。"""
+    bash_only = ["read", "bash"]
+    ps_only = ["read", "powershell"]
+    both = ["read", "bash", "powershell"]
+    has_ls = ["read", "bash", "powershell", "ls"]
+    assert "用 bash 做文件操作:列目录、搜索、找文件" in build_guidelines(bash_only)
+    assert "用 PowerShell 做文件操作:列目录、搜索、找文件" in build_guidelines(ps_only)
+    assert "用 bash 或 PowerShell 做文件操作:列目录、搜索、找文件" in build_guidelines(both)
+    # 有 ls/find/grep 就不要这条(pi 同条件)
+    assert not [g for g in build_guidelines(has_ls) if "做文件操作" in g]
+    # 无条件的三条一直在
+    for names in (["read"], both, has_ls):
         assert "结论先行,简明扼要" in build_guidelines(names)
 
 

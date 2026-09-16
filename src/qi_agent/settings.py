@@ -86,6 +86,8 @@ class QiSettings(BaseModel):
     # 会话 / 工具
     sessionDir: str | None = None
     defaultTools: list[str] | None = None
+    # bash 用哪个 shell(对齐 pi 的 shellPath);空 = 按平台解析(见 tools/shell.py)
+    shellPath: str | None = None
 
     # 运行行为
     compaction: dict[str, Any] | None = None

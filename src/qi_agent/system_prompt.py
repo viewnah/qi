@@ -49,9 +49,9 @@ DEFAULT_METHOD = """做法:
 def build_guidelines(tool_names: Sequence[str]) -> list[str]:
     """按**实际可用工具**生成指南(pi 的条件化 guidelines)。
 
-    pi 只在「有 bash 但没有 grep/find/ls」时才提示用 bash 做文件操作;qi 的默认
-    工具集自带 ls/find/grep,所以这条通常不出现,但收窄到 `["read","bash","edit","write"]`
-    时就会出现 —— 与 pi 同形。
+    pi 只在「有 bash/powershell 但没有 grep/find/ls」时提示用 shell 做文件操作,
+    并按两者是否同时存在分三种措辞。qi 的默认工具集自带 ls/find/grep,所以这条通常
+    不出现,但收窄到 `["read","bash","edit","write"]` 时就会出现 —— 与 pi 同形。
     """
     has = set(tool_names)
     out: list[str] = []
@@ -60,8 +60,13 @@ def build_guidelines(tool_names: Sequence[str]) -> list[str]:
         if text not in out:
             out.append(text)
 
-    if "bash" in has and not ({"grep", "find", "ls"} & has):
-        add("用 bash 做文件操作:列目录、搜索、找文件")
+    if ({"bash", "powershell"} & has) and not ({"grep", "find", "ls"} & has):
+        if "bash" in has and "powershell" in has:
+            add("用 bash 或 PowerShell 做文件操作:列目录、搜索、找文件")
+        elif "powershell" in has:
+            add("用 PowerShell 做文件操作:列目录、搜索、找文件")
+        else:
+            add("用 bash 做文件操作:列目录、搜索、找文件")
     add("结论先行,简明扼要")
     add("涉及文件时把路径写清楚")
     add("使用与用户一致的语言(默认中文)")

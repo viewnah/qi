@@ -1,4 +1,4 @@
-"""AutoRuntime(runtime.py):manual/auto + sticky + @点名 + 会话 JSONL 持久化。
+"""AutoRuntime(runtime.py):manual/auto + @点名 + 每轮重新路由 + 会话 JSONL 持久化。
 
 stream(): 一次用户输入 → 事件(CLI/TUI/HTTP 共享的 consumer 源)。
 """

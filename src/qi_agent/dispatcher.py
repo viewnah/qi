@@ -1,6 +1,8 @@
-"""Dispatcher(P5,对齐 docs/dispatcher.md):信号分层 + 管线 + sticky。
+"""Dispatcher(P5,对齐 docs/dispatcher.md):信号分层 + 管线。
 
 L1 规则(keywords)/ L3 Router-LLM(读 description,结构化 tool-call)/ L4 兜底。
+**每轮输入都重新路由**:规则层不认 active_agent,只有 @点名 / keywords 唯一命中才能
+零 LLM 短路,其余一律交 L3;active_agent 只作为 Router 的上下文提示(不做会话亲和)。
 L2 embedding = 可插拔默认关(本文件留接口,未实现)。
 """
 
@@ -16,14 +18,12 @@ MENTION_RE = re.compile(r"^@([a-z0-9]+(-[a-z0-9]+)*)\b")
 CONFIDENCE_MIN = 0.6      # B6:可配 [runtime]
 ROUTER_TOOL = "dispatch_to"
 
-STICKY_NEW_TASK_WORDS = ("新建", "新开", "换成", "交给", "另起", "换个", "开始新")
-
 
 @dataclass
 class Decision:
     agent: str | None
     confidence: float
-    source: str            # mention|rules|sticky|router|fallback|manual
+    source: str            # mention|rules|router|fallback|manual
     reasoning: str = ""
 
 
@@ -36,7 +36,11 @@ class Dispatcher:
 
     # ── 管线(规则路径:同步,零 LLM) ──
     def rule_decide(self, text: str, active_agent: str | None = None) -> Decision | None:
-        """@点名 / L1 规则 / sticky。全部未命中且需要 Router 时返回 None。"""
+        """@点名 / L1 规则。两者都不命中时返回 None → 交 L3 Router。
+
+        `active_agent` 只作签名兼容:规则层**不做会话亲和**(对齐 B7' 每轮重新路由),
+        确定性直派只有 @点名 与 keywords 唯一命中两种。
+        """
         text = text.strip()
         m = MENTION_RE.match(text)
         if m and self.registry.get(m.group(1)):
@@ -46,11 +50,7 @@ class Dispatcher:
         if len(unique) == 1:
             return Decision(agent=unique[0], confidence=1.0, source="rules",
                             reasoning=f"keywords 命中 {unique[0]}")
-        # 多命中 = 歧义(或命中了其他 agent)→ 交 L3 Router 裁决,不让 sticky 截胡
-        if active_agent and self.registry.get(active_agent) \
-                and not self._new_task_signal(text, active_agent, unique):
-            return Decision(agent=active_agent, confidence=0.9, source="sticky",
-                            reasoning="延续当前 agent")
+        # 无命中 / 多命中(歧义)→ 交 L3 Router 裁决
         return None
 
     def _keyword_hits(self, text: str) -> list[str]:
@@ -78,16 +78,6 @@ class Dispatcher:
                              text_lower) is not None
         return kw in text_lower
 
-    def _new_task_signal(self, text: str, active_agent: str | None = None,
-                         rule_hit: list[str] | None = None) -> bool:
-        """③ 新任务信号:显式切换词 / @点名 / 其他 agent 的 keywords 命中(对齐 docs/dispatcher.md §3)。"""
-        if any(w in text for w in STICKY_NEW_TASK_WORDS):
-            return True
-        if MENTION_RE.match(text.strip()):
-            return True
-        hits = self._keyword_hits(text) if rule_hit is None else rule_hit
-        return any(name != active_agent for name in hits)
-
     # ── L3 Router(异步) ──
     async def decide_semantic(self, text: str, active_agent: str | None = None,
                               recent_summary: str = "") -> Decision:
@@ -99,13 +89,16 @@ class Dispatcher:
         system = (
             "你是分派器。根据候选 agent 的 description 选择最合适的执行者,"
             "只调用一次 dispatch_to 工具。拿不准时 agent 选 general(若有)或不选。\n"
+            "每轮输入都独立判断,不要因为是同一会话就默认沿用上一个 agent:\n"
+            "- 像新任务(context 与当前 agent 职责不符)→ 改派更合适的 agent;\n"
+            "- 是当前任务的延续(追问、补充、'继续'、纠正)→ 仍选当前 agent。\n"
             f"候选:\n{candidates}"
         )
         user = text
         if recent_summary:
             user = f"会话摘要:{recent_summary}\n\n最新输入:{text}"
         if active_agent:
-            user += f"\n(当前 agent:{active_agent})"
+            user += (f"\n(当前 agent:{active_agent};若最新输入是该任务的延续,应继续选它)")
         for _attempt in range(2):
             resp: ChatResponse = await self.router_llm.chat(
                 [ChatMessage(role="system", content=system),

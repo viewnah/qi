@@ -26,7 +26,7 @@
 │   ├── tools/                  # 内置 7 工具(read/ls/find/grep/write/edit/bash)
 │   ├── runner.py               # AgentRunner(tool-loop)
 │   ├── dispatcher.py           # Router-LLM 分派
-│   ├── runtime.py              # AutoRuntime:sticky/@/manual/stream()
+│   ├── runtime.py              # AutoRuntime:manual/@点名/每轮重新路由/stream()
 │   ├── session.py              # JSONL 会话读写
 │   ├── events.py               # 事件总线
 │   ├── mcp.py                  # MCP client 装载(v1)
@@ -120,7 +120,7 @@ packages = ["src/qi_agent"]
 | B4/N6 | clarify 工具 | v1 加(全局通用工具) |
 | B5 | Router 输出约束 | tool-call 强约束 |
 | B6 | confidence_min | 0.6(可配 `[runtime]`) |
-| B7 | sticky 档位 | v1 关键词启发;预留语义判定升级位 |
+| B7 | sticky 档位 | ~~v1 关键词启发~~ → **已废弃(B7')**:改为每轮重新路由,不做会话亲和;Router 带着 `active_agent` 上下文自行判定是否沿用。理由见 [dispatcher.md §3](dispatcher.md) |
 | B8 | L2 embedding | 可插拔模块,默认关(离线场景再开) |
 | B9 | agent.md icon | 不进 v1 |
 | B10 | 样例 | examples/ 加 writer + general(演示 auto 多角色) |

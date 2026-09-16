@@ -100,7 +100,7 @@ models.json:  $QI_AGENT_CONFIG(env 指定文件,最高)
   ├─ 默认模型从 settings.json 取;缺失则启动失败 + 打印可照抄的迁移命令
   ├─ 校验 api 已知(openai-completions/openai-responses/anthropic-messages/google-generative-ai)
   ├─ 按 pi 顺序解析密钥(auth store → 约定 env → apiKey 引用;ollama 免 key)
-  └─ router* 缺省 → Router 回退 default(L1/sticky 也不依赖模型)
+  └─ router* 缺省 → Router 回退 default(L1 规则也不依赖模型)
 ```
 
 | 用途 | 模型 |

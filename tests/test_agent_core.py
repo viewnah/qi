@@ -207,13 +207,17 @@ def test_mention_and_keywords(tmp_path):
     # 无 active 且无命中 → None(交 router)
     d3 = disp.rule_decide("继续看看")
     assert d3 is None
-    # sticky
+    # 有 active_agent 但输入没命中 → 同样交 Router(不做会话亲和)
     d4 = disp.rule_decide("继续", active_agent="writer")
-    assert d4 is not None and d4.agent == "writer" and d4.source == "sticky"
+    assert d4 is None, f"规则层不该沿用 active_agent,却得到 {d4.agent}/{d4.source}"
 
 
-def test_sticky_not_swallowing_other_agents_keywords(tmp_path):
-    """回归:active_agent 存在时,命中**其他** agent 的 keywords 必须交 Router,不被 sticky 吞掉。"""
+def test_rule_layer_never_sticks_to_active_agent(tmp_path):
+    """回归:规则层不认 active_agent —— 每轮都重新路由。
+
+    旧实现有 sticky:上一轮定过的 agent 会以 confidence 0.9 吞掉后续输入,
+    导致不设 keywords 的 agent(纯语义路由)永远拿不到分派。
+    """
     catalog = make_catalog()
     units = {}
     for a, kws in (("writer", ["文档"]), ("code-analyst", ["review", "分析"])):
@@ -223,17 +227,21 @@ def test_sticky_not_swallowing_other_agents_keywords(tmp_path):
     reg.register_all(units)
     disp = Dispatcher(reg, router_llm=None)
 
-    # 命中 code-analyst 的 keyword,当前停在 writer → 不 sticky,直派/交Router 都行
+    # 命中 code-analyst 的 keyword,当前停在 writer → 直派 code-analyst
     d1 = disp.rule_decide("帮我 review 一下这段代码", active_agent="writer")
     assert d1 is not None and d1.agent == "code-analyst" and d1.source == "rules"
 
-    # 命中两个 agent(歧义)→ 同样不 sticky
+    # 命中两个 agent(歧义)→ 交 Router
     d2 = disp.rule_decide("帮我分析一下这个文档", active_agent="writer")
     assert d2 is None, f"歧义输入应交给 Router,却得到 {d2.agent}/{d2.source}"
 
-    # 无 keywords 命中 → 仍沿用(既有行为不被破坏)
-    d3 = disp.rule_decide("继续", active_agent="writer")
-    assert d3 is not None and d3.agent == "writer" and d3.source == "sticky"
+    # 无 keywords 命中(含"继续")→ 也交 Router,不再沿用
+    for text in ("继续", "刚才那个再加一句", "换个写法"):
+        d = disp.rule_decide(text, active_agent="writer")
+        assert d is None, f"'{text}' 不该被规则层定死,却得到 {d.agent}/{d.source}"
+
+    # 没有 active_agent 时的行为不变
+    assert disp.rule_decide("继续") is None
 
 
 def test_keyword_ascii_word_boundary(tmp_path):
@@ -295,10 +303,13 @@ async def test_runtime_auto_end_to_end(tmp_path, monkeypatch):
     workdir.mkdir()
     sessions = SessionStore(root=tmp_path / "sessions")
 
-    # router 也是 stub(auto 需 decide_semantic)
-    router = StubLLM([ChatResponse(text="", tool_calls=[
-        ToolCallOut(id="r", name="dispatch_to",
-                    args={"agent": "writer", "confidence": 0.9, "reasoning": "写"})])])
+    # router 也是 stub(auto 需 decide_semantic);两轮各一条
+    def _writer_call(i: str) -> ChatResponse:
+        return ChatResponse(text="", tool_calls=[
+            ToolCallOut(id=i, name="dispatch_to",
+                        args={"agent": "writer", "confidence": 0.9, "reasoning": "写"})])
+
+    router = StubLLM([_writer_call("r1"), _writer_call("r2")])
     exec_llm = StubLLM([ChatResponse(text="好的,我写好了。")])
     rt = QiRuntime(cwd=workdir,
                    runtime_cfg=RuntimeConfig(workdir=workdir),
@@ -316,10 +327,50 @@ async def test_runtime_auto_end_to_end(tmp_path, monkeypatch):
     assert s2 is not None
     roles = [e.get("role") for e in s2.entries if e.get("type") == "message"]
     assert "assistant" in roles
-    # sticky: 同一会话再输入,rule path 直接沿用 writer
+    # 每轮重新路由:第二句仍走 router(stub 只有一条脚本,再次返回 writer)
     events2 = [e async for e in rt.stream("补充一句", session)]
     d2 = next(e for e in events2 if e.kind == "dispatch")
-    assert d2.data["source"] == "sticky"
+    assert d2.data["source"] == "router"
+    assert d2.agent == "writer"
+
+
+@pytest.mark.asyncio
+async def test_runtime_reroutes_every_turn(tmp_path, monkeypatch):
+    """回归:上一轮定过 agent 后,下一轮仍由 Router 裁决(不被 sticky 钉住)。
+
+    旧行为:第 1 轮 Router 判给 general/无 keywords 的 agent 后,后续输入零命中
+    → sticky 永久沿用,Router 再无机会介入。
+    """
+    from qi_agent.runtime import QiRuntime, RuntimeConfig
+
+    env = _runtime_env(monkeypatch, tmp_path)
+    write_agent(env["home"] / "agents", "writer", extra={"keywords": []})
+    write_agent(env["home"] / "agents", "analyst", extra={"keywords": []})
+    workdir = tmp_path / "ws"
+    workdir.mkdir()
+
+    def _call(agent: str, cid: str) -> ChatResponse:
+        return ChatResponse(text="", tool_calls=[
+            ToolCallOut(id=cid, name="dispatch_to",
+                        args={"agent": agent, "confidence": 0.9, "reasoning": agent})])
+
+    router = StubLLM([_call("writer", "r1"), _call("analyst", "r2")])
+    rt = QiRuntime(cwd=workdir, runtime_cfg=RuntimeConfig(workdir=workdir),
+                   session_store=SessionStore(root=tmp_path / "s"),
+                   llm=StubLLM([ChatResponse(text="1"), ChatResponse(text="2")]),
+                   router_llm=router)
+    session = rt.sessions.create("t")
+
+    d1 = next(e for e in [e async for e in rt.stream("写点东西", session)]
+              if e.kind == "dispatch")
+    assert (d1.agent, d1.data["source"]) == ("writer", "router")
+
+    # 第二轮:无 keywords 命中,必须再问 Router,并接受改派
+    d2 = next(e for e in [e async for e in rt.stream("分析一下", session)]
+              if e.kind == "dispatch")
+    assert (d2.agent, d2.data["source"]) == ("analyst", "router")
+    # Router 拿到了上一轮 agent 作上下文
+    assert any("writer" in m.content for m in router.calls[1])
 
 
 @pytest.mark.asyncio

@@ -64,7 +64,7 @@ vim .qi/SYSTEM.md                              # 项目级基座提示词(可提
 │   TUI(textual)· CLI(typer 一次性)· HTTP(v2,SSE)           │
 ├──────────────────────────────────────────────────────────┤
 │ 编排层                                                     │
-│   Runtime.stream() ── sticky/@点名 ── Dispatcher(路由)      │
+│   Runtime.stream() ── @点名 ── Dispatcher(每轮重新路由)      │
 │        │                                      │           │
 │        ▼                                      ▼           │
 │   AgentUnit(装载自 .qi/agents/)       Router-LLM(L1/L3/L4)│
@@ -92,12 +92,12 @@ vim .qi/SYSTEM.md                              # 项目级基座提示词(可提
 | 内置工具(v1) | 7 个:read / ls / find / grep / write / edit(diff 精确)/ bash(对齐 pi,去 powershell) | tools.md §2 |
 | 模型 | 全局 `models.json`:`defaultProvider/defaultModel`(执行)/ `routerProvider/routerModel`(分派);agent 不声明模型 | model-config.md |
 | 插件 | pip 包(entry point `qi.plugins`)+ 本地目录双通道;register():add_tool / provides_config / provides_types | plugins.md |
-| 运行 | auto 默认(Dispatcher 分派);`--agent` manual;sticky 会话亲和 + `@` 点名 | cli.md |
+| 运行 | auto 默认(Dispatcher **每轮**分派,不做会话亲和);`--agent` manual;`@` 点名 | cli.md |
 | 命令 | 参数尽量对齐 pi:`qi [-p\|-c\|-r\|…] [--] [@files…] [msg…]` + 子命令 | cli.md |
 | Web(v2) | HTTP 宿主在框架(`qi web`),UI 插件化;不做外置 RPC 桥 | web.md |
 | 配置形态 | agent 定义 = Markdown + frontmatter;模型配置 = JSON `models.json`(对齐 pi,分层:env → 项目 → 用户);应用设置/默认模型 = `settings.json` | settings.md |
 | 会话 | JSONL 每会话文件(pi 风格,entry 带 type/agent_id);位置:**全局 `~/.qi/agent/sessions/`** |
-| Dispatcher | auto:信号分层(L1 规则 / L2 embedding 默认关 / L3 Router 读 description / L4 兜底)+ sticky + @ 点名 |
+| Dispatcher | auto:信号分层(L1 规则 / L2 embedding 默认关 / L3 Router 读 description / L4 兜底)+ @ 点名;**每轮都重新路由,无 sticky 沿用** |
 | bash 安全 | 默认只读 allowlist;破坏性命令需配置放开或审批(v2);路径限会话目录 |
 | clarify / denylist | v1 内置 clarify 通用工具;`disallowed_tools` v1 |
 

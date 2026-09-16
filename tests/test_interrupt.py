@@ -137,13 +137,29 @@ async def test_stop_after_predicate_reports_limit(tmp_path):
 
 
 def test_turn_policy_shape():
-    """runner 里不再有任何"上限数字":轮次是嵌入方的谓词,默认无,qi 自己不设。"""
+    """runner 里不再有任何"上限数字",也不再套回合级请求超时(都对齐 pi)。"""
     assert RunnerSettings().stop_after is None            # 默认不限
     assert not hasattr(RunnerSettings(), "max_turns")     # 数字字段已彻底移除
-    assert RuntimeConfig(workdir=Path(".")).timeout_s == 600.0
-    assert not hasattr(RuntimeConfig(workdir=Path(".")), "max_turns")
+    assert not hasattr(RunnerSettings(), "timeout_s")     # 回合级超时也已移除
+    config = RuntimeConfig(workdir=Path("."))
+    assert not hasattr(config, "max_turns")
+    assert not hasattr(config, "timeout_s")
     assert stop_after_turns(3)(2) is False
     assert stop_after_turns(3)(3) is True
+
+
+def test_request_timeout_lives_at_the_provider_layer():
+    """超时/重试归 provider SDK(pi 的 `retry.provider`),不再是 agent loop 的事。"""
+    from qi_agent.llm import provider_retry_params
+
+    assert provider_retry_params(None) == {}
+    assert provider_retry_params({"enabled": True}) == {}
+    assert provider_retry_params({"provider": {"timeoutMs": 30000, "maxRetries": 2}}) == {
+        "timeout": 30.0, "num_retries": 2}
+    # 脏配置不往下游塞:负数、布尔、非字典一律忽略
+    assert provider_retry_params({"provider": {"timeoutMs": -1}}) == {}
+    assert provider_retry_params({"provider": {"maxRetries": True}}) == {}
+    assert provider_retry_params({"provider": "nope"}) == {}
 
 
 def test_qi_itself_imposes_no_turn_cap():

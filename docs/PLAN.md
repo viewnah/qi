@@ -129,7 +129,7 @@ packages = ["src/qi_agent"]
 | A9 | 设置文件 | `settings.json` 两级深合并、数组整体替换;默认模型只属于 settings(`models.json` 里已不读取);字段清单与“仅存储未生效”清单见 [settings.md](settings.md);`qi config` 读写 |
 | A10 | 顶层技能 | 六级来源(低→高):`~/.agents/skills` → `~/.qi/agent/skills` → user `settings.skills` → 项目 `.agents/skills` 祖先链 → `<git根>/.qi/skills` → project `settings.skills`;agent 自带者最高;同层同名报错、跳层覆盖;排除项作用于整个发现集 |
 | A11 | 系统提示词 | 默认基座**代码内**(`system_prompt.py`,按解析后的工具集生成「可用工具 / 指南」);`SYSTEM.md` **整体替换**默认基座(项目 > 全局);之后动态追加角色层 → `<project_context>`(AGENTS.override.md > AGENTS.md > AGENTS.MD > CLAUDE.md > CLAUDE.MD,全局 + 祖先链至 git 根)→ `<available_skills>` XML(无 `read`/`bash` 则不注入)→ 数据源 → cwd。取消包内置 `SYSTEM.md`;自身文档索引未做。详见 [system-prompt.md](system-prompt.md) |
-| A12 | 轮次与中断 | **对齐 pi:runner 里没有轮次上限这个概念** —— 循环是 `while True`,退出靠模型不再调工具 / 中止 / 嵌入方谓词 `stop_after`(pi 的 `shouldStopAfterTurn` 同形,默认 `None` = 不限)。**qi 自己从不传谓词**(pi-coding-agent 也从不实现那个钩子):交互式靠 `escape` / 客户端断开,无头靠 `SIGTERM`/`SIGHUP` → `kill_live_children()` + `exit(143/129)`(对齐 pi 的 `killTrackedDetachedChildren`)。中断是**协作式**(`abort.py` 的 `AbortSignal`):未执行的 tool_call 补“已中断”结果、半截回答照常落盘、照常发 `agent_end`(data 带 `aborted`);TUI `escape` 宽限 3s 后 `cancel_all()` 兜底;硬取消(`CancelledError`,含 SIGINT/ASGI 取消)也先落盘再抛。单次 LLM 调用的 `timeout_s = 600` 仍是写死的(见未决) |
+| A12 | 轮次 / 超时 / 中断 | **对齐 pi:runner 里既不设轮次上限,也不套回合级请求超时** —— 循环是 `while True`,退出靠模型不再调工具 / 中止 / 嵌入方谓词 `stop_after`(pi 的 `shouldStopAfterTurn` 同形,默认 `None` = 不限)。**qi 自己从不传谓词**(pi-coding-agent 也从不实现那个钩子):交互式靠 `escape` / 客户端断开,无头靠 `SIGTERM`/`SIGHUP` → `kill_live_children()` + `exit(143/129)`(对齐 pi 的 `killTrackedDetachedChildren`)。请求级超时与重试归 **provider 层**(`settings.json` 的 `retry.provider.timeoutMs` / `maxRetries` → litellm `timeout` / `num_retries`;对齐 pi 的 `getProviderRetrySettings`)。中断是**协作式**(`abort.py` 的 `AbortSignal`):未执行的 tool_call 补“已中断”结果、半截回答照常落盘、照常发 `agent_end`(data 带 `aborted`);TUI `escape` 宽限 3s 后 `cancel_all()` 兜底;硬取消(`CancelledError`,含 SIGINT/ASGI 取消)也先落盘再抛 |
 
 ### 仍待定(v2 + 实现期)
 
@@ -138,7 +138,8 @@ packages = ["src/qi_agent"]
 - C3:headless RPC 协议细节 — v2
 - C4:db 插件工具名前缀/冲突策略 — v2 随首个插件定
 - 会话 JSONL entry 类型表具体字段(P3 定稿)
-- `timeout_s`(单次 LLM 调用)接 settings.json:现在是写死的 600s,超了会终止整轮。注意 pi 根本没有单次请求超时(只靠 provider 与中断)—— 要么删掉它彻底对齐,要么把它变成可配项。轮次已经不再是字段(改成嵌入方谓词 `stop_after`),所以这里只剩超时一项
+- qi 自身文档索引注入:pi 在 prompt 尾部给 README/docs/examples 绝对路径 + 按主题指路(qi 版见 system-prompt.md §6);障碍是 `docs/` 不进 wheel,装入后路径不存在 —— 要么改打包(把 docs 打进 wheel),要么只在源码仓库里存在时注入
+- 回合级重试(pi 的 `retry.enabled` / `maxRetries` / `baseDelayMs`:失败回合退避重试)未接;已接的是 provider 层的 `retry.provider.timeoutMs` / `maxRetries`(见 settings.md)。pi 的 `retry.provider.maxRetryDelayMs` 无对应 litellm 参数,也未映射
 - qi 自身文档索引注入:pi 在 prompt 尾部给 README/docs/examples 绝对路径 + 按主题指路(qi 版见 system-prompt.md §6);障碍是 `docs/` 不进 wheel,装入后路径不存在 —— 要么改打包(把 docs 打进 wheel),要么只在源码仓库里存在时注入
 - Router prompt 模板细节(dispatcher.md 草案之上微调)
 

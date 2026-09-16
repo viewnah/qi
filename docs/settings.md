@@ -60,8 +60,9 @@
 | `quietStartup` | 隐藏启动头 | 已接:不写 banner(含快捷键提示);启动提示(会话不存在之类)仍会出 |
 | `defaultProjectTrust` | `ask`/`always`/`never` | 项目信任尚未实现(`-a` 未落地) |
 | `defaultTools` | 初始内置工具集 | 工具集由 agent.md 的 `tools` 决定 |
-| `compaction` | `{enabled, reserveTokens(默认 16384), keepRecentTokens(默认 20000)}` | 已接:超 `contextWindow - reserveTokens` 自动压缩;`/compact` 手动压缩。见 [tui.md](tui.md) §2
-| `retry` | 重试参数 | 未接 |
+| `compaction` | `{enabled, reserveTokens(默认 16384), keepRecentTokens(默认 20000)}` | 已接:超 `contextWindow - reserveTokens` 自动压缩;`/compact` 手动压缩。见 [tui.md](tui.md) §2 |
+| `retry.provider` | `{timeoutMs, maxRetries}` | **已接**(请求级,对齐 pi 的 `getProviderRetrySettings`):→ litellm 的 `timeout`(秒)/ `num_retries`。pi 用毫秒、litellm 用秒,代码里换算。这是**唯一**该管请求超时的地方 —— agent 层不再套 `asyncio.timeout`(旧行为会把整轮打成“执行超时”) |
+| `retry.enabled` / `retry.maxRetries` / `retry.baseDelayMs` | 回合级重试 | 未接(pi 有:失败回合退避重试)。已接的只是上面的 `retry.provider.*`;pi 的 `retry.provider.maxRetryDelayMs` 无对应 litellm 参数,也未映射 |
 | `packages` | npm/git 资源包 | qi 走 pip entry point,无 npm 包概念 |
 | `extensions` / `prompts` / `themes` | 其它资源路径 | 仅 `skills` 已接 |
 

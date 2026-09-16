@@ -262,7 +262,7 @@ qi agents import skill:path/to/skill   # 包装成私有技能进目标 agent
 | 基座提示词 | **代码内默认**(`system_prompt.py`,按解析后的工具集生成「可用工具 / 指南」)+ 可选 `SYSTEM.md` **整体替换**(项目 > 全局);agent.md 正文作为**角色层**、`AGENTS.md`/`CLAUDE.md` 作为**项目上下文**、技能/数据源/工作目录均**动态追加**(见 [system-prompt.md](system-prompt.md)) |
 | 无内置技能 | 撤销"内置技能覆盖"问题(H4 moot) |
 | opening 字段 | v1 补充:message(agent 开场白,进会话历史)+ suggestions(UI 层快捷提问,不进历史) |
-| 执行参数 | model / temperature 不进 agent.md;模型归 `models.json` + `settings.json`。轮次不是字段而是**谓词**:`RunnerSettings.stop_after`(pi 的 `shouldStopAfterTurn` 同形,默认 `None` = 不限),**qi 自己不传**(同 pi 定义了却不实现)。`timeout_s` 仍是写死的 600s(见 [PLAN.md](PLAN.md) 未决) |
+| 执行参数 | model / temperature 不进 agent.md;模型归 `models.json` + `settings.json`。轮次不是字段而是**谓词**:`RunnerSettings.stop_after`(pi 的 `shouldStopAfterTurn` 同形,默认 `None` = 不限),**qi 自己不传**(同 pi 定义了却不实现)。请求级超时/重试也不在 agent 层:归 provider SDK(`settings.json` 的 `retry.provider`,见 [settings.md](settings.md)) |
 | MCP | **v1**:私有 mcp.json 仅本 agent 自动绑定;全局 [mcp.servers] 按 `mcp_servers` 声明绑定,**默认无、显式声明**(凭证敏感);凭证仅 env 引用 |
 | 数据源 | 实例在 agent 目录 data_sources.json(私有自动绑定,凭证 env);工具/type 能力由 db 插件提供,装载门控见 plugins.md |
 | 导入/导出 | agent 自包含目录;import = 拷贝 + 复用装载校验器预检 + 明文凭证扫描;export 产物可直接 import |

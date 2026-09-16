@@ -258,12 +258,38 @@ def merged_tool_calls(merged: dict[int, dict]) -> list[ToolCallOut]:
     return calls
 
 
+def provider_retry_params(retry: dict | None) -> dict:
+    """`settings.json` 的 `retry.provider` → litellm 的**请求级**参数(对齐 pi 的形态)。
+
+    pi 把超时与客户端重试放在 **provider/SDK 那一层**(`retry.provider.timeoutMs` /
+    `maxRetries`),而不是套在整个回合外面 —— 一次慢请求只重试它自己,不会把整轮打成失败。
+    qi 的 settings.json 与 pi 同名同形,所以直接读那两个键。
+
+    未映射:pi 的 `maxRetryDelayMs`(litellm 没有对应参数)。
+    """
+    if not isinstance(retry, dict):
+        return {}
+    provider = retry.get("provider")
+    if not isinstance(provider, dict):
+        return {}
+    out: dict = {}
+    timeout_ms = provider.get("timeoutMs")
+    if isinstance(timeout_ms, (int, float)) and not isinstance(timeout_ms, bool) and timeout_ms > 0:
+        out["timeout"] = timeout_ms / 1000          # pi 用毫秒,litellm 用秒
+    retries = provider.get("maxRetries")
+    if isinstance(retries, int) and not isinstance(retries, bool) and retries >= 0:
+        out["num_retries"] = retries
+    return out
+
+
 class LiteLLMClient:
     """基于 litellm 的实现。spec 来自 resolve_model()(经 resolve_key 取 key)。"""
 
     def __init__(self, spec: ResolvedModel, auth_store: AuthStore | None = None,
-                 thinking_level: str = "off"):
+                 thinking_level: str = "off", retry: dict | None = None):
         self.spec = spec
+        # 请求级超时/重试:归 provider SDK,不归 agent loop(见 provider_retry_params)
+        self._provider_retry = provider_retry_params(retry)
         self._resolved = resolve_key(spec.provider, spec.api_key_ref, auth_store or AuthStore())
         self.model_name = litellm_model_name(spec)
         self.thinking_level = normalize_thinking_level(thinking_level)
@@ -298,6 +324,7 @@ class LiteLLMClient:
             kwargs["max_tokens"] = self.spec.max_tokens
         if temperature is not None:
             kwargs["temperature"] = temperature
+        kwargs.update(self._provider_retry)         # timeout / num_retries(若配了)
         kwargs.update(self._reasoning_params())
         return kwargs
 

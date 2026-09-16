@@ -27,9 +27,12 @@ class RunnerSettings:
     `stop_after` 对齐 pi 的 `shouldStopAfterTurn`(**谓词**,不是数字):runner 自己没有
     “最多几轮”的概念,只在每轮结束时问一次嵌入方“现在停吗”。没给就一直跑 —— pi 的核心
     循环也是裸 `while (true)`,退出靠模型不再调工具 / 中断 / 这个谓词。
+
+    **这里没有请求超时**:pi 的超时在 provider/SDK 那一层(`retry.provider.timeoutMs`
+    + 客户端重试,见 llm.py),不是套在回合外面的 `asyncio.timeout`。qi 曾经套过一层,
+    后果是一次慢请求会把整个回合打成“执行超时”错误。
     """
 
-    timeout_s: float = 600.0
     #: 每轮结束后调用,收到已完成的轮数;True = 优雅停(stop_after_turns(n) 是常用形状)
     stop_after: Callable[[int], bool] | None = None
 
@@ -143,23 +146,23 @@ class AgentRunner:
                 acc_thinking = ""
                 tool_calls: list[ToolCallOut] = []
                 usage: dict = {}
-                async with asyncio.timeout(self.settings.timeout_s):
-                    async for delta in _iter_until_abort(
-                            stream_llm(self.llm, msgs, tools=schemas), abort):
-                        if delta.reasoning:
-                            # 思考内容:与回答分开流式(pi 的 thinking block)
-                            acc_thinking += delta.reasoning
-                            yield AgentEvent(kind="thinking_delta", agent=self.unit.name,
-                                             text=delta.reasoning)
-                        if delta.text:
-                            acc_text += delta.text
-                            # 逐字流式:Web 端靠它打字。CLI/TUI 只读回合末尾的 text 事件,
-                            # 所以它们的输出不变——这是有意为之的向后兼容。
-                            yield AgentEvent(kind="text_delta", agent=self.unit.name,
-                                             text=delta.text)
-                        if delta.finished:
-                            tool_calls = delta.tool_calls
-                            usage = delta.usage
+                # 请求级超时归 provider/SDK(见 llm.py 的 retry.provider),不在这里套 asyncio.timeout
+                async for delta in _iter_until_abort(
+                        stream_llm(self.llm, msgs, tools=schemas), abort):
+                    if delta.reasoning:
+                        # 思考内容:与回答分开流式(pi 的 thinking block)
+                        acc_thinking += delta.reasoning
+                        yield AgentEvent(kind="thinking_delta", agent=self.unit.name,
+                                         text=delta.reasoning)
+                    if delta.text:
+                        acc_text += delta.text
+                        # 逐字流式:Web 端靠它打字。CLI/TUI 只读回合末尾的 text 事件,
+                        # 所以它们的输出不变——这是有意为之的向后兼容。
+                        yield AgentEvent(kind="text_delta", agent=self.unit.name,
+                                         text=delta.text)
+                    if delta.finished:
+                        tool_calls = delta.tool_calls
+                        usage = delta.usage
                 turns_used = turn
                 # 流式途中被中断:半截的 tool_calls 参数不可信,一律丢(pi 对截断消息同处理)
                 if abort is not None and abort.aborted:
@@ -210,9 +213,8 @@ class AgentRunner:
                     yield AgentEvent(kind="error", agent=self.unit.name,
                                      text=f"达到轮次上限 {turns_used},已停止")
                     break
-        except asyncio.TimeoutError:
-            yield AgentEvent(kind="error", agent=self.unit.name,
-                             text=f"执行超时(>{self.settings.timeout_s:.0f}s)")
+        except asyncio.CancelledError:
+            raise                                    # 硬取消照旧上抛(收尾由 runtime.stream 做)
         if last_text:
             yield AgentEvent(kind="text", agent=self.unit.name, text=last_text)
         end_data: dict = {"messages": [m.to_dict() for m in msgs[1:]],

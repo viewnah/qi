@@ -17,6 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from qi_agent.abort import AbortSignal
 from qi_agent.auth import AuthStore
 from qi_agent.config import ResolvedModel
 from qi_agent.llm import (
@@ -383,11 +384,14 @@ async def test_litellm_astream_tolerates_empty_choices_chunks(tmp_path, fake_lit
     assert deltas[-1].usage == {"total_tokens": 3}
 
 
-# ── 5. 超时仍然生效(从 wait_for 换成 asyncio.timeout) ─────
+# ── 5. 挂住的流:不再有回合级超时,只能靠中断(对齐 pi)────────
 
 @pytest.mark.asyncio
-async def test_runner_timeout_still_reported_as_error_event(tmp_path):
-    """超时改成 asyncio.timeout 后,仍必须以 error 事件报出(而不是抛异常)。"""
+async def test_hung_stream_is_not_killed_by_a_loop_timeout(tmp_path):
+    """qi 曾经在 agent loop 外套 `asyncio.timeout(600)`:一次慢请求会把**整轮**打成
+    “执行超时”错误。pi 的超时在 provider/SDK 那一层(retry.provider.timeoutMs +
+    客户端重试),所以这里不再有任何回合级超时 —— 挂住的流只由中断结束。
+    """
     catalog = _catalog()
     unit = _agent_unit(tmp_path, catalog)
 
@@ -397,16 +401,28 @@ async def test_runner_timeout_still_reported_as_error_event(tmp_path):
 
         async def astream(self, messages, tools=None, temperature=None):
             yield _text_delta("开始")
-            await asyncio.sleep(5)             # 超过下面的 timeout
+            await asyncio.sleep(30)             # 挂住(旧实现会在这里触发“执行超时”)
             yield _finished()
 
-    runner = AgentRunner(unit, catalog, HangingLLM(), RunnerSettings(stop_after=stop_after_turns(2), timeout_s=0.1),
+    abort = AbortSignal()
+
+    async def fire() -> None:
+        await asyncio.sleep(0.1)
+        abort.abort()
+
+    runner = AgentRunner(unit, catalog, HangingLLM(), RunnerSettings(),
                          tool_ctx=ToolContext(agent_name=unit.name, workdir=tmp_path))
-    events = [e async for e in runner.run("hi")]
-    errors = [e for e in events if e.kind == "error"]
-    assert errors and "超时" in errors[0].text
-    # 已流出的部分保留(不因超时而被抹掉),但不会发出 text/agent_end 的完整收尾
+
+    async def consume() -> list:
+        return [e async for e in runner.run("hi", abort=abort)]
+
+    events, _ = await asyncio.wait_for(asyncio.gather(consume(), fire()), timeout=10)
+    # 没有“执行超时”错误 —— 结束是中断驱动的
+    assert not [e for e in events if e.kind == "error"]
     assert [e.text for e in events if e.kind == "text_delta"] == ["开始"]
+    end = next(e for e in events if e.kind == "agent_end")
+    assert end.data["aborted"] is True
+    assert "开始" in end.text                      # 已流出的部分保留
 
 
 # ── 6. 叙述落盘:直播与回放必须一致 ───────────────────────

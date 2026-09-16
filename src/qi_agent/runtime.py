@@ -49,9 +49,9 @@ from .tools import ToolContext, register_builtin_tools
 @dataclass
 class RuntimeConfig:
     workdir: Path
-    # 轮次政策不在这里:它现在是 `QiRuntime(stop_after=…)` 的谓词(对齐 pi 的
-    # shouldStopAfterTurn),见 RunnerSettings。
-    timeout_s: float = 600.0
+    # 轮次与请求超时都不在这里:
+    #  · 轮次是 `QiRuntime(stop_after=…)` 的谓词(对齐 pi 的 shouldStopAfterTurn);
+    #  · 请求级超时/重试归 provider 层(settings.json 的 `retry.provider`,见 llm.py)。
     confidence_min: float = 0.6
 
 
@@ -121,12 +121,14 @@ class QiRuntime:
         # 思考级别:显式传参(CLI --thinking)> settings.defaultThinkingLevel > off
         level = thinking_level if thinking_level is not None else self.settings.defaultThinkingLevel
         self.thinking_level = normalize_thinking_level(level)
-        self.llm_exec = llm or LiteLLMClient(default, auth, thinking_level=self.thinking_level)
+        self.llm_exec = llm or LiteLLMClient(default, auth, thinking_level=self.thinking_level,
+                                            retry=self.settings.retry)
         if disable_router:
             self.router_llm = None
         else:
             router_spec = resolve_router_model(self.cfg, self.cwd)
-            self.router_llm = router_llm if router_llm is not None else LiteLLMClient(router_spec, auth)
+            self.router_llm = router_llm if router_llm is not None else LiteLLMClient(
+                router_spec, auth, retry=self.settings.retry)
         self.dispatcher = Dispatcher(self.registry, self.router_llm,
                                      confidence_min=self.runtime_cfg.confidence_min)
 
@@ -328,8 +330,7 @@ class QiRuntime:
                              data={"suggestions": unit.config.opening.suggestions})
 
         runner = AgentRunner(unit, self.catalog, self.llm_exec,
-                             RunnerSettings(timeout_s=self.runtime_cfg.timeout_s,
-                                            stop_after=self.stop_after),
+                             RunnerSettings(stop_after=self.stop_after),
                              tool_ctx=self._tool_ctx(unit.name, unit),
                              base_prompt=self.base_prompt)
         # 顺序要紧:先取上下文(不含本轮),再把 user 消息立即落盘。

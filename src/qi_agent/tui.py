@@ -2555,7 +2555,13 @@ class QiTui(App):
             return
         try:
             resolved = resolve_model(rt.cfg, provider, model)
-            rt.llm_exec = LiteLLMClient(resolved, AuthStore())
+            # 重建客户端要带上来自 settings/UI 状态的参数,否则切模型会默默丢掉它们:
+            # `thinking_level`(否则 footer 显示 high、请求里却没有)与
+            # `retry`(provider 层的 timeout / num_retries)
+            settings = getattr(rt, "settings", None)
+            rt.llm_exec = LiteLLMClient(resolved, AuthStore(),
+                                        thinking_level=self._thinking_level,
+                                        retry=settings.retry if settings is not None else None)
         except Exception as exc:  # 配置/凭证异常不该把 TUI 弄崩
             self._note(f"切换模型失败: {exc}", "error")
             self._scroll_end()

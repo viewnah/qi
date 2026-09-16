@@ -39,8 +39,17 @@ qi · auto                                 ← footer 3:状态行
 
 实现要点:
 
-- **inline**:`App.run(inline=True, inline_no_clear=True)`;transcript 最多占
+- **inline**:`App.run(inline=True, inline_no_clear=True, mouse=False)`;transcript 最多占
   `终端高 - 6`(编辑器 3 + footer 3),再长在内部滚动(不吞终端滚动历史)。
+- **输入加固(不关鼠标上报会崩)**:`mouse=False` —— qi 的界面没有任何鼠标交互
+  (不点、不拖、无滚动条),而上报鼠标会让**不支持 SGR(1006)** 的终端退回旧式
+  X10 报文(`ESC [ M` + 原始坐标字节)。坐标 ≥ 0x80 时整段不是合法 UTF-8,Textual
+  inline 驱动里的严格解码器会抛 `UnicodeDecodeError` → 输入线程死 → `App.panic`
+  把 TUI 带栈带走(`0x85 in position 4`)。上游未修(textualize/textual#6456),
+  所以 `tui.py` 里另加两层:进界面前 `_reset_mouse_reporting()` 关掉残留上报
+  (上次崩溃没走到还原时终端会一直留着),`_harden_inline_input()` 只把
+  `linux_inline_driver` 的解码器换成 `errors="replace"`(坏字节变 U+FFFD,
+  一个坏字节不该打死会话)。关掉上报还顺带把原生文本选择/复制还给终端。
 - **主题**:`theme` 设 `auto`(默认)时用 OSC 11 探测终端背景色 → dark/light,
   并把探测到的背景色设为 Textual 主题底色 —— 于是 inline 区域看不出“被填色”。
   `QI_THEME=dark|light|auto` 可直接覆盖。

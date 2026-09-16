@@ -16,12 +16,15 @@ qi 特有的 auto 分派保留,但按 pi 的行样式渲染(`● → agent (sour
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import functools
 import json
 import os
 import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from datetime import datetime
@@ -3241,6 +3244,62 @@ def _version() -> str:
     return __version__
 
 
+# 关掉鼠标上报 | 清掉可能残留的状态
+#
+# 1000 = 按键/释放、1003 = 任意移动、1015 = urxvt 编码、1006 = SGR 编码。
+# `mouse=False` 时 Textual 不会写这串(它的 `_disable_mouse_support` 直接 return),
+# 所以上一次**崩溃**留下的上报模式会在终端里一直活着:鼠标一动就发 X10 报文。
+_MOUSE_OFF = "\x1b[?1000l\x1b[?1003l\x1b[?1015l\x1b[?1006l"
+
+
+def _reset_mouse_reporting() -> None:
+    """进界面前主动关掉鼠标上报(包括上一次崩溃没还原的残留)。
+
+    残留开着时,鼠标移动会让终端不停发旧式 X10 报文(`ESC [ M` + 原始坐标字节);
+    即使已经加固了 UTF-8 解码,那些字节也只能变成一堆 U+FFFD 打进输入框。
+    驱动写的是 `sys.__stderr__`,这里保持一致。
+    """
+    with contextlib.suppress(Exception):  # 没有终端 / 已关闭:不是致命问题
+        stream = sys.__stderr__ or sys.stderr
+        stream.write(_MOUSE_OFF)
+        stream.flush()
+
+
+def _harden_inline_input() -> None:
+    """让 inline 驱动对非法 UTF-8 字节免疫:一个坏字节不该打死整个会话。
+
+    Textual 的 `LinuxInlineDriver` 用**严格** UTF-8 增量解码器读 stdin
+    (`getincrementaldecoder("utf-8")()`,不带 `errors=`);而终端在**旧式 X10 鼠标
+    编码**下发的报文是 `ESC [ M Cb Cx Cy`,后三个字节是原始坐标 —— 只要某个坐标
+    ≥ 0x80,整段就不是合法 UTF-8,解码抛 `UnicodeDecodeError` → 输入线程死掉 →
+    `App.panic` 打出栈并把 TUI 一起带走(报错就长这样:
+    `'utf-8' codec can't decode byte 0x85 in position 4`)。
+
+    终端不支持 SGR(1006)时报文就会退回 X10:macOS Terminal.app、部分 tmux/ssh,
+    以及终端被重建(如 tmux detach/reattach)都会踩到;上游仍未修
+    (textualize/textual#6456)。这里只换掉**该驱动模块**里那个工厂:坏字节变
+    U+FFFD,`XTermParser` 照常把它当报文/字符吞掉,界面继续跑。
+
+    幂等:重复进 TUI 只打一次补丁。
+    """
+    try:
+        import codecs
+
+        from textual.drivers import linux_inline_driver as driver_module
+    except Exception:  # 驱动改名/缺失也只是少一层加固,不能挡住进界面
+        return
+    if getattr(driver_module, "_qi_lenient_decoder", False):
+        return
+
+    def lenient(encoding: str, errors: str = "strict") -> Any:
+        # 驱动按 `factory("utf-8")()` 调用:交回一个默认 errors=replace 的类
+        decoder_cls = codecs.getincrementaldecoder(encoding)
+        return functools.partial(decoder_cls, errors="replace")
+
+    driver_module.getincrementaldecoder = lenient  # type: ignore[assignment]
+    driver_module._qi_lenient_decoder = True  # type: ignore[attr-defined]
+
+
 def run_tui(initial_prompt: str | None = None, *, session_id: str | None = None,
             cont: bool = False, fork_id: str | None = None,
             no_session: bool = False, name: str | None = None) -> None:
@@ -3255,7 +3314,12 @@ def run_tui(initial_prompt: str | None = None, *, session_id: str | None = None,
         setting = load_settings()[0].theme
     except Exception:  # settings 坏了不该挡住进界面
         setting = None
+    _reset_mouse_reporting()
+    _harden_inline_input()
     palette = resolve_theme(setting, probe=True)
+    # mouse=False:qi 的 TUI 没有任何鼠标交互(不点、不拖、无滚动条),而上报鼠标会让
+    # 不支持 SGR(1006)的终端退回旧式 X10 报文 —— 正是 _harden_inline_input 里那类
+    # 崩溃的来源;关掉还顺带把原生文本选择/复制还给终端。
     QiTui(initial_prompt=initial_prompt, palette=palette, session_id=session_id, cont=cont,
           fork_id=fork_id, no_session=no_session, name=name).run(
-              inline=True, inline_no_clear=True)
+              inline=True, inline_no_clear=True, mouse=False)

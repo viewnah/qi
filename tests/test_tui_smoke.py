@@ -175,3 +175,65 @@ async def test_tui_ctrl_c_twice_quits(tmp_path, monkeypatch):
         await pilot.press("ctrl+c")
         await pilot.pause(0.05)
         assert app._exit is True, "第二次 ctrl+c 应该退出"
+
+
+def test_inline_driver_tolerates_x10_mouse_bytes():
+    """回归:旧式 X10 鼠标报文(`ESC [ M` + 原始坐标字节)不是合法 UTF-8。
+
+    Textual 的 inline 驱动用严格 UTF-8 解码器读 stdin,坐标 ≥ 0x80 时
+    `UnicodeDecodeError` 在输入线程抛出 → `App.panic` → TUI 带栈退出
+    (textualize/textual#6456)。加固后应替换坏字节而不是抛异常。
+    """
+    from textual.drivers import linux_inline_driver as drv
+
+    from qi_agent.tui import _harden_inline_input
+
+    _harden_inline_input()
+    _harden_inline_input()  # 幂等
+    # 驱动内部就是 `getincrementaldecoder("utf-8")()`;这里照抄同一调用形态。
+    factory = getattr(drv, "getincrementaldecoder")
+    decode = factory("utf-8")().decode
+
+    report = b"\x1b[MC\x85\x85\x85"  # Cx=0x85:C(0x43) 之后再遇 0x85 → position 4
+    assert "\ufffd" in decode(report, final=False)
+
+
+def test_reset_mouse_reporting_writes_disable_sequences(monkeypatch):
+    """崩溃残留的鼠标上报必须在进界面前关掉。
+
+    否则残留的 X10 上报会让鼠标一动就发原始坐标字节,被加固后的解码器替换成
+    U+FFFD 灌进输入框(报错里的 `^[[MC` 就是这么漏进 shell 的)。
+    """
+    import io
+
+    from qi_agent.tui import _MOUSE_OFF, _reset_mouse_reporting
+
+    assert "\x1b[?1000l" in _MOUSE_OFF and "\x1b[?1006l" in _MOUSE_OFF
+    stream = io.StringIO()
+    monkeypatch.setattr(sys, "__stderr__", stream)
+    _reset_mouse_reporting()
+    assert stream.getvalue() == _MOUSE_OFF
+
+
+def test_run_tui_runs_inline_without_mouse(tmp_path, monkeypatch):
+    """TUI 关掉鼠标上报:免得终端退回 X10 报文(见上一条),也让原生选择/复制可用。"""
+    _tui_env(tmp_path, monkeypatch)
+    from qi_agent import tui as tui_mod
+
+    calls: dict[str, dict[str, object]] = {}
+
+    class FakeApp:
+        def __init__(self, **kwargs: object) -> None:
+            calls["init"] = kwargs
+
+        def run(self, **kwargs: object) -> None:
+            calls["run"] = kwargs
+
+    monkeypatch.setattr(tui_mod, "QiTui", FakeApp)
+    monkeypatch.setattr(tui_mod, "resolve_theme", lambda *a, **k: None)
+    monkeypatch.setattr(tui_mod, "_reset_mouse_reporting", lambda: None)
+
+    tui_mod.run_tui("你好")
+
+    assert calls["run"] == {"inline": True, "inline_no_clear": True, "mouse": False}
+    assert calls["init"]["initial_prompt"] == "你好"

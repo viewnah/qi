@@ -46,7 +46,8 @@ vim .qi/SYSTEM.md                              # 项目级基座提示词(可提
 | [PLAN.md](docs/PLAN.md) | 开发计划(v1/v2 阶段)与未决清单 |
 | [docs/agent-config.md](docs/agent-config.md) | agent = 自包含目录(agent.md / skills / assets / mcp.json / data_sources.json)、装载校验、MCP、数据源、导入导出 |
 | [docs/system-prompt.md](docs/system-prompt.md) | 系统提示词:基座层(内置 `SYSTEM.md` + 可选覆盖)+ 角色层(agent.md)分层与优先级 |
-| [docs/tools.md](docs/tools.md) | ToolCatalog、内置 7 工具、tools 三态、bash 安全(v1 只读 allowlist) |
+| [docs/tools.md](docs/tools.md) | ToolCatalog、内置 7 工具、tools 三态、bash 策略(与 pi 对齐:无命令级过滤) |
+| [docs/bash-allowlist.md](docs/bash-allowlist.md) | bash 策略**变更记录**:为何删掉首词白名单、与 pi(v0.85.1)的对照、可绕过的四种写法 |
 | [dispatcher.md](docs/dispatcher.md) | auto 模式:信号分层、分派管线、Router 契约、优先级 |
 | [docs/model-config.md](docs/model-config.md) | `models.json`(对齐 pi:`providers` / `baseUrl` / `api` / `models`);默认模型 default / 分派 router;凭证 auth store + 约定 env + apiKey 引用 |
 | [docs/settings.md](docs/settings.md) | `settings.json`(对齐 pi):两级分层深合并、字段清单(含“仅存储未生效”清单)、资源路径与排除项、`qi config` |
@@ -98,7 +99,7 @@ vim .qi/SYSTEM.md                              # 项目级基座提示词(可提
 | 配置形态 | agent 定义 = Markdown + frontmatter;模型配置 = JSON `models.json`(对齐 pi,分层:env → 项目 → 用户);应用设置/默认模型 = `settings.json` | settings.md |
 | 会话 | JSONL 每会话文件(pi 风格,entry 带 type/agent_id);位置:**全局 `~/.qi/agent/sessions/`** |
 | Dispatcher | auto:信号分层(L1 规则 / L2 embedding 默认关 / L3 Router 读 description / L4 兜底)+ @ 点名;**每轮都重新路由,无 sticky 沿用** |
-| bash 安全 | 默认只读 allowlist;破坏性命令需配置放开或审批(v2);路径限会话目录 |
+| bash 策略 | **无命令级过滤**(对齐 pi);限制靠 `tools`/`disallowed_tools` 收窄,或容器/VM;文件工具路径限会话目录 | tools.md §4 / bash-allowlist.md |
 | clarify / denylist | v1 内置 clarify 通用工具;`disallowed_tools` v1 |
 
 ## 4. 技术选型
@@ -144,6 +145,7 @@ vim .qi/SYSTEM.md                              # 项目级基座提示词(可提
 
 ## 6. 安全总原则
 
+- **bash 不筛命令**(对齐 pi):内置 bash 以 qi 进程权限执行任意命令;要收紧就在 agent 级摘工具(`disallowed_tools: [bash]`),要真边界就把进程放进容器/VM——进程内的半吊子过滤容易被误当成安全边界
 - 内容(技能/第三方 agent)是可执行指令:**先审后装/导入时提示**
 - 插件代码 = 全权限:仅可信源;项目级 `.qi`(plugins/agents)需 `-a` 信任
 - 凭证三源:auth store(`~/.qi/agent/auth.json`,0600,按 provider)→ 约定环境变量 → `models.json` 的 `apiKey` 引用;配置文件与导入包**零明文**(导入时扫描)

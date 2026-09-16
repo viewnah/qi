@@ -209,17 +209,17 @@ async def test_unknown_tool_is_structured_error(tmp_path):
 
 @pytest.mark.asyncio
 async def test_tool_error_is_tagged_tool_error(tmp_path):
-    """工具主动抛 ToolError(如 bash 被安全策略拒绝)→ error='tool_error'。"""
+    """工具主动抛 ToolError(如 read 路径越界)→ error='tool_error'。"""
     catalog = _catalog()
     unit = _agent_unit(tmp_path, catalog)
-    llm = StubLLM([_tool_call("bash", {"command": "rm -rf /tmp/evil"}), ChatResponse(text="好的")])
+    llm = StubLLM([_tool_call("read", {"path": "/etc/hostname"}), ChatResponse(text="好的")])
     runner = AgentRunner(unit, catalog, llm, RunnerSettings(max_turns=5),
                          tool_ctx=ToolContext(agent_name=unit.name, workdir=tmp_path))
-    events = [e async for e in runner.run("删文件")]
+    events = [e async for e in runner.run("读目录外的文件")]
     end = next(e for e in events if e.kind == "tool_end")
     assert end.data["status"] == TOOL_ERROR
     assert end.data["error"] == "tool_error"
-    assert "安全策略拒绝" in end.text
+    assert "路径越界" in end.text
 
 
 @pytest.mark.asyncio
@@ -231,12 +231,41 @@ async def test_bash_reports_exit_code(tmp_path):
     ok = await _bash({"command": "ls"}, ctx)
     assert ok.status == TOOL_OK and ok.exit_code == 0
 
-    # tmp_path 不是 git 仓库 → git status 非零退出(该命令本身在只读白名单内)
+    # tmp_path 不是 git 仓库 → git status 非零退出(命令本身能跑,失败来自 git 自身)
     bad = await _bash({"command": "git status"}, ctx)
     assert bad.status == TOOL_ERROR
     assert isinstance(bad.exit_code, int) and bad.exit_code != 0
     assert bad.result.startswith("exit=")
     assert bad.error is None            # 有 exit_code 时不再重复归类
+
+
+@pytest.mark.asyncio
+async def test_bash_has_no_command_allowlist(tmp_path):
+    """对齐 pi:内置 bash 不做命令级过滤。
+
+    锁定这个契约,防止把"首词白名单"加回来——它拦掉 `mkdir`/`mv`/包安装等大量正常命令,
+    却又能被 `&&` / `;` / `>` / 裸 `python` 绕过(见 docs/bash-allowlist.md)。
+    这里用复合命令 + 重定向 + 写操作把当年的四个绕过面一次覆盖。
+    """
+    ctx = ToolContext(agent_name="w", workdir=tmp_path)
+    out = await _bash(
+        {"command": "mkdir -p sub && echo hi > sub/f.txt && mv sub/f.txt sub/g.txt && rm sub/g.txt"},
+        ctx,
+    )
+    assert out.status == TOOL_OK and out.exit_code == 0
+    assert (tmp_path / "sub").is_dir()
+    assert not (tmp_path / "sub" / "g.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_bash_runs_arbitrary_interpreter(tmp_path):
+    """裸 python 可执行任意代码(旧白名单的"禁止裸 python3"是死代码,现已无此概念)。"""
+    if shutil.which("python3") is None:
+        pytest.skip("需要 python3")
+    ctx = ToolContext(agent_name="w", workdir=tmp_path)
+    out = await _bash({"command": 'python3 -c "print(6*7)"'}, ctx)
+    assert out.status == TOOL_OK
+    assert "42" in out.result
 
 
 @pytest.mark.asyncio

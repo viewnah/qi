@@ -160,20 +160,22 @@ async def test_runner_tool_loop(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_runner_blocked_bash(tmp_path):
+async def test_runner_bash_is_not_command_filtered(tmp_path):
+    """bash 不做命令级过滤(对齐 pi):旧白名单会拒的写操作现在能跑,结果回到模型。"""
     catalog = make_catalog()
     d = write_agent(tmp_path, "x")
     unit = load_agent_dir(d, "user", catalog.names)
     ctx = ToolContext(agent_name="x", workdir=tmp_path)
     llm = StubLLM([
         ChatResponse(text="", tool_calls=[ToolCallOut(id="c1", name="bash",
-                                                      args={"command": "rm -rf /tmp/evil"})]),
+                                                      args={"command": "mkdir -p made && echo ok > made/f.txt"})]),
         ChatResponse(text="done"),
     ])
     runner = AgentRunner(unit, catalog, llm, RunnerSettings(max_turns=5), tool_ctx=ctx)
-    events = [e async for e in runner.run("删文件")]
+    events = [e async for e in runner.run("建个目录")]
     tool_msgs = [e.text for e in events if e.kind == "tool_end"]
-    assert any("安全策略拒绝" in t for t in tool_msgs)
+    assert tool_msgs and "安全策略拒绝" not in tool_msgs[0]
+    assert (tmp_path / "made" / "f.txt").read_text(encoding="utf-8").strip() == "ok"
 
 
 # ── P5 dispatcher ─────────────────────────────────────────

@@ -11,7 +11,7 @@
 ## 2. v1 内置 7 个(对齐 pi core tools,除 powershell)
 
 | # | 工具 | 作用 | 实现要点 |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 1 | `read` | 读文件 | 路径 + 行范围;超长截断并提示续读 |
 | 2 | `ls` | 列目录 | 目录下文件/子目录列表 |
 | 3 | `find` | 文件名搜索 | 路径 + 名称/glob 模式(跟 pi,不跟 hikqin 的 `glob`) |
@@ -40,15 +40,25 @@ class ToolResult:
 - 所有工具结果统一截断策略(超长只返回前 N 行 + 提示),对齐 pi 的 `output-accumulator`/hikqin `truncate_if_too_long`。
 - 错误以结果形式返回(不进异常),让模型可读、可重试。
 
-## 4. bash 安全(已定 v1;审批细化在 v2)
+## 4. bash 策略(已定 v1;审批细化在 v2)
 
-- 已定:默认**只读 allowlist**(参考 plan-mode 清单):破坏性命令(rm / git push / 包安装…)被拒;需在 `[runtime] bash` 配置放开或(二期)交互式审批。
+> **变更历史与设计取舍见 [bash-allowlist.md](bash-allowlist.md)。**
+
+- **已定:内置 bash 不做命令级过滤**——不筛子命令、不拦重定向、不做只读 allowlist。与 pi 取向一致(`pi docs/security.md`:*A partial in-process sandbox would be easy to misunderstand as a security boundary*)。
+- 限制手段 = **工具级收窄**(对齐 pi 的 `--tools` / `defaultTools`):`tools` 三态 + `disallowed_tools`。连 bash 都不给就 `disallowed_tools: [bash]`,模型只剩文件工具。
+- 需要真边界时把 qi 整个进程放进容器/VM(对齐 pi `docs/containerization.md` 的路线)。
 - 已定:文件路径限制在会话目录内(防越界,`validate_path` 思想,参考 hikqin filesystem.py)。
+  现状:该约束只覆盖 `read`/`ls`/`find`/`grep`/`write`/`edit` 六个文件工具,**bash 不受限**(与 pi 同为进程权限模型)。
 - 现状:真实文件系统 + 会话 cwd(pi 路线),非 hikqin 虚拟沙箱。
+- 现状:TUI 的 `!` 手动命令不经任何过滤(用户亲手敲的操作不算模型越权)。
+
+> 变更记录(2026-09):v1 早期实现是"命令首词只读白名单"(`READ_ONLY_FIRST` + `GIT_READ_ONLY`),
+> 拦掉了 `mkdir`/`mv`/`cp`/包安装等大量正常命令,却能被 `&&` / `;` / `>` / 裸 `python` 绕过,
+> 且错误提示指向一个不存在的 `[runtime] bash` 配置项。已删除,与 pi 对齐。详见 [bash-allowlist.md](bash-allowlist.md)。
 
 ## 5. 预留(二期)
 
-- 审批/确认机制(破坏性操作的交互式确认)
+- 审批/确认机制(破坏性操作的交互式确认;需要时的位置是 bash 工具的执行前钩子)
 - Windows 平台 bash→powershell 适配
 
 MCP 已是 v1,见 [agent-config.md](agent-config.md) §8。
@@ -56,14 +66,14 @@ MCP 已是 v1,见 [agent-config.md](agent-config.md) §8。
 ## 6. 决策记录
 
 | 决策 | 结论 |
-|---|---|
+| --- | --- |
 | v1 内置 | **7 个**:read / ls / find / grep / write / edit / bash(对齐 pi,去 powershell) |
 | 命名分歧 | 文件名搜索用 `find`(跟 pi),不用 `glob`(hikqin) |
 | edit 方案 | v1 即 diff 精确编辑,不做整写简化版 |
 | tools 三态 | 省略 / `["*"]` = 全部;显式名单 = allowlist;未知名报错(对齐 Claude Code) |
 | denylist | `disallowed_tools` v1(Claude 同款;先 denylist 后 allowlist) |
 | clarify | v1 内置全局通用工具 |
-| bash 安全 | 默认只读 allowlist;破坏性命令需配置放开或审批(v2);路径限会话目录 |
+| bash 策略 | 与 pi 对齐:**无命令级过滤**;限制靠 `tools`/`disallowed_tools` 收窄或容器/VM;文件工具路径限会话目录 |
 
 ## 7. 待定决策
 

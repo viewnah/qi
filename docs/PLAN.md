@@ -113,7 +113,7 @@ packages = ["src/qi_agent"]
 | A3/N1 | frontmatter 语法 | YAML(对齐 Agent Skills/Claude) |
 | A4/N8 | LLM 接入 | litellm(统一多 provider) |
 | A5 | 会话 JSONL entry 类型 | 消息/工具结果/分派/状态/自定义 五类(P3 定格式);**`tool` 类与 header `cwd` 已于 P0 契约补丁落地**,见 [web.md §13](web.md#13-p0-契约改动记录2026-09) |
-| A6/N7 | bash 安全 | 默认只读 allowlist;破坏性命令需配置放开或审批;路径限会话目录 |
+| A6/N7 | bash 安全 | **与 pi 对齐:无命令级过滤**(旧的首词白名单已删除);限制靠 `tools`/`disallowed_tools` 收窄或容器/VM;文件工具路径限会话目录 |
 | B1/N3 | sessions 位置 | 全局 `~/.qi/agent/sessions/`(对齐 pi) |
 | B2/N4 | mcp_servers 省略默认 | **默认无、必须显式声明**(凭证敏感);tools 仍"省略=全部" |
 | B3/N5 | disallowed_tools | v1 做(denylist,Claude 同款) |

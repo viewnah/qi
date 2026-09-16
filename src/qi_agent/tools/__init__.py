@@ -1,6 +1,8 @@
 """内置 7 工具 + clarify(对齐 docs/tools.md):read/ls/find/grep/write/edit/bash。
 
-安全:路径限制在会话工作目录内;bash 默认只读 allowlist。
+安全:六个文件工具的路径限制在会话工作目录内。bash 与 pi 一致 —— **不做命令级过滤**
+(不筛子命令、不拦重定向),限制只来自工具级收窄(tools / disallowed_tools)或容器/VM。
+见 docs/tools.md §4 与 docs/bash-allowlist.md。
 """
 
 from __future__ import annotations
@@ -10,7 +12,6 @@ import contextlib
 import fnmatch
 import os
 import re
-import shlex
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -188,35 +189,7 @@ async def _edit(args: dict, ctx: ToolContext) -> str:
     return f"已编辑 {path}:替换 1 处,{len(old_text)}→{len(new_text)} 字符"
 
 
-# ── bash(默认只读 allowlist) ────────────────────────
-
-READ_ONLY_FIRST = {
-    "cat", "head", "tail", "less", "more", "grep", "rg", "find", "ls", "pwd",
-    "tree", "wc", "sort", "uniq", "echo", "printf", "date", "uname", "whoami",
-    "which", "env", "du", "df", "file", "stat", "diff", "python3", "python",
-}
-GIT_READ_ONLY = {"status", "log", "diff", "branch", "show", "ls-files", "remote", "rev-parse", "stash", "submodule"}
-
-WRITE_HINT = "默认只读白名单;写文件请用 write/edit 工具,或配置 [runtime] bash 放开"
-
-
-def _bash_allowed(command: str) -> tuple[bool, str]:
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
-        return False, "命令无法解析"
-    if not tokens:
-        return False, "空命令"
-    first = tokens[0]
-    if first == "git":
-        sub = tokens[1] if len(tokens) > 1 else "status"
-        return sub in GIT_READ_ONLY, f"git {sub} 不在只读列表;{WRITE_HINT}"
-    if first in READ_ONLY_FIRST:
-        return True, ""
-    if first == "python3":
-        # 只允许 -c 读脚本内无 shell 的场合?过宽,禁止裸 python(防任意写)
-        return False, "禁止裸 python3;如确需,请配置 [runtime] bash 放开"
-    return False, f"{first} 不在只读白名单;{WRITE_HINT}"
+# ── bash(与 pi 对齐:无命令级过滤) ────────────────────
 
 
 async def _bash(args: dict, ctx: ToolContext) -> ToolOutcome:
@@ -224,13 +197,13 @@ async def _bash(args: dict, ctx: ToolContext) -> ToolOutcome:
 
     `result` 文本与旧版**逐字一致**(失败时保留 `exit=N` 前缀),模型看到的内容不变;
     `status` / `exit_code` 是给 UI 工具卡片用的结构化字段。
+
+    安全:与 pi 一致,内置 bash **不筛命令**。要收紧就在 agent 级摘工具
+    (`disallowed_tools: [bash]`),要真边界就把进程放进容器/VM。
     """
     command = str(args.get("command", "")).strip()
     if not command:
         raise ToolError("bash 需要 command")
-    allowed, reason = _bash_allowed(command)
-    if not allowed:
-        raise ToolError(f"命令被安全策略拒绝: {reason}")
     timeout = _num_arg(args, "timeout", float, 120.0)
     proc = await asyncio.create_subprocess_shell(
         command,
@@ -290,7 +263,7 @@ def register_builtin_tools(catalog) -> None:
     catalog.register(Tool("edit", "diff 精确编辑:old_text 必须唯一匹配后替换为 new_text。", _schema(
         {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}},
         ["path", "old_text", "new_text"]), _edit))
-    catalog.register(Tool("bash", "执行只读命令(安全白名单);写操作请用 write/edit。", _schema(
+    catalog.register(Tool("bash", "执行 shell 命令(工作目录=会话目录);输出截断 + timeout。", _schema(
         {"command": {"type": "string"}, "timeout": {"type": "number"}}, ["command"]), _bash))
     catalog.register(Tool("clarify", "向用户提出澄清问题,等待回答。拿不准需求时使用。", _schema(
         {"question": {"type": "string"}}, ["question"]), _clarify))

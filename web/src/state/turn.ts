@@ -181,6 +181,28 @@ export function withNote(state: TurnState, label: string, detail: string): TurnS
   };
 }
 
+/**
+ * 回放历史里**最后一轮的用量**(落盘在助手消息 entry 上)。
+ *
+ * 为什么需要它:打开一个已存在的会话时,`qi.usage` 那个流事件**不会重放** ——
+ * 于是遥测抽屉会写着"本轮还没有用量",而数据其实就在 entry 里。
+ *
+ * 取最后一轮而不是累加:抽屉那条进度问的是"现在上下文里装着多少",
+ * 那是最后一步的 prompt 大小(与后端的 `context_tokens` 同一个意思)。
+ *
+ * @param entries 会话的可见 entries(时间升序)。
+ * @returns 最后一次记下的 usage;一条都没有就 `null`(老会话 —— 不造数)。
+ */
+export function lastUsage(entries: Entry[]): Record<string, unknown> | null {
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const usage = entries[i]?.usage;
+    if (usage !== undefined && usage !== null && typeof usage === "object") {
+      return usage;
+    }
+  }
+  return null;
+}
+
 export function fromEntries(entries: Entry[]): Row[] {
   const rows: Row[] = [];
   for (const e of entries) {

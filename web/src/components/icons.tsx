@@ -485,3 +485,15 @@ export const IconLinkOutline16 = ({ size = 16, className }: IconProps) => (
     />
   </svg>
 )
+
+/**
+ * ic_ds_database_outline_16 —— 输入卡下方那行统计里"token 用量"那颗药丸的字形
+ * (dsh `StatsPills` 的 UsagePill 用的就是它)。三层圆筒 = 数据库/用量。
+ */
+export const IconDatabaseOutline16 = ({ size = 16, className }: IconProps) => (
+  <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none">
+    <ellipse cx="8" cy="3.6" rx="5.75" ry="2.4" stroke="currentColor" strokeWidth="1.25" />
+    <path d="M2.25 3.6V12.3A5.75 2.4 0 0 0 13.75 12.3V3.6" stroke="currentColor" strokeWidth="1.25" />
+    <path d="M2.25 7.95A5.75 2.4 0 0 0 13.75 7.95" stroke="currentColor" strokeWidth="1.25" />
+  </svg>
+)

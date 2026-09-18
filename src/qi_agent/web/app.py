@@ -23,6 +23,7 @@ from ..auth import AuthStore, resolve_key
 from ..config import ConfigError, load_config, resolve_default_model, resolve_router_model
 from ..loader import LoadError, load_mcp_scopes
 from ..registry import AgentRegistry
+from ..session import usage_summary
 from ..workspaces import WorkspaceStore, normalize
 from . import agui, browse, schemas
 from .security import check_credentials, check_host, mask_key
@@ -128,6 +129,9 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
             cwd=session.cwd, path=str(session.path),
             running=web.is_busy(session.id),
             total_entries=len(entries), entries=entries[start:end], skipped=start,
+            # 用量汇总统计的是**整条分支**(与这个窗口无关) —— 所以它在后端算:
+            # 前端只拿到窗口,长会话自己求和会静默少算。
+            usage=schemas.UsageSummary(**usage_summary(entries)),
         )
 
     @app.get("/api/sessions", response_model=schemas.SessionList, dependencies=[Depends(guard)])
@@ -457,6 +461,7 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
         return schemas.ConfigView(
             providers=providers, default_model=default.label,
             default_model_name=default.model,
+            default_model_context_window=default.context_window,
             default_model_source="settings" if default.model else "",
             router_model=(router.label if router.label != default.label else None),
             settings_files=[str(p) for p in runtime.settings_files],

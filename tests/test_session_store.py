@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from qi_agent.session import SessionStore
+from qi_agent.session import SessionStore, usage_summary
 
 
 def _store(tmp_path) -> SessionStore:
@@ -69,3 +69,72 @@ def test_continue_reuses_same_session(tmp_path):
     again = store.latest()
     assert again is not None and again.path == first.path
     assert again.message_count == 1
+
+
+# ── 用量汇总(会话级)─────────────────────────────────────
+#
+# 为什么这套断言值得写:这个汇总是**输入卡下方那行统计**与未来任何"这个会话花了多少"
+# 的唯一来源。三个地方最容易错 —— 数错轮数、把没记 usage 的老会话当成 0、
+# 以及把"上下文占用"写成各轮 prompt 相加(那个数字会随轮数虚增,还会超过窗口)。
+
+def _branch_with_usage() -> list[dict]:
+    return [
+        {"type": "session", "id": "s1"},
+        {"type": "message", "role": "user", "content": "看下目录"},
+        {"type": "tool", "tool": "ls", "status": "ok"},
+        {"type": "message", "role": "assistant", "content": "好了",
+         "usage": {"turns": 2, "llm_calls": 2, "prompt_tokens": 100,
+                   "completion_tokens": 20, "total_tokens": 120, "context_tokens": 100}},
+        {"type": "message", "role": "user", "content": "再改一下"},
+        {"type": "tool", "tool": "edit", "status": "error"},
+        {"type": "message", "role": "assistant", "content": "改完了",
+         "usage": {"turns": 1, "llm_calls": 1, "prompt_tokens": 300,
+                   "completion_tokens": 40, "total_tokens": 340, "context_tokens": 300}},
+    ]
+
+
+def test_usage_summary_counts_rounds_steps_and_tools():
+    got = usage_summary(_branch_with_usage())
+    assert got["turns"] == 2          # 用户消息,不是助手消息
+    assert got["steps"] == 3          # 各轮 usage.turns 之和(2 + 1)
+    assert got["llm_calls"] == 3
+    assert got["tools"] == 2 and got["tool_failures"] == 1
+    assert got["prompt_tokens"] == 400 and got["completion_tokens"] == 60
+    assert got["total_tokens"] == 460
+    # 上下文占用 = **最后一条**的 context_tokens,不是 100 + 300
+    assert got["context_tokens"] == 300
+
+
+def test_usage_summary_of_a_session_that_never_recorded_usage():
+    """老会话(写入 usage 之前)或全程被硬取消:只数轮数,token 是 0。
+
+    **不补估值**:没有就是没有 —— 编一个数字出来会让"这行统计"变成假数据。
+    """
+    branch = [
+        {"type": "message", "role": "user", "content": "a"},
+        {"type": "message", "role": "assistant", "content": "b"},
+    ]
+    got = usage_summary(branch)
+    assert got["turns"] == 1
+    assert (got["steps"], got["total_tokens"], got["context_tokens"]) == (0, 0, 0)
+
+
+def test_usage_summary_without_total_tokens_falls_back_to_the_two_sides():
+    """有的 provider 不给 total_tokens:那就用两侧之和,好过显示 0。"""
+    branch = [{"type": "message", "role": "assistant", "content": "x",
+               "usage": {"prompt_tokens": 10, "completion_tokens": 4}}]
+    got = usage_summary(branch)
+    assert got["total_tokens"] == 14
+
+
+def test_usage_summary_ignores_dirty_values():
+    """provider 给的可能是字符串 / null / bool:一律当 0,不能把它变成异常。
+
+    这个汇总跑在**每次打开会话**的路径上 —— 它为脏数据抛错,整个会话就打不开了。
+    """
+    branch = [{"type": "message", "role": "assistant", "content": "x",
+               "usage": {"turns": "2", "prompt_tokens": None, "completion_tokens": True,
+                         "total_tokens": 7}}]
+    got = usage_summary(branch)
+    assert got["steps"] == 0 and got["total_tokens"] == 7
+    assert got["prompt_tokens"] == 0 and got["completion_tokens"] == 0

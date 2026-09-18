@@ -133,6 +133,25 @@ class SessionList(BaseModel):
     now_running: list[str] = Field(default_factory=list)
 
 
+class UsageSummary(BaseModel):
+    """一个会话的用量汇总(后端算:`session.usage_summary`)。
+
+    放在会话明细上而不是让前端累加 —— 前端只拿得到分页窗口,长会话会静默少算。
+    老会话(写入 usage 之前)除 `turns` 以外全是 0:没有就是没有,不补估值。
+    """
+
+    turns: int = 0
+    steps: int = 0
+    tools: int = 0
+    tool_failures: int = 0
+    llm_calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    #: 最后一轮的 prompt 大小 = 现在上下文里装着多少(不是各轮相加)
+    context_tokens: int = 0
+
+
 class SessionDetail(BaseModel):
     id: str
     title: str
@@ -145,6 +164,8 @@ class SessionDetail(BaseModel):
     entries: list[dict] = Field(default_factory=list)
     #: 窗口前面还有多少条(前端据此决定是否继续向更早翻页)
     skipped: int = 0
+    #: 整条分支的用量汇总(与窗口无关:它统计的是落盘的全部)
+    usage: UsageSummary = Field(default_factory=UsageSummary)
 
 
 class AgentInfo(BaseModel):
@@ -187,6 +208,9 @@ class ConfigView(BaseModel):
     default_model_name: str = ""
     default_model_source: str = ""
     router_model: str | None = None
+    #: 默认模型的上下文窗口(tokens,来自 models.json 的 `contextWindow`)。
+    #: 取不到就是 0 —— 前端据此决定画不画"上下文占用"那条进度(别除零)。
+    default_model_context_window: int = 0
     settings_files: list[str] = Field(default_factory=list)
     config_files: list[str] = Field(default_factory=list)
     session_dir: str = ""

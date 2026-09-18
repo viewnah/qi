@@ -341,11 +341,14 @@ class QiRuntime:
                                        "content": text, "agent_id": unit.name})
         final_text = ""
         partial = ""
+        # 正常结束才有(RUN_FINISHED 的 usage);硬取消那条路径拿不到。
+        end_usage: dict = {}
         pending_tool: dict | None = None
         try:
             async for event in runner.run(text, history, abort=abort):
                 if event.kind == "agent_end":
                     final_text = event.text
+                    end_usage = (event.data or {}).get("usage") or {}
                 elif event.kind == "text_delta":
                     # 当前轮的增量:硬取消发生在 assistant_message 之前时,就靠它抢救半截回答
                     partial += event.text or ""
@@ -369,13 +372,25 @@ class QiRuntime:
             raise
 
         # 助手侧在回合结束后落盘(与旧版一致;tool 往返已在上方单独落盘)
-        self._persist_final(session, unit.name, final_text)
+        self._persist_final(session, unit.name, final_text, usage=end_usage)
 
-    def _persist_final(self, session: Session, agent: str, text: str) -> None:
-        """回合末尾的助手消息(正常结束与中断收尾共用)。"""
-        self.sessions.append(session, {"type": "message", "role": "assistant",
-                                       "content": text or "(无文本输出)",
-                                       "agent_id": agent})
+    def _persist_final(self, session: Session, agent: str, text: str,
+                       usage: dict | None = None) -> None:
+        """回合末尾的助手消息(正常结束与中断收尾共用)。
+
+        `usage` 落盘在本条 entry 上:它原来是**只活在流里**的(RUN_FINISHED 的
+        metadata),刷新/重开就没了 —— 于是"这个会话用了多少 token"在设置页与
+        输入卡下方都无从得知。放在助手消息上是因为它天然按轮分片(一輪一条),
+        汇总就是会话级(见 `usage_summary`)。
+
+        参数与分支摘要条目里的 `usage` 同名同义(那边是压缩那一次的用量)。
+        """
+        entry: dict = {"type": "message", "role": "assistant",
+                       "content": text or "(无文本输出)",
+                       "agent_id": agent}
+        if usage:
+            entry["usage"] = usage
+        self.sessions.append(session, entry)
 
     def _persist_narration(self, session: Session, agent: str, text: str) -> None:
         """落盘"工具调用之前"的助手叙述(custom entry,**不进对话上下文**)。

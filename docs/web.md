@@ -805,7 +805,8 @@ dsh 的项目行是"工作区 chip + 模式 chip"两颗,qi 只有前者。
    只把栏宽收到 264px。
 3. ~~**眉条常驻**~~ **已改**(见 17.7):空态**没有眉条**,与 dsh 一致;眉条只在有内容
    时出现,它的左右内衬对齐内容列(`max(16px, (100% - 内容列)/2)`)。
-   代价写在 17.7 里:第一次发言之前没有开遥测的入口。(设置浮层不再影响这一条 ——
+   代价写在 17.7 里:第一次发言之前没有开遥测的入口。那段代价**现在已经不成立** ——
+   开关挪到了左栏底部(见 18.20),任何时刻都在。(设置浮层不影响这一条 ——
    它已经改成盖在应用之上的一层,见 18.17。)
 4. **一级行只有"在此项目新建会话"**;二级行的重命名/删除/分叉(dsh 有 `…` 菜单)**暂缺** ——
    API(`PATCH`/`DELETE /api/sessions/{id}`)已在,缺的是 UI。
@@ -841,14 +842,15 @@ npm run build
 
 dsh.png 的空态顶上**什么都没有**:一屏白底,居中 hero + 输入卡。qi 之前留了一条 44px 的
 眉条(标题 / cwd / 遥测开关),现在**整条在空态不渲染**(有内容的会话仍然有;设置浮层不再
-影响这一条 —— 见 18.17)。
+影响这一条 —— 见 18.17;眉条自己的内容后来缩成"只有会话名",见 18.20)。
 
 它原来那两样东西本来也不该在:标题位写的是占位文案「新会话」(会话行已经叫「未命名」,
 两处叫法不一),而「遥测」是 harness 的内部视角,不该出现在开场白的第一屏。
 
-**代价(必须记账)**:有内容之前**没有开遥测的入口** —— 它的开关就长在眉条上。要把它挪到
-左栏底部(与「设置」并列)只需加一行;现在保持"先给一屏干净的开场",因为遥测是
-"回看这一轮为什么这么走"的东西,它的消费者天然在对话发生之后。
+**代价(必须记账)**:有内容之前**没有开遥测的入口** —— 它的开关就长在眉条上。
+(这条代价后来消失了:开关挪到了左栏底部、与「设置」并列,任何时刻都在,见 18.20。)
+当时的取舍是"先给一屏干净的开场":遥测是"回看这一轮为什么这么走"的东西,它的消费者
+天然在对话发生之后 —— 但"晚一点"和"没有"是两件事,所以后来还是把入口补上了。
 
 顺带把 hero 的垂直位置对齐了:`.hero` 补上 dsh 的
 `--dsh-composer-hero-padding-bottom`(32px)—— 那个令牌早就在 `tokens.css` 里,只是一直没被用。
@@ -1765,5 +1767,221 @@ options 横向溢出 = false,纵向滚动 = true;页面错误 = 0
 ```bash
 .venv/bin/python -m pytest -q tests/test_mcp_plugin.py tests/test_web_api.py   # 11 + 38
 .venv/bin/python -m pytest -q                                                 # 427
+cd web && npm run typecheck && npm test && npm run check:design && npm run build
+```
+
+### 18.19 输入卡下方那行会话统计 + token 用量(2026-09,使用反馈)
+
+反馈:「dsh 对话框下面有一行会话统计和 token 用量,qi web 参考它也填相应的统计信息,
+把对话框抬高一点」。行本身是照 dsh 的 `StatsPills` 做的;但要让那行**有真数字可写**,
+先得补一条一直缺失的数据链路。
+
+#### (1) 先补链路:usage 以前只活在流里
+
+dsh 那行读的是**持久投影**(sessionStats / tokenUsage),所以刷新、翻页、压缩都不影响它。
+qi 这边 `usage` 只挂在 `RUN_FINISHED.metadata["qi.usage"]` 上 —— **刷新就没了**,
+于是"这个会话用了多少 token"在界面上根本无从显示。
+
+补法(三小步,都在后端):
+
+| 改动 | 位置 | 说明 |
+| --- | --- | --- |
+| usage 落盘 | `runtime._persist_final` | 挂在**助手消息 entry** 上(天然按轮分片,汇总就是会话级) |
+| 会话级汇总 | `session.usage_summary(branch)` | 纯函数:轮数 / 步数 / 工具 / token / 上下文占用 |
+| 汇总上头 + 窗口 | `/api/sessions/{id}` 的 `usage`、`/api/config` 的 `default_model_context_window` | 窗口本来就在配置里(`resolve_default_model` 早就解析出 `context_window`),只是没回给前端 |
+
+汇总**必须在后端算**:前端只拿得到**分页窗口**,长会话窗口外还有几千条 —— 自己求和会静默少算。
+
+另外一个顺带修掉的语义错误:`context_tokens`(最后一次 LLM 调用看到的 prompt 大小)
+与 `prompt_tokens`(各步**相加**)不是一回事。相加的数字会随步数虚增、甚至超过窗口,
+拿它画"上下文占用"是错的。所以 runner 现在单独记一个 `context_tokens`,
+遥测抽屉那条进度也改用它(以前用 `total_tokens`,那是错的)。
+
+#### (2) 那行长什么样
+
+照 dsh `StatsPills.module.css`:两颗**图标药丸**(仪表盘 = 会话计数、数据库 = token 用量)、
+居中、gap 12、13/20 次要色、药丸内衬 `1px 8px` / r24 / 等宽数字。
+`formatTokens` 的取位**逐条照 dsh** `token-format.ts`(`>=100` 取整,否则一位小数;大写 `K`/`M`)
+—— 同一个位置上的数字读法不一致会显得像两个产品(第一版我自作聪明改成小写 + 有效数字,
+被自己的单测抓住后改回来了)。
+
+两处与 dsh 的**有意**差异:
+
+- 药丸是**静态读数**而不是按钮。dsh 那颗可以点开"时间 / 用量"详情面板,qi 没有那个面板 ——
+  所以不做点了没反应的控件。
+- qi 的行是**落盘口径**,dsh 的是活投影:运行中那一轮要等它落盘才计入,所以它永远比屏幕上
+  的对话慢一轮。换来的是刷新/重开之后数字不变(与 §18.17 的"以后端为准"同一取舍)。
+
+#### (3) 「把对话框抬高一点」
+
+用的就是 dsh 的机制:`InputBar.module.css` 里
+
+```css
+.root:has([data-composer-stats]) { padding-bottom: 4px; }   /* 原本 8px */
+```
+
+行的 `.root` 自带 4px 上内衬,所以底部间隙收回 4px 后画出来的 B8 节奏不变 ——
+**卡片被抬起来的高度 = 那 4px + 行本身的高度**。qi 对应的是 `.dock:has(.stats)`。
+空态(还没说过话)那行不渲染,卡片位置不变 —— 否则它会把 hero 里的项目 chip 与输入卡拆开。
+
+> 顺手改正了一句**写错的注释**:`Dock.tsx` 原来说"dsh 的 composer **上方**也有一行 stats pill"。
+> 实际上方的状态条(status strip)与下方的 stats pills 是**两样东西**;qi 只有上方那条活动条。
+
+#### (4) 实测(真实 Chrome/CDP;会话用一份手工写的 JSONL,不跑 LLM)
+
+```text
+空态(hero)有统计行吗 = false                     ← 位置不变
+统计行 rect = [477.9, 870, 764.2, 26]  pad-top 4px
+统计行文字 = "2 轮 · 3 步 · 工具 2 1 失败" + "5.1K tokens · 上下文 4%"
+药丸 = SPAN(不是按钮)· color label-tertiary rgb(129,133,140) · r24 · pad 1px 8px · tabular-nums
+失败次数 = rgb(245,158,11)(state-warning)· 图标 14×14
+.dock padding-bottom = 4px                      ← dsh 的 :has() 规则生效,卡片被抬起来
+输入卡 rect = [477.9, 772, 764.2, 98] → 距视口底 30px(= 行 26 + 4)
+页面错误 = 0(浅色/深色都渲染)
+```
+
+后端口径(同一份 fixture):
+
+```text
+/api/sessions/{id}.usage = {turns:2, steps:3, tools:2, tool_failures:1, llm_calls:3,
+                            prompt_tokens:5000, completion_tokens:50,
+                            total_tokens:5050, context_tokens:4100}
+/api/config.default_model_context_window = 100000
+```
+
+#### (5) 「token 统计什么的都没有吗」:老会话为什么一行都没有
+
+反馈来得很快,而且**是对的**:打开任何已有会话,那行只有「N 轮 · 工具 N」,一个 token 数字都没有。
+
+原因不是坏了,是**历史里真的没有** —— usage 从这次改动起才写进会话文件。实测(反馈者本机):
+
+```text
+~/.qi/agent/sessions/*.jsonl:7 个会话 / 18 条 entry / 其中带 usage 的 **0 条**
+最近一轮:09-18 09:56(而这次改动是 10:03)
+```
+
+打开这类会话时后端回的就是全 0(`turns` 之外),而**补算不出来**:当时没记,消息正文也推不出
+真实计费。所以不编一个估值,而是把那句话说在界面上 —— 多一颗 `用量未记录` 药丸
+(tooltip 写明"跑在记录用量之前,新的一轮开始就有了"),而不是留白让人猜。
+
+实测(手工造的"老会话" JSONL,与反馈者那份同形):
+
+```text
+后端口径   {turns:2, steps:0, tools:1, total_tokens:0, context_tokens:0}
+界面       row = "2 轮 · 工具 1" + "用量未记录"     ← 两颗粒丸,tooltip 有解释
+.dock      padding-bottom = 4px                       ← 行在时卡片照样抬起来
+页面错误   0
+```
+
+顺带量出来的**活路径**证据(本地 stub LLM 宿主,**不花真 provider 的额度**):
+
+```text
+空态                 row=null,dock padding-bottom 0px
+发完一轮后           row="1 轮 · 1 步" + "1.3K tokens · 上下文 1%",padding-bottom 4px
+落盘的 entry usage   {turns:1, context_tokens:1234, llm_calls:1, prompt_tokens:1234,
+                      completion_tokens:56, total_tokens:1290}
+页面错误             0
+```
+
+这两处是同一轮反馈里**顺手修掉**的:
+
+- **刷新之后遥测抽屉说"本轮还没有用量"**:`qi.usage` 那个流事件不会重放,而 usage 就在 entry 里。
+  新增 `state/turn.ts` 的 `lastUsage(entries)`,打开会话时取**最后一轮**的用量喂给抽屉 ——
+  现在重开一个会话,抽屉直接显示 `4100 / 100000 tokens · 4.1%`(之前是空的)。
+- **老宿主会把整页打崩**:老宿主的明细响应里没有 `usage` 字段,`countsLabel(undefined)` 会抛。
+  改成 `detail.usage ?? null`。实测(用 `fetch` 拦截把那个字段删掉模拟老宿主):页面照常、0 错误,
+  只是那行统计整体不渲染 —— 与 `/api/workspaces` 同一条降级规矩。
+
+#### (6) 一条量出来的事实 + 没做的
+
+- dsh 的 `.sep` 写的是 `color: var(--dsw-alias-separator-primary)`,而那个令牌**在它自己的
+  仓库里只被引用、从未定义**(全仓搜只有这一处)。所以 dsh 的 `·` 实际也是继承药丸色;
+  qi 不引入无法对拍的令牌,两边渲染完全相同。
+- **没做**:dsh 那种点开药丸的详情面板(时间/分步用量)。qi 没有逐步骤计时(没有 TTFT /
+  decode 时长),面板里会有半屏是空的 —— 要做得先把 runner 的计时补上,是另一件事。
+- **没做**:缓存命中率。qi 的 `_accumulate_usage` 只累加**整数**字段,而
+  `cached_tokens` 在 OpenAI 兼容协议里是嵌套对象(`prompt_tokens_details.cached_tokens`),
+  拿不到可靠的值 —— 编一个百分比出来不如不显示。
+
+#### (7) 验证怎么跑
+
+```bash
+.venv/bin/python -m pytest -q                       # 433(新增 usage_summary 4 项 + web 2 项)
+cd web && npm run typecheck && npm test             # 66(新增 stats.test.ts 7 项 + turn.test.ts 的 lastUsage 3 项)
+npm run check:design && npm run build
+```
+
+### 18.20 对话页眉条改成「只有会话名」(2026-09,使用反馈,两轮)
+
+反馈第一轮:「对话页面顶栏像 chat.deepseek.com 一样只显示会话名称。且标题靠左,字大一点。」
+第二轮(看到结果后)校正:「参考 dsh 会话标题的位置,不需要和会话内容左对齐,应该更左。现在字有点
+太大了。」
+
+眉条原来是一条 44px 的条,挂着三样东西:会话名(14px/500)、cwd(11px 等宽)、右侧「遥测」开关。
+现在只剩会话名,而且**贴左**:
+
+| 项 | 之前 | 现在 | 依据 |
+| --- | --- | --- | --- |
+| 高度 | 44px | **52px** | dsh 的会话头 min-height 76 = 标题行 30 + view tabs 行;qi 没有 tabs |
+| 左右内衬 | `max(side-clearance, (100% - 内容宽)/2)`(跟居中正文对齐) | **`0 28px 0 20px`** | dsh `ConversationRoot.module.css` 的 `.header` 原值 |
+| 字 | 14px / 500(`max-width: 46%`) | **`--dsw-font-base-strong-16`**(500 16px/24px) | dsh 的会话名是 `.crumb` 的 14px/20px + `.crumbCurrent` 的 `font-weight: 500`;qi 取 16 —— 大一级,但没到 20 |
+| 内容 | 标题 + cwd + 遥测开关 | **只有标题**(`title` 给全名) | 反馈 |
+
+**两轮之间的那次错**:第一轮我把标题留在「跟居中正文左对齐」的位置、字号提到 20px
+(`--dsw-font-l-20`)。两条都不对 —— dsh 的标题是 flat 20px 内衬(与正文**故意不齐**),
+字号也只比正文大一点点;20px 在 52px 的条里明显是标题压过了内容。第二轮按它的真实值校正:
+
+```text
+dsh .header   = padding: 10px 28px 0 20px; min-height: 76px;
+                border-bottom: 0.5px solid var(--dsw-alias-border-l3)
+dsh .crumb    = font-size: 14px; line-height: 20px; padding: 4px 8px; radius 12;
+                max-width: 220px; color: label-tertiary
+dsh .crumbCurrent = font-weight: 500; color: label-primary     ← 当前会话那一颗
+```
+
+> 顺带改掉一句**写错的注释**:眉条原来写着「无分隔线(dsh 的对话头部是浮在内容上的轻条)」——
+> dsh 的会话头**有** `border-bottom: 0.5px solid border-l3`。qi 这次仍然不加(反馈只谈位置与
+> 字号),但注释不能再撒谎;要不要补这条线是另一个决定。
+
+#### 两样东西的去处(不是删掉了)
+
+- **cwd → 遥测抽屉的「环境」组**。它是诊断事实,不是标题;抽屉里本来就有「工作目录」这一行。
+- **「遥测」开关 → 左栏底部,与「设置」并列**(同 `.rail__footrow` 几何:259×42;放在「设置」**上方**,
+  让「设置」保持最底那行 —— 与 dsh 的侧栏脚同序)。
+
+第二条不是新决定:§17.7 就把它记作「要把它挪到左栏底部(与「设置」并列)只需加一行」,当时没做,
+因为"晚一点"还能接受。这次眉条要腾空,就落到了那个位置 —— 顺带把 §17.4 / §17.7 记的那条代价
+(「有内容之前没有开遥测的入口」)**消掉了**:现在任何时刻都能开。
+
+#### 实测(真实 Chrome/CDP,1440 宽)
+
+第一轮(错的那版):
+
+```text
+眉条 = [280, 0, 1160, 56];标题 font = 500 20px / 28px;标题 x = 493.9(= 正文 x)
+```
+
+第二轮(现在):
+
+```text
+眉条 = [280, 0, 1160, 52];子节点 = ["work__title:…"]
+标题 = 500 16px / 24px · label-primary rgb(15,17,21)
+标题 x = 300(= 面板左缘 280 + 20)   ← 正文 x 仍是 493.9:刻意的错位
+眉条里还有 .work__cwd 吗 = false
+左栏底部 = [遥测(aria-pressed=false,259×42),设置(259×42)]
+点遥测 → shell[data-tele]=open(抽屉 301px);再点 → closed
+页面错误 = 0
+```
+
+#### 没做的
+
+- **没加 dsh 那条 `border-bottom`**(0.5px `border-l3`):它确实有,但反馈只谈位置与字号。
+- **没有照搬 chat.deepseek.com 的右栏控件**(分享 / 设置图标):qi 没有那些能力,放上去就是假图标。
+- **标题不换行**:超长会话名走省略号(一行)+ `title` 全名 —— dsh 的 `.crumb` 也是 `max-width: 220px`
+  加省略号。
+
+#### 验证怎么跑
+
+```bash
 cd web && npm run typecheck && npm test && npm run check:design && npm run build
 ```

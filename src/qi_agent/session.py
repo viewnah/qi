@@ -138,6 +138,69 @@ class Session:
         return self.message_count_of()
 
 
+def _as_int(value: object) -> int:
+    """usage 里的计数:非整数(bool 也是 int 的子类,单独排除)一律当 0。
+
+    provider 差异大 —— 有的回字符串、有的回 null。它们不影响会话能不能跑,所以不报错。
+    """
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def usage_summary(branch: list[dict]) -> dict:
+    """当前分支的用量汇总(**会话级**,读落盘的 entries)。
+
+    为什么在后端算:前端只拿得到**一个窗口**(`/api/sessions/{id}` 是分页的),
+    长会话窗口前面还有几千条 —— 前端求和会静默少算。后端手上有整条分支。
+
+    口径:
+      - `turns` 用户轮数(`role=user` 的 message);
+      - `steps` / `llm_calls` / token 累计**只读带 usage 的助手消息**;
+      - 写入 usage 之前的老会话、以及被硬取消的轮没有 usage → 它们只计入 `turns`,
+        不把 token 当成 0 也不补估值(没有就是没有);
+      - `context_tokens` 取**最后一条**带该键的轮 —— 那是那一轮最后一次 LLM 调用
+        看到的 prompt 大小(即"现在上下文里装着多少"),**不是**各轮 prompt 相加。
+    """
+    turns = 0
+    tools = 0
+    tool_failures = 0
+    steps = 0
+    llm_calls = 0
+    totals: dict[str, int] = {}
+    context_tokens = 0
+    for entry in branch:
+        kind = entry.get("type")
+        if kind == "tool":
+            tools += 1
+            if entry.get("status") == "error":
+                tool_failures += 1
+            continue
+        if kind != "message":
+            continue
+        if entry.get("role") == "user":
+            turns += 1
+            continue
+        if entry.get("role") != "assistant":
+            continue
+        usage = entry.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        steps += _as_int(usage.get("turns"))
+        llm_calls += _as_int(usage.get("llm_calls"))
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            totals[key] = totals.get(key, 0) + _as_int(usage.get(key))
+        context = _as_int(usage.get("context_tokens"))
+        if context > 0:
+            context_tokens = context
+    # 有的 provider 不给 total_tokens:那就用两侧之和 —— 好过显示 0。
+    total = totals.get("total_tokens") or (totals.get("prompt_tokens", 0)
+                                           + totals.get("completion_tokens", 0))
+    return {"turns": turns, "steps": steps, "tools": tools,
+            "tool_failures": tool_failures, "llm_calls": llm_calls,
+            "prompt_tokens": totals.get("prompt_tokens", 0),
+            "completion_tokens": totals.get("completion_tokens", 0),
+            "total_tokens": total, "context_tokens": context_tokens}
+
+
 class SessionError(Exception):
     pass
 

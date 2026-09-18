@@ -50,6 +50,9 @@ def _accumulate_usage(total: dict, usage: dict | None) -> None:
 
     按需累加所有**整数**字段:provider 差异大(有的给 `cached_tokens`,有的给
     `cache_read_input_tokens`),不设白名单。非整数值忽略(bool 也是 int 的子类,单独排除)。
+
+    只有**可累加**的量走这里。`context_tokens`(最后一次调用的 prompt 大小)不走:
+    几轮的 prompt 相加没有含义,它由调用方单独算出。
     """
     total["llm_calls"] = total.get("llm_calls", 0) + 1
     for key, value in (usage or {}).items():
@@ -135,6 +138,10 @@ class AgentRunner:
         yield AgentEvent(kind="agent_start", agent=self.unit.name)
         last_text = ""
         usage_total: dict = {}
+        #: 最后一次 LLM 调用看到的 prompt 大小 = **当前上下文占用**。
+        #: 与 `usage_total` 里的 `prompt_tokens`(各步相加)不是一回事 —— 几轮的
+        #: prompt 相加得到的数字没有含义,所以单列一个键。
+        context_tokens: int = 0
         turns_used = 0
         turn = 0
         aborted = False
@@ -169,6 +176,9 @@ class AgentRunner:
                     aborted = True
                     tool_calls = []
                 _accumulate_usage(usage_total, usage)
+                prompt_side = (usage or {}).get("prompt_tokens")
+                if isinstance(prompt_side, int) and not isinstance(prompt_side, bool):
+                    context_tokens = prompt_side
                 msgs.append(ChatMessage(role="assistant", content=acc_text,
                                         tool_calls=tool_calls))
                 last_text = acc_text
@@ -218,7 +228,8 @@ class AgentRunner:
         if last_text:
             yield AgentEvent(kind="text", agent=self.unit.name, text=last_text)
         end_data: dict = {"messages": [m.to_dict() for m in msgs[1:]],
-                          "usage": {"turns": turns_used, **usage_total}}
+                          "usage": {"turns": turns_used, "context_tokens": context_tokens,
+                                    **usage_total}}
         if aborted:
             end_data["aborted"] = True
         yield AgentEvent(kind="agent_end", agent=self.unit.name, text=last_text,

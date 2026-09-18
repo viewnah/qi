@@ -115,6 +115,8 @@ export interface Entry {
    result?: string;
    /** 插件给客户端看的自由结构(见 QiToolMeta)。回放时也要带上。 */
    details?: Record<string, unknown> | null;
+   /** 这一次调用的用量。老会话(写入 usage 之前)没有这个字段。 */
+   usage?: Record<string, unknown>;
    // dispatch
    agent?: string | null;
    display_name?: string | null;
@@ -127,6 +129,25 @@ export interface Entry {
    summary?: string;
 }
 
+/**
+ * 一个会话的用量汇总(后端算:`session.usage_summary`)。
+ *
+ * 后端算而不是前端累加:前端只拿得到**分页窗口**,长会话自己求和会静默少算。
+ * 老会话(写入 usage 之前)除 `turns` 以外全是 0 —— 没有就是没有,不补估值。
+ */
+export interface UsageSummary {
+   turns: number;
+   steps: number;
+   tools: number;
+   tool_failures: number;
+   llm_calls: number;
+   prompt_tokens: number;
+   completion_tokens: number;
+   total_tokens: number;
+   /** 最后一轮的 prompt 大小 = 现在上下文里装着多少(不是各轮相加) */
+   context_tokens: number;
+}
+
 export interface SessionDetail {
    id: string;
    title: string;
@@ -137,6 +158,8 @@ export interface SessionDetail {
    total_entries: number;
    entries: Entry[];
    skipped: number;
+   /** 整条分支的用量汇总(与窗口无关) */
+   usage: UsageSummary;
 }
 
 export interface AgentInfo {
@@ -168,6 +191,8 @@ export interface ConfigView {
    /** 不带 provider 前缀的模型名(展示用:输入卡右下)。旧宿主可能不给,回落 `default_model`。 */
    default_model_name?: string;
    default_model_source: string;
+   /** 默认模型的上下文窗口(tokens)。0 = 取不到 → 不画占用条(不是"窗口是 0") */
+   default_model_context_window: number;
    router_model: string | null;
    settings_files: string[];
    config_files: string[];

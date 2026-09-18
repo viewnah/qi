@@ -705,45 +705,31 @@ pre,
  overflow: hidden;
 }
 
-/* 眉条:44px,无分隔线(dsh 的对话头部是浮在内容上的轻条)。左右内衬跟着内容列走:
-   宽屏时与居中内容列左缘对齐(用 max() 让窄屏自动回落到最小内衬),
-   这样标题不会看起来与下面的转录脱节。 */
+/* 眉条:52px,只有会话名,而且**贴左**(flat 20px 内衬 —— 不跟居中内容列对齐)。
+   位置直接参考 dsh 的 `ConversationRoot.module.css`:它的会话头是
+   `padding: 10px 28px 0 20px`,标题就落在离面板左缘 20px 处,与下面居中的正文**故意不齐**。
+   (它那边 min-height 76,是因为标题行下面还有一排 view tabs;qi 只有标题这一行,所以 52。)
+   标题的左右内衬照抄它的 20 / 28。 */
 .work__head {
  display: flex;
  flex: none;
  align-items: center;
- gap: 10px;
- min-height: 44px;
- padding: 0
-  max(
-   var(--dsh-composer-side-clearance),
-   calc((100% - var(--dsh-chat-content-width)) / 2)
-  );
+ min-height: 52px;
+ padding: 0 28px 0 20px;
 }
 
+/* 字阶取 `--dsw-font-base-strong-16`(500 16px/24px)。
+   参考值:dsh 的会话名是 `.crumb` 的 14px/20px + `font-weight: 500`(crumbCurrent)。
+   qi 取 16 —— 比 dsh 那档大一级(反馈要"字大一点"),但 20px 那次明显过了。
+   改字阶请用令牌:门禁逐条对拍 dsh 的阶梯。 */
 .work__title {
- overflow: hidden;
- max-width: 46%;
- color: var(--dsw-alias-label-primary);
- font-size: 14px;
- font-weight: 500;
- line-height: 20px;
- text-overflow: ellipsis;
- white-space: nowrap;
-}
-
-.work__cwd {
- overflow: hidden;
- min-width: 0;
- color: var(--dsw-alias-label-caption);
- font-family: var(--ds-font-family-code);
- font-size: 11px;
- text-overflow: ellipsis;
- white-space: nowrap;
-}
-
-.work__spacer {
  flex: 1;
+ min-width: 0;
+ overflow: hidden;
+ color: var(--dsw-alias-label-primary);
+ font: var(--dsw-font-base-strong-16);
+ text-overflow: ellipsis;
+ white-space: nowrap;
 }
 
 .work__body {
@@ -1270,6 +1256,14 @@ pre,
  padding: 0 var(--dsh-composer-side-clearance) 8px;
 }
 
+/* 统计行在时,输入卡**上抬 4px**:dsh `InputBar.module.css` 的同一条规则
+   (`.root:has([data-composer-stats]) { padding-bottom: 4px }`)。
+   行的 `.stats` 自带 4px 上内衬,所以底部间隙收回 4px 后画出来的 B8 节奏不变
+   —— 卡片被抬起来的就是那 4px 加上行本身的高度。 */
+.dock:has(.stats) {
+ padding-bottom: 4px;
+}
+
 .dock__inner {
  max-width: var(--dsh-composer-card-max-width);
  margin: 0 auto;
@@ -1307,6 +1301,56 @@ pre,
  flex: 1;
 }
 .activity__warn {
+ color: var(--dsw-alias-state-warning);
+}
+
+/* ── 卡片下方那行统计(照 dsh `StatsPills.module.css`)──────────
+   两颗图标药丸:仪表盘 = 会话计数,数据库 = token 用量。几何取自 dsh 的 `.root`
+   (居中、gap 12、13/20 次要色、上内衬 4)+ `.pill`(内衬 `1px 8px`、r24、等宽数字)。
+   dsh 那行自己带左右内衬(`side-clearance + 16`),qi 不需要:`.dock__inner` 已经
+   是卡片宽度且自己居中。 */
+.stats {
+ display: flex;
+ justify-content: center;
+ gap: 12px;
+ box-sizing: border-box;
+ padding: 4px 0 0;
+ color: var(--dsw-alias-label-tertiary);
+ font: var(--dsw-font-xs-13);
+}
+
+/* 药丸是**静态读数**而不是按钮:dsh 那颗可以点开时间/用量详情面板,qi 没有那个面板
+   —— 所以不做一个"点了没反应"的控件。 */
+.stats__pill {
+ display: inline-flex;
+ align-items: center;
+ gap: 6px;
+ max-width: 100%;
+ padding: 1px 8px;
+ border-radius: 24px;
+ color: inherit;
+ font-variant-numeric: tabular-nums;
+ white-space: nowrap;
+}
+
+.stats__label {
+ min-width: 0;
+ overflow: hidden;
+ text-overflow: ellipsis;
+}
+
+/* 分隔点:同档色、靠间距分开。
+
+   dsh 的 `.sep` 写的是 `color: var(--dsw-alias-separator-primary)` —— 而那个令牌
+   在它的仓库里**只被引用、从未定义**(全仓搜只有这一处),所以它自己也回退成"继承
+   药丸的颜色"。qi 不引入一个无法对拍的令牌(颜色门禁只对拍 design-platform.css 里
+   存在的键),两边因此渲染**完全相同**:继承 `label-tertiary`。 */
+.stats__sep {
+ margin: 0 6px;
+}
+
+/* 失败次数用警告色:它是这行里唯一"可能需要你做事"的数字。 */
+.stats__warn {
  color: var(--dsw-alias-state-warning);
 }
 

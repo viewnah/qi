@@ -18,11 +18,23 @@
  * 两边冲突时以截图为准(用户看的就是它)。
  *
  * 两处**qi 自己的**东西,都留着:
- *   1. **活动条**(`activity`):回答"此刻在干什么"。dsh 的 composer 上方也有
- *      一行 stats pill,dsh 靠它报 token/耗时;qi 用它报**动作**。位置一致(卡片上方),
- *      内容按 qi 的需要是刻意的差异 —— 底边状态条离视线最远,而这是最需要即时可见的东西。
+ *   1. **活动条**(`activity`):回答"此刻在干什么"。dsh 的同一位置(卡片**上方**)
+ *      是它自己的状态条(status strip);qi 用它报**动作**。
  *   2. **停止按钮**:dsh 没有(它没有"取消这一轮"的出口)。qi 的取消=客户端断开,
  *      所以运行中发送键变成停止键,**同一个圆**,不新增控件。
+ *
+ * **卡片下方那行统计**(`stats`)是这次加的,形状照 dsh 的 `StatsPills`
+ * (`ui-chat/src/client/chat/StatsPills.module.css`):两颗图标药丸 —— 仪表盘那颗是
+ * 会话计数,数据库那颗是 token 用量。三条与 dsh 一致的做法:
+ *   · **有数据才画**(它那边是 `steps===0 && !hasTokens` 时整行不渲染);行不在时
+ *     底部间隙是 8px,在时收到 4px(行自带 4px 上内衬),见 app.css 的 `:has()` 规则;
+ *   · 药丸是**静态读数**而不是按钮:qi 没有 dsh 那种展开详情面板(那颗面板是它自己的
+ *     时间 / 用量对话框),所以不做"点了没反应的控件";
+ *   · 图标沿用 dsh 那两颗(Gauge / Database),尺寸 14。
+ *
+ * 一处**口径差异**,写清楚:dsh 的行靠活投影,流式途中数字就在跳;qi 的行读的是
+ * **落盘口径**(`/api/sessions/{id}` 的 `usage`)—— 运行中那一轮要等它落盘才计入,
+ * 所以它永远比屏幕上的对话慢一轮。换来的是刷新/重开之后数字不会变。
  *
  * 文本域用 `<textarea>` 自增长(max-height 由 CSS 封顶):`Enter` 发送、
  * `Shift+Enter` 换行。dsh 用 contenteditable(它要内联 chip),qi 不需要。
@@ -30,7 +42,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CommandMenu } from "./CommandMenu";
 import { COMMANDS } from "../commands";
+import { contextShare, countsLabel, formatTokens } from "../state/stats";
+import type { UsageSummary } from "../api/types";
 import {
+  IconDatabaseOutline16,
+  IconGaugeOutline16,
   IconPaperclipOutline16,
   IconPlusOutline16,
   SendArrowGlyph,
@@ -51,6 +67,8 @@ export function Dock({
   canFork,
   canCompact,
   onCommand,
+  usage,
+  contextWindow,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -71,11 +89,28 @@ export function Dock({
   canCompact: boolean;
   /** 命令菜单选中某一条(动作在 App 里:`new` / `fork` / `settings`)。 */
   onCommand: (id: string) => void;
+  /** 会话级用量(后端算的**落盘口径**)。null = 还没选中会话。 */
+  usage: UsageSummary | null;
+  /** 默认模型的上下文窗口。0 = 取不到 → 不画占用百分比(不是"窗口是 0")。 */
+  contextWindow: number;
 }) {
   const ref = useRef<HTMLTextAreaElement | null>(null);
   /** 输入卡本身:指令菜单按它的 rect 定位(见 CommandMenu 的文件头)。 */
   const cardRef = useRef<HTMLDivElement | null>(null);
   const canSend = !disabled && value.trim().length > 0;
+  /** 卡片下方那行统计的文案(没东西可报时是 null → 整行不渲染)。 */
+  const counts = usage === null ? null : countsLabel(usage);
+  const share =
+    usage === null ? null : contextShare(usage.context_tokens, contextWindow);
+  const hasTokens =
+    usage !== null && (usage.total_tokens > 0 || usage.context_tokens > 0);
+  /**
+   * 有轮数、但一个 token 都没记 —— 那是**本次改动之前**跑过的会话。
+   *
+   * 这时不能什么都不写:用户看到的是"有统计行、但没有 token",而他无从知道为什么。
+   * 把事实写出来("用量未记录")比留白好 —— 也不编一个估值填上去。
+   */
+  const usageMissing = usage !== null && usage.turns > 0 && !hasTokens;
 
   // 指令菜单:combobox 形态 —— 焦点始终在输入框,菜单只画一个高亮行。
   const [menuOpen, setMenuOpen] = useState(false);
@@ -297,6 +332,51 @@ export function Dock({
             </div>
           </div>
         </div>
+
+        {/* 会话统计 + token 用量。**有数据才画** —— 空会话（还没说过话）不占这
+            22px,否则 hero 里的项目 chip 与输入卡会被它拆开（它俩本该隔 12px）。 */}
+        {counts !== null || hasTokens || usageMissing ? (
+          <div className="stats">
+            {counts !== null && usage !== null ? (
+              <span className="stats__pill">
+                <IconGaugeOutline16 size={14} />
+                <span className="stats__label">
+                  {counts}
+                  {usage.tool_failures > 0 ? (
+                    <span className="stats__warn">
+                      {` ${usage.tool_failures} 失败`}
+                    </span>
+                  ) : null}
+                </span>
+              </span>
+            ) : null}
+            {hasTokens && usage !== null ? (
+              <span className="stats__pill">
+                <IconDatabaseOutline16 size={14} />
+                <span className="stats__label">
+                  {`${formatTokens(usage.total_tokens)} tokens`}
+                  {share === null ? null : (
+                    <>
+                      <span className="stats__sep" aria-hidden>
+                        ·
+                      </span>
+                      {`上下文 ${Math.round(share * 100)}%`}
+                    </>
+                  )}
+                </span>
+              </span>
+            ) : null}
+            {usageMissing ? (
+              <span
+                className="stats__pill"
+                title="这轮对话跑在记录用量之前:qi 当时没有把 usage 写进会话文件,事后也补算不出来。新的一轮开始就有了。"
+              >
+                <IconDatabaseOutline16 size={14} />
+                <span className="stats__label">用量未记录</span>
+              </span>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </div>
   );

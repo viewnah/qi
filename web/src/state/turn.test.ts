@@ -13,6 +13,7 @@ import {
   emptyTurn,
   fromEntries,
   hydrate,
+  lastUsage,
   reduce,
   withUserMessage,
 } from "./turn";
@@ -279,5 +280,44 @@ describe("未知 CUSTOM 不被静默丢弃", () => {
   it("落到一行 note,带上名字", () => {
     const s = run({ type: "CUSTOM", name: "acme.widget", value: { x: 1 } });
     expect(s.rows[0]).toMatchObject({ kind: "note", label: "acme.widget" });
+  });
+});
+
+describe("lastUsage", () => {
+  const entries: Entry[] = [
+    { type: "message", role: "user", content: "你好" },
+    {
+      type: "message",
+      role: "assistant",
+      content: "第一轮",
+      usage: { prompt_tokens: 100, context_tokens: 100 },
+    },
+    { type: "message", role: "user", content: "再来" },
+    {
+      type: "message",
+      role: "assistant",
+      content: "第二轮",
+      usage: { prompt_tokens: 900, context_tokens: 300 },
+    },
+  ];
+
+  it("取**最后一轮**,不是第一条、也不是累加", () => {
+    expect(lastUsage(entries)).toEqual({ prompt_tokens: 900, context_tokens: 300 });
+  });
+
+  it("老会话(一条 usage 都没记过)→ null:不造数", () => {
+    const old: Entry[] = [
+      { type: "message", role: "user", content: "你好" },
+      { type: "message", role: "assistant", content: "你好" },
+    ];
+    expect(lastUsage(old)).toBeNull();
+  });
+
+  it("后面的轮次没记 usage 时,回退到最近一条记过的", () => {
+    const mixed: Entry[] = [
+      ...entries,
+      { type: "message", role: "assistant", content: "被中断的一轮" },
+    ];
+    expect(lastUsage(mixed)).toEqual({ prompt_tokens: 900, context_tokens: 300 });
   });
 });

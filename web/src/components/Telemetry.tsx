@@ -37,8 +37,8 @@ export function Telemetry({
 }: {
   turn: TurnState;
   model: string | null;
-  /** 模型上下文窗口(tokens)。来自 /api/config 之外的模型元数据,取不到就不画条。 */
-  contextWindow: number | null;
+  /** 模型上下文窗口(tokens,来自 `/api/config` 的默认模型元数据)。0/取不到就不画条。 */
+  contextWindow: number;
 }) {
   const routes = turn.rows.filter((r) => r.kind === "route").slice(-6);
   const tools = countTools(turn.rows);
@@ -46,8 +46,17 @@ export function Telemetry({
     typeof turn.usage.total_tokens === "number"
       ? turn.usage.total_tokens
       : null;
+  /**
+   * 占用看的是 **`context_tokens`**(最后一次 LLM 调用看到的 prompt 大小),
+   * 而不是 `total_tokens` —— 后者是多步**相加**的结果,一步就能超过窗口。
+   * 旧宿主不给这个键时回落到 total(那是以前的行为,至少不会空屏)。
+   */
+  const used =
+    typeof turn.usage.context_tokens === "number" && turn.usage.context_tokens > 0
+      ? turn.usage.context_tokens
+      : total;
   const ratio =
-    total !== null && contextWindow ? Math.min(1, total / contextWindow) : null;
+    used !== null && contextWindow > 0 ? Math.min(1, used / contextWindow) : null;
 
   return (
     <div className="tele__scroll">
@@ -56,7 +65,7 @@ export function Telemetry({
         <div className="tele__label">上下文</div>
         {ratio === null ? (
           <div className="tele__empty">
-            {total === null ? "本轮还没有用量" : "模型窗口未知,只报用量"}
+            {used === null ? "本轮还没有用量" : "模型窗口未知,只报用量"}
           </div>
         ) : (
           <div className="meter">
@@ -68,12 +77,12 @@ export function Telemetry({
               />
             </div>
             <div className="meter__note">
-              {total} / {contextWindow} tokens · {(ratio * 100).toFixed(1)}%
+              {used} / {contextWindow} tokens · {(ratio * 100).toFixed(1)}%
             </div>
           </div>
         )}
-        {total !== null && ratio === null ? (
-          <div className="meter__note">{total} tokens</div>
+        {used !== null && ratio === null ? (
+          <div className="meter__note">{used} tokens</div>
         ) : null}
       </div>
 

@@ -818,3 +818,66 @@ async def test_export_serves_the_session_jsonl(client, tmp_path):
     assert any(entry.get("type") == "message" for entry in lines[1:])
 
     assert (await client.get("/api/sessions/none/export")).status_code == 404
+
+
+class UsageStub(StreamingStub):
+    """带 `prompt_tokens` 的两步流:用来钉住"usage 会落盘"这条链路。
+
+    默认的 StreamingStub 只报 total_tokens,而"上下文占用"看的是 prompt 侧 ——
+    没有它就断言不了 `context_tokens` 到底有没有被算出来。
+    """
+
+    async def astream(self, messages, tools=None, temperature=None):
+        self.calls += 1
+        if self.calls == 1:
+            yield LLMDelta(text="先看一下", finished=True,
+                           tool_calls=[ToolCallOut(id="c1", name="ls", args={"path": "."})],
+                           usage={"prompt_tokens": 900, "completion_tokens": 10,
+                                  "total_tokens": 910})
+            return
+        yield LLMDelta(text="完成", finished=True,
+                       usage={"prompt_tokens": 1200, "completion_tokens": 30,
+                              "total_tokens": 1230})
+
+
+@pytest.mark.asyncio
+async def test_session_usage_is_persisted_and_exposed(tmp_path, monkeypatch):
+    """用量汇总:一轮跑完 → 落盘 → `/api/sessions/{id}` 报会话级数字。
+
+    以前 usage 只活在流里(RUN_FINISHED 的 metadata),**刷新就没了** ——
+    于是"这个会话花了多少 token"在界面上根本无从显示。这条用例钉住它落盘,
+    并且钉住三个容易错的数:`steps` 是各轮相加、`context_tokens` 取最后一轮、
+    `turns` 数的是用户消息。
+    """
+    app = _app(tmp_path, monkeypatch, llm=UsageStub())
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        sid = (await client.post("/api/sessions",
+                                 json={"title": "用量", "cwd": str(tmp_path)})).json()["id"]
+        await _agui(client, sid)
+        body = (await client.get(f"/api/sessions/{sid}")).json()
+        usage = body["usage"]
+        assert usage["turns"] == 1
+        assert usage["steps"] == 2                     # 这个 stub 一轮里调了两次 LLM
+        assert usage["llm_calls"] == 2
+        assert usage["tools"] == 1
+        assert usage["total_tokens"] == 910 + 1230
+        assert usage["prompt_tokens"] == 900 + 1200
+        assert usage["context_tokens"] == 1200          # **最后一轮**,不是 2100
+
+        # 落盘断言:数字来自文件,不是流里的残留 —— 重开一个 store 读同一份 JSONL。
+        fresh = SessionStore(root=_web(client).sessions.root).get(sid)
+        assert fresh is not None
+        assistant = [e for e in fresh.branch() if e.get("role") == "assistant"]
+        assert assistant[-1]["usage"]["context_tokens"] == 1200
+
+
+@pytest.mark.asyncio
+async def test_config_exposes_the_default_model_context_window(client):
+    """上下文窗口来自 models.json(没写 contextWindow 的模型用默认值)。
+
+    之前 App 里硬编码 `contextWindow = 0` —— 于是界面上那条"上下文占用"永远是空的,
+    而数据一直都在配置里。
+    """
+    body = (await client.get("/api/config")).json()
+    assert body["default_model_context_window"] == 128000

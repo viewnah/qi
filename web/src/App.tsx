@@ -6,13 +6,13 @@
  * ```text
  * ┌────────────┬──────────────────────────────┐
  * │ 侧栏 280   │ 工作台                        │
- * │ 品牌行 60   │   眉条 44(标题 · cwd · 遥测)  │
+ * │ 品牌行 60   │   眉条 52(只有会话名,贴左)      │
  * │ 新会话 38   │   ┌─ 空态 = hero ─┐            │
  * │ 工作区 36   │   │  mark + 标题   │           │
  * │  项目 34    │   │  项目 chip      │           │
- * │   会话 32   │   │  输入卡         │           │
+ * │   会话 32   │   │  输入卡 + 统计行  │           │
  * │   ...      │   └───────────────┘           │
- * │ 设置/主题   │                               │
+ * │ 遥测 / 设置 │                               │
  * └────────────┴──────────────────────────────┘
  * ```
  *
@@ -36,6 +36,7 @@ import type {
   ConfigView,
   Meta,
   SessionSummary,
+  UsageSummary,
   WorkspaceNames,
 } from "./api/types";
 import { ConfirmDialog } from "./components/ConfirmDialog";
@@ -51,6 +52,7 @@ import type { ProjectOption } from "./components/ProjectMenu";
 import {
   emptyTurn,
   fromEntries,
+  lastUsage,
   reduce,
   withNote,
   withUserMessage,
@@ -194,6 +196,14 @@ export function App() {
   const [fatal, setFatal] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
+  /**
+   * 当前会话的用量汇总(后端算的落盘口径)。
+   *
+   * 为什么不在前端自己累加:这里手上只有**分页窗口**,长会话窗口外还有几千条 ——
+   * 求和会静默少算。所以它在"打开会话"与"一轮结束"两个时点从 `/api/sessions/{id}`
+   * 重取,不参与逐帧的流式状态。
+   */
+  const [sessionUsage, setSessionUsage] = useState<UsageSummary | null>(null);
   const [title, setTitle] = useState("");
   const [turn, setTurn] = useState<TurnState>(emptyTurn);
   const [draft, setDraft] = useState("");
@@ -309,9 +319,17 @@ export function App() {
       setSessionId(detail.id);
       setTitle(detail.title);
       setDraftCwd(detail.cwd ?? "");
+      // 会话级用量:**后端算的落盘口径**(前端只有窗口,自己求和会少算),
+      // 所以它只在"打开会话"与"一轮结束"两个时点刷新。
+      // `?? null` 是给**老宿主**的:它的明细里没有 `usage` 字段,直接透传下去
+      // 会让 Dock 读到 undefined 而抛错(整页白) —— 与 `/api/workspaces` 同一条降级规矩。
+      setSessionUsage(detail.usage ?? null);
       setTurn({
         ...emptyTurn,
         rows: fromEntries(detail.entries),
+        // 历史里**最后一轮**的用量:让遥测抽屉的"上下文"在刷新/重开之后也有数
+        // (`qi.usage` 那个流事件不会重放)。老会话没记过 → 保持空。
+        usage: lastUsage(detail.entries) ?? {},
         phase: "idle",
       });
     } catch (err) {
@@ -330,6 +348,7 @@ export function App() {
         setSessionId(created.id);
         setTitle(created.title);
         setTurn(emptyTurn);
+        setSessionUsage(null);      // 新会话:还没有任何用量
         if (first) void sendTo(created.id, first);
       } catch (err) {
         setFatal(describe(err));
@@ -352,6 +371,14 @@ export function App() {
             phase: prev.phase === "running" ? "ok" : prev.phase,
           }));
           void refreshSessions();
+          // 这一轮已经落盘(带 usage),重拉一次明细拿新的会话级汇总 ——
+          // 卡片下方那行统计因此在每轮结束后跟一步。
+          void api
+            .session(id)
+            .then((detail) => setSessionUsage(detail.usage ?? null))
+            .catch(() => {
+              // 拿不到就保持上一轮的数字:宁可旧一点,也不要变成空白。
+            });
         },
         onError: (err) => {
           setTurn((prev) =>
@@ -457,6 +484,7 @@ export function App() {
         setSessionId(null);
         setTitle("");
         setTurn(emptyTurn);
+        setSessionUsage(null);
       }
     },
     [refreshSessions, sessionId],
@@ -501,7 +529,9 @@ export function App() {
   }, [dialog, forgetSessions, nameDraft, openSession, refreshSessions, sessionId]);
 
   const running = turn.phase === "running";
-  const contextWindow = 0; // 模型窗口目前不在 /api/config 里,取不到就不画占用条
+  // 上下文窗口来自 /api/config(默认模型的 `contextWindow`)。0 = 取不到,
+  // 那时不画占用百分比 —— 而不是画一条永远 0% 的。
+  const contextWindow = config?.default_model_context_window ?? 0;
   const empty = turn.rows.length === 0;
   // 输入卡右下只显示**裸模型名**(`provider/model` 在窄窗口里放不下);完整标签
   // (`provider/model`)留给 tooltip 与遥测抽屉 —— 同 id 不同 provider 时靠它分辨。
@@ -631,6 +661,8 @@ export function App() {
       canFork={sessionId !== null}
       canCompact={sessionId !== null && turn.rows.length > 0}
       onCommand={(id) => void runCommand(id)}
+      usage={sessionUsage}
+      contextWindow={contextWindow}
     />
   );
 
@@ -654,37 +686,30 @@ export function App() {
           settingsOpen={view === "settings"}
           settingsTriggerRef={settingsTriggerRef}
           onOpenSettings={() => setView("settings")}
+          telemetryOpen={tele}
+          onToggleTelemetry={() => setTele((v) => !v)}
         />
       </aside>
 
       <main className="work">
-        {/* 眉条**只在有内容时存在**。
+        {/* 眉条:**只有会话名**,贴左(20px 内衬)、16px/500 —— 位置与字号都按 dsh 的
+            会话头(`ConversationRoot.module.css` 的 `padding: ... 0 20px` + `.crumb` 14px
+            那一档)来,不跟下面居中的正文对齐。
 
-            空态就该是 dsh.png 那个样子:一屏白底 —— 居中 hero + 输入卡,
-            顶上什么都没有。它原本那两样东西也都不该在:"新会话"只是没会话
-            时的占位文案(会话行已经叫「未命名」),而遥测开关是 harness 的内部
-            视角,不是开场白要给人看的东西。代价写进 docs/web.md §17.4:
-            第一次发言之前没有开遥测的入口。
+            使用反馈直接要的(先说"像 chat.deepseek.com 一样只显示会话名称",再校正为
+            "不用和内容左对齐、要更左,字也别那么大")。旧版这里还挂着 cwd 与「遥测」开关:
+            cwd 是诊断事实、不是标题(它在遥测抽屉的「环境」里看),开关挪到了左栏底部
+            (与「设置」并列)—— 它是那个抽屉现在唯一的入口。
+            `title` 属性给的是全名:名字长时会被省略号截断,悬停能看全。
 
-            设置浮层**不再影响**这条判断:它是 `position: fixed` 的面板,
-            底下这屏(包括空态 hero)原样留着 —— dsh 的设置就是这么挂在
-            应用之上的,不是把工作台换掉。 */}
+            空态**整条不渲染**(§17.7):一屏白底 —— 居中 hero + 输入卡,顶上什么都没有。
+            代价写进 docs/web.md §17.4:第一次发言之前没有开遥测的入口(现在入口在左栏,
+            所以这条代价已经不成立了)。 */}
         {empty ? null : (
           <header className="work__head">
-            <span className="work__title">{title || "未命名"}</span>
-            <span className="work__cwd" title={cwd}>
-              {cwd}
+            <span className="work__title" title={title || "未命名"}>
+              {title || "未命名"}
             </span>
-            <span className="work__spacer" />
-            <button
-              type="button"
-              className="ghost"
-              aria-pressed={tele}
-              onClick={() => setTele((v) => !v)}
-              title="遥测:分派理由 / 上下文占用 / 动作计数"
-            >
-              遥测
-            </button>
           </header>
         )}
 

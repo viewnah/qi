@@ -45,7 +45,6 @@ import type { RefObject } from "react";
 import {
   IconFolderClose16,
   IconFolderOpen16,
-  IconGaugeOutline16,
   IconNewChatOutline16,
   IconPlusOutline16,
   IconSettingsOutline16,
@@ -79,8 +78,6 @@ export function Rail({
   onOpenSettings,
   settingsOpen = false,
   settingsTriggerRef,
-  telemetryOpen = false,
-  onToggleTelemetry,
 }: {
   groups: ProjectGroup[];
   current: string | null;
@@ -106,9 +103,6 @@ export function Rail({
   settingsOpen?: boolean;
   /** 「设置」行本身的 ref:浮层关掉时把焦点**还给**它(见 Settings 的 `returnFocusTo`)。 */
   settingsTriggerRef?: RefObject<HTMLButtonElement | null>;
-  /** 遥测抽屉开着没有(它就是那个抽屉**唯一**的入口,见下面 foot 里的注释)。 */
-  telemetryOpen?: boolean;
-  onToggleTelemetry: () => void;
 }) {
   // 折叠的是**组**,不是单条会话:单条折叠只省一行,却多一次点击。
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
@@ -332,21 +326,6 @@ export function Rail({
       </div>
 
       <div className="rail__foot">
-        {/* 遥测抽屉的开头。它原来长在眉条右侧 —— 眉条改成"只有会话名"之后
-            (使用反馈),那个按钮没地方了。放这里不是将就:§17.7 就把它记作
-            "要把它挪到左栏底部(与「设置」并列)只需加一行",而且它和设置同一性质
-            (都是 harness 自己的视角,不是对话内容)。
-            图标同样**不套 `.rail__slot`**(理由见下面「设置」行)。 */}
-        <button
-          type="button"
-          className="rail__footrow"
-          aria-pressed={telemetryOpen}
-          onClick={onToggleTelemetry}
-          title="遥测:分派理由 / 上下文占用 / 动作计数"
-        >
-          <IconGaugeOutline16 size={16} />
-          <span className="rail__title">遥测</span>
-        </button>
         <button
           ref={settingsTriggerRef}
           type="button"

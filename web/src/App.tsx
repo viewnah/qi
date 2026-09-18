@@ -293,6 +293,21 @@ export function App() {
     return () => abortRef.current?.();
   }, [refreshSessions]);
 
+  /**
+   * 标题跟着**列表**走。
+   *
+   * 自动命名是后端在首轮结束后做的(它要调一次模型),落盘后列表里就有新标题了 ——
+   * 这里把它同步到眉条,否则会出现"左栏已经叫「梳理仓库结构」、眉条还写着未命名"。
+   * 手动改名也走同一条路(改完就刷新列表),所以这里是唯一需要同步的地方。
+   */
+  useEffect(() => {
+    if (sessionId === null) return;
+    const fresh = sessions.find((s) => s.id === sessionId);
+    if (fresh !== undefined && fresh.title && fresh.title !== title) {
+      setTitle(fresh.title);
+    }
+  }, [sessions, sessionId, title]);
+
   // 新行到达时贴底(只在用户本来就在底部时 —— 否则会打断向上翻阅)
   useEffect(() => {
     const el = scrollRef.current;
@@ -686,6 +701,10 @@ export function App() {
           // 运行中会被 409 拒掉(那是"现在不行"),一样用 note 说明,而不是错误屏。
           note("压缩失败", describe(err));
         }
+      } else if (id === "tele") {
+        // 遥测抽屉从"左栏一行可见选项"改成了指令:它还在(分派理由 / 上下文占用 /
+        // 动作计数都是诊断事实),但不再占界面。见 docs/web.md §18.25。
+        setTele((v) => !v);
       } else if (id === "settings") {
         setSettingsSection("models");
         setView("settings");
@@ -749,8 +768,6 @@ export function App() {
           settingsOpen={view === "settings"}
           settingsTriggerRef={settingsTriggerRef}
           onOpenSettings={() => setView("settings")}
-          telemetryOpen={tele}
-          onToggleTelemetry={() => setTele((v) => !v)}
         />
       </aside>
 

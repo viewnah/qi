@@ -42,6 +42,7 @@ from .models import AgentEvent
 from .registry import AgentRegistry, CapabilityRegistry, ToolCatalog, discover_plugins
 from .runner import AgentRunner, RunnerSettings
 from .session import Session, SessionStore
+from .titling import suggest_title
 from .settings import load_settings, session_dir
 from .tools import ToolContext, register_builtin_tools
 
@@ -58,7 +59,9 @@ class RuntimeConfig:
 # 落盘工具结果的字符上限。tools/ 内置工具已自行截断(200 行 / 50k 字符),
 # 但插件工具可能不截断——落盘前再过一道上限,避免单个工具撑破会话文件。
 MAX_TOOL_ENTRY_CHARS = 8000
-MAX_TOOL_DETAILS_CHARS = 8000    # 与 result 同档:插件不该让会话文件无界增长
+MAX_TOOL_DETAILS_CHARS = 8000
+#: 自动命名最多等这么久(秒)。等不到就把落盘挂到回调上 —— 见 `_apply_title`。
+TITLE_WAIT_S = 2.0    # 与 result 同档:插件不该让会话文件无界增长
 
 
 def _salvaged(final_text: str, partial: str) -> str:
@@ -279,6 +282,15 @@ class QiRuntime:
         """
         # 旧会话首次被使用时回填 cwd(只写一次);新会话在 create(cwd=…) 时已带
         self.sessions.ensure_cwd(session, self.cwd)
+        # 自动命名:**并行**跑(不拖首字延迟),回合末尾才套用(见 `_apply_title`)。
+        # 触发条件是"这个会话还没有标题" —— 新建的与本功能上线前建的老会话都算。
+        title_task: asyncio.Task[str | None] | None = None
+        if not session.title.strip():
+            # 输入取会话原本的第一句话,不是这一轮说的话:老会话续聊时,
+            # "接着再补个测试"会把一个讲仓库结构的会话命名成"补充测试"。
+            # (本轮的用户消息此刻还没落盘 —— 它在下面 append,所以新会话会回落到 text。)
+            title_task = asyncio.create_task(
+                suggest_title(self.llm_exec, self.first_user_text(session) or text))
         async for event in self._maybe_auto_compact(session):
             yield event
         active = self._active_agent(session)
@@ -373,10 +385,14 @@ class QiRuntime:
         except asyncio.CancelledError:
             # 硬取消:收尾不做任何 await(已在取消状态),只做同步落盘
             self._persist_final(session, unit.name, _salvaged(final_text, partial))
+            if title_task is not None:
+                title_task.cancel()      # 别把它漏在后台(它还会往会话里写)
             raise
 
         # 助手侧在回合结束后落盘(与旧版一致;tool 往返已在上方单独落盘)
         self._persist_final(session, unit.name, final_text, usage=end_usage)
+        if title_task is not None:
+            await self._apply_title(session, title_task)
 
     def _persist_final(self, session: Session, agent: str, text: str,
                        usage: dict | None = None) -> None:
@@ -395,6 +411,43 @@ class QiRuntime:
         if usage:
             entry["usage"] = usage
         self.sessions.append(session, entry)
+
+    @staticmethod
+    def first_user_text(session: Session) -> str:
+        """当前分支上第一条用户消息(没有就空串)。命名拿它当输入。"""
+        for entry in session.branch():
+            if entry.get("type") == "message" and entry.get("role") == "user":
+                return str(entry.get("content") or "")
+        return ""
+
+    async def _apply_title(self, session: Session, task: asyncio.Task[str | None]) -> None:
+        """把并行起的命名结果套到会话上。
+
+        **最多等 `TITLE_WAIT_S`**:命名是体验改进,但不该拖住"这一轮结束"(前端在
+        RUN_FINISHED 之后才刷新列表 —— 等太久就是可见的卡顿)。等不到就把落盘挂到
+        回调上,它完成时自己写盘:下一次刷新(下一轮 / 重开会话)就能看到标题。
+        """
+        done, _pending = await asyncio.wait({task}, timeout=TITLE_WAIT_S)
+        if task in done:
+            self._write_title(session, task.result())
+            return
+        task.add_done_callback(
+            lambda t: self._write_title(session, None if t.cancelled() else t.result()))
+
+    def _write_title(self, session: Session, title: str | None) -> None:
+        """落盘**模型给的**标题。空标题、或用户已经手动改过 → 不动。
+
+        两条都必须有:模型回垃圾时保持「未命名」好过写个垃圾进文件;而用户在流式期间
+        手动改了名,自动命名不能把它覆盖回去。
+        """
+        if not title or session.title.strip():
+            return
+        try:
+            self.sessions.set_title(session, title)
+        except OSError:
+            # 故意吞掉(与本仓库其它"不要因此中断主流程"的 except 同形):
+            # 标题没落上不影响本轮回答,也没必要把它变成错误行。
+            return
 
     def _persist_thinking(self, session: Session, agent: str, text: str) -> None:
         """落盘一步思考(entry `type=custom`, `custom_type=assistant_thinking`)。

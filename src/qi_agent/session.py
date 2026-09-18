@@ -369,6 +369,30 @@ class SessionStore:
         session.position = entry_id
         return True
 
+    def set_title(self, session: Session, title: str) -> None:
+        """改标题:**内存 + header entry + 落盘**三处一起改。
+
+        标题在会话文件里有**两份**:`session.title`(运行时读的)与 header entry 的
+        `title`(磁盘上那份真相)。只改一份就会出现"列表里是新名、重开又变回旧的" ——
+        所以收进一个方法,别在两处各写一遍(改名端点与自动命名都走它)。
+        """
+        header = (session.entries[0]
+                  if session.entries and session.entries[0].get("type") == "session"
+                  else None)
+        previous = (session.title, header.get("title") if header else None)
+        session.title = title
+        if header is not None:
+            header["title"] = title
+        try:
+            self.save(session)
+        except OSError:
+            # 写盘失败就把内存**回滚**:否则会出现"列表里是新名、磁盘上还是旧名"，
+            # 刷新一次标题就变回去 —— 那是最难查的一类不一致。
+            session.title = previous[0]
+            if header is not None:
+                header["title"] = previous[1]
+            raise
+
     def fork_at(self, session: Session, entry_id: str | None,
                 title: str | None = None) -> Session:
         """把 `branch(entry_id)` 复制成一个**新会话文件**(pi 的 fork/clone 都是新文件)。

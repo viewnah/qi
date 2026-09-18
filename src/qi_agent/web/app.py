@@ -161,10 +161,8 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
         session = web.sessions.get(sid)
         if session is None:
             raise HTTPException(status_code=404, detail="会话不存在")
-        session.title = body.title
-        if session.entries and session.entries[0].get("type") == "session":
-            session.entries[0]["title"] = body.title
-        web.sessions.save(session)
+        # 改标题走 store 的方法:内存 + header entry + 落盘三处一起改(与自动命名共用)。
+        web.sessions.set_title(session, body.title)
         return summary(session)
 
     @app.delete("/api/sessions/{sid}", status_code=204, dependencies=[Depends(guard)])

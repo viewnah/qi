@@ -28,6 +28,7 @@ import {
   IconCopyOutline16,
   IconDownloadOutline16,
   IconEditOutline16,
+  IconGaugeOutline16,
   IconNewChatOutline16,
   IconPaperclipOutline16,
   IconQuestionOutline14,
@@ -129,6 +130,14 @@ export const COMMANDS: CommandItem[] = [
     alias: "/help",
     description: "列出可用指令",
     icon: <IconQuestionOutline14 size={16} />,
+  },
+  {
+    id: "tele",
+    section: SECTION_COMMANDS,
+    label: "遥测",
+    alias: "/tele",
+    description: "显示 / 隐藏遥测抽屉(分派理由 / 上下文 / 动作)",
+    icon: <IconGaugeOutline16 size={16} />,
   },
   {
     id: "settings",

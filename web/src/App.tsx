@@ -61,6 +61,7 @@ import {
 } from "./state/turn";
 import type { TurnState } from "./state/turn";
 import { EMPTY_NAMES, groupByProject, projectLabel } from "./state/projects";
+import { parseSessionHash, sessionHash } from "./state/route";
 import { commandHelpText } from "./commands";
 import type { ProjectGroup } from "./state/projects";
 import { applyTheme, readTheme } from "./theme/theme";
@@ -233,6 +234,16 @@ export function App() {
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [nameDraft, setNameDraft] = useState("");
 
+  /**
+   * 刷新时想打开的会话(只读一次)。
+   *
+   * **必须在任何 effect 之前取**:下面的同步 effect 会把 `sessionId=null` 写成 `#`,
+   * 之后再去读 `location.hash` 就什么都没有了 —— 首次渲染时读进 ref 最稳。
+   */
+  const bootSessionRef = useRef(parseSessionHash(window.location.hash));
+  /** 首屏"按 URL 打开会话"只做一次(列表可能在后续刷新里变)。 */
+  const bootDone = useRef(false);
+
   const abortRef = useRef<(() => void) | null>(null);
   /** 左栏底部「设置」行:浮层关掉时焦点还给它(见 Settings 的 `returnFocusTo`)。 */
   const settingsTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -404,6 +415,54 @@ export function App() {
     },
     [agent, refreshSessions],
   );
+
+  /** 首屏会话列表到了之后,按 URL 打开它(**这就是"刷新回到当前会话"**)。 */
+  useEffect(() => {
+    if (bootDone.current || sessions.length === 0) return;
+    bootDone.current = true;
+    const wanted = bootSessionRef.current;
+    if (wanted === null) return;
+    if (sessions.some((s) => s.id === wanted)) {
+      void openSession(wanted);
+      return;
+    }
+    // 会话被删了、或这个 id 不属于这台机器:清掉死链,别让地址栏一直指着不存在的东西。
+    bootSessionRef.current = null;
+    window.history.replaceState(null, "", sessionHash(null));
+  }, [sessions, openSession]);
+
+  /**
+   * 会话 → URL。用 `replaceState` 而不是 `location.hash = …`:
+   * 后者会**新增历史记录**(点十个会话就堆十条)而且会触发 `hashchange`(回环)。
+   */
+  useEffect(() => {
+    if (!bootDone.current && bootSessionRef.current !== null) return;   // 首屏还没决定
+    if (parseSessionHash(window.location.hash) === sessionId) return;
+    window.history.replaceState(null, "", sessionHash(sessionId));
+  }, [sessionId]);
+
+  /** URL → 会话:地址栏被手工改、或前进/后退。hash 是这份状态的唯一真相。 */
+  useEffect(() => {
+    const onHash = () => {
+      const wanted = parseSessionHash(window.location.hash);
+      if (wanted === null) {
+        setSessionId(null);
+        setTurn(emptyTurn);
+        return;
+      }
+      if (wanted === sessionId) return;
+      if (!sessions.some((s) => s.id === wanted)) {
+        // 地址栏里的 id 这台宿主不认识(手打的、或从别的机器复制来的):
+        // **把地址栏改回当前会话**,而不是拿它去请求一个必然 404 的会话 ——
+        // 那会把整页打成错误屏(实测过);也不清视图:用户只是敲错了,没做错什么。
+        window.history.replaceState(null, "", sessionHash(sessionId));
+        return;
+      }
+      void openSession(wanted);
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, [openSession, sessions, sessionId]);
 
   const createSession = useCallback(
     async (first?: string, cwdForNew?: string) => {

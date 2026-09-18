@@ -43,7 +43,7 @@ import { ConfirmDialog } from "./components/ConfirmDialog";
 import { DirPicker } from "./components/DirPicker";
 import { Dock } from "./components/Dock";
 import { Rail } from "./components/Rail";
-import { RowView } from "./components/Rows";
+import { BlockView } from "./components/Rows";
 import { Settings } from "./components/Settings";
 import type { SettingsSectionKey } from "./components/Settings";
 import { Telemetry } from "./components/Telemetry";
@@ -52,6 +52,7 @@ import type { ProjectOption } from "./components/ProjectMenu";
 import {
   emptyTurn,
   fromEntries,
+  groupProcess,
   lastUsage,
   reduce,
   withNote,
@@ -410,10 +411,17 @@ export function App() {
    * 全部**先问后端、再以后端回的东西为准**(不做乐观更新):这些都是低频动作,
    * 少一次往返换不来什么,而本地先改再回滚会让"列表和磁盘不一致"这种最难查。
    */
+  /**
+   * 分叉:`at` 省略 = 当前节点(左栏行尾菜单用);给了 entry id = **从那条消息分叉**
+   * (转录里每条消息下面那个按钮用,与 dsh 的 branch 同一语义)。
+   *
+   * 不论是否需要确认:**分叉只新增文件、不动任何已有数据** —— 与左栏那个分叉同一理由
+   * (docs/web.md §18.1)。
+   */
   const forkSession = useCallback(
-    async (id: string) => {
+    async (id: string, at?: string) => {
       try {
-        const forked = await api.forkSession(id);
+        const forked = await api.forkSession(id, at);
         await refreshSessions();
         // 分叉完直接开新会话:用户点"分叉"要的就是接着新分支往下说(CLI/TUI 同款)。
         await openSession(forked.id);
@@ -423,6 +431,21 @@ export function App() {
     },
     [openSession, refreshSessions],
   );
+
+  /**
+   * 复制单条消息。**返回是否真的成功**:成功时反馈在按钮自己身上(图标换成勾),
+   * 失败才甩一行 note —— 与 `/copy` 指令同规矩:剪贴板被拒是"这一步没成",
+   * 不是"应用坏了";而没成功就不该显示"已复制"。
+   */
+  const copyMessage = useCallback(async (text: string): Promise<boolean> => {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (err) {
+      setTurn((prev) => withNote(prev, "复制失败", String(err)));
+      return false;
+    }
+  }, []);
 
   const askRenameSession = useCallback((session: SessionSummary) => {
     setNameDraft(session.title);
@@ -529,6 +552,21 @@ export function App() {
   }, [dialog, forgetSessions, nameDraft, openSession, refreshSessions, sessionId]);
 
   const running = turn.phase === "running";
+  /**
+   * 哪一行的动作**常显**:最后一条"带动作的行"(提问或回答)。
+   *
+   * 其余行的动作悬停才显形 —— 照 dsh 的 `data-actions-reveal`:老消息不该一直挂着
+   * 一排按钮抢视线,而最新一条要能直接看见(那是刚说完、最可能想动的那条)。
+   */
+  const lastActionKey = useMemo(() => {
+    for (let i = turn.rows.length - 1; i >= 0; i -= 1) {
+      const row = turn.rows[i];
+      if (row !== undefined && (row.kind === "you" || row.kind === "say")) {
+        return row.key;
+      }
+    }
+    return null;
+  }, [turn.rows]);
   // 上下文窗口来自 /api/config(默认模型的 `contextWindow`)。0 = 取不到,
   // 那时不画占用百分比 —— 而不是画一条永远 0% 的。
   const contextWindow = config?.default_model_context_window ?? 0;
@@ -752,8 +790,19 @@ export function App() {
             <>
               <div className="transcript" ref={scrollRef} data-transcript="">
                 <div className="transcript__inner">
-                  {turn.rows.map((row) => (
-                    <RowView key={row.key} row={row} />
+                  {/* 按**块**渲染:一个回合的思考/工具/叙述合成一个可折叠的过程块
+                      (见 `groupProcess`) —— 「哪些行收进块」只有那里一处真相。 */}
+                  {groupProcess(turn.rows).map((block) => (
+                    <BlockView
+                      key={block.key}
+                      block={block}
+                      sessionId={sessionId}
+                      revealActions={block.key === lastActionKey}
+                      onCopy={copyMessage}
+                      onFork={(entryId) =>
+                        void forkSession(sessionId ?? "", entryId)
+                      }
+                    />
                   ))}
                 </div>
               </div>

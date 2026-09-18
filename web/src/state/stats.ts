@@ -5,6 +5,7 @@
  * 而"12.4k 还是 12400"这种事有**唯一**正确答案 —— 两处各写一遍就会分叉。
  */
 import type { UsageSummary } from "../api/types";
+import type { ProcessRow } from "./turn";
 
 /**
  * 紧凑 token 数。**逐条照 dsh `ui-chat/src/client/chat/token-format.ts` 的规则**:
@@ -55,4 +56,30 @@ export function countsLabel(usage: UsageSummary): string | null {
    if (usage.steps > 0) parts.push(`${usage.steps} 步`);
    if (usage.tools > 0) parts.push(`工具 ${usage.tools}`);
    return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+/**
+ * 过程块的折叠标签:`思考 1.2K 字 · 工具 3 次`(+ 失败次数)。
+ *
+ * 它描述的是"里面有什么",不是把里面的行分成两类 —— 块内**不区分**思考与过程
+ * (使用反馈),但收起时总得让人知道值不值得展开。dsh 的 `TurnProcessNodeView`
+ * 同样只用计数拼标签("N 次工具调用 · N 条消息"),措辞不同、道理一样。
+ */
+export function processLabel(rows: ProcessRow[]): string {
+   let chars = 0;
+   let tools = 0;
+   let failures = 0;
+   for (const row of rows) {
+      if (row.kind === "tool") {
+         tools += 1;
+         if (row.status === "error") failures += 1;
+      } else if (row.kind === "think" || row.kind === "say") {
+         chars += row.text.length;
+      }
+   }
+   const parts: string[] = [];
+   if (chars > 0) parts.push(`思考 ${formatTokens(chars)} 字`);
+   if (tools > 0) parts.push(`工具 ${tools} 次`);
+   if (failures > 0) parts.push(`${failures} 次失败`);
+   return parts.join(" · ") || "过程";
 }

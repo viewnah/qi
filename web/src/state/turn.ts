@@ -17,6 +17,10 @@ export interface YouRow {
   kind: "you";
   key: string;
   text: string;
+  /** 落盘 entry 的 id。**直播中刚发出去的那句还没有**(乐观显示时还没落盘),
+   *  所以它同时是"这条消息能不能被分叉"的开关(与 dsh 只给有 messageId 的消息
+   *  挂动作同一条规矩)。 */
+  entryId?: string;
 }
 
 /** 分派决策。qi 独有(走 CUSTOM),也是这个 harness 相对普通 chat 的差异点。 */
@@ -51,6 +55,8 @@ export interface SayRow {
   text: string;
   live: boolean;
   tone: "final" | "narration" | "opening";
+  /** 落盘 entry 的 id(直播中那一条还没有 —— 见 `YouRow.entryId`)。 */
+  entryId?: string;
 }
 
 export interface ToolRowData {
@@ -203,15 +209,86 @@ export function lastUsage(entries: Entry[]): Record<string, unknown> | null {
   return null;
 }
 
+/**
+ * 过程行:思考 / 工具 / 工具之间的叙述。
+ *
+ * 它们**折叠进同一个块**,不再各自成行。
+ */
+export type ProcessRow = ThinkRow | ToolRowData | SayRow;
+
+/** 转录的渲染单元:单行,或一个可折叠的过程块。 */
+export type Block =
+  | { kind: "row"; key: string; row: Row }
+  | { kind: "process"; key: string; rows: ProcessRow[] };
+
+function isProcessRow(row: Row): row is ProcessRow {
+  return (
+    row.kind === "think" ||
+    row.kind === "tool" ||
+    (row.kind === "say" && row.tone === "narration")
+  );
+}
+
+/**
+ * 把行折成块:**一个回合的过程合成一个可折叠的块**。
+ *
+ * 为什么合并(使用反馈:「一次会话只有一个总的思考过程,可以折叠起来到一起,
+ * 不用区分思考和过程」):思考、工具、工具之间的叙述原来是各自一行,一轮里出现
+ * 七八行"过程"就把结论埋了;而"思考"与"过程"这两个标签本身也没有区分价值 ——
+ * 读者对它们的关心程度是同一个:平时不关心,需要时才展开。
+ *
+ * 规则只有一条:**连续的过程行合成一个块**。于是每个回合的形态稳定为
+ * `提问 → 分派 → [过程] → 回答`,中间夹着的工具往返全在块里。
+ * `final` 回答 / `opening` 开场白 / 分派 / 标记 / 错误都**不进块** ——
+ * 它们是结论或元信息,本来就该单独可见。
+ */
+export function groupProcess(rows: Row[]): Block[] {
+  const blocks: Block[] = [];
+  let pending: ProcessRow[] = [];
+  let pendingKey = "";
+  const flush = () => {
+    if (pending.length === 0) return;
+    blocks.push({ kind: "process", key: pendingKey, rows: pending });
+    pending = [];
+  };
+  for (const row of rows) {
+    if (isProcessRow(row)) {
+      if (pending.length === 0) pendingKey = row.key;
+      pending.push(row);
+      continue;
+    }
+    flush();
+    blocks.push({ kind: "row", key: row.key, row });
+  }
+  flush();
+  return blocks;
+}
+
 export function fromEntries(entries: Entry[]): Row[] {
   const rows: Row[] = [];
+  /**
+   * 已读到的分派行,等着排到**它回答的那个提问**后面。
+   *
+   * 落盘顺序是 `dispatch → message(user) → …`(`runtime.stream` 先落决策再落提问),
+   * 直接按文件顺序画就会出现"分派在提问上方"—— 读起来像"先选人、再说话"。直播路径
+   * 恰好相反(提问是乐观插入的,事件在它后面到),所以两边顺序不一致。这里把回放
+   * 对齐到直播:**提问在前,分派紧跟其后**(它回答的是"谁在回答这个问题")。
+   */
+  const pendingRoutes: Row[] = [];
   for (const e of entries) {
     switch (e.type) {
       case "message": {
         const text = e.content ?? "";
         if (!text) break;
         if (e.role === "user") {
-          rows.push({ kind: "you", key: nextKey("you"), text });
+          rows.push({
+            kind: "you",
+            key: nextKey("you"),
+            text,
+            entryId: e.id,
+          });
+          // 这个提问的分派决策紧跟在它后面(不是前面)—— 见 pendingRoutes 的注释。
+          rows.push(...pendingRoutes.splice(0));
         } else if (e.role === "assistant") {
           rows.push({
             kind: "say",
@@ -220,6 +297,7 @@ export function fromEntries(entries: Entry[]): Row[] {
             text,
             live: false,
             tone: "final",
+            entryId: e.id,
           });
         }
         break;
@@ -237,10 +315,19 @@ export function fromEntries(entries: Entry[]): Row[] {
             tone: "narration",
           });
         }
+        // 思考同理(后端 `_persist_thinking`),它是"思考 → 回答"那条分隔线的上半截。
+        if (e.custom_type === "assistant_thinking" && e.content) {
+          rows.push({
+            kind: "think",
+            key: nextKey("think"),
+            text: e.content,
+            live: false,
+          });
+        }
         break;
       }
       case "dispatch":
-        rows.push({
+        pendingRoutes.push({
           kind: "route",
           key: nextKey("route"),
           agent: e.agent ?? null,

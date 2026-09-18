@@ -12,6 +12,7 @@ import type { AguiEvent, Entry } from "../api/types";
 import {
   emptyTurn,
   fromEntries,
+  groupProcess,
   hydrate,
   lastUsage,
   reduce,
@@ -250,15 +251,44 @@ describe("历史回放", () => {
 
   it("把五类 entry 映射成行(叙述与工具卡不能丢)", () => {
     const rows = fromEntries(entries);
+    // 分派行排在**提问之后**:落盘顺序是 dispatch → user(runtime 先落决策),
+    // 但读者要的是"谁在回答这个问题" —— 直接按文件顺序画会让分派压在提问上方。
     expect(rows.map((r) => r.kind)).toEqual([
-      "route",
       "you",
+      "route",
       "say",
       "tool",
       "say",
     ]);
     // 叙述必须是 narration,不能与结论同级 —— 否则扫读会失效
     expect(sayOf(rows)?.tone).toBe("narration");
+  });
+
+  it("分派行跟着它回答的那个提问(两个回合各归各的)", () => {
+    const twoTurns: Entry[] = [
+      { type: "dispatch", agent: "a", display_name: "甲", confidence: 1, source: "rule" },
+      { type: "message", role: "user", content: "第一个问题" },
+      { type: "message", role: "assistant", content: "第一个回答" },
+      { type: "dispatch", agent: "b", display_name: "乙", confidence: 1, source: "rule" },
+      { type: "message", role: "user", content: "第二个问题" },
+      { type: "message", role: "assistant", content: "第二个回答" },
+    ];
+    const rows = fromEntries(twoTurns);
+    expect(rows.map((r) => r.kind)).toEqual([
+      "you", "route", "say", "you", "route", "say",
+    ]);
+    // 关键:第一个分派不能掉到第二个提问后面去
+    expect(rows[1]).toMatchObject({ kind: "route", label: "甲" });
+    expect(rows[4]).toMatchObject({ kind: "route", label: "乙" });
+  });
+
+  it("落盘的行带上 entry id(分叉按钮只给落盘过的消息)", () => {
+    const rows = fromEntries([
+      { type: "message", role: "user", content: "问", id: "e1" },
+      { type: "message", role: "assistant", content: "答", id: "e2" },
+    ]);
+    expect(rows[0]).toMatchObject({ kind: "you", entryId: "e1" });
+    expect(rows[1]).toMatchObject({ kind: "say", entryId: "e2" });
   });
 
   it("hydrate 会把本轮输入补回去(qi.history 抓的是 run 之前的 entries)", () => {
@@ -319,5 +349,74 @@ describe("lastUsage", () => {
       { type: "message", role: "assistant", content: "被中断的一轮" },
     ];
     expect(lastUsage(mixed)).toEqual({ prompt_tokens: 900, context_tokens: 300 });
+  });
+});
+
+describe("groupProcess(把一轮的过程收成一个块)", () => {
+  const row = (partial: Partial<Row> & { kind: Row["kind"]; key: string }): Row =>
+    partial as Row;
+  const think = (key: string): Row =>
+    row({ kind: "think", key, text: "想", live: false });
+  const tool = (key: string): Row =>
+    row({
+      kind: "tool",
+      key,
+      callId: "",
+      tool: "ls",
+      args: {},
+      status: "ok",
+      durationMs: 1,
+      exitCode: 0,
+      error: null,
+      result: "",
+      details: null,
+    });
+  const say = (key: string, tone: "final" | "narration"): Row =>
+    row({ kind: "say", key, agent: "a", text: "话", live: false, tone });
+
+  it("思考 / 叙述 / 工具连续出现 → 合成**一个**块", () => {
+    const blocks = groupProcess([
+      row({ kind: "you", key: "y1", text: "问" }),
+      row({ kind: "route", key: "r1", agent: "a", label: "甲", confidence: 1, source: "rule", reasoning: "" }),
+      think("t1"),
+      say("n1", "narration"),
+      tool("x1"),
+      say("f1", "final"),
+    ]);
+    expect(blocks.map((b) => b.kind)).toEqual(["row", "row", "process", "row"]);
+    const block = blocks[2];
+    if (block?.kind !== "process") throw new Error("第 3 块应当是过程块");
+    // 块内保持原顺序,而且**不区分**种类(渲染层的事,这里只保证顺序)
+    expect(block.rows.map((r) => r.kind)).toEqual(["think", "say", "tool"]);
+    // 块的 key 取块内第一行:列表重排时 React 认的是它
+    expect(block.key).toBe("t1");
+  });
+
+  it("分派 / 结论 / 标记**不进**块 —— 它们是元信息与结论", () => {
+    const blocks = groupProcess([
+      row({ kind: "note", key: "n1", label: "上下文已压缩", detail: "" }),
+      say("f1", "final"),
+      think("t1"),
+      think("t2"),
+    ]);
+    expect(blocks.map((b) => b.kind)).toEqual(["row", "row", "process"]);
+    const last = blocks[2];
+    if (last?.kind !== "process") throw new Error("最后一块应当是过程块");
+    expect(last.rows).toHaveLength(2);
+  });
+
+  it("没有过程行时一个块都不出", () => {
+    const blocks = groupProcess([say("f1", "final")]);
+    expect(blocks.map((b) => b.kind)).toEqual(["row"]);
+  });
+
+  it("两轮各自成块(中间隔着结论,不会跨轮合并)", () => {
+    const blocks = groupProcess([
+      think("t1"), say("f1", "final"),
+      think("t2"), tool("x2"), say("f2", "final"),
+    ]);
+    expect(blocks.map((b) => b.kind)).toEqual([
+      "process", "row", "process", "row",
+    ]);
   });
 });

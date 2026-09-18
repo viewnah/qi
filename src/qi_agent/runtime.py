@@ -354,6 +354,10 @@ class QiRuntime:
                     partial += event.text or ""
                 elif event.kind == "assistant_message":
                     partial = event.text or ""        # 该轮的权威全文
+                    # 思考**先**落:它发生在这条消息之前。顺序反了,回放就成了
+                    # "先回答、再思考"。
+                    self._persist_thinking(session, unit.name,
+                                           str((event.data or {}).get("thinking") or ""))
                     if event.text and event.data.get("tool_calls"):
                         # 宣布了工具调用的助手消息是"过程"而非最终回答 → 立刻落成 custom entry。
                         # **立即**落盘而不缓冲到下一轮:否则它将被写在它触发的工具卡片**之后**,
@@ -391,6 +395,27 @@ class QiRuntime:
         if usage:
             entry["usage"] = usage
         self.sessions.append(session, entry)
+
+    def _persist_thinking(self, session: Session, agent: str, text: str) -> None:
+        """落盘一步思考(entry `type=custom`, `custom_type=assistant_thinking`)。
+
+        与叙述同一个理由:思考是**过程**,直播时看得见(pi 的 thinking block),
+        不落盘则刷新/回放里整段消失 —— 界面上"思考与回答之间那条分隔线"也就
+        少了上半截(只剩一条孤零零的线)。
+
+        做成 `custom` 而不是 `message` 是**刻意的**:`_history()` 只读 `message`,
+        所以思考**不进 LLM 上下文**(零提示词回归风险)。
+
+        思考可能很长:与工具结果同档封顶,不让会话文件无界增长。
+        每步一条 `assistant_message`,空文本跳过。
+        """
+        if not text.strip():
+            return
+        body = (text if len(text) <= MAX_TOOL_ENTRY_CHARS
+                else text[:MAX_TOOL_ENTRY_CHARS] + "…(落盘已截断)")
+        self.sessions.append(session, {"type": "custom",
+                                       "custom_type": "assistant_thinking",
+                                       "agent": agent, "content": body})
 
     def _persist_narration(self, session: Session, agent: str, text: str) -> None:
         """落盘"工具调用之前"的助手叙述(custom entry,**不进对话上下文**)。

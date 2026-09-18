@@ -27,6 +27,7 @@ from qi_agent.llm import (
     LiteLLMClient,
     LLMDelta,
     ThinkingLLMClient,
+    ToolCallOut,
     chat_as_stream,
     normalize_thinking_level,
     reasoning_text_of,
@@ -496,3 +497,60 @@ async def test_tui_reports_reasoning_drop_once(tmp_path, monkeypatch):
         app._restore_status()
         app._report_reasoning_dropped()           # 第二次不再提示
         assert "不接受" not in app._status
+
+
+# ── 思考落盘(直播/回放一致)─────────────────────────────
+#
+# 为什么值得钉住:思考原来是**只活在流里**的(界面上看得见、刷新就没了),而
+# "思考与回答之间那条分隔线"依赖它。同一类 bug 在这个仓库里修过两次
+# (工具往返、工具之间的叙述),所以这里把三条口径一次钉死:
+#   1. 思考会落盘,而且排在**同一步的回答之前**;
+#   2. 它是 `custom` 而不是 `message` —— `_history()` 只读 message,
+#      所以思考**不进 LLM 上下文**(提示词零回归);
+#   3. 空思考不落盘(不往会话里塞空 entry)。
+
+class ThinkingStub:
+    """两步:第一步带思考 + 工具调用,第二步只有结论。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def chat(self, messages, tools=None, temperature=None):  # pragma: no cover
+        raise AssertionError("有 astream 时不应调用 chat")
+
+    async def astream(self, messages, tools=None, temperature=None):
+        self.calls += 1
+        if self.calls == 1:
+            yield LLMDelta(reasoning="先看看目录里有什么")
+            yield LLMDelta(text="我看一下", finished=True,
+                           tool_calls=[ToolCallOut(id="c1", name="ls", args={"path": "."})])
+            return
+        yield LLMDelta(reasoning="现在可以答了")
+        yield LLMDelta(text="结论", finished=True)
+
+
+@pytest.mark.asyncio
+async def test_thinking_is_persisted_before_the_answer_and_stays_out_of_context(tmp_path):
+    from qi_agent.runtime import QiRuntime, RuntimeConfig
+    from qi_agent.session import SessionStore
+
+    store = SessionStore(root=tmp_path / "sessions")
+    # 与 test_web_api 的 runtime 构造同形:agent 走包内置的 general,catalog 由 runtime 自建。
+    runtime = QiRuntime(cwd=tmp_path, runtime_cfg=RuntimeConfig(workdir=tmp_path),
+                        session_store=store, llm=ThinkingStub(), disable_router=True)
+    session = store.create("思考", cwd=tmp_path)
+    async for _ in runtime.stream("看下目录", session):
+        pass
+
+    kinds = [(e.get("type"), e.get("custom_type"), e.get("role")) for e in session.branch()]
+    # 思考排在它那一步的回答之前(顺序反了回放就成了"先回答、再思考")
+    thinking = [i for i, k in enumerate(kinds) if k[1] == "assistant_thinking"]
+    assert len(thinking) == 2, kinds
+    first_assistant = next(i for i, k in enumerate(kinds) if k[2] == "assistant")
+    assert thinking[0] < first_assistant
+    body = next(e for e in session.branch() if e.get("custom_type") == "assistant_thinking")
+    assert "先看看目录里有什么" in body["content"]
+
+    # 不进 LLM 上下文:历史只由 message 组成
+    history = runtime._history(session)
+    assert all("先看看目录里有什么" not in m.content for m in history)

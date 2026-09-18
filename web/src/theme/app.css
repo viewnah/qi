@@ -760,120 +760,160 @@ pre,
  padding: 0 var(--dsh-composer-side-clearance);
 }
 
-.row {
- display: grid;
- grid-template-columns: 2px minmax(0, 1fr);
- gap: 14px;
-}
+/* ── 无壳的行(提问 / 回答 / 分派 / 标记 / 错误)────────────────
+   回答与提问**不带走左缘细线**:细线是"证据"的语言(思考 / 工具),内容是内容。
+   dsh 的 assistant 正文与用户气泡都没有左边框 —— 反馈也是这么要的
+   (「把回答左边的竖线去掉」)。 */
 
-/* 左缘的细线就是"身份/状态"的载体。用 currentColor 让每种行自己声明颜色。 */
-.row__rail {
- border-radius: 1px;
- background: currentColor;
- opacity: 0.55;
-}
-
-.row__body {
+.plain {
  display: flex;
  flex-direction: column;
  gap: 6px;
  min-width: 0;
 }
 
-/* 行眉:种类标签 + 元信息。等宽,只做导航用。
-   字号直接用 dsh 的 **11px 档**令牌(`--dsw-font-xxxs-11` = 400 11px/14px),只把
-   字体换成等宽 —— 这样 dsh 改档位时 qi 跟着走。原来写 10px/16px:
-   10px 在 dsh 的阶梯里没有位置(它只在轨迹时间轴那一处用 10px),16px 也不是
-   那一档的行高。 */
-.row__eyebrow {
- display: flex;
- align-items: center;
- gap: 8px;
- color: var(--dsw-alias-label-caption);
- font: var(--dsw-font-xxxs-11);
- font-family: var(--ds-font-family-code);
- letter-spacing: 0.08em;
- text-transform: uppercase;
+/* 提问:右对齐气泡,而且**没有人称标签**。
+   几何逐条照 dsh `MessageItem.module.css` 的 `.userRow` / `.bubble`:r22、
+   `--dsw-specific-bubble` 底、内衬 `10px 16px`、正文 14/22,
+   宽度上限 `min(内容列 × 0.702, 82%)`(525/748 ≈ 0.702 是 dsh 的 figma 比例)。 */
+.plain--you {
+ align-items: flex-end;
 }
-
-.row__eyebrow b {
- color: var(--dsw-alias-label-tertiary);
- font-weight: 600;
-}
-
-.row__text {
+.bubble {
+ max-width: min(calc(var(--dsh-chat-content-width) * 0.702), 82%);
+ padding: 10px 16px;
+ border-radius: 22px;
+ background: var(--dsw-specific-bubble);
  color: var(--dsw-alias-label-primary);
  font-size: var(--dsh-content-font-size);
- line-height: calc(24px + var(--dsh-content-font-delta));
+ line-height: calc(22px + var(--dsh-content-font-delta));
  white-space: pre-wrap;
  word-break: break-word;
 }
 
-/* 你的输入:靠右、有底色,像"投进去的东西"。 */
-.row--you {
- color: var(--dsw-alias-state-business-primary);
-}
-.row--you .row__body {
- align-items: flex-end;
-}
-.row--you .row__text {
- max-width: min(88%, 620px);
- padding: 9px 14px;
- border-radius: 16px 16px 4px;
- background: var(--dsw-specific-bubble);
-}
-
-/* 分派:不抢视线,但必须可见 —— 这是 harness 的"为什么"。 */
-.row--route {
+/* 分派:一行极小元信息,不抢视线,但必须可见 —— 这是 harness 的"为什么"。 */
+.plain--route {
  color: var(--dsw-alias-label-tertiary);
 }
-.row--route .row__text {
+.route__head {
+ display: flex;
+ align-items: center;
+ gap: 8px;
+ color: var(--dsw-alias-label-tertiary);
+}
+.route__head b {
+ color: var(--dsw-alias-label-secondary);
+ font-weight: 600;
+}
+.route__head span {
  color: var(--dsw-alias-label-secondary);
  font-size: 13px;
  line-height: 20px;
 }
-
-/* 思考:默认折叠,展开后等宽、压暗。过程不值得抢注意力。 */
-.row--think {
- color: var(--dsw-alias-label-caption);
-}
-.row--think .row__text {
+.route__why {
  color: var(--dsw-alias-label-tertiary);
- font-family: var(--ds-font-family-code);
  font-size: 12px;
  line-height: 19px;
+ white-space: pre-wrap;
 }
 
-/* 结论:最高权重,唯一"像人说话"的东西。 */
-.row--say {
- color: var(--dsw-alias-label-secondary);
-}
-.row--say[data-tone="final"] {
- color: var(--dsw-alias-state-business-primary);
-}
-.row--say[data-tone="final"] .row__text {
+/* 回答:无壳正文,全文最高权重。 */
+.plain--say {
  color: var(--dsw-alias-label-primary);
 }
-
-.row--tool {
- color: var(--dsw-alias-state-warning);
+.say__text {
+ font-size: var(--dsh-content-font-size);
+ line-height: calc(26px + var(--dsh-content-font-delta));
+ white-space: pre-wrap;
+ word-break: break-word;
 }
-.row--tool[data-status="ok"] {
+/* ── 过程块:一轮的思考 + 工具 + 叙述收成一个可折叠块 ──────────
+   头部几何照 dsh `TurnProcessNodeView.module.css`:33px 一行;正文整体缩进一级(22px),
+   与 dsh 把过程缩进在回答之下的关系一致。
+
+   **分隔线画在整块的下沿**,不在头部下沿(使用反馈:「分隔线是在整个思考过程和最终回答
+   结果之间,不是在思考的标题和思考内容之间」)。dsh 那个 `border-bottom` 挂在过程头
+   上 —— 收起时它确实等于"过程与回答之间",但**展开时那条线就夹在标题和内容之间**了。
+   所以这里把它移到 `.process` 本身:两种状态下它都只表达"过程到此为止,下面是回答"。
+
+   最后一行是过程块时(运行中还没出回答)不画线 —— 否则转录末尾会挂一条悬空的线。 */
+.process {
+ display: flex;
+ flex-direction: column;
+ padding-bottom: 8px;
+ border-bottom: 0.5px solid var(--dsw-alias-border-l2);
+}
+.transcript__inner > .process:last-child {
+ padding-bottom: 0;
+ border-bottom: none;
+}
+.process .process__head {
+ display: flex;
+ align-items: center;
+ gap: 6px;
+ box-sizing: border-box;
+ width: 100%;
+ height: 33px;
+ padding: 0;
+ border: none;
+ background: none;
+ color: var(--dsw-alias-label-tertiary);
+ font: inherit;
+ font-size: 13px;
+ line-height: 24px;
+ text-align: left;
+}
+.process .process__head:hover {
+ color: var(--dsw-alias-label-secondary);
+}
+.process[data-live="true"] .process__head {
+ color: var(--dsw-alias-label-secondary);
+}
+.process__label {
+ min-width: 0;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+.process__body {
+ display: flex;
+ flex-direction: column;
+ gap: 10px;
+ padding: 8px 0 0 22px;
+}
+/* 块内的文字(思考,以及工具之间的叙述)—— **同一种渲染**:反馈明确说"不用区分
+   思考和过程",所以这里没有"思考"标签、也没有第二种样式。 */
+.process__text {
+ color: var(--dsw-alias-label-tertiary);
+ font-size: 13px;
+ line-height: 20px;
+ white-space: pre-wrap;
+ word-break: break-word;
+}
+/* 工具行在块里:点 · 名字 · 参数 · 耗时 · 形符(状态不单靠颜色,带 ✓/✗)。 */
+.tool {
+ display: flex;
+ flex-direction: column;
  color: var(--dsw-alias-label-tertiary);
 }
-.row--tool[data-status="error"] {
+.tool[data-status="error"] {
  color: var(--dsw-alias-state-error-primary);
 }
-
-.row--note {
- color: var(--dsw-alias-label-dimmed);
+.tool__body {
+ display: flex;
+ flex-direction: column;
+ gap: 8px;
+ padding-top: 8px;
 }
-.row--note .row__body {
+
+/* 标记行:一条居中的分隔语(压缩 / 分支摘要)。 */
+.plain--note {
  flex-direction: row;
  align-items: center;
  gap: 10px;
+ color: var(--dsw-alias-label-dimmed);
 }
-.row--note .row__rule {
+.plain--note .note__rule {
  flex: 1;
  height: 0.5px;
  background: var(--dsw-alias-border-l2);
@@ -889,12 +929,67 @@ pre,
  font-size: 11px;
 }
 
-.row--error {
+.plain--error {
  color: var(--dsw-alias-state-error-primary);
 }
-.row--error .row__text {
- color: var(--dsw-alias-state-error-primary);
+.plain--error .say__text {
  font-size: 13px;
+ line-height: 20px;
+}
+.plain__tag {
+ font: var(--dsw-font-xxxs-11);
+ font-family: var(--ds-font-family-code);
+ letter-spacing: 0.08em;
+}
+
+/* ── 每条消息下面那行图标动作(照 dsh `MessageIconActions`)──────
+   复制 + 分叉,28×28 圆钮。可见性照 dsh 的两条:老消息悬停/聚焦才显形
+   (`opacity`,保住布局不跳),最后一条常显(`data-always`);触摸设备没有 hover,
+   那条媒体查询里一律常显 —— 与 dsh 同一条退路。 */
+.msg-actions {
+ display: flex;
+ align-items: center;
+ gap: 4px;
+ height: 28px;
+ opacity: 0;
+ transition: opacity 80ms ease;
+}
+.msg-actions[data-always="true"] {
+ opacity: 1;
+}
+.msg-action {
+ display: inline-flex;
+ align-items: center;
+ justify-content: center;
+ width: 28px;
+ height: 28px;
+ padding: 0;
+ border: none;
+ border-radius: 50%;
+ background: transparent;
+ color: var(--dsw-alias-label-tertiary);
+}
+.msg-action:hover:not(:disabled) {
+ background: var(--dsw-alias-interactive-bg-hover);
+ color: var(--dsw-alias-label-secondary);
+}
+.msg-action:disabled {
+ opacity: 0.4;
+}
+.msg-action:focus-visible {
+ outline: none;
+ box-shadow: 0 0 0 2px var(--dsw-alias-border-l3);
+}
+@media (hover: hover) {
+ .plain:hover > .msg-actions,
+ .plain:focus-within > .msg-actions {
+  opacity: 1;
+ }
+}
+@media (hover: none) {
+ .msg-actions {
+  opacity: 1;
+ }
 }
 
 /* 折叠行(思考 / 工具正文)的开关。 */

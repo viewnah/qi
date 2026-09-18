@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { UsageSummary } from "../api/types";
-import { contextShare, countsLabel, formatTokens } from "./stats";
+import { contextShare, countsLabel, formatTokens, processLabel } from "./stats";
 
 function usage(partial: Partial<UsageSummary> = {}): UsageSummary {
    return {
@@ -72,4 +72,44 @@ describe("countsLabel", () => {
       // 只说了几句话、还没调过工具:不写"工具 0"。
       expect(countsLabel(usage({ turns: 1, steps: 1 }))).toBe("1 轮 · 1 步");
    });
+});
+
+describe("processLabel(过程块收起时的那行字)", () => {
+  const think = (text: string) =>
+    ({ kind: "think", key: "t", text, live: false }) as const;
+  const tool = (status: "ok" | "error") =>
+    ({
+      kind: "tool",
+      key: "x",
+      callId: "",
+      tool: "ls",
+      args: {},
+      status,
+      durationMs: 1,
+      exitCode: 0,
+      error: null,
+      result: "",
+      details: null,
+    }) as const;
+  const narration = (text: string) =>
+    ({ kind: "say", key: "s", agent: null, text, live: false, tone: "narration" }) as const;
+
+  it("思考字数 + 工具次数(+ 失败次数)", () => {
+    expect(processLabel([think("一二三四五"), tool("ok"), tool("error")])).toBe(
+      "思考 5 字 · 工具 2 次 · 1 次失败",
+    );
+  });
+
+  it("工具之间的叙述也算进思考字数(块内不区分两者)", () => {
+    expect(processLabel([think("一二"), narration("三四五")])).toBe("思考 5 字");
+  });
+
+  it("只有工具 / 只有思考 都读得通", () => {
+    expect(processLabel([tool("ok")])).toBe("工具 1 次");
+    expect(processLabel([think("一二三")])).toBe("思考 3 字");
+  });
+
+  it("空块兜底(理论上不会出现)", () => {
+    expect(processLabel([])).toBe("过程");
+  });
 });

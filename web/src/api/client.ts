@@ -149,10 +149,14 @@ export const api = {
     ),
 
   /** 分叉:把当前分支复制成**新会话**(后端 201 回新会话的摘要)。 */
-  forkSession: (id: string) =>
+  /**
+   * 分叉:`at` = 从哪个 entry 分叉(省略 = 当前节点,即最后一个完整回合)。
+   * 省略与 `at=""` 含义不同(后者 = 从第一条消息之前),所以只在给了才进 body。
+   */
+  forkSession: (id: string, at?: string) =>
     request<SessionSummary>(
       `/api/sessions/${encodeURIComponent(id)}/fork`,
-      { method: "POST", body: JSON.stringify({}) },
+      { method: "POST", body: JSON.stringify(at === undefined ? {} : { at }) },
     ),
 
   /**

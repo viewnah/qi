@@ -138,8 +138,8 @@ pre,
 .shell {
  display: grid;
  --qi-rail-w: var(--dsh-sidebar-width);
- --qi-tele-w: 0px;
- grid-template-columns: var(--qi-rail-w) minmax(0, 1fr) var(--qi-tele-w);
+ --qi-files-w: 0px;
+ grid-template-columns: var(--qi-rail-w) minmax(0, 1fr) var(--qi-files-w);
  height: 100%;
  background: var(--dsw-alias-bg-base);
  overflow: hidden;
@@ -148,11 +148,13 @@ pre,
   var(--ds-ease-in-out);
 }
 
-.shell[data-tele="open"] {
- --qi-tele-w: var(--dsh-rightbar-min);
+/* 右栏宽度取自 dsh 的右栏比例(它默认 45%、可拖;qi 不拖,给一个 clamp)。
+   0px ↔ clamp 之间过渡,所以"滑入"是列宽在走,不是浮层盖上来。 */
+.shell[data-files="open"] {
+ --qi-files-w: clamp(300px, 38vw, 640px);
 }
 
-/* dsh `SIDEBAR_AUTO_COLLAPSE` 之下收窄(不是折叠:qi 没做窄栏形态)。 */
+/* dsh `SIDEBAR_AUTO_COLLAPSE` 之下把轨道收窄(手动折叠见下面 `data-rail`)。 */
 @media (width <= 1024px) {
  .shell {
   --qi-rail-w: var(--dsh-sidebar-min-width);
@@ -160,8 +162,7 @@ pre,
 }
 
 @media (prefers-reduced-motion: reduce) {
- .shell,
- .tele {
+ .shell {
   transition: none;
  }
 }
@@ -658,6 +659,9 @@ pre,
  display: flex;
  flex: none;
  flex-direction: column;
+ /* 钉在底部。**不能只靠 `.rail__list` 的 flex** —— 折叠态下树是 `display:none`,
+    底栏会立刻浮到新会话按钮下面(实测就是这个现象:设置跑到上面去了)。 */
+ margin-top: auto;
 }
 
 .rail__footrow {
@@ -694,6 +698,113 @@ pre,
  50% {
   opacity: 0.35;
  }
+}
+
+/* ── 左栏折叠:56px 竖条,只留动作图标 ──────────────────────
+   几何照 dsh 的 rail 规格:**36×36 的控件盒在 56px 竖条里居中**
+   (`SidebarRoot.module.css` 的注释就是这么写的),原来的列表内容(会话树、搜索、
+   字标)在折叠态下 `display: none` —— dsh 是"先原地淡出、settle 后卸载",
+   qi 简化为直接隐藏:两边都是"列宽在走、内容不回流",差别只在淡出那 150ms。
+
+   代价写在这里:折叠态下**看不到也点不到任何会话**(dsh 的选择是"窄栏只放动作,
+   不放列表");想开会话就展开。 */
+.shell[data-rail="collapsed"] {
+ --qi-rail-w: 56px;
+}
+
+.shell[data-rail="collapsed"] .rail {
+ padding: 6px 10px;
+}
+
+.shell[data-rail="collapsed"] .rail__wordmark,
+.shell[data-rail="collapsed"] .rail__new-label,
+.shell[data-rail="collapsed"] .rail__list {
+ display: none;
+}
+
+/* 折叠态下这一区**不隐藏**:只留「搜索」与「添加工作区」两个圆钮。
+   56px 里放不下并排的两个 36px 钮,所以竖排。 */
+.shell[data-rail="collapsed"] .rail__section {
+ flex-direction: column;
+ height: auto;
+ gap: 4px;
+ padding-left: 0;
+ margin: 0 0 4px;
+}
+
+.shell[data-rail="collapsed"] .rail__section-label,
+.shell[data-rail="collapsed"] .rail__searchinput,
+.shell[data-rail="collapsed"] .rail__clear {
+ display: none;
+}
+
+.shell[data-rail="collapsed"] .rail__section-actions,
+.shell[data-rail="collapsed"] .rail__searchslot {
+ display: flex;
+ flex: none;
+ max-width: none;
+ margin: 0 auto;
+}
+
+/* `display: flex` 那一行是**必须**的:搜索展开时有一条老规则
+   (`.rail__section[data-search="open"] .rail__section-actions { display: none }`,
+   让输入框占满整行)会连**折叠态**的加号一起吃掉 —— 反馈的"点开搜索再折叠,
+   新建工作区图标又没了"就是这个。折叠态没有"输入框占满"这回事(56px 里根本没有输入框),
+   所以这里要把两个钮都摁回可见。 */
+.shell[data-rail="collapsed"] .rail__section[data-search="open"] .rail__section-actions {
+ display: flex;
+}
+
+.shell[data-rail="collapsed"] .rail__searchbtn,
+.shell[data-rail="collapsed"] .rail__iconbtn {
+ width: 36px;
+ height: 36px;
+}
+
+.shell[data-rail="collapsed"] .rail__brandrow {
+ justify-content: center;
+}
+
+.shell[data-rail="collapsed"] .rail__new,
+.shell[data-rail="collapsed"] .rail__footrow {
+ justify-content: center;
+ width: 36px;
+ height: 36px;
+ margin: 4px auto;
+ padding: 0;
+ border-radius: 50%;
+}
+
+.shell[data-rail="collapsed"] .rail__footrow .rail__title {
+ display: none;
+}
+
+/* 展开/折叠开关(dsh 把它放在 brand row 的右端;qi 的字标是纯文字,
+   所以折叠后留下的就是它 —— 不做假 logo)。 */
+.rail__collapse {
+ display: inline-flex;
+ align-items: center;
+ justify-content: center;
+ flex: none;
+ width: 28px;
+ height: 28px;
+ margin-left: auto;
+ padding: 0;
+ border: none;
+ border-radius: 50%;
+ background: transparent;
+ color: var(--dsw-alias-label-secondary);
+}
+
+.rail__collapse:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+ color: var(--dsw-alias-label-primary);
+}
+
+.shell[data-rail="collapsed"] .rail__collapse {
+ width: 36px;
+ height: 36px;
+ margin: 0;
 }
 
 /* ── 中栏:工作台 ───────────────────────────────────────── */
@@ -1819,165 +1930,349 @@ pre,
  background: var(--dsw-alias-state-error-secondary);
 }
 
-/* ── 右栏:遥测(抽屉)───────────────────────────────────
-   轨道宽 0 ↔ `--dsh-rightbar-min`(见 `.shell`),面板定位在框架右缘、
-   关闭时整体移出屏外 —— 与 dsh `AppFrame` 的右栏同构(它的轨道为 0 时
-   面板悬在中栏之上,有轨道时才占位)。 */
+/* 眉条右端的「文件面板」开关(dsh `ui-sidebar-right` 的 `ExpandButton`:
+   会话头角落座位上那个 28px 圆钮,图标是左栏 panel 图标的**镜像**)。 */
+.work__files {
+ display: inline-flex;
+ align-items: center;
+ justify-content: center;
+ flex: none;
+ width: 28px;
+ height: 28px;
+ margin-left: 8px;
+ padding: 0;
+ border: none;
+ border-radius: 50%;
+ background: transparent;
+ color: var(--dsw-alias-label-secondary);
+}
 
-.tele {
- position: fixed;
- top: 0;
- right: 0;
- bottom: 0;
- z-index: 10;
+.work__files:hover,
+.work__files[aria-pressed="true"] {
+ background: var(--dsw-alias-interactive-bg-hover);
+ color: var(--dsw-alias-label-primary);
+}
+
+.work__filesicon {
+ transform: scaleX(-1);
+}
+
+/* 右栏那一列的壳:与对话区同底色,左缘一条发丝线(`ui-sidebar-right` 的 `.panel`)。 */
+.files-side {
+ min-width: 0;
+ overflow: hidden;
+ border-left: 0.5px solid var(--dsw-alias-border-l4);
+}
+
+/* ── 右栏:文件面板(会话目录的树 + 预览)──────────────────────
+   版式照 dsh `ui-sidebar-right`:面板与对话区同一层底色(`bg-base`),左缘一条
+   0.5px 发丝线;打开/收起是**列宽过渡**(轨道 0 ↔ `clamp(300px, 38vw, 640px)`,
+   见 `.shell[data-files]`),不是浮层。
+   三处比 dsh 收窄的地方写在 `FilePanel.tsx` 的文件头(无页签 / 一次列一层 /
+   扩展名徽标代替按类型的图标美术)。 */
+
+.files {
  display: flex;
  flex-direction: column;
- width: var(--dsh-rightbar-min);
- overflow: hidden;
- border-left: 0.5px solid var(--dsw-alias-border-l3);
- background: var(--dsw-alias-bg-layer-1);
- transform: translateX(100%);
- transition: transform var(--ds-transition-duration-slow) var(--ds-ease-in-out);
+ height: 100%;
+ min-width: 0;
+ background: var(--dsw-alias-bg-base);
 }
 
-.shell[data-tele="open"] .tele {
- transform: none;
-}
-
-.tele__head {
+/* ── 页签栏 = 面板的整个上沿 ──────────────────────────────
+   几何照 dsh `ui-dockkit` 的 `.tabStrip` / `.tab` / `.tabActive` / `.tabClose`:
+   28px 高、r12、激活态 `label-primary` + `markdown-tag` 底、关闭钮**悬停或激活才显形**、
+   页签栏自己不带底色(面板底色透上来)。dsh 的栏里还有一个 28px 的"新增/分屏"控件;
+   qi 没有可新增的类型(树就是来源),所以栏尾只留刷新与关闭面板。 */
+.files__strip {
  display: flex;
  flex: none;
  align-items: center;
- gap: 8px;
- min-height: 44px;
- padding: 0 14px;
- border-bottom: 0.5px solid var(--dsw-alias-border-l1);
+ gap: 4px;
+ padding: 10px 8px 8px;
 }
 
-.tele__title {
- flex: 1;
- color: var(--dsw-alias-label-secondary);
- font-size: 13px;
- font-weight: 500;
- line-height: 20px;
-}
-
-.tele__scroll {
- flex: 1;
- min-height: 0;
- padding: 14px 14px 20px;
- overflow-y: auto;
-}
-
-.tele__group {
+.files__tabs {
  display: flex;
- flex-direction: column;
- gap: 8px;
- margin-bottom: 20px;
+ flex: 1;
+ align-items: center;
+ gap: 2px;
+ min-width: 0;
+ overflow-x: auto;
+ scrollbar-width: none;
 }
 
-.tele__label {
- color: var(--dsw-alias-label-caption);
- font-size: 11px;
- line-height: 16px;
- letter-spacing: 0.06em;
- text-transform: uppercase;
+.files__tabs::-webkit-scrollbar {
+ display: none;
 }
 
-.tele__kv {
- display: grid;
- grid-template-columns: auto minmax(0, 1fr);
- gap: 6px 12px;
+.files__tab {
+ display: flex;
+ flex: 0 1 auto;
+ align-items: center;
+ gap: 2px;
+ box-sizing: border-box;
+ min-width: 80px;
+ max-width: 170px;
+ height: 28px;
+ padding: 0 4px 0 10px;
+ border-radius: 12px;
+ color: var(--dsw-alias-label-secondary);
+ font-size: var(--dsh-content-font-size-secondary, 13px);
+ line-height: 1;
+ white-space: nowrap;
 }
 
-.tele__kv dt {
- color: var(--dsw-alias-label-caption);
- font-size: 11px;
- line-height: 18px;
-}
-
-.tele__kv dd {
- overflow: hidden;
- margin: 0;
+.files__tab:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
  color: var(--dsw-alias-label-primary);
- font-family: var(--ds-font-family-code);
- font-size: 11px;
- line-height: 18px;
- text-align: right;
+}
+
+.files__tab[data-active] {
+ color: var(--dsw-alias-label-primary);
+ background: var(--dsw-alias-markdown-tag);
+}
+
+.files__tabtitle {
+ flex: 1;
+ min-width: 0;
+ overflow: hidden;
  text-overflow: ellipsis;
 }
 
-/* 上下文占用条 —— chat 界面最缺的那个信息。 */
-.meter {
+.files__tabclose {
+ display: inline-flex;
+ align-items: center;
+ justify-content: center;
+ flex: none;
+ width: 20px;
+ height: 20px;
+ padding: 0;
+ border: none;
+ border-radius: 50%;
+ background: transparent;
+ color: inherit;
+ /* 静止不显形:老页签不该一直挂着一个 × 抢视线(dsh 的 `.tabClose` 同款)。 */
+ opacity: 0;
+}
+
+.files__tab[data-active] .files__tabclose,
+.files__tab:hover .files__tabclose,
+.files__tab:focus-within .files__tabclose {
+ opacity: 1;
+}
+
+.files__tabclose:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.files__stripend {
  display: flex;
- flex-direction: column;
- gap: 5px;
+ flex: none;
+ align-items: center;
+ gap: 2px;
 }
 
-.meter__bar {
- position: relative;
- height: 4px;
- overflow: hidden;
- border-radius: 999px;
- background: var(--dsw-alias-bg-layer-3);
-}
-
-.meter__fill {
- height: 100%;
- border-radius: 999px;
- background: var(--dsw-alias-state-business-primary);
-}
-.meter__fill[data-warn="true"] {
- background: var(--dsw-alias-state-warning);
-}
-
-.meter__note {
- color: var(--dsw-alias-label-caption);
- font-family: var(--ds-font-family-code);
- font-size: 11px;
-}
-
-/* 路由候选:让"为什么选它"可查。 */
-.route-card {
+/* 「文件」页签里的层级条:上一级 + 当前路径(会话目录 → … → 这一层)。 */
+.files__crumbrow {
  display: flex;
- flex-direction: column;
+ flex: none;
+ align-items: center;
  gap: 4px;
- padding: 8px 10px;
- border: 0.5px solid var(--dsw-alias-border-l2);
+ padding: 2px 8px 6px;
+}
+
+.files__icon:disabled {
+ color: var(--dsw-alias-label-dimmed);
+}
+
+.files__icon:disabled:hover {
+ background: transparent;
+}
+
+.files__path {
+ flex: 1;
+ min-width: 0;
+ overflow: hidden;
+ color: var(--dsw-alias-label-tertiary);
+ font-size: 12px;
+ line-height: 18px;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+
+.files__crumb {
+ color: var(--dsw-alias-label-tertiary);
+}
+
+/* 面板头部的小圆钮:28px 圆 + 14px 字形(dsh `ui-sidebar-right` 的 `.iconButton`)。 */
+.files__icon {
+ display: inline-flex;
+ align-items: center;
+ justify-content: center;
+ flex: none;
+ width: 28px;
+ height: 28px;
+ padding: 0;
+ border: none;
+ border-radius: 50%;
+ background: transparent;
+ color: var(--dsw-alias-label-secondary);
+}
+
+.files__icon:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+ color: var(--dsw-alias-label-primary);
+}
+
+/* 同一个 chevron 字形,转 90° 当"返回上一级/返回目录"用。 */
+.files__back {
+ transform: rotate(90deg);
+}
+
+.files__body {
+ flex: 1;
+ min-height: 0;
+ padding: 8px;
+ overflow: auto;
+}
+
+.files__note {
+ margin: 8px 6px;
+ color: var(--dsw-alias-label-tertiary);
+ font-size: 12px;
+ line-height: 18px;
+ list-style: none;
+}
+
+/* 树行:一行一个可点区域(dsh `.row` 的形态:目录/文件同一高度、名字吃满)。 */
+.filetree {
+ display: flex;
+ flex-direction: column;
+ gap: 1px;
+ margin: 0;
+ padding: 0;
+ list-style: none;
+}
+
+.filetree__row {
+ display: flex;
+ align-items: center;
+ gap: 8px;
+ width: 100%;
+ padding: 4px 6px;
+ border: none;
+ border-radius: var(--dsw-radius-sm);
+ background: transparent;
+ color: var(--dsw-alias-label-primary);
+ font-size: 13px;
+ line-height: 20px;
+ text-align: left;
+}
+
+.filetree__row:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* 目录用 dsh 的琥珀色(`FileTypeIcon.module.css` 的 `.folder`)。 */
+.filetree__folder {
+ display: inline-flex;
+ flex: none;
+ color: var(--dsw-static-amber-400);
+}
+
+/* 文件用**扩展名徽标**:等宽小字 + 按类型的颜色。
+   颜色同样取自 dsh `FileTypeIcon.module.css` 的那几条注解(--dsh-file-type-default-color):
+   code / markdown / html = deepseek-500,image = violet(它自己也没有令牌,见注释),
+   pdf = red-600,其它 = neutral-bluish-300。 */
+.filetree__badge {
+ display: inline-flex;
+ align-items: center;
+ justify-content: center;
+ flex: none;
+ box-sizing: border-box;
+ min-width: 22px;
+ height: 16px;
+ padding: 0 3px;
+ border-radius: 4px;
+ background: var(--dsw-alias-bg-layer-2);
+ font-family: var(--ds-font-family-code);
+ font-size: 9px;
+ line-height: 1;
+ letter-spacing: 0.02em;
+ text-transform: uppercase;
+}
+
+.filetree__badge[data-kind="code"],
+.filetree__badge[data-kind="markdown"],
+.filetree__badge[data-kind="html"] {
+ color: var(--dsw-static-deepseek-500);
+}
+.filetree__badge[data-kind="image"] {
+ color: var(--ds-file-type-violet);
+}
+.filetree__badge[data-kind="pdf"] {
+ color: var(--dsw-static-red-600);
+}
+.filetree__badge[data-kind="other"] {
+ color: var(--dsw-static-neutral-bluish-300);
+}
+
+.filetree__name {
+ flex: 1;
+ min-width: 0;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+
+.filetree__meta {
+ flex: none;
+ color: var(--dsw-alias-label-caption);
+ font-size: 11px;
+ line-height: 16px;
+}
+
+/* 预览:文本用等宽 `pre`;**不做语法高亮与行号** —— dsh 的 CodeBlock 是个独立子系统
+   (shiki + 流式高亮 + 行号槽),qi 先只给"看得见的原文"。 */
+.fileprev {
+ display: flex;
+ flex-direction: column;
+ gap: 8px;
+ height: 100%;
+ min-height: 0;
+}
+
+.fileprev__pre {
+ flex: 1;
+ min-height: 0;
+ margin: 0;
+ padding: 10px 12px;
+ border-radius: var(--dsw-radius-md);
+ background: var(--dsw-alias-bg-layer-2);
+ color: var(--dsw-alias-label-secondary);
+ font-family: var(--ds-font-family-code);
+ font-size: var(--dsw-font-markdown-code-block-font-size);
+ line-height: 1.65;
+ white-space: pre-wrap;
+ word-break: break-word;
+ overflow: auto;
+}
+
+.fileprev__img {
+ max-width: 100%;
  border-radius: var(--dsw-radius-md);
  background: var(--dsw-alias-bg-layer-2);
 }
 
-.route-card__head {
- display: flex;
- align-items: baseline;
- gap: 8px;
-}
-
-.route-card__name {
- color: var(--dsw-alias-label-primary);
- font-family: var(--ds-font-family-code);
- font-size: 12px;
- font-weight: 600;
-}
-
-.route-card__conf {
- margin-left: auto;
- color: var(--dsw-alias-label-caption);
- font-family: var(--ds-font-family-code);
- font-size: 11px;
-}
-
-.route-card__why {
- color: var(--dsw-alias-label-tertiary);
- font-size: 11px;
- line-height: 17px;
-}
-
-.tele__empty {
- color: var(--dsw-alias-label-caption);
- font-size: 11px;
- line-height: 17px;
+/* PDF 与 HTML 都进 iframe:PDF 交给浏览器自带的阅读器,HTML 走沙箱(见 FilePanel 的注释)。 */
+.fileprev__frame {
+ flex: 1;
+ width: 100%;
+ min-height: 60vh;
+ border: 0.5px solid var(--dsw-alias-border-l2);
+ border-radius: var(--dsw-radius-md);
+ background: var(--dsw-alias-bg-layer-2);
 }
 
 /* ── 通用 ───────────────────────────────────────────────── */

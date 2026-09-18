@@ -25,7 +25,7 @@ from ..loader import LoadError, load_mcp_scopes
 from ..registry import AgentRegistry
 from ..session import usage_summary
 from ..workspaces import WorkspaceStore, normalize
-from . import agui, browse, schemas
+from . import agui, browse, files as fileapi, schemas
 from .security import check_credentials, check_host, mask_key
 from .state import RunBusy, WebState
 
@@ -334,6 +334,98 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
             roots=[schemas.DirEntry(**d) for d in browse.windows_drives()],
             entries=[schemas.DirEntry(**e) for e in listing],
         )
+
+    # ── 会话目录内的文件(右侧文件面板)──────────────────────────
+    #
+    # **边界与文件工具同一条**(`files.guard` 抄自 `ToolContext.guard`):路径必须落在
+    # 会话 cwd 内,软链也跟随后判定。同一份数据不该有两个边界 —— 工具读不到的,界面也不读。
+    #
+    # 三个端点各管一件事:列一层 / 读文本 / 读原字节。原字节那条**只给白名单类型**,
+    # 而且对 HTML 加 `sandbox` 响应头(见 `files.py` 的模块注释)。
+
+    def _file_root(session: str | None) -> tuple[Path, str]:
+        """取这次请求的根目录:会话的 cwd(没有会话 → 默认 cwd)。"""
+        if session:
+            found = web.sessions.get(session)
+            if found is None:
+                raise HTTPException(status_code=404, detail="会话不存在")
+            return web.session_cwd(found), session
+        return web.default_cwd, ""
+
+    @app.get("/api/files", response_model=schemas.FileListing,
+             dependencies=[Depends(guard)])
+    async def list_files(path: str = Query(""),
+                         session: str | None = Query(None)) -> schemas.FileListing:
+        """列**一层**目录(前端懒展开)。"""
+        root, _sid = _file_root(session)
+        try:
+            absolute, entries = fileapi.list_dir(root, path)
+        except fileapi.FileAccessError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="目录不存在") from None
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="没有权限读取这个目录") from None
+        parent = Path(path).parent.as_posix() if path else None
+        if parent == ".":
+            parent = ""
+        return schemas.FileListing(
+            root=str(root.resolve(strict=False)), path=absolute, parent=parent,
+            entries=[schemas.FileEntry(name=e.name, path=e.path, kind=e.kind,
+                                       size=e.size, mtime=e.mtime, raw=e.raw)
+                     for e in entries],
+        )
+
+    @app.get("/api/files/content", response_model=schemas.FileContent,
+             dependencies=[Depends(guard)])
+    async def file_content(path: str = Query(...),
+                           session: str | None = Query(None)) -> schemas.FileContent:
+        """文本预览。二进制 / 太大**不算错误**:回 kind 说明,前端显示一行提示。"""
+        root, _sid = _file_root(session)
+        try:
+            read = fileapi.read_text(root, path)
+        except fileapi.FileAccessError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="文件不存在") from None
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="没有权限读取这个文件") from None
+        return schemas.FileContent(
+            path=path, kind=read.kind, size=read.size, truncated=read.truncated,
+            # 二进制不给语言提示(它不预览)
+            lang=fileapi.lang_of(path) if read.kind == "text" else "",
+            text=read.text,
+        )
+
+    @app.get("/api/files/raw", dependencies=[Depends(guard)])
+    async def file_raw(path: str = Query(...),
+                       session: str | None = Query(None)) -> Response:
+        """原字节预览(图片 / PDF / HTML)。
+
+        两条响应头是安全设计的一部分,不是可选项:
+          · `X-Content-Type-Options: nosniff` —— 别让浏览器把回的东西当别的类型解释;
+          · `Content-Security-Policy: sandbox`(只对 HTML)—— 把预览的 HTML 放进一个
+            **不透明源**:脚本不执行、拿不到本站的 cookie/凭证。前端那头还会再加一层
+            `<iframe sandbox>`(双保险)。
+        """
+        root, _sid = _file_root(session)
+        try:
+            blob, media = fileapi.read_bytes(root, path)
+        except fileapi.FileAccessError as exc:
+            code = 415 if "不支持原样预览" in str(exc) else 400
+            raise HTTPException(status_code=code, detail=str(exc)) from exc
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="文件不存在") from None
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="没有权限读取这个文件") from None
+        headers = {
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": "inline",
+            "Cache-Control": "no-store",
+        }
+        if media == "text/html":
+            headers["Content-Security-Policy"] = "sandbox"
+        return Response(content=blob, media_type=media, headers=headers)
 
     # ── AG-UI:单次 POST,响应即流 ──────────────────────────────
     #

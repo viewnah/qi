@@ -24,6 +24,8 @@ import type {
   /** 目录选择器(`GET /api/fs/dirs`)。 */
   DirectoryListing,
   ConfigView,
+  FileContent,
+  FileListing,
   McpList,
   Meta,
   PluginList,
@@ -198,6 +200,28 @@ export const api = {
 
   /** MCP 声明(全局 / 项目 / agent 私有)。老宿主回 404 → 调用方降级,不当作致命错误。 */
   mcp: () => request<McpList>("/api/mcp"),
+
+  /** 列会话目录内**一层**目录(右侧文件面板;边界与文件工具同一条)。 */
+  files: (session: string | null, path = "") =>
+    request<FileListing>(
+      `/api/files?path=${encodeURIComponent(path)}${
+        session === null ? "" : `&session=${encodeURIComponent(session)}`
+      }`,
+    ),
+
+  /** 文本预览。二进制不是错误:回 `kind: "binary"`。 */
+  fileContent: (session: string | null, path: string) =>
+    request<FileContent>(
+      `/api/files/content?path=${encodeURIComponent(path)}${
+        session === null ? "" : `&session=${encodeURIComponent(session)}`
+      }`,
+    ),
+
+  /** 原字节预览的 URL:图片 / PDF / HTML 直接喂给 `img` / `iframe`,不走 fetch。 */
+  fileRawUrl: (session: string | null, path: string) =>
+    `/api/files/raw?path=${encodeURIComponent(path)}${
+      session === null ? "" : `&session=${encodeURIComponent(session)}`
+    }`,
 
   /** 写凭证必须带确认头:后端也会拦(428),这是双保险。 */
   setAuth: (provider: string, key: string) =>

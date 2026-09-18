@@ -46,6 +46,7 @@ import {
   IconFolderClose16,
   IconFolderOpen16,
   IconNewChatOutline16,
+  IconPanelLeftOutline16,
   IconPlusOutline16,
   IconSettingsOutline16,
   IconTriangleRightFill14,
@@ -78,6 +79,9 @@ export function Rail({
   onOpenSettings,
   settingsOpen = false,
   settingsTriggerRef,
+  railCollapsed,
+  onToggleCollapse,
+  onExpandRail,
 }: {
   groups: ProjectGroup[];
   current: string | null;
@@ -103,6 +107,13 @@ export function Rail({
   settingsOpen?: boolean;
   /** 「设置」行本身的 ref:浮层关掉时把焦点**还给**它(见 Settings 的 `returnFocusTo`)。 */
   settingsTriggerRef?: RefObject<HTMLButtonElement | null>;
+  /** 左栏是否折叠成 56px 竖条(见 app.css 的 `data-rail="collapsed"`)。
+   *  名字不能叫 `collapsed`:那已经是"折叠的工作区分组"那个本地 state。 */
+  railCollapsed: boolean;
+  onToggleCollapse: () => void;
+  /** **幂等的**"展开左栏"。折叠态点放大镜时会用到 —— 那里一次点击会被两个处理器
+   *  （按钮 + 它外面的容器）各调一次,所以这里不能是"切换",否则展开又立刻收回去(实测踩过)。 */
+  onExpandRail: () => void;
 }) {
   // 折叠的是**组**,不是单条会话:单条折叠只省一行,却多一次点击。
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
@@ -137,6 +148,18 @@ export function Rail({
           38px 的新会话按钮),所以不做成一个假按钮。 */}
       <div className="rail__brandrow">
         <span className="rail__wordmark">Qi Web</span>
+        {/* 折叠开关:dsh 的 logoRow 右端那个 panel 图标。折叠后字标隐掉,
+            留下的就是它 —— qi 的字标是纯文字,不为了"折叠态有个 logo"去造假图标。 */}
+        <button
+          type="button"
+          className="rail__collapse"
+          aria-expanded={!railCollapsed}
+          aria-label={railCollapsed ? "展开侧栏" : "收起侧栏"}
+          title={railCollapsed ? "展开侧栏" : "收起侧栏"}
+          onClick={onToggleCollapse}
+        >
+          <IconPanelLeftOutline16 size={16} />
+        </button>
       </div>
 
       <button
@@ -155,6 +178,8 @@ export function Rail({
         query={query}
         onQueryChange={setQuery}
         onAddWorkspace={onAddWorkspace}
+        collapsed={railCollapsed}
+        onExpandRail={onExpandRail}
       />
 
       <div className="rail__list" role="tree" aria-label="工作区与会话">

@@ -246,6 +246,46 @@ class PluginList(BaseModel):
     plugins: list[str]
 
 
+class FileEntry(BaseModel):
+    """文件树的一行。路径一律**相对会话目录**(前端拿它当 key,也拿它回传)。"""
+
+    name: str
+    path: str
+    kind: Literal["dir", "file"]
+    size: int = 0
+    mtime: float = 0
+    #: 能否原字节预览(图片 / PDF / HTML)—— 前端据此选预览方式
+    raw: bool = False
+
+
+class FileListing(BaseModel):
+    """一层目录(前端懒展开,一次只取一层)。"""
+
+    #: 会话目录的绝对路径(根,也是边界)
+    root: str
+    #: 这一层的绝对路径
+    path: str
+    #: 上一层的相对路径;已在根上时为 None(前端据此禁用"上级")
+    parent: str | None = None
+    entries: list[FileEntry] = Field(default_factory=list)
+
+
+class FileContent(BaseModel):
+    """文本预览。
+
+    `kind` 是判别位:`text` 才有 `text`;`binary` / `too_large` 是"能看见这个文件、
+    但不预览内容"—— 前端据此显示一行说明而不是空白。
+    """
+
+    path: str
+    kind: Literal["text", "binary"]
+    size: int = 0
+    #: 被上限截断(只回了前一段)
+    truncated: bool = False
+    lang: str = ""
+    text: str = ""
+
+
 class McpServerInfo(BaseModel):
     """一个 MCP server 的**结构**,不含任何值(docs/web.md §18.18)。
 

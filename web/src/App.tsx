@@ -41,13 +41,14 @@ import type {
   WorkspaceNames,
 } from "./api/types";
 import { ConfirmDialog } from "./components/ConfirmDialog";
+import { IconPanelLeftOutline16 } from "./components/icons";
 import { DirPicker } from "./components/DirPicker";
 import { Dock } from "./components/Dock";
 import { Rail } from "./components/Rail";
 import { BlockView } from "./components/Rows";
 import { Settings } from "./components/Settings";
 import type { SettingsSectionKey } from "./components/Settings";
-import { Telemetry } from "./components/Telemetry";
+import { FilePanel } from "./components/FilePanel";
 import { ProjectMenu } from "./components/ProjectMenu";
 import type { ProjectOption } from "./components/ProjectMenu";
 import {
@@ -225,7 +226,13 @@ export function App() {
   /** 设置浮层打开时落在哪一节(指令菜单的 `/agents` / `/settings` 用)。 */
   const [settingsSection, setSettingsSection] =
     useState<SettingsSectionKey>("models");
-  const [tele, setTele] = useState(false);
+  /**
+   * 左栏折叠成 56px 竖条(dsh 的 rail 规格,见 app.css 的 `data-rail="collapsed"`)。
+   * **不落盘**:与"手动钉智能体"同一条规矩 —— 它是这个客户端的即时形态,刷新回默认。
+   */
+  const [railCollapsed, setRailCollapsed] = useState(false);
+  /** 右侧文件面板开着没有(会话目录的树 + 预览,见 FilePanel)。 */
+  const [filesOpen, setFilesOpen] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   /** 下一个新会话落在哪个目录(项目 chip 选的)。空串 = 还不知道,等 /api/meta。 */
   const [draftCwd, setDraftCwd] = useState("");
@@ -760,10 +767,9 @@ export function App() {
           // 运行中会被 409 拒掉(那是"现在不行"),一样用 note 说明,而不是错误屏。
           note("压缩失败", describe(err));
         }
-      } else if (id === "tele") {
-        // 遥测抽屉从"左栏一行可见选项"改成了指令:它还在(分派理由 / 上下文占用 /
-        // 动作计数都是诊断事实),但不再占界面。见 docs/web.md §18.25。
-        setTele((v) => !v);
+      } else if (id === "files") {
+        // 右侧文件面板:空态(hero)里没有眉条,所以那条开关够不着 —— 指令是第二个入口。
+        setFilesOpen((v) => !v);
       } else if (id === "settings") {
         setSettingsSection("models");
         setView("settings");
@@ -808,7 +814,11 @@ export function App() {
   );
 
   return (
-    <div className="shell" data-tele={tele ? "open" : "closed"}>
+    <div
+      className="shell"
+      {...(railCollapsed ? { "data-rail": "collapsed" } : {})}
+      {...(filesOpen ? { "data-files": "open" } : {})}
+    >
       <aside className="rail">
         <Rail
           groups={groups}
@@ -827,6 +837,9 @@ export function App() {
           settingsOpen={view === "settings"}
           settingsTriggerRef={settingsTriggerRef}
           onOpenSettings={() => setView("settings")}
+          railCollapsed={railCollapsed}
+          onToggleCollapse={() => setRailCollapsed((v) => !v)}
+          onExpandRail={() => setRailCollapsed(false)}
         />
       </aside>
 
@@ -849,6 +862,19 @@ export function App() {
             <span className="work__title" title={title || "未命名"}>
               {title || "未命名"}
             </span>
+            {/* 右栏开关:dsh 把它放在会话头的角落座位(`ExpandButton`),
+                图标是左栏那个 panel 图标的**镜像**(它的 `.icon { scaleX(-1) }`)。 */}
+            <button
+              type="button"
+              className="work__files"
+              aria-pressed={filesOpen}
+              aria-haspopup="false"
+              title={filesOpen ? "收起文件面板" : "展开文件面板"}
+              aria-label={filesOpen ? "收起文件面板" : "展开文件面板"}
+              onClick={() => setFilesOpen((v) => !v)}
+            >
+              <IconPanelLeftOutline16 size={15} className="work__filesicon" />
+            </button>
           </header>
         )}
 
@@ -913,23 +939,12 @@ export function App() {
         </div>
       </main>
 
-      <aside className="tele">
-        <div className="tele__head">
-          <span className="tele__title">遥测</span>
-          <button
-            type="button"
-            className="ghost"
-            onClick={() => setTele(false)}
-            aria-label="关闭遥测"
-          >
-            关闭
-          </button>
-        </div>
-        <Telemetry
-          turn={turn}
-          model={config?.default_model ?? null}
-          contextWindow={contextWindow}
-        />
+      {/* 右栏:会话目录的树 + 预览。列宽 0 ↔ clamp 过渡(见 `.shell[data-files]`),
+          开着才挂载 —— 收起时不留一棵没人看的树在后台。 */}
+      <aside className="files-side">
+        {filesOpen ? (
+          <FilePanel sessionId={sessionId} onClose={() => setFilesOpen(false)} />
+        ) : null}
       </aside>
 
       {/* 设置浮层。**挂在 `shell` 这一层、而不是 `work` 里**:它要盖住整屏

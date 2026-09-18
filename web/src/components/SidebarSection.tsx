@@ -30,11 +30,17 @@ export function SidebarSection({
   query,
   onQueryChange,
   onAddWorkspace,
+  collapsed,
+  onExpandRail,
 }: {
   /** 搜索串(受控值由 Rail 持有 —— 它要用它过滤列表)。 */
   query: string;
   onQueryChange: (value: string) => void;
   onAddWorkspace: () => void;
+  /** 左栏正折叠成 56px 竖条:这一区只剩两个圆钮(见 app.css 的 `data-rail`)。 */
+  collapsed: boolean;
+  /** 折叠态下点放大镜:先展开左栏(否则输入框没有地方放)。 */
+  onExpandRail: () => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const input = useRef<HTMLInputElement | null>(null);
@@ -49,23 +55,25 @@ export function SidebarSection({
     setExpanded(false);
   };
 
+  /** 打开搜索。折叠态下先请 Rail 展开 —— 56px 里放不下输入框(dsh 点面板字形同理)。 */
+  const open = () => {
+    if (collapsed) onExpandRail();
+    setExpanded(true);
+  };
+
   return (
     <div className="rail__section" data-search={expanded ? "open" : "closed"}>
       <span className="rail__section-label">工作区</span>
       <div className="rail__searchslot">
         {/* 整槽可点:dsh 把 onClick 挂在容器上(输入框未展开时也占着这一格)。 */}
-        <div
-          className="rail__search"
-          data-expanded={expanded}
-          onClick={() => setExpanded(true)}
-        >
+        <div className="rail__search" data-expanded={expanded} onClick={open}>
           <button
             type="button"
             className="rail__searchbtn"
             aria-label="搜索会话"
             aria-expanded={expanded}
             title="搜索会话"
-            onClick={() => setExpanded(true)}
+            onClick={open}
           >
             <IconSearchOutline16 size={expanded ? 11 : 14} />
           </button>

@@ -260,6 +260,38 @@ export interface PluginList {
    plugins: string[];
 }
 
+/** 文件树里的一行(`GET /api/files`)。路径一律相对会话目录。 */
+export interface FileEntry {
+   name: string;
+   path: string;
+   kind: "dir" | "file";
+   size: number;
+   mtime: number;
+   /** 能原字节预览(图片 / PDF / HTML) */
+   raw: boolean;
+}
+
+/** 一层目录(前端懒展开,一次只取一层)。 */
+export interface FileListing {
+   /** 会话目录的绝对路径(根,也是边界) */
+   root: string;
+   /** 这一层的绝对路径 */
+   path: string;
+   /** 上一层的相对路径;已在根上时为 null */
+   parent: string | null;
+   entries: FileEntry[];
+}
+
+/** 文本预览。`kind` 是判别位:`binary` 是"能看见这个文件、但不预览内容"。 */
+export interface FileContent {
+   path: string;
+   kind: "text" | "binary";
+   size: number;
+   truncated: boolean;
+   lang: string;
+   text: string;
+}
+
 /**
  * 一个 MCP server 的**结构**(不含值,见 docs/web.md §18.18)。
  *

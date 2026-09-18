@@ -626,6 +626,12 @@
      透出来,和面板里的字抢注意力。同样不在颜色门禁的对拍范围(它管 alias/specific)。 */
   --dsw-mask-blur: blur(2px);
 
+  /* 文件类型那个紫色:dsh 在 `FileTypeIcon.module.css` 里就是**字面量**
+     (`--dsh-file-type-violet: rgb(139, 118, 246)`),旁边还写着"设计平台里没有
+     匹配那套图片/视频美术的紫色令牌"。qi 把它搬成令牌,只因为色值纪律要求
+     字面量只能住在 tokens.css 里 —— 值本身与 dsh 逐字相同。 */
+  --ds-file-type-violet: rgb(139, 118, 246);
+
   /* 代码字体:dsh 的 `--ds-font-family-code` 原样。刻意**不复用** `--dsw-font-mono`
      ——dsh 的两套栈不同(这一套没有裸 `monospace` 兜底,否则 Windows 中文回落到宋体)。 */
   --ds-font-family-code:

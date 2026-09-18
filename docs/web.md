@@ -2230,3 +2230,83 @@ h2 = 「结论」· 700 19px / 28px            ← dsh 的 markdown h2 档
 cd web && npm run typecheck && npm test        # 88(新增 markdown 12 项:结构 / 安全 / 中文强调)
 npm run check:design && npm run check:tokens && npm run build
 ```
+
+### 18.24 输入卡显示并切换智能体(2026-09,使用反馈)
+
+反馈:「会话输入框,模型旁边添加智能体显示,支持切换智能体,要显示 auto(默认)智能体。」
+
+输入卡右下角现在是 `[智能体 chip] [模型] [发送]`。chip 默认写 **auto**,点开是一张菜单:
+`auto` + 全部**可选**的 agent(带 `display_name` 与来源层)。
+
+#### 语义与 TUI 完全一致(照抄,不另发明)
+
+| 选择 | 行为 |
+| --- | --- |
+| **auto**(默认) | 不带 override,每一轮由分派器重新决定(读 keywords / Router-LLM);转录里的分派行写 `rules` / `semantic` / `fallback` |
+| **某个 agent** | 每一轮都带 `forwardedProps.agent`,后端直派它;分派行写 **`manual`**、置信度 100% |
+
+四条口径:
+
+- **内置兜底 `general`(显示名就是「qi」)与 auto 是同一件事,不单独列一项**(第二轮反馈:
+  「qi 和 auto 得当成同一个吧」)。auto 每轮分派、匹配不到就落到它身上 —— 菜单里再列一个「qi」
+  只会让人以为"qi"与"auto"是两个选择。它的角色写进了 auto 那一条的注明:
+  `每轮由分派器决定,匹配不到就用 qi(内置 general)`。
+  代价写清楚:想「强制基座角色、不要路由」时菜单里点不到了,那条路仍在 —— 消息里写 `@general`
+  (分派器认 @ 点名,只作用于那一轮)。
+- **不把"上次用到谁"当成当前值**。会话文件里确实记着 `state.active_agent`(最近一次分派的**结果**),
+  但那是结果、不是设置 —— 拿它当 chip 的显示值,界面会声称"现在钉在 code-reviewer 上",而实际仍是 auto。
+  chip 只表达**设置**。
+- **不落盘**(与 TUI 的 `--agent` / `/agent` 相同):手动选择是这个客户端的即时设置,刷新后回到 auto。
+  要按会话粘住得在后端开一个"会话级手动 agent"的口子 —— 那是另一个决定(会改变 auto 的默认语义)。
+- **菜单 portal 到 `body`**。菜单朝上开,要压住输入卡上方的项目 chip 行;而那一行在 hero 态是
+  `z-index: 10`、`.dock` 只有 1 —— 留在卡片里会被它盖住(§18.16 的指令菜单踩过同一个坑)。
+  所以与 `CommandMenu` 同一手法:portal + `position: fixed` + 按 chip 的 rect 定位。
+
+前端**没有**为此新增接口:`/api/agents` 早就有(设置页在用),`run()` 的第 4 个参数
+(`{ agent }`)也早就有 —— 只是此前没人从界面上设过它。
+
+#### 顺手修掉一个**静默**的闭包 bug
+
+第一版接好后,实测发现:在 hero 态(还没会话)先选好智能体、再发第一句时,**手动选择会被丢掉** ——
+分派行写的是 `fallback`,而不是 `manual`,而且不报任何错。
+
+根因是 `App.tsx` 里 `createSession` 的依赖数组漏了 `sendTo`(那里原本挂着
+`eslint-disable-next-line react-hooks/exhaustive-deps`)。`sendTo` 在智能体变化时会重建,
+而 `createSession` 抓的是**旧闭包**(`agent` 还是 null)—— 于是"第一句"这条路永远按 auto 走。
+修法:把 `createSession` 移到 `sendTo` 之后,并把 `sendTo` 列进依赖(依赖数组现在是真的)。
+
+> 这个仓库为"过期闭包"栽过一次(§18.8 的指令菜单:填了路径没用),这次是同一类问题的另一张脸:
+> **编译不报错、测试也不报错,只有端到端发一句话才看得见**。
+
+#### 实测(真实 Chrome/CDP,1440 宽;stub LLM 宿主 + 两个项目 agent)
+
+```text
+chip(空态) = "auto"(带 agent 图标,位于模型名左边:x 1092.3 / 模型 1181.1)
+菜单项     = ["auto / 每轮由分派器决定,匹配不到就用 qi(内置 general)",
+             "代码评审 / reviewer · project", "文档写手 / writer · project"]
+             （内置 general 不再单列 —— 第一版列了,反馈指出它与 auto 是同一件事）
+菜单       = portal 到 body · position fixed · elementFromPoint 命中菜单(压得住项目 chip 行)
+选「文档写手」→ chip = "文档写手",title 跟着变
+从 hero 态发第一句 → 分派行 = "分派文档写手 · manual · 100%"     ← 修闭包前这里是 fallback
+再切「代码评审」发第二句 → 两条分派行 = [manual 文档写手, manual 代码评审]
+落盘的 dispatch entry = {agent:"writer",   source:"manual", confidence:1.0}
+                        {agent:"reviewer", source:"manual", confidence:1.0}
+切回 auto → chip = "auto"
+页面错误 = 0
+```
+
+#### 没做的
+
+- **不显示"本轮实际派给了谁"**:那是转录里分派行的活(它一直在写)。chip 只回答"设置成什么",
+  两件事混在一个控件里会互相撒谎。
+- **不给内置 `general` 单独留一个"钉住它"的菜单项**:见上面第一条(它与 auto 同义);
+  要强制它用 `@general`。
+- **不落盘 / 不做会话级粘性**:见上面第二条。想按会话记住,值得单独讨论(它会让"auto"不再是默认)。
+- **不做 `@` 补全菜单**:文本里的 `@name` 一直有效(分派器认它),但输入框里没有补全提示 ——
+  那是另一件事(要接命令菜单那套 combobox)。
+
+#### 验证怎么跑
+
+```bash
+cd web && npm run typecheck && npm test && npm run check:design && npm run build
+```

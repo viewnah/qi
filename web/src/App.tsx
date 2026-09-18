@@ -33,6 +33,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, ContractError, run } from "./api/client";
 import type {
+  AgentInfo,
   ConfigView,
   Meta,
   SessionSummary,
@@ -205,6 +206,16 @@ export function App() {
    * 重取,不参与逐帧的流式状态。
    */
   const [sessionUsage, setSessionUsage] = useState<UsageSummary | null>(null);
+  /**
+   * 手动钉住的智能体:`null` = auto(默认,每轮由分派器决定)。
+   *
+   * 与 TUI 的 `--agent` / `/agent` 同一语义,也同一生命周期 —— **不落盘**:它是这个
+   * 客户端的即时设置,刷新后回到 auto。会话文件里的 `active_agent` 是"上次分派到谁"
+   * 的**结果**,拿它当设置显示会撒谎(见 AgentMenu 的注释)。
+   */
+  const [agent, setAgent] = useState<string | null>(null);
+  /** 可选智能体清单(菜单用)。取不到就只剩 auto —— 不影响发消息。 */
+  const [agents, setAgents] = useState<AgentInfo[]>([]);
   const [title, setTitle] = useState("");
   const [turn, setTurn] = useState<TurnState>(emptyTurn);
   const [draft, setDraft] = useState("");
@@ -269,6 +280,12 @@ export function App() {
           setOverrides(EMPTY_NAMES);
         }
         setConfig(await api.config());
+        // 智能体清单只喂那个下拉菜单:取不到不该把整页打成错误态。
+        try {
+          setAgents(await api.agentList());
+        } catch {
+          setAgents([]);
+        }
       } catch (err) {
         setFatal(describe(err));
       }
@@ -338,26 +355,6 @@ export function App() {
     }
   }, []);
 
-  const createSession = useCallback(
-    async (first?: string, cwdForNew?: string) => {
-      try {
-        const created = await api.createSession(
-          "",
-          cwdForNew || draftCwd || meta?.default_cwd || undefined,
-        );
-        await refreshSessions();
-        setSessionId(created.id);
-        setTitle(created.title);
-        setTurn(emptyTurn);
-        setSessionUsage(null);      // 新会话:还没有任何用量
-        if (first) void sendTo(created.id, first);
-      } catch (err) {
-        setFatal(describe(err));
-      }
-    },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [draftCwd, meta, refreshSessions],
-  );
 
   /** 真正发起一轮:单次 POST,响应就是流。 */
   const sendTo = useCallback(
@@ -386,9 +383,34 @@ export function App() {
             reduce(prev, { type: "RUN_ERROR", message: describe(err) }),
           );
         },
-      });
+      },
+      // 第 4 个参数是**选项**:手动钉住时每轮都带过去(后端据此直派,source 记成 "manual")。
+      { agent });
     },
-    [refreshSessions],
+    [agent, refreshSessions],
+  );
+
+  const createSession = useCallback(
+    async (first?: string, cwdForNew?: string) => {
+      try {
+        const created = await api.createSession(
+          "",
+          cwdForNew || draftCwd || meta?.default_cwd || undefined,
+        );
+        await refreshSessions();
+        setSessionId(created.id);
+        setTitle(created.title);
+        setTurn(emptyTurn);
+        setSessionUsage(null);      // 新会话:还没有任何用量
+        if (first) void sendTo(created.id, first);
+      } catch (err) {
+        setFatal(describe(err));
+      }
+    },
+    // `sendTo` **必须**列上:它带着「当前智能体」这个设置,而 `sendTo` 在智能体变化时
+    // 会重建。漏掉它 → 在 hero 态选好智能体再发第一句时,这里调用的是**旧闭包**
+    // (`agent` 还是 null),手动选择静默失效(实测踩过:分派行写的是 fallback)。
+    [draftCwd, meta, refreshSessions, sendTo],
   );
 
   const send = useCallback(() => {
@@ -701,6 +723,9 @@ export function App() {
       onCommand={(id) => void runCommand(id)}
       usage={sessionUsage}
       contextWindow={contextWindow}
+      agent={agent}
+      agents={agents}
+      onPickAgent={setAgent}
     />
   );
 

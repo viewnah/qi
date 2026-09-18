@@ -1670,6 +1670,89 @@ pre,
 
 /* 模型名:只读回声(不是菜单)。几何照 dsh `.select` 的字级,但不画 chevron、
    不给 hover —— 换模型在「设置」里。 */
+/* ── 输入卡右下角的智能体 chip(模型名左边)────────────────────
+   与项目 chip 同一套几何(28px 高、r16、13/20、hover 给底)—— 它就是同一类东西:
+   一个"这一轮会怎么走"的设置。菜单**朝上开**(输入卡在视口底部),而且 portal 到 body,
+   所以这里是 `position: fixed` + 由 JS 量出来的 right/bottom(见 AgentMenu)。 */
+.agentchip {
+ display: inline-flex;
+ flex: none;
+ min-width: 0;
+}
+.agentchip__btn {
+ display: inline-flex;
+ align-items: center;
+ gap: 4px;
+ max-width: 180px;
+ min-height: 28px;
+ padding: 0 8px;
+ border: none;
+ border-radius: 16px;
+ background: transparent;
+ color: var(--dsw-alias-label-secondary);
+ font-size: 13px;
+ line-height: 20px;
+}
+.agentchip__btn:hover,
+.agentchip__btn[aria-expanded="true"] {
+ background: var(--dsw-alias-interactive-bg-hover);
+ color: var(--dsw-alias-label-primary);
+}
+.agentchip__label {
+ min-width: 0;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+.agentchip__chevron {
+ flex: none;
+ color: var(--dsw-alias-label-caption);
+}
+.agentmenu {
+ position: fixed;
+ z-index: 200;              /* 高于项目 chip 行的 10 与指令菜单的同一档 */
+ display: flex;
+ flex-direction: column;
+ gap: 2px;
+ min-width: 220px;
+ max-width: 340px;
+ max-height: 320px;
+ overflow-y: auto;
+ padding: 4px;
+ border-radius: var(--dsw-radius-lg);
+ background: var(--dsw-specific-menu);
+ --dsw-elevation-stroke-color: var(--dsw-alias-border-l1);
+ box-shadow: var(--dsw-elevation-panel);
+}
+.agentmenu__item {
+ display: flex;
+ flex-direction: column;
+ gap: 1px;
+ width: 100%;
+ padding: 6px 8px;
+ border: none;
+ border-radius: var(--dsw-radius-sm);
+ background: transparent;
+ color: var(--dsw-alias-label-primary);
+ font-size: 13px;
+ line-height: 20px;
+ text-align: left;
+}
+.agentmenu__item:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+}
+.agentmenu__item[aria-checked="true"] {
+ background: var(--dsw-alias-interactive-bg-active);
+}
+.agentmenu__name {
+ font-weight: 500;
+}
+.agentmenu__note {
+ color: var(--dsw-alias-label-tertiary);
+ font-size: 11px;
+ line-height: 16px;
+}
+
 .composer__model {
  max-width: 220px;
  overflow: hidden;

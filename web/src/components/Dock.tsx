@@ -40,10 +40,11 @@
  * `Shift+Enter` 换行。dsh 用 contenteditable(它要内联 chip),qi 不需要。
  */
 import { useEffect, useMemo, useRef, useState } from "react";
+import { AgentMenu } from "./AgentMenu";
 import { CommandMenu } from "./CommandMenu";
 import { COMMANDS } from "../commands";
 import { contextShare, countsLabel, formatTokens } from "../state/stats";
-import type { UsageSummary } from "../api/types";
+import type { AgentInfo, UsageSummary } from "../api/types";
 import {
   IconDatabaseOutline16,
   IconGaugeOutline16,
@@ -69,6 +70,9 @@ export function Dock({
   onCommand,
   usage,
   contextWindow,
+  agent,
+  agents,
+  onPickAgent,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -93,6 +97,11 @@ export function Dock({
   usage: UsageSummary | null;
   /** 默认模型的上下文窗口。0 = 取不到 → 不画占用百分比(不是"窗口是 0")。 */
   contextWindow: number;
+  /** 当前钉住的智能体(null = auto,由分派器每轮决定)。 */
+  agent: string | null;
+  /** 可选的智能体清单(菜单里列出来;取不到就只剩 auto)。 */
+  agents: AgentInfo[];
+  onPickAgent: (name: string | null) => void;
 }) {
   const ref = useRef<HTMLTextAreaElement | null>(null);
   /** 输入卡本身:指令菜单按它的 rect 定位(见 CommandMenu 的文件头)。 */
@@ -304,6 +313,8 @@ export function Dock({
               </button>
             </div>
             <div className="composer__trailing">
+              {/* 智能体 chip:模型名左边,和模型一样是"这一轮会怎么走"的设置(见 AgentMenu)。 */}
+              <AgentMenu agents={agents} value={agent} onPick={onPickAgent} />
               <span className="composer__model" title={modelFull}>
                 {model || "未配置模型"}
               </span>

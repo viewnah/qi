@@ -148,7 +148,7 @@ AgentUnit("code-analyst")
 ├── config        ← agent.md(frontmatter + 正文 + include)
 ├── tools[]       ← 全局 ToolCatalog 解析(read, ls, grep, find, bash)— 只注入被引用的
 ├── skills[]      ← skills/ 下全部 SKILL.md(自动绑定,渐进披露)
-├── mcp_tools[]   ← 私有 mcp.json 或全局 [mcp.servers] → tools/list 注入
+├── mcp_tools[]   ← 私有 mcp.json 或全局/项目 mcp.json → tools/list 注入
 └── model         ← defaultProvider/defaultModel(执行统一用全局默认模型,见 model-config.md)
 ```
 
@@ -156,21 +156,36 @@ AgentUnit("code-analyst")
 
 ## 8. MCP(v1)
 
-### 8.1 两个来源
+> **v1 只做「解析与门控」,不做实连**(没有 MCP client,见 PLAN.md 的待办)。
+> 下面是**声明面**的全部规则;`tools/list` 拿回来的工具注入属于实连那一期。
+
+### 8.1 三个来源
 
 | 来源 | 位置 | 可见性 |
 | --- | --- | --- |
-| 全局 server | `qi_agent.toml [mcp.servers.<name>]`(共享基建,凭证仅 env 引用) | 按 agent 声明绑定 |
+| 全局 server | `~/.qi/agent/mcp.json`(共享基建,凭证仅 env 引用) | 按 agent 声明绑定 |
+| 项目 server | `<git根>/.qi/mcp.json`(跟项目走,可提交共享) | 按 agent 声明绑定 |
 | 私有 server | agent 目录内 `mcp.json`(拷贝即走) | **仅该 agent**,自动绑定 |
+
+三处**同一份格式**(`{"mcpServers": {…}}`),共用一个解析器(`loader.read_mcp_file`)。
+全局与项目两处只是一张**声明表**:谁能看见由 agent.md 的 `mcp_servers` 决定 —— 这是刻意的
+(凭证敏感:自动把全公司的 MCP server 发给每个 agent 是不对的)。
 
 ### 8.2 绑定规则
 
 frontmatter 增加 `mcp_servers`(v1):**默认无,必须显式声明**(凭证敏感;与 tools 的"省略=全部"不同):
 
 ```yaml
-mcp_servers: [github]     # allowlist:只用这些全局 server
-# 省略 = 不绑定任何全局 server;私有 mcp.json 的 server 总是仅本 agent 可用
+mcp_servers: [github]     # allowlist:只用这些全局/项目 server
+# 省略 = 不绑定任何全局/项目 server;私有 mcp.json 的 server 总是仅本 agent 可用
 ```
+
+两条硬规则:
+
+- **同名项目覆盖全局**(与 settings / agent 的层级一致,后者胜出);
+- **未知名报错**,不静默跳过 —— 声明了却指不到东西就是"这个 agent 以为自己有 github、
+  其实没有",那比启动失败难查得多(对齐 tools 的未知名报错)。例外:`import` 校验时用
+  `mcp_table=None`,那时"要装到哪"未知,只校验声明形状。
 
 ### 8.3 mcp.json 内容(标准 MCP 格式,凭证只存 env 引用)
 
@@ -263,7 +278,7 @@ qi agents import skill:path/to/skill   # 包装成私有技能进目标 agent
 | 无内置技能 | 撤销"内置技能覆盖"问题(H4 moot) |
 | opening 字段 | v1 补充:message(agent 开场白,进会话历史)+ suggestions(UI 层快捷提问,不进历史) |
 | 执行参数 | model / temperature 不进 agent.md;模型归 `models.json` + `settings.json`。轮次不是字段而是**谓词**:`RunnerSettings.stop_after`(pi 的 `shouldStopAfterTurn` 同形,默认 `None` = 不限),**qi 自己不传**(同 pi 定义了却不实现)。请求级超时/重试也不在 agent 层:归 provider SDK(`settings.json` 的 `retry.provider`,见 [settings.md](settings.md)) |
-| MCP | **v1**:私有 mcp.json 仅本 agent 自动绑定;全局 [mcp.servers] 按 `mcp_servers` 声明绑定,**默认无、显式声明**(凭证敏感);凭证仅 env 引用 |
+| MCP | **v1**:私有 mcp.json 仅本 agent 自动绑定;全局(`~/.qi/agent/mcp.json`)+ 项目(`<git根>/.qi/mcp.json`)两张声明表按 `mcp_servers` 声明绑定,**默认无、显式声明**(凭证敏感);同名项目覆盖全局;凭证仅 env 引用 |
 | 数据源 | 实例在 agent 目录 data_sources.json(私有自动绑定,凭证 env);工具/type 能力由 db 插件提供,装载门控见 plugins.md |
 | 导入/导出 | agent 自包含目录;import = 拷贝 + 复用装载校验器预检 + 明文凭证扫描;export 产物可直接 import |
 

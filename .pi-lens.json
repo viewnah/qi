@@ -4,5 +4,8 @@
     "web/node_modules/**",
     "web/dist/**",
     "**/*.min.js"
-  ]
+  ],
+  "format": {
+    "enabled": false
+  }
 }

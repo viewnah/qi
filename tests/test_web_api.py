@@ -24,6 +24,7 @@ from qi_agent.web.app import create_app
 from qi_agent.web.schemas import CONTRACT_VERSION
 from qi_agent.web.security import is_loopback, mask_key, require_safe_config
 from qi_agent.web.state import WebState
+from qi_agent.workspaces import WorkspaceStore
 
 
 class StreamingStub:
@@ -89,6 +90,8 @@ def _app(tmp_path: Path, monkeypatch, llm=None, provider: str = "ollama", **kwar
                          disable_router=True)
 
     state = WebState(tmp_path, runtime_factory=factory)
+    # 工作区偏好落在 tmp:不传的话默认会写进真实 `~/.qi/agent/workspaces.json`
+    kwargs.setdefault("workspace_store", WorkspaceStore(tmp_path / "workspaces.json"))
     return create_app(cwd=tmp_path, state=state, **kwargs)
 
 
@@ -411,6 +414,49 @@ async def test_skills_and_plugins_endpoints(client):
     assert all(isinstance(name, str) for name in plugins["plugins"])
 
 
+@pytest.mark.asyncio
+async def test_mcp_endpoint_lists_declarations_without_values(client, tmp_path):
+    """设置页的 MCP 节:`/api/mcp` 只回**结构**,不回任何值。
+
+    这条用例的重点是**不泄露**:mcp.json 的 env 值不像 data_sources 的 dsn 那样被
+    强制 `{env:XXX}`,用户手写明文完全可能 —— 所以 env / headers 只回键名,stdio 的
+    command / args 一律不回(那是最容易写成 `--token=sk-…` 的地方)。
+    """
+    secret = "sk-LIVE-SECRET-abcdef"
+    (tmp_path / ".qi").mkdir(exist_ok=True)
+    (tmp_path / ".qi" / "mcp.json").write_text(json.dumps({"mcpServers": {
+        "github": {"type": "streamable-http", "url": "https://api.githubcopilot.com/mcp/"},
+        "local-db": {"type": "stdio", "command": "npx",
+                     "args": ["-y", "db-mcp", f"--token={secret}"],
+                     "env": {"DB_TOKEN": f"{secret}-env"},
+                     "headers": {"Authorization": f"Bearer {secret}"}},
+    }}, ensure_ascii=False), encoding="utf-8")
+    agent = tmp_path / ".qi" / "agents" / "analyst"
+    agent.mkdir(parents=True)
+    (agent / "agent.md").write_text(
+        "---\nname: analyst\ndescription: 分析。\nkeywords: [分析]\ntools: [\"*\"]\n"
+        "mcp_servers: [github]\n---\n正文\n", encoding="utf-8")
+
+    res = await client.get("/api/mcp")
+    assert res.status_code == 200
+    body = res.json()
+    assert [s["scope"] for s in body["sources"]][:2] == ["global", "project"]
+    global_, project = body["sources"][0], body["sources"][1]
+    assert global_["exists"] is False and global_["servers"] == []   # 没文件也要回一层
+    assert project["exists"] is True and project["path"].endswith(".qi/mcp.json")
+
+    by_name = {s["name"]: s for s in project["servers"]}
+    assert by_name["github"]["target"] == "https://api.githubcopilot.com/mcp/"
+    assert by_name["github"]["bound_by"] == ["analyst"]     # 门控:声明了才绑
+    assert by_name["local-db"]["bound_by"] == []            # 没声明 → 没人绑
+    assert by_name["local-db"]["target"] == "stdio"         # stdio 不回 command/args
+    assert by_name["local-db"]["env_keys"] == ["DB_TOKEN"]
+    assert by_name["local-db"]["header_keys"] == ["Authorization"]
+
+    for leaked in (secret, f"--token={secret}", "npx", "db-mcp"):
+        assert leaked not in res.text, f"{leaked} 泄露到了前端"
+
+
 # ── 安全 ──────────────────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -477,3 +523,298 @@ def test_port_preflight_detects_busy_port():
         assert _port_free("127.0.0.1", busy_port) is False
     # 关掉后同一端口应可绑定(证明上面 False 不是因为参数写错)
     assert _port_free("127.0.0.1", busy_port) is True
+
+
+# ── 会话分叉 ──────────────────────────────────────────────
+
+async def test_fork_session_copies_branch_into_new_file(client, tmp_path):
+    """分叉 = 把**当前分支**复制成一个新会话文件(pi 同款:新文件,不是同一文件里开叉)。
+
+    三条与 CLI/TUI 共用的语义:标题带 `@fork`、`cwd` 继承、原会话一个字节不动。
+    """
+    sid = (await client.post("/api/sessions", json={"title": "源会话", "cwd": str(tmp_path)})).json()["id"]
+    await _agui(client, sid)
+    before = (await client.get(f"/api/sessions/{sid}")).json()
+
+    resp = await client.post(f"/api/sessions/{sid}/fork", json={})
+    assert resp.status_code == 201, resp.text
+    forked = resp.json()
+    assert forked["id"] != sid
+    assert forked["title"] == "源会话 @fork"
+    assert forked["cwd"] == str(tmp_path)
+
+    after = (await client.get(f"/api/sessions/{sid}")).json()
+    assert after["total_entries"] == before["total_entries"]      # 源会话没被改
+    copy = (await client.get(f"/api/sessions/{forked['id']}")).json()
+    assert copy["total_entries"] == before["total_entries"]       # 历史逐条复制
+    assert copy["entries"][0]["cwd"] == str(tmp_path)
+
+
+async def test_fork_rejects_busy_and_unknown_anchor(client, tmp_path):
+    """运行中不分叉(文件正在被追加,拷到的可能是半截回合);分叉点不存在要 400。"""
+    sid = (await client.post("/api/sessions", json={"title": "a", "cwd": str(tmp_path)})).json()["id"]
+    web = _web(client)
+    web.begin(sid)
+    try:
+        assert (await client.post(f"/api/sessions/{sid}/fork", json={})).status_code == 409
+    finally:
+        web.end(sid)
+    assert (await client.post(f"/api/sessions/{sid}/fork", json={"at": "nope"})).status_code == 400
+    assert (await client.post("/api/sessions/none/fork", json={})).status_code == 404
+
+
+# ── 工作区:显示名 + 「删除连会话一起删」─────────────────────
+
+async def _session_in(client, cwd, title="a"):
+    return (await client.post("/api/sessions", json={"title": title, "cwd": str(cwd)})).json()
+
+
+async def test_workspace_rename_only_touches_the_display_name(client, tmp_path):
+    """改名只改**显示名**:目录没动,会话没动,标题也没动。"""
+    created = await _session_in(client, tmp_path)
+    cwd = created["cwd"]
+    assert (await client.get("/api/workspaces")).json() == {"names": {}}
+
+    renamed = await client.patch("/api/workspaces", json={"cwd": cwd, "name": "我的项目"})
+    assert renamed.json() == {"names": {cwd: "我的项目"}}
+    assert tmp_path.is_dir()
+    assert (await client.get(f"/api/sessions/{created['id']}")).json()["title"] == "a"
+
+    # 空名 = 取消改名(恢复成目录名),不是"起个空名字"
+    restored = await client.patch("/api/workspaces", json={"cwd": cwd, "name": ""})
+    assert restored.json() == {"names": {}}
+
+
+async def test_workspace_delete_takes_its_sessions_with_it(client, tmp_path):
+    """删除工作区 = **连同它名下的会话一起删**(不可恢复);目录本身不动。"""
+    other_dir = tmp_path / "keep"
+    other_dir.mkdir()
+    one = await _session_in(client, tmp_path, "一")
+    two = await _session_in(client, tmp_path, "二")
+    survivor = await _session_in(client, other_dir, "别的目录")
+    cwd = one["cwd"]
+    await client.patch("/api/workspaces", json={"cwd": cwd, "name": "要删的"})
+
+    body = (await client.delete("/api/workspaces", params={"cwd": cwd})).json()
+    assert sorted(body["ids"]) == sorted([one["id"], two["id"]])
+    assert body["names"] == {}                                   # 显示名随之清掉
+
+    # 会话文件真的没了(不是"换个地方显示")
+    assert (await client.get(f"/api/sessions/{one['id']}")).status_code == 404
+    assert (await client.get(f"/api/sessions/{two['id']}")).status_code == 404
+    # 别的目录一条不少
+    rest = (await client.get("/api/sessions")).json()["sessions"]
+    assert [x["id"] for x in rest] == [survivor["id"]]
+    # 目录本身不删 —— qi 不动用户的文件夹
+    assert tmp_path.is_dir()
+
+
+async def test_workspace_delete_is_scoped_by_normalized_cwd(client, tmp_path, monkeypatch):
+    """按**规范化后的 cwd**圈定会话:同一个目录的两种写法(软链/尾斜杠)算同一个工作区。"""
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real)
+    created = await _session_in(client, real)          # 会话写在真实路径下
+    # 用软链路径删:要删掉的是同一批会话
+    body = (await client.delete("/api/workspaces", params={"cwd": str(link)})).json()
+    assert body["ids"] == [created["id"]]
+    assert (await client.get("/api/sessions")).json()["sessions"] == []
+
+
+async def test_workspace_delete_refuses_while_a_session_runs(client, tmp_path):
+    """工作区里有会话在跑就整体拒绝(409):删掉正在写的文件会毁掉那一轮。"""
+    created = await _session_in(client, tmp_path)
+    web = _web(client)
+    web.begin(created["id"])
+    try:
+        resp = await client.delete("/api/workspaces", params={"cwd": created["cwd"]})
+        assert resp.status_code == 409
+        assert "正在运行" in resp.json()["detail"]
+    finally:
+        web.end(created["id"])
+    # 释放之后必须能删掉 —— 否则一次异常就把工作区永久卡住
+    assert (await client.delete("/api/workspaces", params={"cwd": created["cwd"]})).status_code == 200
+    assert (await client.get("/api/sessions")).json()["sessions"] == []
+
+
+async def test_workspace_delete_of_unknown_directory_is_a_noop(client, tmp_path):
+    """删一个没有会话的目录:不报错、也没有东西可删(前端可能在陈旧列表上操作)。"""
+    body = (await client.delete("/api/workspaces", params={"cwd": str(tmp_path / "没有这个")})).json()
+    assert body == {"ids": [], "names": {}}
+
+
+async def test_workspaces_survive_a_corrupt_file(client, tmp_path):
+    """偏好文件坏掉不能让 API 挂:读成空、后续写入把文件修回来。"""
+    bad = tmp_path / "workspaces.json"
+    bad.write_text("{ 这不是 JSON", encoding="utf-8")
+    assert (await client.get("/api/workspaces")).json() == {"names": {}}
+    assert (await client.patch("/api/workspaces",
+                               json={"cwd": str(tmp_path), "name": "x"})).status_code == 200
+    assert json.loads(bad.read_text(encoding="utf-8"))["names"]
+
+
+# ── 「未分组」桶的批量清除 ────────────────────────────────────
+
+async def test_clear_ungrouped_only_touches_cwd_less_sessions(client, tmp_path):
+    """「清除会话」清的是**没有 cwd 的旧会话**;任何工作区里的会话都必须原样留着。"""
+    web = _web(client)
+    # 造两条"旧会话":API 建会话时总会带上 cwd,所以直接经 store 建(模拟早先版本写下的 header)
+    legacy_one = web.sessions.create("旧一", cwd=None)
+    legacy_two = web.sessions.create("旧二", cwd=None)
+    grouped = await _session_in(client, tmp_path, "有目录的")
+
+    listed = (await client.get("/api/sessions")).json()["sessions"]
+    assert {s["id"] for s in listed} == {legacy_one.id, legacy_two.id, grouped["id"]}
+    assert [s["cwd"] for s in listed if s["id"] in (legacy_one.id, legacy_two.id)] == [None, None]
+
+    body = (await client.delete("/api/sessions", params={"scope": "ungrouped"})).json()
+    assert sorted(body["ids"]) == sorted([legacy_one.id, legacy_two.id])
+
+    rest = (await client.get("/api/sessions")).json()["sessions"]
+    assert [s["id"] for s in rest] == [grouped["id"]]          # 有目录的一条不少
+    assert (await client.get(f"/api/sessions/{legacy_one.id}")).status_code == 404
+
+
+async def test_clear_ungrouped_refuses_while_one_runs(client, tmp_path):
+    """任一条在运行中就整体拒绝(409)—— 删掉正在写的文件会毁掉那一轮。"""
+    web = _web(client)
+    legacy = web.sessions.create("旧", cwd=None)
+    grouped = await _session_in(client, tmp_path)
+    web.begin(legacy.id)
+    try:
+        resp = await client.delete("/api/sessions", params={"scope": "ungrouped"})
+        assert resp.status_code == 409
+        assert "正在运行" in resp.json()["detail"]
+    finally:
+        web.end(legacy.id)
+    # 释放后必须能清掉 —— 否则一次异常就把这一桶永久卡住
+    assert (await client.delete("/api/sessions", params={"scope": "ungrouped"})).status_code == 200
+    assert [s["id"] for s in (await client.get("/api/sessions")).json()["sessions"]] == [grouped["id"]]
+
+
+async def test_clear_ungrouped_rejects_other_scopes(client, tmp_path):
+    """作用域是**闭集**:拼错或不给都要 422,不能悄悄变成"删全部"。"""
+    assert (await client.delete("/api/sessions", params={"scope": "all"})).status_code == 422
+    assert (await client.delete("/api/sessions")).status_code == 422
+
+
+# ── 服务器目录浏览(「添加工作区」的选择器)────────────────────
+
+async def test_browse_dirs_lists_directories_and_parent(client, tmp_path):
+    """只列目录(文件不出现在选择器里),并给出上一级与主目录。"""
+    import os
+
+    (tmp_path / "child").mkdir()
+    (tmp_path / "note.txt").write_text("x", encoding="utf-8")
+    body = (await client.get("/api/fs/dirs", params={"path": str(tmp_path)})).json()
+    assert body["path"] == os.path.realpath(str(tmp_path))       # 归一成真实路径
+    # 断言**意图**而不是精确列表:tmp_path 下还有夹具自己建的目录(home / sessions)。
+    names = [e["name"] for e in body["entries"]]
+    assert "child" in names
+    assert "note.txt" not in names                               # 文件绝不出现在选择器里
+    assert all(Path(e["path"]).is_dir() for e in body["entries"])
+    child = next(e for e in body["entries"] if e["name"] == "child")
+    assert child["path"] == str(Path(body["path"]) / "child")
+    assert body["parent"] == os.path.realpath(str(tmp_path.parent))
+    # `home` 是**真实主目录**,不是 QI_AGENT_HOME(测试里那个被指向 tmp)——
+    # 选择器的"主目录"快捷键要落到用户真正想去的地方。
+    assert body["home"] == os.path.realpath(str(Path.home()))
+    assert body["roots"] == []                                    # 非 Windows 没有盘符
+
+
+async def test_browse_dirs_defaults_to_home(client):
+    """不给 `path` 就是主目录 —— 前端首屏就是这么用的。"""
+    import os
+
+    body = (await client.get("/api/fs/dirs")).json()
+    assert body["path"] == os.path.realpath(str(Path.home()))
+
+
+async def test_browse_dirs_error_codes(client, tmp_path):
+    """三种失败分开回:不存在 404、不是目录 400、没权限 403(与 pi-web 同样的区分)。"""
+    missing = await client.get("/api/fs/dirs", params={"path": str(tmp_path / "没有这个")})
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == "目录不存在"
+
+    file = tmp_path / "a.txt"
+    file.write_text("x", encoding="utf-8")
+    not_dir = await client.get("/api/fs/dirs", params={"path": str(file)})
+    assert not_dir.status_code == 400
+    assert not_dir.json()["detail"] == "这不是一个目录"
+
+
+async def test_browse_dirs_requires_credentials(tmp_path, monkeypatch):
+    """它是文件系统接口:必须与其它 /api 一样过 guard(不能因为"只读"就免鉴权)。"""
+    app = _app(tmp_path, monkeypatch, password="s3cret-token")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        assert (await client.get("/api/fs/dirs")).status_code == 401
+        ok = await client.get("/api/fs/dirs", headers={"Authorization": "Bearer s3cret-token"})
+        assert ok.status_code == 200
+
+
+async def test_config_exposes_bare_model_name_for_display(tmp_path, monkeypatch):
+    """`default_model` 是 `provider/model` 标签(诊断面用),`default_model_name` 是裸模型名。
+
+    输入卡右下只有一行的宽度:`commandcode/deepseek/deepseek-v4.1-flash` 这种三段式
+    在窄窗口里必然被截断,而"哪个 provider"在设置页与遥测抽屉里都看得到。
+    """
+    app = _app(tmp_path, monkeypatch, provider="deepseek")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        body = (await client.get("/api/config")).json()
+        assert body["default_model"] == "deepseek/x"
+        assert body["default_model_name"] == "x"
+
+
+# ── 手动压缩(输入卡「调用指令」里的 /compact)────────────────────
+
+async def test_compact_endpoint_reports_nothing_to_compact(client, tmp_path):
+    """没什么可压时回 `compacted=False`(而不是错误)—— 前端据此提示,不当失败。"""
+    sid = (await client.post("/api/sessions", json={"title": "空", "cwd": str(tmp_path)})).json()["id"]
+    resp = await client.post(f"/api/sessions/{sid}/compact")
+    assert resp.status_code == 200
+    assert resp.json() == {"compacted": False}
+
+
+async def test_compact_rejects_unknown_and_busy(client, tmp_path):
+    """不存在的会话 404;运行中 409(压缩要读整条分支并追加,与正在写的回合会打架)。"""
+    sid = (await client.post("/api/sessions", json={"title": "a", "cwd": str(tmp_path)})).json()["id"]
+    assert (await client.post("/api/sessions/none/compact")).status_code == 404
+    web = _web(client)
+    web.begin(sid)
+    try:
+        resp = await client.post(f"/api/sessions/{sid}/compact")
+        assert resp.status_code == 409
+        assert "正在运行" in resp.json()["detail"]
+    finally:
+        web.end(sid)
+
+
+# ── 导出会话(指令 /export)──────────────────────────────────
+
+async def test_export_serves_the_session_jsonl(client, tmp_path):
+    """导出就是**原样发会话文件**(它本身就是 JSONL),文件名带标题与 id。
+
+    标题里放中文是刻意测的:HTTP 头是 latin-1,直接写进 `filename=` 会抛
+    UnicodeEncodeError,所以后端按 RFC 5987 双写(`filename` + `filename*`)。
+    """
+    import urllib.parse
+
+    sid = (await client.post("/api/sessions", json={"title": "导出 我", "cwd": str(tmp_path)})).json()["id"]
+    await _agui(client, sid)
+
+    resp = await client.get(f"/api/sessions/{sid}/export")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("application/x-ndjson")
+    disposition = resp.headers["content-disposition"]
+    assert f'filename="qi-{sid}.jsonl"' in disposition
+    encoded = urllib.parse.quote(f"导出 我-{sid}.jsonl", safe="")
+    assert f"filename*=UTF-8''{encoded}" in disposition
+
+    lines = [json.loads(line) for line in resp.text.splitlines() if line.strip()]
+    assert lines[0]["type"] == "session" and lines[0]["id"] == sid
+    assert any(entry.get("type") == "message" for entry in lines[1:])
+
+    assert (await client.get("/api/sessions/none/export")).status_code == 404

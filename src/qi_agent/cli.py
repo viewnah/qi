@@ -533,6 +533,9 @@ def agents_show(name: str = typer.Argument(...)) -> None:
         console.print("数据源: " + ", ".join(f"{d.id}({d.type})" for d in unit.data_sources))
     if unit.mcp_private:
         console.print("私有 MCP: " + ", ".join(s.name for s in unit.mcp_private))
+    if unit.mcp_declared:
+        # 名字 + 它是在哪一层定义的,因为同一个名字在项目/全局里可以是两份配置
+        console.print("声明绑定 MCP: " + ", ".join(s.name for s in unit.mcp_declared))
     if unit.config.opening:
         console.print(f"opening: {unit.config.opening.message[:60]}")
 

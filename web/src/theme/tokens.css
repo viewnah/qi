@@ -515,7 +515,15 @@
      “elevation 逐元素声明”),原因写在那一节。 */
   --dsw-elevation-stroke-color: var(--dsw-alias-border-l4);
 
-  /* ── 字体阶梯(dsh `--dsw-font-*`)────────────────────────────── */
+  /* ── 字体阶梯(dsh `--dsw-font-*`)──────────────────────────────
+     逐条照搬 dsh `ui-theme/src/styles/gradient-shadow-text.css`,**顺序也就是 dsh 的
+     顺序**(大到小,regular 紧跟着它的 strong 变体),便于与源文件逐行对读。
+
+     为什么这一段也归门禁管:`check-dsh-tokens.mjs` 原来只管 alias/specific 颜色,
+     于是这份阶梯静默漂移过 —— `--dsw-font-xl-24` 的字重写成 500(dsh 是 600)、
+     `--dsw-font-xxxs-11` 的行高写成 16(dsh 是 14),还有 4 条 strong 变体
+     整条不存在(`m-18` / `xs-strong-13` / `xxs-strong-12` / `xxxs-strong-11`)。
+     现在同一份门禁逐条对拍这 13 条(省略字重 = 400,与简写语义一致)。 */
   /* dsh `base.css` 原样(含尾部的 'Helvetica Neue', Helvetica, Arial ——
      之前抄漏了这三个,非 macOS 上回落顺序会与 dsh 不同)。 */
   --dsw-font-family:
@@ -525,21 +533,33 @@
   --dsw-font-mono:
     ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 
+  --dsw-font-xl-24: 600 24px / 32px var(--dsw-font-family);
+  --dsw-font-l-20: 500 20px / 28px var(--dsw-font-family);
+  --dsw-font-m-18: 500 16px / 28px var(--dsw-font-family);
   --dsw-font-base-16: 400 16px / 24px var(--dsw-font-family);
   --dsw-font-base-strong-16: 500 16px / 24px var(--dsw-font-family);
-  --dsw-font-l-20: 500 20px / 28px var(--dsw-font-family);
-  --dsw-font-xl-24: 500 24px / 32px var(--dsw-font-family);
   --dsw-font-s-14: 400 14px / 22px var(--dsw-font-family);
   --dsw-font-s-strong-14: 500 14px / 22px var(--dsw-font-family);
   --dsw-font-xs-13: 400 13px / 20px var(--dsw-font-family);
+  --dsw-font-xs-strong-13: 500 13px / 20px var(--dsw-font-family);
   --dsw-font-xxs-12: 400 12px / 18px var(--dsw-font-family);
-  --dsw-font-xxxs-11: 400 11px / 16px var(--dsw-font-family);
+  --dsw-font-xxs-strong-12: 500 12px / 18px var(--dsw-font-family);
+  --dsw-font-xxxs-11: 400 11px / 14px var(--dsw-font-family);
+  --dsw-font-xxxs-strong-11: 500 11px / 14px var(--dsw-font-family);
+
+  /* markdown 家族只搬**qi 真用到的**那一条(代码块);其余 h1–h4/base 等
+     等 qi 没有 markdown 渲染器,搬过来就是死令牌。 */
+  --dsw-font-markdown-code-block-font-size: 11px;
 
   /* ── ④ 应用级布局(dsh `--dsh-*` 与组件常量)──────────────────── */
   --dsh-sidebar-width: 280px;
+  /* dsh `ui-layout/columns.ts` 的 `SIDEBAR_MIN`。窄屏(≤ 自动折叠阈值)收窄到它。 */
+  --dsh-sidebar-min-width: 264px;
   --dsh-sidebar-auto-collapse: 1024px;
   --dsh-sidebar-inline-padding: 12px;
   --dsh-panel-gap: 8px;
+  /* dsh `ui-layout` 的 `RIGHTBAR_MIN`:右栏轨道的下限,qi 的遥测抽屉宽度用它。 */
+  --dsh-rightbar-min: 300px;
 
   /* dsh 原式:clamp(680px, 列宽 * .64, 920px) */
   --dsh-conversation-column-width: calc(
@@ -561,7 +581,35 @@
   --dsh-composer-hero-padding-bottom: 32px;
   --dsh-hero-input-min-height: 52px;
   --dsh-scrollbar-width: 8px;
+
+  /* 正文字号阶梯 —— 逐字照搬 dsh `ui-theme/src/styles/gradient-shadow-text.css`
+     (54–57 行)。dsh 用一个"设置里可调的正文字号"派生整套层级,qi 没有那个设置,
+     但**派生关系照搬**:改 `--dsh-content-font-size` 一处,低一档的
+     `--secondary` 就跟着走,不会出现"正文改了、工具行没改"的分叉。
+     默认 14px 时:delta = 0、secondary = 13px。 */
   --dsh-content-font-size: 14px;
+  --dsh-content-font-delta: calc(var(--dsh-content-font-size, 14px) - 14px);
+  --dsh-content-font-size-secondary: min(
+    calc(var(--dsh-content-font-size, 14px) - 1px),
+    max(13px, calc(var(--dsh-content-font-size, 14px) - 2px))
+  );
+  --dsh-content-font-delta-secondary: calc(
+    var(--dsh-content-font-size-secondary) - 13px
+  );
+
+  /* 动效常量(dsh `ui-theme/src/styles/base.css`,非颜色):dsh 把这三条放在
+     base.css 而不是 design-platform.css,所以不在 `check-dsh-tokens.mjs` 的
+     对拍范围(那个门禁只管 alias/specific 颜色)。值逐字等于 dsh —— 转场曲线
+     是手感常量,不要就地写字面值。 */
+  --ds-ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --ds-transition-duration: 0.2s;
+  --ds-transition-duration-fast: 0.1s;
+  --ds-transition-duration-slow: 0.3s;
+
+  /* 遮罩的模糊(dsh `gradient-shadow-text.css` 的 `--dsw-mask-blur`)。设置面的
+     遮罩照 dsh 用 `bg-mask-1` + 这条 —— 只有底色不模糊时,底下那屏的正文仍然
+     透出来,和面板里的字抢注意力。同样不在颜色门禁的对拍范围(它管 alias/specific)。 */
+  --dsw-mask-blur: blur(2px);
 
   /* 代码字体:dsh 的 `--ds-font-family-code` 原样。刻意**不复用** `--dsw-font-mono`
      ——dsh 的两套栈不同(这一套没有裸 `monospace` 兜底,否则 Windows 中文回落到宋体)。 */

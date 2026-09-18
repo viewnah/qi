@@ -1,20 +1,27 @@
 /**
  * qi web —— 版式与组件语言。
  *
- * ## 设计判断
+ * ## 版式基线
  *
- * qi 是**多 agent 分派 harness**,不是聊天软件。所以转录不做气泡:
- * 转录的本质是**因果轨迹**(决策 → 思考 → 动作 → 结论),气泡会把"过程"和"结论"
- * 渲染成同类东西,于是结论被淹没。这里用**行**:每行一种 tone,左缘一条细线承担
- * 身份色,机器味儿的一律等宽 —— 读者能扫着跳过过程、只读结论。
+ * 外壳与**首页空态**照 dsh 的网页面(`data/dsh.png` + `ui-layout` / `ui-sidebar` /
+ * `ui-workspace` / `ui-conversation` 的 CSS):280px 左栏(工作区 → 会话二级目录)、
+ * 白底工作台、居中 hero(品牌标 + 标题 + 项目 chip + 输入卡)、右侧遥测抽屉。
+ * 逐条几何来源写在 `components/Rail.tsx` 与 `Dock.tsx` 的文件头里,这里只落样式。
+ *
+ * **转录的行语言是 qi 自己的**,不是 dsh 的(§15.4 的那条设计判断仍然成立):
+ * 转录的本质是**因果轨迹**(决策 → 思考 → 动作 → 结论),不是对称交谈;
+ * 气泡会把"过程"和"结论"渲染成同类东西,于是结论被淹没。这里用**行**:每行一种
+ * tone,左缘一条细线承担身份色,机器味儿的一律等宽 —— 读者能扫着跳过过程、只读结论。
+ * dsh 的转录是"按轮"的(轮内 rail + TurnNavigator),换过去要连事件归约一起改,
+ * 而且会丢掉"过程/结论"这层区分,所以这次**只对齐外壳与空态**。
  *
  * 三条由此推出的结构决定:
  *
- *   1. **三栏,不是两栏。** 中间是工作台,右侧是**遥测栏**:路由决策与理由、
- *      上下文占用、本轮动作计数。这是 harness 相对 chat 的差异点 ——
- *      "它为什么这么做"和"还剩多少上下文"应该是一等公民,而不是藏在日志里。
+ *   1. **遥测是抽屉,不是常驻第三栏。** 首屏与 dsh 一致(单栏);点"遥测"才从右侧
+ *      滑出并让中栏让出 `--dsh-rightbar-min`——与 dsh `AppFrame` 同构(它的右栏
+ *      轨道为 0 时面板悬在中栏之上,有轨道时才占位)。
  *   2. **活动条贴着输入框,不在页面底边。** 你想知道的是"**此刻**在干什么",
- *      那信息属于手边。底边状态条是终端时代的遗物。
+ *      那信息属于手边。dsh 的输入卡上方也有同样位置的一行 stats。
  *   3. **过程可折叠、结论不可折叠。** 思考与工具正文默认收起,结论(finalsay)永远展开。
  *
  * ## 色值纪律
@@ -24,171 +31,669 @@
  * 版式是这里自己的。
  */
 
-/* ── 外壳:三栏 ─────────────────────────────────────────── */
+/* ── 全局:dsh 的 shell 底座(dsh `ui-theme` → `packages/client/web/src/base.css`)──
+   qi 之前只搬了"根高度 + 去外边距"两条,而那个文件里**真正决定文字长相**的
+   四条一条都没搬。后果不是"看起来略不同",而是**换一个浏览器就换一套字体**:
+   `--dsw-font-family` 在 tokens.css 里定义得再准,没人用它也等于零 ——
+   body 吃浏览器默认字体(zh 内容在 Chrome 下落到 PingFang、在 Safari 下落到宋体),
+   CJK 的墨迹大小随之变化,这就是"工作区那行字看起来比 dsh 小"的根。
+
+   逐条对应(顺序与 dsh 一致,便于对读):
+     · `height/margin`  —— 外壳要满屏(见下);
+     · `font-family`     —— 用 dsh 的栈,不再靠浏览器默认;
+     · `-webkit-font-smoothing: antialiased` —— dsh 刻意要**灰阶**抗锯齿而不是
+       次像素:macOS 上次像素渲染的 CJK 笔画更重(实测同一枚"工作区",qi 的竖
+       笔 3 个设备像素、dsh 的 2 个)。这一条不改字号,但它就是"看起来粗细不
+       一样"的来源;
+     · `text-autospace: normal` —— 中日韩与拉丁之间插空隙(不支持的引擎忽略);
+     · `color/background`—— 默认墨色与底色;
+     · 表单控件 `font-family: inherit` —— UA 样式表把 button/textarea 钉在
+       Arial/monospace 上,不显式继承就会与周围文字不是同一套字体。
+   这些以前就没有,只是以前外壳本来就不满屏、也没人把两边的字并排量过
+   (docs/web.md §17.7(6) 记账)。 */
+
+html,
+body,
+#root {
+ height: 100%;
+}
+
+body {
+ margin: 0;
+ font-family: var(
+  --dsw-font-family,
+  -apple-system,
+  BlinkMacSystemFont,
+  "Segoe UI",
+  "PingFang SC",
+  "Hiragino Sans GB",
+  "Microsoft YaHei",
+  "Helvetica Neue",
+  Helvetica,
+  Arial,
+  sans-serif
+ );
+ -webkit-font-smoothing: antialiased;
+ -moz-osx-font-smoothing: grayscale;
+ text-autospace: normal;
+ color: var(--dsw-alias-label-primary);
+ background: var(--dsw-alias-bg-base);
+ /* 滚动条皮肤的两条默认色(dsh 把它们声明在 `body` 上:自定义属性只能向下继承,
+     声明在 `html` 上会让 `scrollbar-color` 拿到无效值而回落到 `auto`)。 */
+ --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l1);
+ --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l1);
+}
+
+/* 表单控件不继承 body 字体(UA 样式表把 button 钉在 Arial、textarea 钉在
+   monospace 上),所以显式重新套上 app 的字体栈 —— 与 dsh 的全局重置同一条。 */
+button,
+input,
+select,
+textarea {
+ font-family: inherit;
+}
+
+/* 字面载荷保留源间距与列对齐(dsh 同名的 `text-autospace: no-autospace` 列表;
+   qi 的等宽证据块是 `.evidence`)。 */
+code,
+pre,
+.evidence {
+ text-autospace: no-autospace;
+}
+
+/* ── 滚动条皮肤(dsh `ui-theme/src/styles/scrollbar.css` 的简化版)──────
+   没有它,滚动区画 UA 原生滚动条:两套主题下都不跟色,而且**宽度不是 dsh 的
+   8px** —— 侧栏行会因为 `scrollbar-gutter: stable` 白吃掉 15px 而左缩一截
+   (实测:行尾时间落点差 7px)。
+   qi 只搬宽度与配色;dsh 还有一条"指针不在这一列就不画滚动条"的交互(要 JS
+   追指针并重绑变量),没搬。 */
+
+.rail__list,
+.transcript,
+.tele__scroll {
+ --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+ --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
+}
+
+::-webkit-scrollbar {
+ width: var(--dsh-scrollbar-width);
+ height: var(--dsh-scrollbar-width);
+}
+
+::-webkit-scrollbar-track {
+ background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+ border-radius: 999px;
+ background: var(--dsh-scrollbar-thumb);
+}
+
+::-webkit-scrollbar-thumb:hover {
+ background: var(--dsh-scrollbar-thumb-hover);
+}
+
+/* ── 外壳:左栏 + 工作台 + 遥测抽屉 ─────────────────────── */
 
 .shell {
  display: grid;
- grid-template-columns: var(--rail-w, 248px) minmax(0, 1fr) var(--tele-w, 0px);
+ --qi-rail-w: var(--dsh-sidebar-width);
+ --qi-tele-w: 0px;
+ grid-template-columns: var(--qi-rail-w) minmax(0, 1fr) var(--qi-tele-w);
  height: 100%;
  background: var(--dsw-alias-bg-base);
  overflow: hidden;
+ /* 轨道动画:dsh 用 `--ds-transition-duration-slow` + `--ds-ease-in-out`。 */
+ transition: grid-template-columns var(--ds-transition-duration-slow)
+  var(--ds-ease-in-out);
 }
 
-/* 遥测栏开关:默认窄屏收起。用 grid 的列宽而不是 display:none,
-   这样展开/收起是同一套布局,不会引发重排跳变。 */
 .shell[data-tele="open"] {
- --tele-w: 296px;
+ --qi-tele-w: var(--dsh-rightbar-min);
 }
 
-.shell[data-rail="closed"] {
- --rail-w: 0px;
-}
-
-@media (width <= 1100px) {
+/* dsh `SIDEBAR_AUTO_COLLAPSE` 之下收窄(不是折叠:qi 没做窄栏形态)。 */
+@media (width <= 1024px) {
  .shell {
-  --rail-w: 200px;
-  --tele-w: 0px;
- }
- .shell[data-rail="closed"] {
-  --rail-w: 0px;
+  --qi-rail-w: var(--dsh-sidebar-min-width);
  }
 }
 
-/* ── 左栏:会话 ─────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+ .shell,
+ .tele {
+  transition: none;
+ }
+}
+
+/* ── 左栏:工作区 → 会话 ──────────────────────────────────
+   几何照 dsh `SidebarRoot.module.css`:上下内衬 6、左右内衬 12、品牌行 60、
+   新会话 38/半径 12、区块标题 36、一级行 34、二级行 32、行间距 2。 */
 
 .rail {
  display: flex;
  flex-direction: column;
  min-width: 0;
+ height: 100%;
+ box-sizing: border-box;
+ padding: 6px var(--dsh-sidebar-inline-padding);
  overflow: hidden;
  background: var(--dsw-specific-sidebar-fill);
  border-right: 0.5px solid var(--dsw-alias-border-l3);
+ color: var(--dsw-alias-label-primary);
+ font-size: 14px;
 }
 
-.rail__head {
+/* 品牌行:高 60(logoRow),内容靠左,dsh 在这个高度里放 mark + 18px 字标。 */
+.rail__brandrow {
  display: flex;
  flex: none;
  align-items: center;
  gap: 8px;
- min-height: 52px;
- padding: 8px 10px;
+ height: 60px;
+ padding-left: 4px;
+ margin-bottom: 8px;
+ box-sizing: border-box;
+ overflow: hidden;
 }
 
-.rail__brand {
+/* 字标:品牌行里唯一的元素(图标已去掉),18/24 600 与 dsh `.brandName` 一致。 */
+.rail__wordmark {
  display: inline-flex;
- flex: 1;
  align-items: center;
- gap: 8px;
- min-width: 0;
+ height: 24px;
  color: var(--dsw-alias-label-primary);
- font-size: 15px;
+ font-size: 18px;
  font-weight: 600;
- letter-spacing: 0.06em;
+ line-height: 24px;
+ letter-spacing: 0.04em;
 }
 
+/* 新会话:高 38、半径 12、发丝描边、elevated 底(dsh `.newSession`)。 */
 .rail__new {
  display: flex;
  flex: none;
  align-items: center;
  justify-content: center;
  gap: 6px;
- width: 100%;
- height: 34px;
- margin: 0 0 8px;
+ height: 38px;
+ padding: 8px 16px;
+ margin: 0 2px 8px;
+ box-sizing: border-box;
  border: 0.5px solid var(--dsw-alias-border-l3);
- border-radius: var(--dsw-radius-md);
+ border-radius: 12px;
  background: var(--dsw-alias-button-elevated-fill);
  color: var(--dsw-alias-label-primary);
- font: var(--dsw-font-xs-13);
+ font-size: 14px;
  font-weight: 500;
+ line-height: 22px;
 }
 
-.rail__new:hover {
+.rail__new:hover:not(:disabled) {
  background: var(--dsw-alias-button-floating-hover);
 }
 
+.rail__new:disabled {
+ opacity: 0.5;
+ cursor: default;
+}
+
+.rail__new-label {
+ max-width: 200px;
+ overflow: hidden;
+ white-space: nowrap;
+}
+
+/* 区块标题(工作区):高 36、次级字色、右侧一个动作按钮(dsh `.sectionHeader`)。 */
 .rail__section {
- flex: none;
- padding: 10px 12px 4px;
- color: var(--dsw-alias-label-caption);
- font-size: 11px;
- line-height: 16px;
- letter-spacing: 0.04em;
-}
-
-.rail__list {
- flex: 1;
- min-height: 0;
- padding: 0 6px 12px;
- overflow-y: auto;
-}
-
-/* 新会话按钮的横向内衬(与 rail__head 的 10px 对齐) */
-.rail__newpad {
- padding: 0 10px;
-}
-
-/* 会话列表里的空态与提示行 */
-.rail__hint {
- padding: 4px 8px;
- color: var(--dsw-alias-label-caption);
- font-size: 11px;
- line-height: 16px;
-}
-
-.rail__item {
  display: flex;
- flex-direction: column;
- gap: 2px;
+ flex: none;
+ align-items: center;
+ gap: 4px;
+ height: 36px;
+ padding-left: 4px;
+ margin: 2px 0 4px;
+ box-sizing: border-box;
+ color: var(--dsw-alias-label-tertiary);
+}
+
+.rail__section-label {
+ flex: none;
+ max-width: 45%;
+ overflow: hidden;
+ line-height: 20px;
+ white-space: nowrap;
+ transition:
+  max-width 180ms var(--ds-ease-in-out),
+  opacity 120ms var(--ds-ease-in-out);
+}
+
+/* 搜索展开:标签收成 0、动作组收起,输入框占满 —— dsh `sectionHeader` 同款行为
+  (它也是收 `max-width` 与 `headerActions`,而不是另起一行)。 */
+.rail__section[data-search="open"] .rail__section-label {
+ max-width: 0;
+ opacity: 0;
+}
+
+.rail__section-actions {
+ display: flex;
+ flex: none;
+ align-items: center;
+ gap: 4px;
+}
+
+.rail__section[data-search="open"] .rail__section-actions {
+ display: none;
+}
+
+/* 搜索槽(dsh `.searchSlot`):收起时只占 28px(一个圆钮),展开时占满。
+ 输入框**常驻**(靠 opacity + pointer-events 收起而不是条件渲染)—— dsh 这么写是为了
+ 让宽度/不透明度的过渡连贯;条件渲染会在两帧之间把动画打断。 */
+.rail__searchslot {
+ display: flex;
+ flex: 1;
+ align-items: center;
+ max-width: 28px;
+ min-width: 0;
+ margin-left: auto;
+ transition: max-width 180ms var(--ds-ease-in-out);
+}
+
+.rail__section[data-search="open"] .rail__searchslot {
+ max-width: 100%;
+}
+
+.rail__search {
+ display: flex;
+ flex: none;
+ align-items: center;
  width: 100%;
- padding: 7px 8px;
- border: none;
- border-radius: var(--dsw-radius-md);
+ height: 28px;
+ border: 0;
+ border-radius: 999px;
  background: transparent;
  color: var(--dsw-alias-label-secondary);
- text-align: left;
+ overflow: hidden;
+ transition:
+  height 180ms var(--ds-ease-in-out),
+  border-radius 180ms var(--ds-ease-in-out),
+  border-color 180ms var(--ds-ease-in-out);
 }
 
-.rail__item:hover {
+/* 展开态(dsh `.searchExpanded`):高 30、圆角 10、发丝描边 l4。 */
+.rail__search[data-expanded="true"] {
+ height: 30px;
+ border: 0.5px solid var(--dsw-alias-border-l4);
+ border-radius: 10px;
+ color: var(--dsw-alias-label-caption);
+}
+
+.rail__searchbtn {
+ display: inline-flex;
+ flex: none;
+ align-items: center;
+ justify-content: center;
+ width: 28px;
+ height: 28px;
+ padding: 0;
+ border: none;
+ border-radius: 999px;
+ background: transparent;
+ color: inherit;
+}
+
+.rail__search[data-expanded="true"] .rail__searchbtn {
+ height: 30px;
+}
+
+.rail__searchbtn:hover {
  background: var(--dsw-alias-interactive-bg-hover);
 }
 
-.rail__item[aria-current="true"] {
- background: var(--dsw-alias-interactive-bg-active);
- color: var(--dsw-alias-label-primary);
- font-weight: 500;
+/* 展开后放大镜不再有自己的 hover 底:它已经是输入框的一部分(dsh 同款)。 */
+.rail__search[data-expanded="true"] .rail__searchbtn:hover {
+ background: transparent;
 }
 
-.rail__item-title {
- overflow: hidden;
+.rail__searchinput {
+ flex: 1;
+ width: 0;
+ min-width: 0;
+ padding: 0;
+ border: none;
+ background: transparent;
+ color: var(--dsw-alias-label-primary);
  font-size: 13px;
+ line-height: 18px;
+ opacity: 0;
+ pointer-events: none;
+ outline: none;
+ transition: opacity 120ms var(--ds-ease-in-out);
+}
+
+.rail__search[data-expanded="true"] .rail__searchinput {
+ margin-left: -2px;
+ opacity: 1;
+ pointer-events: auto;
+}
+
+.rail__searchinput::placeholder {
+ color: var(--dsw-alias-label-tertiary);
+}
+
+/* 清空钮(dsh `.clearButton`):24px 圆。 */
+.rail__clear {
+ display: inline-flex;
+ flex: none;
+ align-items: center;
+ justify-content: center;
+ width: 24px;
+ height: 24px;
+ padding: 0;
+ border: none;
+ border-radius: 999px;
+ background: transparent;
+ color: var(--dsw-alias-label-secondary);
+}
+
+.rail__clear:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* 区块标题里的图标按钮:28px 圆形(dsh `.iconButton`)。 */
+.rail__iconbtn {
+ display: inline-flex;
+ flex: none;
+ align-items: center;
+ justify-content: center;
+ width: 28px;
+ height: 28px;
+ padding: 0;
+ border: none;
+ border-radius: 999px;
+ background: transparent;
+ color: var(--dsw-alias-label-secondary);
+}
+
+.rail__iconbtn:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* 列表:唯一滚动区。底部 16px 留白 + 稳定滚动条槽(dsh `.list`)。
+   右侧那两个长度值不是随手写的:负外边距把滚动条**推进栏的右侧内衬里**,
+   于是行的右缘仍然是离栏边 12px —— 少了这一段,`scrollbar-gutter: stable`
+   会白吃掉 8px,每一行都短一截(实测:dsh 行尾时间到 x=259 CSS,qi 只有 244)。
+   dsh 原式:`.listArea { margin-right: -12px }` + `.list { margin-right: 2px;
+   padding-right: 12 - 8 - 2 = 2px }`。 */
+.rail__list {
+ flex: 1;
+ min-height: 0;
+ margin-right: calc(2px - var(--dsh-sidebar-inline-padding));
+ padding-right: calc(
+  var(--dsh-sidebar-inline-padding) -
+  var(--dsh-scrollbar-width) -
+  2px
+ );
+ padding-bottom: 16px;
+ overflow-y: auto;
+ scrollbar-gutter: stable;
+}
+
+.rail__hint {
+ padding: 4px 8px;
+ color: var(--dsw-alias-label-caption);
+ font-size: 12px;
+ line-height: 18px;
+}
+
+/* 一级与二级行之间 2px(dsh `.groupSection > * + *`)。 */
+.rail__group > * + * {
+ margin-top: 2px;
+}
+
+/* 一个工作区段落之间的呼吸( dsh `.groupSection + .groupSection`)。 */
+.rail__group + .rail__group {
+ margin-top: 4px;
+}
+
+/*
+ * 一级行:高 34,内衬 8,文件夹槽 16 + gap 6 → 标题离行左 30。
+ * 二级行:高 32,内衬 8,状态槽 16 + 标题 margin-left 4 → 标题离行左 28。
+ * 两者标题起点几乎重合是 **dsh 的做法**(层级靠文件夹/箭头与分组读,不靠缩进),
+ * dsh.png 实测:一级标题 x=43 CSS、二级 x=41 CSS,与 12+30 / 12+28 吻合。
+ */
+.rail__project,
+.rail__session {
+ display: flex;
+ align-items: center;
+ box-sizing: border-box;
+ padding: 0 8px;
+ border-radius: 8px;
+ color: var(--dsw-alias-label-primary);
+ cursor: pointer;
+ user-select: none;
+}
+
+.rail__project {
+ height: 34px;
+ gap: 6px;
+}
+
+.rail__session {
+ height: 32px;
+ gap: 0;
+}
+
+.rail__project:hover,
+.rail__session:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.rail__session[aria-selected="true"] {
+ background: var(--dsw-alias-interactive-bg-active);
+}
+
+.rail__project:focus-visible,
+.rail__session:focus-visible {
+ outline: 2px solid var(--dsw-alias-label-primary);
+ outline-offset: -2px;
+}
+
+/* 图标槽:16×20,内容居中(dsh `.slot`)。 */
+.rail__slot {
+ display: inline-flex;
+ flex: none;
+ align-items: center;
+ justify-content: center;
+ width: 16px;
+ height: 20px;
+ color: var(--dsw-alias-label-tertiary);
+}
+
+/* 当前会话所在的项目:文件夹点亮成品牌业务色(dsh `.folderActive`)。 */
+.rail__folder[data-active="true"] {
+ color: var(--dsw-alias-state-business-primary);
+}
+
+/* 项目行悬停/键盘聚焦时**文件夹换成展开箭头**(dsh 的 hover 交换)。
+ 两个槽都是 16px,所以换的时候标题不会跳。
+
+ ⚠️ 这里**不能**用 `:focus-within`:鼠标点一下整行(行是 `tabIndex=0` 的
+ `role=treeitem`)会让它**一直持有焦点**,于是鼠标移开之后图标还是箭头 ——
+ 这正是"移开鼠标后工作区不恢复文件夹"那个 bug 的根因。
+ 换成 `:focus-visible`:鼠标点击不触发它,而 Tab 键聚焦会触发 ——
+ 两种输入方式都照顾到,且不留下"焦点态"的假象。 */
+.rail__chevron {
+ display: none;
+}
+
+.rail__project:hover .rail__chevron,
+.rail__project:focus-visible .rail__chevron,
+.rail__project:has(.rail__rowbtn:focus-visible) .rail__chevron {
+ display: inline-flex;
+}
+
+.rail__project:hover .rail__folder,
+.rail__project:focus-visible .rail__folder,
+.rail__project:has(.rail__rowbtn:focus-visible) .rail__folder {
+ display: none;
+}
+
+.rail__title {
+ flex: 1;
+ min-width: 0;
+ overflow: hidden;
+ font-size: 14px;
  line-height: 20px;
  text-overflow: ellipsis;
  white-space: nowrap;
 }
 
-.rail__item-meta {
- display: flex;
+.rail__session .rail__title {
+ margin: 0 6px 0 4px;
+}
+
+/* 行尾的相对时间:12/20 三级字色(dsh `.time`)。 */
+.rail__time {
+ flex: none;
+ color: var(--dsw-alias-label-tertiary);
+ font-size: 12px;
+ line-height: 20px;
+}
+
+/* 运行中的状态点。dsh 的状态槽只有"有事"时才画点。 */
+.rail__dot {
+ width: 6px;
+ height: 6px;
+ border-radius: 999px;
+ background: var(--dsw-alias-state-business-primary);
+ animation: qi-breathe 1.1s ease-in-out infinite;
+}
+
+/* 行尾动作(一级:菜单 + 新建;二级:菜单):
+   静止时**不占位**(`display: none`,不是 opacity —— dsh `.rowActions` 同款),
+   hover / 键盘聚焦 / 菜单已打开时显形。
+
+   菜单已打开这一条靠 `:has()`:`RowMenu` 的面板是 portal 出去的(body 下、
+   `position: fixed`),所以行的后代里只剩触发按钮 —— 它的 `data-open` 就是状态。 */
+.rail__actions {
+ display: none;
+ flex: none;
  align-items: center;
- gap: 6px;
- color: var(--dsw-alias-label-caption);
- font: var(--dsw-font-xxxs-11);
- line-height: 14px;
+ gap: 2px;
+ height: 20px;
 }
 
-.rail__item-meta span {
- overflow: hidden;
- text-overflow: ellipsis;
- white-space: nowrap;
+/* 行尾动作与箭头同一套条件(见上):hover / 键盘 focus-visible / 菜单已打开。
+ 不用 `:focus-within` 的理由相同 —— 鼠标点过之后动作不该一直挂着。 */
+.rail__project:hover .rail__actions,
+.rail__project:focus-visible .rail__actions,
+.rail__project:has(.rail__rowbtn:focus-visible) .rail__actions,
+.rail__project:has(.rail__rowbtn[data-open="true"]) .rail__actions,
+.rail__session:hover .rail__actions,
+.rail__session:focus-visible .rail__actions,
+.rail__session:has(.rail__rowbtn:focus-visible) .rail__actions,
+.rail__session:has(.rail__rowbtn[data-open="true"]) .rail__actions {
+ display: flex;
 }
 
+/* 二级行:动作出现时把行尾时间**换掉**(dsh 也是换而不是并排挤) ——
+   时间与「…」抢的是同一块位置,并排会把标题压得更窄。 */
+.rail__session:hover .rail__time,
+.rail__session:focus-visible .rail__time,
+.rail__session:has(.rail__rowbtn:focus-visible) .rail__time,
+.rail__session:has(.rail__rowbtn[data-open="true"]) .rail__time {
+ display: none;
+}
+
+.rail__rowbtn {
+ display: inline-flex;
+ flex: none;
+ align-items: center;
+ justify-content: center;
+ width: 22px;
+ height: 22px;
+ padding: 0;
+ border: none;
+ border-radius: 999px;
+ background: transparent;
+ color: var(--dsw-alias-label-secondary);
+}
+
+.rail__rowbtn:hover:not(:disabled) {
+ background: var(--dsw-alias-interactive-bg-hover);
+ color: var(--dsw-alias-label-primary);
+}
+
+.rail__rowbtn:disabled {
+ opacity: 0.4;
+ cursor: default;
+}
+
+/* 展开箭头:14 的图形按 12 渲染(dsh 也这么传),展开时转 90°。 */
+.rail__arrow {
+ transition: transform var(--ds-transition-duration) var(--ds-ease-in-out);
+}
+
+.rail__arrow[data-open="true"] {
+ transform: rotate(90deg);
+}
+
+/* 底部:设置 + 主题。dsh 的 footArea 是加法堆叠的几行,行几何与列表行一致。 */
+/* 底部(设置行):几何与颜色**逐条**照 dsh `ui-settings-general/SettingsRoot.module.css`
+ 的 `.triggerRow` + `.trigger`(那是 `sidebar.settings` 槽的占位者):
+
+ | 项 | dsh | 说明 |
+ | --- | --- | --- |
+ | 行高 | **42px** | 比列表行(34/32)高一档 —— 它是底部唯一的控件 |
+ | 半径 | **12px** | 不是列表行的 8 |
+ | 内衬 | `0 10px 0 8px` | 左边 8(与图标槽对齐),右边 10 |
+ | 字色 | **`label-primary`**(近黑) | 之前用的是 `label-secondary`(灰的)——"没有 dsh 黑"就是这个 |
+ | 字号/行高 | 14 / 22 | |
+ | 行宽 | `calc(100% + 4px)` + `margin: 4px -2px` | 点击区比栏内衬**宽 4px**:悬停底色因此贴到栏的左右内衬里 |
+ | 图标 | `IconSettingsOutline16` @16 | |
+
+ `.rail__foot` 不再自己加 `padding-top`:行自带 4px 外边距(dsh 也是行级 margin)。 */
 .rail__foot {
  display: flex;
  flex: none;
+ flex-direction: column;
+}
+
+.rail__footrow {
+ display: flex;
  align-items: center;
- gap: 4px;
- padding: 6px 10px;
- border-top: 0.5px solid var(--dsw-alias-border-l3);
+ gap: 8px;
+ width: calc(100% + 4px);
+ height: 42px;
+ margin: 4px -2px;
+ padding: 0 10px 0 8px;
+ box-sizing: border-box;
+ border: none;
+ border-radius: 12px;
+ background: transparent;
+ color: var(--dsw-alias-label-primary);
+ font-size: 14px;
+ line-height: 22px;
+ text-align: left;
+}
+
+.rail__footrow:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.rail__footrow .rail__title {
+ color: inherit;
+}
+
+@keyframes qi-breathe {
+ 0%,
+ 100% {
+  opacity: 1;
+ }
+ 50% {
+  opacity: 0.35;
+ }
 }
 
 /* ── 中栏:工作台 ───────────────────────────────────────── */
@@ -200,14 +705,20 @@
  overflow: hidden;
 }
 
+/* 眉条:44px,无分隔线(dsh 的对话头部是浮在内容上的轻条)。左右内衬跟着内容列走:
+   宽屏时与居中内容列左缘对齐(用 max() 让窄屏自动回落到最小内衬),
+   这样标题不会看起来与下面的转录脱节。 */
 .work__head {
  display: flex;
  flex: none;
  align-items: center;
  gap: 10px;
- min-height: 52px;
- padding: 0 16px 0 20px;
- border-bottom: 0.5px solid var(--dsw-alias-border-l3);
+ min-height: 44px;
+ padding: 0
+  max(
+   var(--dsh-composer-side-clearance),
+   calc((100% - var(--dsh-chat-content-width)) / 2)
+  );
 }
 
 .work__title {
@@ -253,13 +764,14 @@
  scrollbar-gutter: stable;
 }
 
+/* 转录的内容列宽用 dsh 的 `--dsh-chat-content-width`(与输入卡同一套宽度轴)。 */
 .transcript__inner {
  display: flex;
  flex-direction: column;
  gap: 18px;
- max-width: 760px;
+ max-width: var(--dsh-chat-content-width);
  margin: 0 auto;
- padding: 0 24px;
+ padding: 0 var(--dsh-composer-side-clearance);
 }
 
 .row {
@@ -282,15 +794,18 @@
  min-width: 0;
 }
 
-/* 行眉:种类标签 + 元信息。等宽、极小,只做导航用。 */
+/* 行眉:种类标签 + 元信息。等宽,只做导航用。
+   字号直接用 dsh 的 **11px 档**令牌(`--dsw-font-xxxs-11` = 400 11px/14px),只把
+   字体换成等宽 —— 这样 dsh 改档位时 qi 跟着走。原来写 10px/16px:
+   10px 在 dsh 的阶梯里没有位置(它只在轨迹时间轴那一处用 10px),16px 也不是
+   那一档的行高。 */
 .row__eyebrow {
  display: flex;
  align-items: center;
  gap: 8px;
  color: var(--dsw-alias-label-caption);
+ font: var(--dsw-font-xxxs-11);
  font-family: var(--ds-font-family-code);
- font-size: 10px;
- line-height: 14px;
  letter-spacing: 0.08em;
  text-transform: uppercase;
 }
@@ -302,8 +817,8 @@
 
 .row__text {
  color: var(--dsw-alias-label-primary);
- font-size: 14px;
- line-height: 22px;
+ font-size: var(--dsh-content-font-size);
+ line-height: calc(24px + var(--dsh-content-font-delta));
  white-space: pre-wrap;
  word-break: break-word;
 }
@@ -429,12 +944,16 @@
  transform: rotate(90deg);
 }
 
-/* 工具行的单行形态:点 · 名字 · 参数 · 耗时 · 形符。一行放得下,扫读快。 */
+/* 工具行的单行形态:点 · 名字 · 参数 · 耗时 · 形符。一行放得下,扫读快。
+   字号 = dsh 工具行那一档(`--dsh-content-font-size-secondary`,默认 13px,
+   `ToolRow.module.css` 用它 + `calc(24px + delta)` 行高)。 */
 .tool-line {
  display: flex;
  align-items: center;
  gap: 8px;
  min-width: 0;
+ font-size: var(--dsh-content-font-size-secondary);
+ line-height: calc(24px + var(--dsh-content-font-delta));
 }
 
 .tool-line__dot {
@@ -465,7 +984,6 @@
  flex: none;
  color: var(--dsw-alias-label-primary);
  font-family: var(--ds-font-family-code);
- font-size: 12px;
  font-weight: 500;
 }
 
@@ -474,7 +992,8 @@
  min-width: 0;
  color: var(--dsw-alias-label-caption);
  font-family: var(--ds-font-family-code);
- font-size: 11px;
+ /* dsh `ToolRow.module.css`:等宽的参数比同行正文低两档(13 − 2 = 11)。 */
+ font-size: calc(var(--dsh-content-font-size-secondary) - 2px);
  text-overflow: ellipsis;
  white-space: nowrap;
 }
@@ -484,9 +1003,11 @@
  margin-left: auto;
  color: var(--dsw-alias-label-caption);
  font-family: var(--ds-font-family-code);
- font-size: 11px;
+ font-size: calc(var(--dsh-content-font-size-secondary) - 2px);
 }
 
+/* 形符 ✓/✗ 是**图形**,不是文本 —— 固定 11px,不跟着正文档位走(否则
+   大字号偏好下它会抢过工具名)。 */
 .tool-line__mark {
  flex: none;
  font-size: 11px;
@@ -508,7 +1029,9 @@
  background: var(--dsw-alias-bg-layer-2);
  color: var(--dsw-alias-label-secondary);
  font-family: var(--ds-font-family-code);
- font-size: 11.5px;
+ /* dsh 的代码块档位(`--dsw-font-markdown-code-block-font-size`,11px)。
+ 原来是 11.5px —— 半个像素在 dsh 的阶梯里没有位置。 */
+ font-size: var(--dsw-font-markdown-code-block-font-size);
  line-height: 1.65;
  white-space: pre-wrap;
  word-break: break-word;
@@ -544,7 +1067,7 @@
  }
 }
 
-/* ── 空态:工作台,不是广告牌 ──────────────────────────── */
+/* ── 错误态:居中一屏(不再是空态;空态已改成下面的 hero)──── */
 
 .blank {
  display: flex;
@@ -565,64 +1088,200 @@
  text-align: center;
 }
 
-.blank__mark {
- color: var(--dsw-alias-label-primary);
+/* ── 空态:hero(dsh `EmptyHero` / `HeroShell` 的骨架)─────────────
+   标题 = 字标「Qi Web」(26/32 wt500,无 mark、无角标);stack 与 body 都 gap 12
+   (卡片上方的 12 就是项目 chip 行);整块在剩余高度里居中。 */
+
+/* hero 整块居中,但**不是屏幕正中**:dsh 的 hero 容器下方留了 32px
+   (`--dsh-composer-hero-padding-bottom`),于是整块比几何中心高 16px。
+   实测对照:dsh.png 的 stack 中心 y≈423.75,视口中心是 439.5。 */
+.hero {
+ display: flex;
+ flex: 1;
+ align-items: center;
+ justify-content: center;
+ min-height: 0;
+ padding: 0 var(--dsh-composer-side-clearance)
+  var(--dsh-composer-hero-padding-bottom);
 }
 
-.blank__title {
+.hero__stack {
+ display: flex;
+ flex-direction: column;
+ align-items: stretch;
+ gap: 12px;
+ width: 100%;
+ max-width: var(--dsh-composer-card-max-width);
+}
+
+/* 标题就是字标本身:居中、26/32 wt500(与 dsh 的 headline 同一档),
+   没有 mark、没有角标 —— 所以不用 flex,一行文字 `text-align` 就够。 */
+.hero__headline {
+ text-align: center;
  color: var(--dsw-alias-label-primary);
- font-size: 20px;
+ font-size: 26px;
  font-weight: 500;
- line-height: 28px;
+ line-height: 32px;
 }
 
-.blank__hint {
- color: var(--dsw-alias-label-tertiary);
+.hero__body {
+ display: flex;
+ flex-direction: column;
+ gap: 12px;
+ min-width: 0;
+}
+
+/* 项目 chip 行:卡片上方 12,自己再往左 8(dsh workspace row 的 px 8)。
+   z-index 高于卡片 —— 展开的项目菜单要压在输入卡之上(dsh 同款做法)。 */
+.hero__projectrow {
+ display: flex;
+ align-items: center;
+ min-width: 0;
+ padding-left: 8px;
+ z-index: 10;
+}
+
+.hero__body > .dock {
+ padding: 0;
+ z-index: 1;
+}
+
+.hero__body > .dock .dock__inner {
+ max-width: none;
+}
+
+/* 项目 chip:文件夹 + 名称 + chevron;静止透明,仅 hover / 展开时给底。 */
+.projectchip {
+ position: relative;
+ display: inline-flex;
+ min-width: 0;
+}
+
+.projectchip__btn {
+ display: inline-flex;
+ align-items: center;
+ gap: 4px;
+ max-width: min(100%, 360px);
+ min-height: 28px;
+ padding: 0 8px;
+ border: none;
+ border-radius: 16px;
+ background: transparent;
+ color: var(--dsw-alias-label-primary);
  font-size: 13px;
+ font-weight: 500;
  line-height: 20px;
 }
 
-/* 空态里给"这套 harness 有什么"的信息,而不是装饰。 */
-.blank__facts {
- display: flex;
- flex-wrap: wrap;
- justify-content: center;
- gap: 6px;
- margin-top: 2px;
+.projectchip__btn:not(:disabled):hover,
+.projectchip__btn[aria-expanded="true"] {
+ background: var(--dsw-alias-interactive-bg-hover);
 }
 
-.fact {
+/* 静态回声态:没有 hover 反馈、也没有指针 —— 不假装能点。 */
+.projectchip__btn:disabled {
+ cursor: default;
+}
+
+.projectchip__folder {
  display: inline-flex;
+ flex: none;
+ color: var(--dsw-alias-label-primary);
+}
+
+.projectchip__label {
+ min-width: 0;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+
+.projectchip__chevron {
+ flex: none;
+ color: var(--dsw-alias-label-caption);
+}
+
+.projectmenu {
+ position: absolute;
+ top: calc(100% + 4px);
+ left: 0;
+ z-index: 20;
+ display: flex;
+ flex-direction: column;
+ gap: 2px;
+ min-width: 260px;
+ max-width: 380px;
+ padding: 4px;
+ border-radius: var(--dsw-radius-lg);
+ background: var(--dsw-specific-menu);
+ --dsw-elevation-stroke-color: var(--dsw-alias-border-l1);
+ box-shadow: var(--dsw-elevation-panel);
+}
+
+.projectmenu__item {
+ display: flex;
  align-items: center;
  gap: 6px;
- padding: 3px 10px;
- border: 0.5px solid var(--dsw-alias-border-l2);
- border-radius: 999px;
- color: var(--dsw-alias-label-secondary);
- font-family: var(--ds-font-family-code);
- font-size: 11px;
- line-height: 16px;
+ width: 100%;
+ padding: 6px 8px;
+ border: none;
+ border-radius: var(--dsw-radius-sm);
+ background: transparent;
+ color: var(--dsw-alias-label-primary);
+ font-size: 13px;
+ line-height: 20px;
+ text-align: left;
 }
 
-/* ── 输入区:活动条 + 卡片 ─────────────────────────────── */
+.projectmenu__item:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.projectmenu__folder {
+ display: inline-flex;
+ flex: none;
+ color: var(--dsw-alias-label-tertiary);
+}
+
+.projectmenu__label {
+ flex: none;
+ font-weight: 500;
+ white-space: nowrap;
+}
+
+.projectmenu__cwd {
+ flex: 1;
+ min-width: 0;
+ overflow: hidden;
+ color: var(--dsw-alias-label-caption);
+ font-family: var(--ds-font-family-code);
+ font-size: 11px;
+ text-align: right;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+
+/* ── 输入区:活动条 + 卡片 ───────────────────────────────
+   卡片几何照 dsh `InputBar.module.css`:上内衬 8、卡片内 gap 12、按钮行内衬
+   `2px 8px 6px`、半径 22、发丝描边走 elevation(border-l2)、soft 阴影。 */
 
 .dock {
  flex: none;
- padding: 0 24px 14px;
+ padding: 0 var(--dsh-composer-side-clearance) 8px;
 }
 
 .dock__inner {
- max-width: 760px;
+ max-width: var(--dsh-composer-card-max-width);
  margin: 0 auto;
 }
 
-/* 活动条:贴着输入框,回答"此刻在干什么"。 */
+/* 活动条:贴着输入框,回答"此刻在干什么"。dsh 的同一位置是 stats pills。 */
 .activity {
  display: flex;
  align-items: center;
  gap: 8px;
  min-height: 22px;
- padding: 0 6px 6px;
+ padding: 0 8px 6px;
  color: var(--dsw-alias-label-tertiary);
  font-family: var(--ds-font-family-code);
  font-size: 11px;
@@ -651,12 +1310,15 @@
  color: var(--dsw-alias-state-warning);
 }
 
+/* 卡片:上内衬 8(文本区之前),卡片内 gap 12,半径 22(dsh `.card`)。 */
 .composer {
+ /* `relative`:指令菜单要贴它的上沿(dsh 也是把菜单挂在输入卡这张卡片上)。 */
+ position: relative;
  display: flex;
  flex-direction: column;
- gap: 10px;
- padding: 8px 8px 8px 14px;
- border-radius: 18px;
+ gap: 12px;
+ padding-top: 8px;
+ border-radius: 22px;
  background: var(--dsw-specific-input-major);
  --dsw-elevation-stroke-color: var(--dsw-alias-border-l2);
  box-shadow: var(--dsw-elevation-soft);
@@ -666,46 +1328,75 @@
  --dsw-elevation-stroke-color: var(--dsw-alias-state-business-primary);
 }
 
+/* 文本区:内衬 `4px 8px 0 14px`、行高 24(14px 字 + 10 行距)。
+   停靠态地板 36(一行 + 上内衬 4 + 下方 8 呼吸);hero 态 52(两行)。 */
 .composer__input {
+ box-sizing: border-box;
  width: 100%;
+ min-height: 36px;
  max-height: 320px;
- padding: 0;
+ padding: 4px 8px 0 14px;
  border: none;
  background: transparent;
  color: var(--dsw-alias-label-primary);
  caret-color: var(--dsw-alias-state-business-primary);
  font-family: var(--dsw-font-family);
  font-size: 14px;
- line-height: 22px;
+ line-height: 24px;
  resize: none;
  outline: none;
+}
+
+.hero .composer__input {
+ min-height: var(--dsh-hero-input-min-height);
 }
 
 .composer__input::placeholder {
  color: var(--dsw-alias-label-caption);
 }
 
+/* 按钮行:内衬 `2px 8px 6px`(整行比文本区低 2px,dsh 的实测取舍)。 */
 .composer__row {
  display: flex;
+ flex-wrap: wrap;
  align-items: center;
- gap: 10px;
+ justify-content: space-between;
+ gap: 12px;
+ padding: 2px 8px 6px;
+ min-width: 0;
 }
 
 .composer__tools {
  display: flex;
  align-items: center;
- gap: 8px;
+ gap: 12px;
  min-width: 0;
 }
 
+/* 右侧末尾组:换行时用 auto 外边距重新靠右,单行时 space-between 已经靠右。 */
 .composer__trailing {
  display: flex;
+ flex: none;
  align-items: center;
- gap: 8px;
+ gap: 12px;
  margin-left: auto;
 }
 
-.iconbtn {
+/* 模型名:只读回声(不是菜单)。几何照 dsh `.select` 的字级,但不画 chevron、
+   不给 hover —— 换模型在「设置」里。 */
+.composer__model {
+ max-width: 220px;
+ overflow: hidden;
+ color: var(--dsw-alias-label-secondary);
+ font-size: 13px;
+ font-weight: 500;
+ line-height: 20px;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+
+/* 附件圆按钮:28px,selector 底(dsh `.add`)。qi 暂不支持附件,所以是禁用态。 */
+.composer__add {
  display: grid;
  flex: none;
  place-items: center;
@@ -717,25 +1408,30 @@
  color: var(--dsw-alias-label-primary);
 }
 
-.iconbtn:hover:not(:disabled) {
+.composer__add:hover:not(:disabled) {
  background: var(--dsw-alias-interactive-bg-hover-solid);
 }
-.iconbtn:disabled {
- opacity: 0.45;
+.composer__add:disabled {
+ opacity: 0.5;
  cursor: default;
 }
 
+/* 发送键:34px 圆、`button-info-fill` 底(dsh 的 IconButton 34:10465)。
+   箭头是**静态反色**:dsh 在那里写死一个具体白色(不是前景令牌,
+   它注释明说"两个主题下都白"),qi 落成 `label-inverse` 语义键(见 tokens.css)。 */
 .sendbtn {
  display: grid;
  flex: none;
  place-items: center;
- width: 32px;
- height: 32px;
+ width: 34px;
+ height: 34px;
  border: none;
  border-radius: 999px;
  background: var(--dsw-alias-button-info-fill);
  color: var(--dsw-alias-label-inverse);
- transition: background-color 0.1s;
+ /* 抵消按钮行的 2px 下移:小的 chip 下沉时发送圆保持原位(dsh 同款)。 */
+ transform: translateY(-2px);
+ transition: background-color var(--ds-transition-duration-fast);
 }
 
 .sendbtn:hover:not(:disabled) {
@@ -746,6 +1442,7 @@
  cursor: default;
 }
 
+/* 停止键 = 发送键同一个圆、换成错误色:取消是"这一轮不要了",不是另一个功能。 */
 .sendbtn--stop {
  background: var(--dsw-alias-state-error-primary);
 }
@@ -753,22 +1450,47 @@
  background: var(--dsw-alias-state-error-secondary);
 }
 
-.hint {
- padding: 0 4px 6px;
- color: var(--dsw-alias-label-caption);
- font-size: 11px;
- line-height: 16px;
-}
-
-/* ── 右栏:遥测 ─────────────────────────────────────────── */
+/* ── 右栏:遥测(抽屉)───────────────────────────────────
+   轨道宽 0 ↔ `--dsh-rightbar-min`(见 `.shell`),面板定位在框架右缘、
+   关闭时整体移出屏外 —— 与 dsh `AppFrame` 的右栏同构(它的轨道为 0 时
+   面板悬在中栏之上,有轨道时才占位)。 */
 
 .tele {
+ position: fixed;
+ top: 0;
+ right: 0;
+ bottom: 0;
+ z-index: 10;
  display: flex;
  flex-direction: column;
- min-width: 0;
+ width: var(--dsh-rightbar-min);
  overflow: hidden;
  border-left: 0.5px solid var(--dsw-alias-border-l3);
  background: var(--dsw-alias-bg-layer-1);
+ transform: translateX(100%);
+ transition: transform var(--ds-transition-duration-slow) var(--ds-ease-in-out);
+}
+
+.shell[data-tele="open"] .tele {
+ transform: none;
+}
+
+.tele__head {
+ display: flex;
+ flex: none;
+ align-items: center;
+ gap: 8px;
+ min-height: 44px;
+ padding: 0 14px;
+ border-bottom: 0.5px solid var(--dsw-alias-border-l1);
+}
+
+.tele__title {
+ flex: 1;
+ color: var(--dsw-alias-label-secondary);
+ font-size: 13px;
+ font-weight: 500;
+ line-height: 20px;
 }
 
 .tele__scroll {
@@ -928,108 +1650,461 @@
  color: var(--dsw-alias-state-error-primary);
 }
 
-/* 设置页:保留原有两栏结构(它已经够用,这次不动)。 */
-.settings {
- display: grid;
- flex: 1;
- grid-template-columns: 190px minmax(0, 1fr);
- gap: 10px;
- min-height: 0;
- padding: 10px;
- background: var(--dsw-alias-bg-module-platform);
+/* ── 设置面 ───────────────────────────────────────────────
+   几何**逐条**照 dsh `ui-settings-general/SettingsRoot.module.css`(figma
+   501:29947):遮罩 `.mask`(`bg-mask-1` + `--dsw-mask-blur`)、面板 800 宽 /
+   `min(800px, 100vh - 48px)` 高 / r32 / `elevation-prominent`、导轨 188 宽
+   内衬 `22px 12px 0`、导航格 40 高 r12 内衬 `9px 16px 9px 12px`、内容列头
+   54 高、options 内衬 `0 24px 24px` 且**自己滚**。
+
+   这里是**浮层**而不是页面:底下的工作台(会话 / 空态 hero)原样留着,关掉
+   就回来 —— dsh 的设置面板就是这么挂在应用之上的。
+
+   一处**刻意**的偏离,写清代价:dsh 的头部有一个 `.actions` 槽(它的设置页
+   有"文档级动作"),qi 没有这类动作,所以头部只剩关闭键(`justify-content:
+   flex-end`)。 */
+.set {
+ position: fixed;
+ inset: 0;
+ z-index: 150;
+ display: flex;
+ align-items: center;
+ justify-content: center;
 }
-.settings__nav {
+
+.set__mask {
+ position: absolute;
+ inset: 0;
+ background: var(--dsw-alias-bg-mask-1);
+ backdrop-filter: var(--dsw-mask-blur);
+}
+
+/* 一个高度管所有节:节与节的内容量差好几倍(一列卡片 vs 一张表),按内容定高
+   会让面板在每次点导航时**在指针底下**改尺寸。装不下的在 options 里滚。 */
+.set__panel {
+ position: relative;
+ z-index: 1;
+ display: flex;
+ width: 800px;
+ height: min(800px, calc(100vh - 48px));
+ max-width: calc(100vw - 48px);
+ border-radius: 32px;
+ overflow: hidden;
+ background: var(--dsw-alias-bg-layer-2);
+ box-shadow: var(--dsw-elevation-prominent);
+ /* 抬升面:滚动条拇指取 l2 的 elevation 令牌(dsh `.panel` 同款做法)。
+     声明在面板上而不是那个滚动的子元素,好让"这是抬升面"这个判断和面待在一起;
+     自定义属性向下继承,真正滚动的 `.set__options` 从这儿拿到它。 */
+ --dsh-scrollbar-thumb: var(--dsw-alias-scrollbar-bg-l2);
+ --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
+}
+
+.set__nav {
+ flex: none;
  display: flex;
  flex-direction: column;
- gap: 2px;
- height: fit-content;
- padding: 8px;
- border-radius: var(--dsw-radius-lg);
- background: var(--dsw-alias-bg-layer-1);
+ gap: 18px;
+ width: 188px;
+ padding: 22px 12px 0;
+ box-sizing: border-box;
 }
-.settings__nav-item {
- padding: 6px 10px;
+
+.set__nav-title {
+ padding: 0 12px;
+ color: var(--dsw-alias-label-primary);
+ font: var(--dsw-font-base-strong-16);
+}
+
+.set__nav-list {
+ display: flex;
+ flex-direction: column;
+ gap: 4px;
+}
+
+.set__nav-cell {
+ display: flex;
+ align-items: center;
+ gap: 8px;
+ height: 40px;
+ padding: 9px 16px 9px 12px;
+ box-sizing: border-box;
  border: none;
- border-radius: var(--dsw-radius-md);
+ border-radius: 12px;
  background: transparent;
- color: var(--dsw-alias-label-secondary);
+ color: var(--dsw-alias-label-primary);
  font: var(--dsw-font-s-14);
  text-align: left;
+ cursor: pointer;
 }
-.settings__nav-item:hover {
- background: var(--dsw-alias-interactive-bg-hover);
- color: var(--dsw-alias-label-primary);
+
+.set__nav-cell:hover {
+ background: var(--dsw-specific-sidebar-nav-item-hover);
 }
-.settings__nav-item[aria-current="true"] {
+
+.set__nav-cell[aria-current="true"] {
  background: var(--dsw-specific-sidebar-nav-item-active);
- color: var(--dsw-alias-label-primary);
 }
-.settings__body {
+
+.set__nav-icon {
+ display: inline-flex;
+ flex: none;
+}
+
+.set__nav-label {
+ flex: 1;
+ min-width: 0;
+ overflow: hidden;
+ white-space: nowrap;
+ text-overflow: ellipsis;
+}
+
+.set__content {
+ flex: 1;
+ min-width: 0;
  display: flex;
  flex-direction: column;
- gap: 10px;
- min-width: 0;
+}
+
+.set__head {
+ flex: none;
+ display: flex;
+ align-items: flex-start;
+ justify-content: flex-end;
+ height: 54px;
+ padding: 20px 14px 8px 10px;
+ box-sizing: border-box;
+}
+
+.set__close {
+ display: inline-flex;
+ align-items: center;
+ justify-content: center;
+ width: 28px;
+ height: 28px;
+ padding: 0;
+ border: none;
+ border-radius: 28px;
+ background: transparent;
+ color: var(--dsw-alias-label-primary);
+ cursor: pointer;
+}
+
+.set__close:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* 视觉隐藏、读屏可读(dsh `.hiddenLabel`):关闭键的图形没有文字,名字靠它。 */
+.set__sr {
+ position: absolute;
+ width: 1px;
+ height: 1px;
+ overflow: hidden;
+ clip: rect(0 0 0 0);
+ white-space: nowrap;
+}
+
+.set__options {
+ flex: 1;
+ min-height: 0;
+ padding: 0 24px 24px;
  overflow-y: auto;
 }
-.card {
+
+/* ── 分节内容(内容列的语汇)────────────────────────────────
+   节标题 16/500 lh24、引言 14/22 `label-tertiary`、内容列 max-width 720 ——
+   三条取自 dsh `ModelsSection.module.css` 的 `.section` / `.title` / `.intro`。 */
+.set-sec {
  display: flex;
  flex-direction: column;
  gap: 12px;
- padding: 16px;
- border: 1px solid var(--dsw-alias-border-l1);
- border-radius: var(--dsw-radius-lg);
- background: var(--dsw-alias-bg-layer-1);
+ max-width: 720px;
+ color: var(--dsw-alias-label-primary);
 }
-.card__title {
+
+.set-sec__title {
+ margin: 0;
+ color: var(--dsw-alias-label-primary);
  font: var(--dsw-font-base-strong-16);
 }
-.card__desc {
- color: var(--dsw-alias-label-caption);
- font: var(--dsw-font-xs-13);
+
+.set-sec__intro {
+ margin: 0;
+ color: var(--dsw-alias-label-tertiary);
+ font: var(--dsw-font-s-14);
 }
-.rowline {
+
+.set-sec__intro code,
+.set-sec__empty code {
+ font-family: var(--ds-font-family-code);
+ font-size: 12px;
+}
+
+.set-sec__empty {
+ margin: 0;
+ color: var(--dsw-alias-label-caption);
+ font: var(--dsw-font-xxs-12);
+}
+
+/* 卡片行(dsh `.rowCard`):0.5px 发丝描边 + r16。 */
+.set-cards {
+ display: flex;
+ flex-direction: column;
+ gap: 8px;
+ margin: 12px 0 0;
+ padding: 0;
+ list-style: none;
+}
+
+.set-card {
+ display: flex;
+ flex-direction: column;
+ gap: 12px;
+ padding: 12px 14px;
+ border: 0.5px solid var(--dsw-alias-border-l4);
+ border-radius: 16px;
+}
+
+.set-card__head {
  display: flex;
  align-items: center;
+ gap: 8px;
+}
+
+.set-card__name {
+ color: var(--dsw-alias-label-primary);
+ font: var(--dsw-font-s-strong-14);
+}
+
+/* 路由名(agent 的目录名)读作名字的注解,不读作第二个名字 —— 与 dsh `.rowTag`
+   同一条判断:小一档、次要色,别跟标题抢。 */
+.set-card__route {
+ font-family: var(--ds-font-family-code);
+ font-size: 12px;
+ line-height: 18px;
+ color: var(--dsw-alias-label-tertiary);
+}
+
+.set-card__tag {
+ flex: none;
+ padding: 1px 6px;
+ border: 0.5px solid var(--dsw-alias-border-l3);
+ border-radius: 4px;
+ color: var(--dsw-alias-label-secondary);
+ font: var(--dsw-font-xxxs-11);
+}
+
+.set-card__actions {
+ display: inline-flex;
+ align-items: center;
+ gap: 4px;
+ margin-left: auto;
+}
+
+.set-card__desc {
+ margin: 0;
+ color: var(--dsw-alias-label-tertiary);
+ font: var(--dsw-font-xxs-12);
+}
+
+.set-card__fields,
+.set-fields {
+ display: flex;
+ flex-direction: column;
+ gap: 6px;
+}
+
+.set-fields {
+ margin-top: 12px;
+}
+
+/* 行内动作:密集胶囊(dsh `.rowActions .secondaryButton` 的 28/14 档)。 */
+.set-act {
+ display: inline-flex;
+ align-items: center;
+ justify-content: center;
+ box-sizing: border-box;
+ height: 28px;
+ padding: 0 10px;
+ border: 0.5px solid var(--dsw-alias-border-l3);
+ border-radius: 14px;
+ background: transparent;
+ color: var(--dsw-alias-label-primary);
+ font: var(--dsw-font-xxs-12);
+ cursor: pointer;
+}
+
+.set-act:hover {
+ background: var(--dsw-alias-interactive-bg-hover-solid);
+}
+
+.set-act--danger {
+ border: none;
+ color: var(--dsw-alias-state-error-primary);
+}
+
+.set-act--danger:hover {
+ background: var(--dsw-alias-interactive-bg-hover-danger);
+}
+
+.set-act:focus-visible,
+.set__close:focus-visible,
+.set__nav-cell:focus-visible {
+ outline: none;
+ box-shadow: 0 0 0 2px var(--dsw-alias-border-l3);
+}
+
+/* 状态圆点(dsh `.credentialDot`):8px;**名字由 `aria-label` 给**,颜色只是加强。 */
+.set-dot {
+ display: inline-block;
+ flex: none;
+ box-sizing: border-box;
+ width: 8px;
+ height: 8px;
+ border-radius: 50%;
+}
+
+.set-dot--ok {
+ background: var(--dsw-alias-state-success-primary);
+}
+
+.set-dot--bad {
+ background: var(--dsw-alias-state-error-primary);
+}
+
+/* 标签/值行。**这就是本次修掉的那个静默缺陷**:以前这几行用的类名是
+   `.row__label` / `.row__value`,而 app.css 里只有 `.rowline__*` —— 于是设置页里
+   每一行"标签:值"都是裸 DOM(标签和值挤在一起、没有对齐、没有字号差)。 */
+.kv {
+ display: flex;
+ align-items: baseline;
  justify-content: space-between;
  gap: 16px;
- min-height: 30px;
- font: var(--dsw-font-xs-13);
 }
-.rowline__label {
- color: var(--dsw-alias-label-secondary);
+
+.kv__label {
+ flex: none;
+ color: var(--dsw-alias-label-tertiary);
+ font: var(--dsw-font-xxs-12);
 }
-.rowline__value {
- overflow: hidden;
+
+/* `pre-line` + `break-all`:这两个值里有**多行绝对路径**(config/settings 文件),
+   换行要保住、长路径要能断,否则会把面板撑出横向滚动。 */
+.kv__value {
+ min-width: 0;
  color: var(--dsw-alias-label-primary);
  font-family: var(--ds-font-family-code);
  font-size: 12px;
+ line-height: 18px;
  text-align: right;
- text-overflow: ellipsis;
+ white-space: pre-line;
+ word-break: break-all;
 }
-.table {
+
+/* 简单行(插件名 / 检查项):圆点 + 名字 + 细节,细节靠右。 */
+.set-rows {
+ display: flex;
+ flex-direction: column;
+ gap: 10px;
+ margin: 12px 0 0;
+ padding: 0;
+ list-style: none;
+}
+
+.set-row {
+ display: flex;
+ align-items: baseline;
+ gap: 8px;
+}
+
+.set-row__name {
+ color: var(--dsw-alias-label-primary);
+ font: var(--dsw-font-xxs-12);
+}
+
+.set-row__detail {
+ min-width: 0;
+ margin-left: auto;
+ color: var(--dsw-alias-label-secondary);
+ font-family: var(--ds-font-family-code);
+ font-size: 12px;
+ line-height: 18px;
+ text-align: right;
+ word-break: break-all;
+}
+
+/* 技能表:dsh 的表格语汇是**上发丝线 + 无竖线**(规则只画在行与行之间)。 */
+.set-table {
  width: 100%;
+ margin-top: 12px;
  border-collapse: collapse;
- font: var(--dsw-font-xs-13);
+ font: var(--dsw-font-xxs-12);
 }
-.table th {
- padding: 6px 8px;
- border-bottom: 1px solid var(--dsw-alias-border-l1);
- color: var(--dsw-alias-label-caption);
+
+.set-table th {
+ padding: 8px 12px 8px 0;
+ border-bottom: 0.5px solid var(--dsw-alias-border-l2);
+ color: var(--dsw-alias-label-tertiary);
  font-weight: 500;
  text-align: left;
 }
-.table td {
- padding: 8px;
- border-bottom: 1px solid var(--dsw-alias-border-l1);
+
+.set-table td {
+ padding: 10px 12px 10px 0;
+ border-bottom: 0.5px solid var(--dsw-alias-border-l1);
  color: var(--dsw-alias-label-secondary);
  vertical-align: top;
 }
-.check--ok {
- color: var(--dsw-alias-state-success);
+
+.set-table tr:last-child td {
+ border-bottom: none;
 }
-.check--bad {
- color: var(--dsw-alias-state-warning);
+
+.set-mono {
+ color: var(--dsw-alias-label-primary);
+ font-family: var(--ds-font-family-code);
+ font-size: 12px;
 }
+
+/* ── MCP 节:三处声明(全局 / 项目 / agent 私有)──────────────
+   每处一个小标题(层标签 + 该文件绝对路径),下面复用卡片行。
+   `mcp-src` 之间留 24:这一节是"三组各带一个文件头",比节内其他地方的单一列表
+   需要更明确的段落感(否则三个路径会读成一串)。 */
+.mcp {
+ display: flex;
+ flex-direction: column;
+ gap: 24px;
+ margin-top: 12px;
+}
+
+.mcp-src {
+ display: flex;
+ flex-direction: column;
+}
+
+.mcp-src__head {
+ display: flex;
+ align-items: center;
+ gap: 8px;
+}
+
+.mcp-src__path {
+ min-width: 0;
+ color: var(--dsw-alias-label-tertiary);
+ font-family: var(--ds-font-family-code);
+ font-size: 12px;
+ line-height: 18px;
+ word-break: break-all;
+}
+
+/* 绑定关系写在卡片行右端(dsh 的行尾动作位)—— 它是这一行的**注解**,不是按钮,
+   所以不用胶囊外形,只用小一号的次要色。 */
+.mcp-bind {
+ flex: none;
+ margin-left: auto;
+ color: var(--dsw-alias-label-tertiary);
+ font: var(--dsw-font-xxs-12);
+}
+
 .btn {
  padding: 6px 14px;
  border: 1px solid var(--dsw-alias-border-l2);
@@ -1050,9 +2125,17 @@
  border-color: var(--dsw-alias-state-error-primary);
  color: var(--dsw-alias-state-error-primary);
 }
+/* 遮罩:二次确认弹层。
+
+`z-index` 不是可选项:页面里已经有几个刻意抬高的层(输入卡 hover 时要压在
+项目菜单下用过 `z-index: 1`、遥测抽屉 10、项目菜单 20、行尾「…」菜单 100),
+而 `position: fixed` + `z-index: auto` 的遮罩会被它们盖住 —— 实测过:弹层的
+"保存"按钮被输入卡的按钮行盖住,坐标点击落在 composer 上,于是按下没反应。
+弹层永远在最上面,所以给一个高于所有页面内层的值。 */
 .overlay {
  position: fixed;
  inset: 0;
+ z-index: 200;
  display: flex;
  align-items: center;
  justify-content: center;
@@ -1095,6 +2178,34 @@
  color: var(--dsw-alias-state-warning);
  font: var(--dsw-font-xs-13);
 }
+/* 弹层里的错误行(红):错误**留在弹层里**,不把整页打成错误屏 ——
+   选中的目录出问题(比如刚被删)不该丢掉整个界面。 */
+.dialog__error {
+ color: var(--dsw-alias-state-error);
+ font: var(--dsw-font-xs-13);
+}
+
+.dialog__input {
+ box-sizing: border-box;
+ width: 100%;
+ padding: 7px 10px;
+ border: 0.5px solid var(--dsw-alias-border-l4);
+ border-radius: var(--dsw-radius-md);
+ background: var(--dsw-specific-input-major);
+ color: var(--dsw-alias-label-primary);
+ font: var(--dsw-font-s-14);
+ outline: none;
+}
+
+.dialog__input::placeholder {
+ color: var(--dsw-alias-label-caption);
+}
+
+.dialog__input:focus {
+ --dsw-elevation-stroke-color: var(--dsw-alias-state-business-primary);
+ border-color: var(--dsw-alias-state-business-primary);
+}
+
 .dialog__actions {
  display: flex;
  justify-content: flex-end;
@@ -1197,4 +2308,289 @@
  color: var(--dsw-alias-label-secondary);
  font-size: 12px;
  line-height: 19px;
+}
+
+/* ── 行尾「…」菜单(RowMenu;几何照 dsh `ui-primitives/Menu.module.css`)──
+   面板:内衬 4、圆角 20、`--dsw-specific-menu` 底 + `elevation-prominent`
+   (描边画在阴影里,组件配 `border: 0` —— 与 dsh 同法)。
+   条目:min-height 40、内衬 `8px 10px`、圆角 10、字号 14/22、gap 8。
+
+   `position: fixed` + `z-index` 不是口味:面板挂在 body 上(portal),位置由
+   触发按钮的 rect 算出,并在视口下方放不下时向上翻 —— 侧栏列表是
+   `overflow-y: auto`,留在行内会被裁掉。 */
+.rowmenu {
+ position: fixed;
+ z-index: 100;
+ box-sizing: border-box; /* 218 是**外卡片**宽(dsh Menu 的注释:min-width 含内衬) */
+ display: flex;
+ flex-direction: column;
+ padding: 4px;
+ border: 0;
+ border-radius: 20px;
+ background: var(--dsw-specific-menu);
+ --dsw-elevation-stroke-color: var(--dsw-alias-border-l1);
+ box-shadow: var(--dsw-elevation-prominent);
+}
+
+.rowmenu__item {
+ display: flex;
+ align-items: center;
+ gap: 8px;
+ min-height: 40px;
+ padding: 8px 10px;
+ border: none;
+ border-radius: 10px;
+ background: transparent;
+ color: var(--dsw-alias-label-primary);
+ font-size: 14px;
+ line-height: 22px;
+ text-align: left;
+}
+
+.rowmenu__item:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* 危险项(删除)用错误色 —— 与它上面的安全项拉开距离,不是靠位置记。 */
+.rowmenu__item[data-danger="true"] {
+ color: var(--dsw-alias-state-error-primary);
+}
+
+.rowmenu__icon {
+ display: inline-flex;
+ flex: none;
+ color: var(--dsw-alias-label-secondary);
+}
+
+.rowmenu__item[data-danger="true"] .rowmenu__icon {
+ color: inherit;
+}
+
+.rowmenu__label {
+ flex: 1;
+ min-width: 0;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+
+/* ── 目录选择器(「添加工作区」;服务器路径浏览,形状照 pi-web)──────
+   弹层壳仍是 `.dialog`(同一套遮罩与动作按钮),这里是它的内容:
+   路径栏 + 快捷行 + 目录列表。列表封高并自己滚动 —— 否则一个宽目录会把
+   弹层撑到屏幕外(`.dialog` 本身有 `max-height: 90vh` 与 `overflow: auto`)。 */
+.picker {
+ display: flex;
+ flex-direction: column;
+ gap: 8px;
+ min-width: 0;
+}
+
+.picker__bar {
+ display: flex;
+ align-items: center;
+ gap: 8px;
+}
+
+.picker__bar .dialog__input {
+ flex: 1;
+ min-width: 0;
+}
+
+.picker__shortcuts {
+ display: flex;
+ flex-wrap: wrap;
+ align-items: center;
+ gap: 4px;
+}
+
+.picker__list {
+ display: flex;
+ flex-direction: column;
+ gap: 2px;
+ min-height: 6rem;
+ max-height: 15rem;
+ padding: 4px;
+ border: 0.5px solid var(--dsw-alias-border-l2);
+ border-radius: var(--dsw-radius-md);
+ overflow-y: auto;
+}
+
+.picker__row {
+ display: flex;
+ align-items: center;
+ gap: 8px;
+ padding: 6px 8px;
+ border: none;
+ border-radius: var(--dsw-radius-sm);
+ background: transparent;
+ color: var(--dsw-alias-label-primary);
+ font-size: 13px;
+ line-height: 18px;
+ text-align: left;
+}
+
+.picker__row:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.picker__row svg {
+ flex: none;
+ color: var(--dsw-alias-label-tertiary);
+}
+
+.picker__name {
+ min-width: 0;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+
+.picker__hint {
+ padding: 6px 8px;
+ color: var(--dsw-alias-label-tertiary);
+ font-size: 13px;
+ line-height: 18px;
+}
+
+/* 项目 chip 菜单里的分隔线(「添加工作区…」之前):发丝线只做分隔,不承担边界。 */
+.projectmenu__sep {
+ flex: none;
+ height: 0.5px;
+ margin: 4px 6px;
+ background: var(--dsw-alias-border-l1);
+}
+
+/* 菜单里"做不了"的那一条(如附件:qi 暂不支持):置灰但**留在列表里**,
+   右侧注明原因 —— 让它消失会让人以为这个能力在别处。 */
+.rowmenu__item:disabled {
+ color: var(--dsw-alias-label-caption);
+ cursor: default;
+}
+
+.rowmenu__item:disabled:hover {
+ background: transparent;
+}
+
+.rowmenu__note {
+ flex: none;
+ margin-left: auto;
+ color: var(--dsw-alias-label-caption);
+ font-size: 12px;
+ line-height: 18px;
+}
+
+/* ── 输入卡的指令菜单(CommandMenu;几何照 dsh `ui-input-trigger/MenuView`)──
+   关键一条:**它属于输入卡**,不是挂在按钮下面的浮层 ——
+   `bottom: calc(100% + 4px); left: 0; right: 0` 让它贴着卡片上沿、与卡片同宽。
+   圆角 20、`--dsw-specific-menu` 底 + `elevation-prominent`(描边画在阴影里)。 */
+.cmdmenu {
+ position: absolute;
+ right: 0;
+ bottom: calc(100% + 4px);
+ left: 0;
+ z-index: 100;
+ display: flex;
+ flex-direction: column;
+ box-sizing: border-box;
+ max-height: 400px;
+ padding: 4px;
+ border: 0;
+ border-radius: 20px;
+ background: var(--dsw-specific-menu);
+ --dsw-elevation-stroke-color: var(--dsw-alias-border-l1);
+ box-shadow: var(--dsw-elevation-prominent);
+ overflow-y: auto;
+}
+
+/* 节标题(「添加」/「指令」):12/18 500、三级字色,`6px 10px 2px`。 */
+.cmdmenu__section {
+ flex: none;
+ min-height: 26px;
+ padding: 6px 10px 2px;
+ color: var(--dsw-alias-label-tertiary);
+ font-size: 12px;
+ font-weight: 500;
+ line-height: 18px;
+}
+
+.cmdmenu__section:not(:first-child) {
+ margin-top: 4px;
+}
+
+/* 行:图标 · 标题 · 斜杠别名 ……… 右侧描述。min-height 40 与 dsh 的菜单同档。 */
+.cmdmenu__item {
+ display: flex;
+ align-items: center;
+ gap: 8px;
+ width: 100%;
+ min-height: 40px;
+ padding: 8px 10px;
+ box-sizing: border-box;
+ border: none;
+ border-radius: 10px;
+ background: transparent;
+ color: var(--dsw-alias-label-primary);
+ font-size: 14px;
+ line-height: 22px;
+ text-align: left;
+}
+
+.cmdmenu__item[data-active="true"] {
+ background: var(--dsw-alias-interactive-bg-hover);
+}
+
+/* 置灰的行(附件):保留在列表里但不高亮、不取色 —— 别让人以为它可用。 */
+.cmdmenu__item:disabled {
+ color: var(--dsw-alias-label-caption);
+ cursor: default;
+}
+
+.cmdmenu__item:disabled[data-active="true"] {
+ background: transparent;
+}
+
+.cmdmenu__icon {
+ display: inline-flex;
+ flex: none;
+ align-items: center;
+ justify-content: center;
+ width: 16px;
+ height: 16px;
+ color: var(--dsw-alias-label-tertiary);
+}
+
+.cmdmenu__name {
+ flex: none;
+ max-width: 40%;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+
+/* 斜杠别名:三级字色 —— 让人顺便学会 `/fork` 这种写法。 */
+.cmdmenu__alias {
+ flex: none;
+ max-width: 20%;
+ overflow: hidden;
+ color: var(--dsw-alias-label-tertiary);
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+
+/* 描述右对齐:所有描述收在同一条右边缘上,标题因此读成一列(dsh 的注释原话)。 */
+.cmdmenu__desc {
+ flex: 1;
+ min-width: 0;
+ overflow: hidden;
+ color: var(--dsw-alias-label-tertiary);
+ text-align: right;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+
+.cmdmenu__empty {
+ padding: 10px 12px;
+ color: var(--dsw-alias-label-tertiary);
+ font-size: 13px;
+ line-height: 18px;
 }

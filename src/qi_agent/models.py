@@ -5,11 +5,16 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 WILDCARD = "*"
+
+#: MCP 声明表的来源层。agent 私有那层不走这张表(它写在 agent 自己目录里、
+#: 自动绑定),所以这里只有两层。
+McpScope = Literal["global", "project"]
 
 
 class Opening(BaseModel):
@@ -28,7 +33,7 @@ class AgentConfig(BaseModel):
     disallowed_tools: list[str] = []        # v1 denylist(B3,Claude 同款)
     include: list[str] = []
     opening: Opening | None = None
-    mcp_servers: list[str] = []             # 全局 [mcp.servers] 绑定(默认无,显式声明)
+    mcp_servers: list[str] = []             # 全局/项目 mcp.json 的绑定(默认无,显式声明)
 
     @field_validator("name")
     @classmethod
@@ -88,6 +93,9 @@ class AgentUnit:
     skills: list[Skill] = field(default_factory=list)
     data_sources: list[DataSource] = field(default_factory=list)
     mcp_private: list[McpServerSpec] = field(default_factory=list)
+    #: 按 agent.md 的 `mcp_servers` 从全局/项目 mcp.json 解析出来的那部分。
+    #: 与 `mcp_private` 分开存,是为了让"哪来的"在诊断面可见(`qi agents show`)。
+    mcp_declared: list[McpServerSpec] = field(default_factory=list)
     tools: list[str] = field(default_factory=list)   # 解析后的工具名
 
     @property

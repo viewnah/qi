@@ -86,7 +86,7 @@ vim .qi/SYSTEM.md                              # 项目级基座提示词(整体
 | agent 位置 | 仅 2 处:`~/.qi/agent/agents/` + `<项目>/.qi/agents/`;项目静默覆盖全局;同层重复报错;无内置 | agent-config.md §3 |
 | agent.md 字段(v1) | name / display_name / description(路由信号)/ keywords / tools / include / opening | agent-config.md §4 |
 | 技能 | 私有自动绑定、渐进披露、无内置、无共享库;同一 agent 内同名报错 | agent-config.md §5 |
-| MCP(v1) | 私有 mcp.json(仅本 agent,凭证 env)+ 全局 `[mcp.servers]` 按 `mcp_servers` 绑定 | agent-config.md §8 |
+| MCP(v1) | 私有 mcp.json(仅本 agent,凭证 env)+ 全局 `~/.qi/agent/mcp.json` / 项目 `.qi/mcp.json` 按 `mcp_servers` 绑定 | agent-config.md §8 |
 | 数据源 | 实例在 agent `data_sources.json`(私有,凭证 env);**插件消费型配置**:插件缺席不装载 | agent-config.md §9 / plugins.md |
 | 导入导出 | import = 拷贝 + 复用装载校验器 + 明文凭证扫描;export 产物可直接 import | agent-config.md §10 |
 | 工具 | 代码全局注册 ToolCatalog;**tools 三态**:省略或 `*` = 全部,名单 = allowlist;未知名报错 | tools.md |

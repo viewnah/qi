@@ -11,7 +11,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pytest  # noqa: E402
 
 from qi_agent.config import ConfigError  # noqa: E402
-from qi_agent.loader import LoadError, load_all_agents, load_agent_dir  # noqa: E402
+from qi_agent.loader import (  # noqa: E402
+    LoadError,
+    load_agent_dir,
+    load_all_agents,
+    load_mcp_scopes,
+    mcp_name_index,
+)
 from qi_agent.registry import CapabilityRegistry, PluginApi, ToolCatalog  # noqa: E402
 from qi_agent.tools import register_builtin_tools  # noqa: E402
 
@@ -119,3 +125,119 @@ def test_plugin_required_for_data_source_load_all(tmp_path, monkeypatch):
     units = load_all_agents(cwd=tmp_path, catalog_names=catalog.names,
                             has_data_source_provider=False)
     assert units["db-analyst"].data_sources == []
+
+
+# ── 全局 / 项目 mcp.json(声明表 + 门控)──────────────────────
+#
+# 为什么这两层要单独测:agent 私有那份是"写在谁目录里就归谁",而全局/项目那两份是
+# **一张声明表** —— 谁能看见由 agent.md 的 `mcp_servers` 决定(凭证敏感 → 默认无、
+# 必须显式声明)。门控错了会出现"某个 agent 悄悄多了一个带凭证的 server"。
+
+def _mcp_files(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
+    """隔离环境:返回 (全局 mcp.json 路径, 项目 mcp.json 路径)。
+
+    项目根靠 `.git` 锚定(与 find_project_root 一致),否则会一路向上找到真实仓库。
+    """
+    from qi_agent import paths
+
+    home = tmp_path / "home"
+    (home / "agents").mkdir(parents=True)
+    monkeypatch.setenv(paths.QI_AGENT_HOME, str(home))
+    proj = tmp_path / "proj"
+    (proj / ".git").mkdir(parents=True)
+    return home / "mcp.json", proj / ".qi" / "mcp.json"
+
+
+def test_scope_table_is_project_over_global(tmp_path, monkeypatch):
+    """同名 server:项目覆盖全局(与 settings/agent 的层级一致)。"""
+    g, p = _mcp_files(tmp_path, monkeypatch)
+    g.write_text(json.dumps({"mcpServers": {"github": {"type": "streamable-http",
+                                                       "url": "https://global.example/mcp"}}}))
+    p.parent.mkdir(parents=True)
+    p.write_text(json.dumps({"mcpServers": {"github": {"type": "streamable-http",
+                                                       "url": "https://project.example/mcp"}}}))
+    proj = p.parent.parent
+    table = load_mcp_scopes(proj)
+    assert [scope for scope, _f, _s in table] == ["global", "project"]
+    assert all(f.is_file() for _scope, f, _s in table)
+    assert mcp_name_index(proj)["github"].config["url"] == "https://project.example/mcp"
+
+
+def test_declared_mcp_is_gated_by_the_agent(tmp_path, monkeypatch):
+    """全局/项目里的 server,**声明才绑**;没声明的 agent 一个都拿不到。"""
+    g, p = _mcp_files(tmp_path, monkeypatch)
+    p.parent.mkdir(parents=True)
+    p.write_text(json.dumps({"mcpServers": {
+        "github": {"type": "streamable-http", "url": "https://x/mcp"},
+        "db": {"type": "stdio", "command": "npx"}}}))
+    proj = p.parent.parent
+    home = tmp_path / "home"
+
+    def _agent(name: str, extra: str = "") -> Path:
+        d = home / "agents" / name
+        d.mkdir(parents=True)
+        (d / "agent.md").write_text(
+            f"---\nname: {name}\ndescription: 描述。\nkeywords: [k]\ntools: [\"*\"]\n{extra}---\n正文\n")
+        return d
+
+    catalog = ToolCatalog()
+    register_builtin_tools(catalog)
+    declared = load_agent_dir(_agent("wants", "mcp_servers: [github]\n"), "user",
+                              catalog.names, mcp_table=mcp_name_index(proj))
+    assert [s.name for s in declared.mcp_declared] == ["github"]
+    assert declared.mcp_private == []
+
+    silent = load_agent_dir(_agent("quiet"), "user", catalog.names,
+                            mcp_table=mcp_name_index(proj))
+    assert silent.mcp_declared == [] and silent.mcp_private == []
+
+
+def test_declared_mcp_unknown_name_is_an_error(tmp_path, monkeypatch):
+    """声明了但表里没有 → 报错(不静默失效),并把可用名字列出来。"""
+    g, p = _mcp_files(tmp_path, monkeypatch)
+    p.parent.mkdir(parents=True)
+    p.write_text(json.dumps({"mcpServers": {"github": {"type": "streamable-http",
+                                                       "url": "https://x/mcp"}}}))
+    proj = p.parent.parent
+    d = tmp_path / "home" / "agents" / "typo"
+    d.mkdir(parents=True)
+    (d / "agent.md").write_text(
+        "---\nname: typo\ndescription: 描述。\nkeywords: [k]\ntools: [\"*\"]\n"
+        "mcp_servers: [githbu]\n---\n正文\n")
+    catalog = ToolCatalog()
+    register_builtin_tools(catalog)
+    with pytest.raises(LoadError) as exc:
+        load_agent_dir(d, "user", catalog.names, mcp_table=mcp_name_index(proj))
+    assert "githbu" in str(exc.value) and "github" in str(exc.value)
+
+
+def test_declared_mcp_not_resolved_without_scope_context(tmp_path, monkeypatch):
+    """`mcp_table=None`(import 校验):只校验形状,不解析名字 —— 因为"要装到哪"未知。"""
+    _mcp_files(tmp_path, monkeypatch)
+    d = tmp_path / "home" / "agents" / "portable"
+    d.mkdir(parents=True)
+    (d / "agent.md").write_text(
+        "---\nname: portable\ndescription: 描述。\nkeywords: [k]\ntools: [\"*\"]\n"
+        "mcp_servers: [whatever]\n---\n正文\n")
+    catalog = ToolCatalog()
+    register_builtin_tools(catalog)
+    unit = load_agent_dir(d, "user", catalog.names)      # 不传 mcp_table
+    assert unit.mcp_declared == []
+
+
+def test_load_all_agents_wires_the_scope_table(tmp_path, monkeypatch):
+    """端到端:load_all_agents 自己把两张表合起来喂给每个 agent。"""
+    g, p = _mcp_files(tmp_path, monkeypatch)
+    p.parent.mkdir(parents=True)
+    p.write_text(json.dumps({"mcpServers": {"github": {"type": "streamable-http",
+                                                       "url": "https://x/mcp"}}}))
+    proj = p.parent.parent
+    d = tmp_path / "home" / "agents" / "wired"
+    d.mkdir(parents=True)
+    (d / "agent.md").write_text(
+        "---\nname: wired\ndescription: 描述。\nkeywords: [k]\ntools: [\"*\"]\n"
+        "mcp_servers: [github]\n---\n正文\n")
+    catalog = ToolCatalog()
+    register_builtin_tools(catalog)
+    units = load_all_agents(cwd=proj, catalog_names=catalog.names)
+    assert [s.name for s in units["wired"].mcp_declared] == ["github"]

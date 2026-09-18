@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 #: AG-UI 改造是**破坏性**的:事件形状、传输形态(单 POST)、续传机制全变了,
@@ -37,10 +39,89 @@ class SessionRename(BaseModel):
     title: str = Field(min_length=1)
 
 
+class SessionFork(BaseModel):
+    """分叉。`at` = 从哪个 entry 分叉(默认 = 当前节点,即最后一个完整回合)。
+
+    `at=None`(不给)与 `at=""`(从第一条消息之前)含义不同,所以用 `str | None`。
+    """
+
+    at: str | None = None
+
+
+class DirEntry(BaseModel):
+    """目录选择器里的一条(只有目录,没有文件 —— 见 `web/browse.py`)。"""
+
+    name: str
+    path: str
+
+
+class DirectoryListing(BaseModel):
+    """`GET /api/fs/dirs` 的响应。形状照 pi-web 的 `/api/cwd/browse`。
+
+    `parent` 为 `None` 表示"已经在根上"(前端据此禁用"上级")。
+    `roots` 只有 Windows 会给盘符,其余平台为空。
+    """
+
+    path: str
+    parent: str | None = None
+    home: str = ""
+    roots: list[DirEntry] = Field(default_factory=list)
+    entries: list[DirEntry] = Field(default_factory=list)
+
+
+class CompactionResult(BaseModel):
+    """手动压缩的结果。
+
+    `compacted=False` 表示"没什么可压的"(`prepare_compaction` 回 `None`),不是失败 ——
+    调用方据此提示用户,而不是当错误。
+    """
+
+    compacted: bool = False
+
+
+class DeletedSessions(BaseModel):
+    """批量删除的结果:**真正被删掉的会话 id**。
+
+    只回 id 不回条数:前端要拿它判断"当前正开着的那个是否也在被删之列"。
+    """
+
+    ids: list[str] = Field(default_factory=list)
+
+
+class WorkspaceRename(BaseModel):
+    """工作区改名。`name` 空串 = 恢复成目录名(见 `workspaces.py`)。"""
+
+    cwd: str = Field(min_length=1)
+    name: str = ""
+
+
+class WorkspaceNames(BaseModel):
+    """工作区改过的**显示名**(目录 → 名字)。
+
+    只有这一样 —— 项目列表本身是从会话 `cwd` 派生的,后端不维护名单,否则就会出现
+    "名单说有三个工作区、会话文件只有一个"的两份真相。目录没有条目时用目录名。
+    """
+
+    names: dict[str, str] = Field(default_factory=dict)
+
+
+class WorkspaceDeleted(BaseModel):
+    """删除工作区的结果:**连同它的会话一起删掉了**。
+
+    `ids` 是真正被删掉的会话 id(前端据此判断"当前正开着的那个是否也没了"),
+    `names` 是删除后剩下的显示名表。目录本身不动 —— qi 不动用户的文件夹。
+    """
+
+    ids: list[str] = Field(default_factory=list)
+    names: dict[str, str] = Field(default_factory=dict)
+
+
 class SessionSummary(BaseModel):
     id: str
     title: str
     created_at: str
+    #: 会话文件 mtime(最近活跃)。左栏的「15分钟」用它,不是 `created_at`。
+    updated_at: str = ""
     cwd: str | None = None
     message_count: int = 0
     running: bool = False
@@ -100,6 +181,10 @@ class ProviderInfo(BaseModel):
 class ConfigView(BaseModel):
     providers: list[ProviderInfo]
     default_model: str | None = None
+    #: 不带 provider 前缀的模型名 —— **给展示用**(输入卡右下的那一行放不下
+    #: `provider/model`,而模型 id 自己可能还带斜杠:`deepseek/deepseek-v4.1-flash`)。
+    #: 诊断面(遥测抽屉 / 检查项)继续用 `default_model` 的完整标签。
+    default_model_name: str = ""
     default_model_source: str = ""
     router_model: str | None = None
     settings_files: list[str] = Field(default_factory=list)
@@ -135,3 +220,50 @@ class PluginList(BaseModel):
     """
 
     plugins: list[str]
+
+
+class McpServerInfo(BaseModel):
+    """一个 MCP server 的**结构**,不含任何值(docs/web.md §18.18)。
+
+    口径:名字 / 传输类型 / 目标 URL / `env` 与 `headers` 的**键名**。
+    `env` 值、`headers` 值、以及 stdio 的 `command` / `args` **一律不出宿主**——
+    后三个字段是最容易直接写进明文密钥的地方(`npx -y x --token=sk-…`),
+    而 mcp.json 的 env 值不像 data_sources 的 dsn 那样被强制 `{env:XXX}`。
+    与"凭证只回掩码"同一条规矩。
+    """
+
+    name: str
+    #: `streamable-http` / `stdio` / …(mcp.json 里的 `type` 原值;没写就是空)
+    transport: str = ""
+    #: http 类回 URL;stdio 回 `"stdio"`(命令与参数不回显,见类注释)
+    target: str = ""
+    #: `env` / `headers` 的键名(值永不出宿主)
+    env_keys: list[str] = Field(default_factory=list)
+    header_keys: list[str] = Field(default_factory=list)
+    #: 声明绑定它的 agent 名(全局/项目层才有意义 —— 那是"门控"的结果)
+    bound_by: list[str] = Field(default_factory=list)
+
+
+class McpSource(BaseModel):
+    """一处 mcp.json(全局 / 项目 / 某个 agent 的私有)。
+
+    `exists=False` 也回:`servers` 为空配上看路径,前端才能区分"这里没有文件"
+    与"文件在但没声明 server"。
+    """
+
+    scope: Literal["global", "project", "agent"]
+    #: scope=="agent" 时是 agent 名
+    owner: str = ""
+    path: str = ""
+    exists: bool = False
+    servers: list[McpServerInfo] = Field(default_factory=list)
+
+
+class McpList(BaseModel):
+    """设置页 MCP 节的全部数据。
+
+    v1 只有**解析与门控**,没有 MCP client(见 docs/PLAN.md 的未决清单),
+    所以这里没有任何"已连接 / 工具发现"状态可回 —— 回的就是磁盘上的声明。
+    """
+
+    sources: list[McpSource]

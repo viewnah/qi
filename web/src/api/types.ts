@@ -29,6 +29,8 @@ export interface SessionSummary {
    id: string;
    title: string;
    created_at: string;
+   /** 会话文件 mtime(最近活跃)。左栏行尾的「15分钟」读它,不是 `created_at`。 */
+   updated_at?: string;
    cwd: string | null;
    message_count: number;
    running: boolean;
@@ -37,6 +39,57 @@ export interface SessionSummary {
 
 export interface SessionList {
    sessions: SessionSummary[];
+}
+
+/**
+ * 工作区改过的**显示名**(目录 → 名字)。
+ *
+ * 只有这一样:项目列表本身是会话 `cwd` 的派生,后端不维护名单 —— 否则会出现
+ * "名单说有三个工作区、会话文件只有一个"的两份真相。见 `src/qi_agent/workspaces.py`。
+ */
+export interface WorkspaceNames {
+   names: Record<string, string>;
+}
+
+/** 手动压缩的结果:`POST /api/sessions/{id}/compact`。`compacted=false` = 没什么可压。 */
+export interface CompactionResult {
+   compacted: boolean;
+}
+
+/** 批量删除的结果:`DELETE /api/sessions?scope=ungrouped`(「未分组」桶的清除)。 */
+export interface DeletedSessions {
+   /** 真正被删掉的会话 id(前端据此判断"当前开着的那个是否也没了")。 */
+   ids: string[];
+}
+
+/** `DELETE /api/workspaces` 的结果:**连同会话一起删掉了**(不可恢复)。 */
+export interface WorkspaceDeleted {
+   /** 真正被删掉的会话 id(前端据此判断"当前开着的那个是否也没了")。 */
+   ids: string[];
+   /** 删除后剩下的显示名表。 */
+   names: Record<string, string>;
+}
+
+/**
+ * 目录选择器的一条(`GET /api/fs/dirs`)。**只有目录** —— 文件名在选择器里只是噪音,
+ * 而且少回一类信息就少一类泄露面(见 `src/qi_agent/web/browse.py`)。
+ */
+export interface DirEntry {
+   name: string;
+   path: string;
+}
+
+/** `GET /api/fs/dirs` 的响应。形状照 pi-web 的 `/api/cwd/browse`。 */
+export interface DirectoryListing {
+   /** 归一后的真实路径(`~` 已展开、软链已解析)。 */
+   path: string;
+   /** 上一级;已经在根上时为 `null`(据此禁用"上级")。 */
+   parent: string | null;
+   /** 主目录(「主目录」快捷键的落点)。 */
+   home: string;
+   /** Windows 的盘符列表,其它平台为空。 */
+   roots: DirEntry[];
+   entries: DirEntry[];
 }
 
 /** 会话 JSONL 的一条 entry(五类 + header)。字段按 `type` 取舍,故多数可选。 */
@@ -110,7 +163,10 @@ export interface ProviderInfo {
 
 export interface ConfigView {
    providers: ProviderInfo[];
+   /** 完整标签 `provider/model`(诊断面用:遥测抽屉、检查项)。 */
    default_model: string | null;
+   /** 不带 provider 前缀的模型名(展示用:输入卡右下)。旧宿主可能不给,回落 `default_model`。 */
+   default_model_name?: string;
    default_model_source: string;
    router_model: string | null;
    settings_files: string[];
@@ -177,6 +233,40 @@ export interface SkillList {
 /** 已装载的插件名。`discover_plugins()` 只返回名字,所以这里也只回名字。 */
 export interface PluginList {
    plugins: string[];
+}
+
+/**
+ * 一个 MCP server 的**结构**(不含值,见 docs/web.md §18.18)。
+ *
+ * 宿主只投影出名字 / 传输类型 / 目标 / `env` 与 `headers` 的**键名**:
+ * `env` 值、`headers` 值、stdio 的 `command` / `args` 都不出宿主 —— mcp.json 的
+ * env 值不像 data_sources 的 dsn 那样被强制 `{env:XXX}`,手写明文是可能的。
+ */
+export interface McpServerInfo {
+   name: string;
+   /** `streamable-http` / `stdio` / …;没写就是空串 */
+   transport: string;
+   /** http 类回 URL;stdio 回 `"stdio"`(命令与参数不回显) */
+   target: string;
+   env_keys: string[];
+   header_keys: string[];
+   /** 声明绑定它的 agent 名(全局/项目层才有意义:那是门控的结果) */
+   bound_by: string[];
+}
+
+/** 一处 mcp.json(全局 / 项目 / 某个 agent 私有)。`exists=false` 也回,前端据此区分空态。 */
+export interface McpSource {
+   scope: "global" | "project" | "agent";
+   /** scope=="agent" 时是 agent 名 */
+   owner: string;
+   path: string;
+   exists: boolean;
+   servers: McpServerInfo[];
+}
+
+/** `GET /api/mcp` —— 设置页 MCP 节的全部数据(v1 只有声明,没有连接状态)。 */
+export interface McpList {
+   sources: McpSource[];
 }
 
 export interface AgentList {

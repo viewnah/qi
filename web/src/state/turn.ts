@@ -164,6 +164,23 @@ function settle(rows: Row[]): Row[] {
  * qi 的会话 entry → 行。实时流开头的 `qi.history` 与 REST 会话明细**共用这一条路径**,
  * 所以直播与回放必然一致 —— 这是 qi 一直守着的不变量。
  */
+/**
+ * 本地插一行 `note`(命令的反馈)。
+ *
+ * 为什么要有这个:`/help`、`/session` 这类指令的结果**不来自模型**,也不该进 LLM
+ * 上下文(那是会话文件的事)。它们只是界面上的一句回答 —— 复用既有的 `note` 行
+ * (转录里本来就有这种"标记行"),不新增行类型、不碰后端。
+ */
+export function withNote(state: TurnState, label: string, detail: string): TurnState {
+  return {
+    ...state,
+    rows: [
+      ...state.rows,
+      { kind: "note", key: nextKey("note"), label, detail },
+    ],
+  };
+}
+
 export function fromEntries(entries: Entry[]): Row[] {
   const rows: Row[] = [];
   for (const e of entries) {

@@ -8,19 +8,23 @@ from __future__ import annotations
 
 import asyncio
 import secrets
+import time
 import uuid
 from pathlib import Path
+from typing import Literal
+from urllib.parse import quote
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .. import __version__
 from ..auth import AuthStore, resolve_key
 from ..config import ConfigError, load_config, resolve_default_model, resolve_router_model
-from ..loader import LoadError
+from ..loader import LoadError, load_mcp_scopes
 from ..registry import AgentRegistry
-from . import agui, schemas
+from ..workspaces import WorkspaceStore, normalize
+from . import agui, browse, schemas
 from .security import check_credentials, check_host, mask_key
 from .state import RunBusy, WebState
 
@@ -40,11 +44,16 @@ h1{{font-size:18px}}</style>
 
 def create_app(cwd: Path | str | None = None, password: str | None = None,
                allowed_hosts: list[str] | None = None, bind_host: str = "127.0.0.1",
-               state: WebState | None = None) -> FastAPI:
+               state: WebState | None = None,
+               workspace_store: WorkspaceStore | None = None) -> FastAPI:
     app = FastAPI(title=schemas.APP_NAME, version=__version__,
                   docs_url=None, redoc_url=None)
     web = state or WebState(Path(cwd).resolve() if cwd else Path.cwd())
     app.state.web = web
+    #: 工作区的两个「人工决定」(显示名 / 不再分组)。默认落在 `~/.qi/agent/`,
+    #: 测试传一个 tmp 路径的 store,不去碰真实 home。
+    workspaces = workspace_store or WorkspaceStore()
+    app.state.workspaces = workspaces
     app.state.password = password
     allowed = list(allowed_hosts or [])
 
@@ -86,9 +95,23 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
         return {"ok": True, "app": schemas.APP_NAME, "contract": schemas.CONTRACT_VERSION}
 
     # ── 会话 ──────────────────────────────────────────────
+    def touched_at(session) -> str:
+        """会话文件最后一次改动的时刻(本地时间,与 `session._now()` 同格式)。
+
+        左栏的「15分钟」显示的是**最近活跃**,不是创建时间:列表顺序本来就是文件
+        mtime(`SessionStore._files()`),用创建时间会让"排在最前却写着 3天前"
+        这种自相矛盾的行出现。文件被外部删掉时回落 `created_at`,不抛。
+        """
+        try:
+            mtime = session.path.stat().st_mtime
+        except OSError:
+            return session.created_at
+        return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(mtime))
+
     def summary(session) -> schemas.SessionSummary:
         return schemas.SessionSummary(
             id=session.id, title=session.title, created_at=session.created_at,
+            updated_at=touched_at(session),
             cwd=session.cwd, message_count=session.message_count,
             # `is_busy` 已是 bool —— 早先写成 `is not None` 是错的(永远为 True)
             running=web.is_busy(session.id), path=str(session.path),
@@ -146,6 +169,169 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
             raise HTTPException(status_code=409, detail="会话正在运行,先停止再删除")
         if not web.sessions.delete(sid):
             raise HTTPException(status_code=404, detail="会话不存在")
+
+    @app.delete("/api/sessions", response_model=schemas.DeletedSessions,
+                dependencies=[Depends(guard)])
+    async def delete_sessions(scope: Literal["ungrouped"] = Query(...)) -> schemas.DeletedSessions:
+        """批量删除:目前只有一种作用域 —— 左栏「未分组」桶里的会话。
+
+        「未分组」= **没有 cwd 的旧会话**(qi 早先版本的 header 里没有 cwd,无从判断
+        它在哪个项目里)。它们既不能被"删除工作区"带走(那个目录名下的会话根本不含它们),
+        也只能一个一个删 —— 所以给这一桶一个批量出口。
+
+        与单条删除同一套护栏:**任一条在运行中就整体拒绝**(409),否则会删掉正在写的文件。
+        """
+        doomed = [
+            s.id for s in web.sessions.list()
+            if s.cwd is None or s.cwd == ""
+        ]
+        busy = [sid for sid in doomed if web.is_busy(sid)]
+        if busy:
+            raise HTTPException(
+                status_code=409,
+                detail="未分组里有会话正在运行,先停止再清除",
+            )
+        return schemas.DeletedSessions(
+            ids=[sid for sid in doomed if web.sessions.delete(sid)],
+        )
+
+    @app.get("/api/sessions/{sid}/export", dependencies=[Depends(guard)])
+    async def export_session(sid: str) -> Response:
+        """导出会话 JSONL(= TUI 的 `/export`)。**原样发文件**:会话文件本身就是 JSONL,
+        再序列化一遍只会引入第二份真相。文件名给成 `<标题>-<id>.jsonl`,浏览器据此命名。"""
+        session = web.sessions.get(sid)
+        if session is None:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        try:
+            text = session.path.read_text(encoding="utf-8")
+        except OSError:
+            raise HTTPException(status_code=404, detail="会话文件不存在") from None
+        stem = "".join(c for c in (session.title or "session") if c not in '/\\:*?"<>|')[:40]
+        # HTTP 头是 latin-1:标题里只要有中文,直接写进 `filename=` 就会抛
+        # UnicodeEncodeError(这个端点会 500)。所以按 RFC 5987 双写:ASCII 兜底名
+        # + `filename*=UTF-8''<百分号编码>`,浏览器优先用后者。
+        ascii_name = f"qi-{sid}.jsonl"
+        utf8_name = quote(f"{stem or 'session'}-{sid}.jsonl", safe="")
+        return Response(
+            content=text,
+            media_type="application/x-ndjson",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="{ascii_name}"; '
+                    f"filename*=UTF-8''{utf8_name}"
+                ),
+                # 前端要能读文件名(同源也默认不给跨不出去的响应头)
+                "Access-Control-Expose-Headers": "Content-Disposition",
+            },
+        )
+
+    @app.post("/api/sessions/{sid}/compact", response_model=schemas.CompactionResult,
+              dependencies=[Depends(guard)])
+    async def compact_session(sid: str) -> schemas.CompactionResult:
+        """手动压缩上下文(= TUI 的 `/compact`,把旧消息摘要掉)。
+
+        **不能在运行中压缩**:压缩要"读整条分支 → 摘要 → 追加一条 entry",
+        与会话正在追加的那一轮会打架(和重命名/删除同一类冲突),所以占用中就 409。
+        `compacted=False` 表示没什么可压(消息太少/没超阈值),不是错误。
+        """
+        session = web.sessions.get(sid)
+        if session is None:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        if web.is_busy(sid):
+            raise HTTPException(status_code=409, detail="会话正在运行,先停止再压缩")
+        runtime = web.runtime_for(web.session_cwd(session))
+        entry = await runtime.compact_session(session)
+        return schemas.CompactionResult(compacted=entry is not None)
+
+    @app.post("/api/sessions/{sid}/fork", response_model=schemas.SessionSummary,
+              status_code=201, dependencies=[Depends(guard)])
+    async def fork_session(sid: str, body: schemas.SessionFork | None = None) -> schemas.SessionSummary:
+        """把一个会话的**当前分支**复制成新会话(pi 的 fork:新文件,不是同一个文件里开叉)。
+
+        语义与 CLI/TUI 一致(`store.fork_at(source, source.current, title=f"{title} @fork")`):
+        副标题带 `@fork`、cwd 继承、entry 的 id/parentId 原样拷过去(链在新文件里自洽)。
+        运行中不允许分叉:文件正在被追加,拷到的可能是个半截回合。
+        """
+        session = web.sessions.get(sid)
+        if session is None:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        if web.is_busy(sid):
+            raise HTTPException(status_code=409, detail="会话正在运行,先停止再分叉")
+        at = session.current if body is None or body.at is None else body.at
+        if at is not None and at not in {str(e.get("id")) for e in session.tree_entries}:
+            raise HTTPException(status_code=400, detail=f"找不到分叉点: {at}")
+        title = f"{session.title} @fork" if session.title else "fork"
+        return summary(web.sessions.fork_at(session, at, title=title))
+
+    # ── 工作区:只有"改过的显示名"这一份偏好 ────────────────
+    # 项目列表本身是派生的(会话 cwd),所以这里没有"列表"端点,也没有"新建工作区"——
+    # 在某个目录下新建会话就是新建工作区。三种方法的语义见 docs/web.md §18.3。
+
+    @app.get("/api/workspaces", response_model=schemas.WorkspaceNames,
+             dependencies=[Depends(guard)])
+    async def list_workspaces() -> schemas.WorkspaceNames:
+        return schemas.WorkspaceNames(names=workspaces.load().names)
+
+    @app.patch("/api/workspaces", response_model=schemas.WorkspaceNames,
+               dependencies=[Depends(guard)])
+    async def rename_workspace(body: schemas.WorkspaceRename) -> schemas.WorkspaceNames:
+        """改工作区的**显示名**。目录不动:项目就是目录,改目录名会影响会话的 cwd。"""
+        return schemas.WorkspaceNames(names=workspaces.rename(body.cwd, body.name).names)
+
+    @app.delete("/api/workspaces", response_model=schemas.WorkspaceDeleted,
+                dependencies=[Depends(guard)])
+    async def delete_workspace(cwd: str = Query(..., min_length=1)) -> schemas.WorkspaceDeleted:
+        """删除工作区:**连同它名下的会话一起删**(不可恢复)。目录本身不删。
+
+        三件事必须做对:
+          · 会话集合按**规范化后的 cwd** 取(老会话的 header 可能没规范化过,
+            macOS 上 `/tmp` 与 `/private/tmp` 是同一个目录两种写法);
+          · 任一会话在运行中就整体拒绝(409)—— 删掉正在写的文件会毁掉那一轮;
+          · 最后忘掉这个目录的显示名,不留悬空的覆盖项。
+        """
+        target = normalize(cwd)
+        doomed = [
+            s.id for s in web.sessions.list()
+            if s.cwd is not None and normalize(s.cwd) == target
+        ]
+        busy = [sid for sid in doomed if web.is_busy(sid)]
+        if busy:
+            raise HTTPException(
+                status_code=409,
+                detail="该工作区有会话正在运行,先停止再删除工作区",
+            )
+        deleted = [sid for sid in doomed if web.sessions.delete(sid)]
+        return schemas.WorkspaceDeleted(
+            ids=deleted, names=workspaces.forget(cwd).names,
+        )
+
+    # ── 服务器目录浏览(「添加工作区」的选择器)─────────────────
+    # 形状照 pi-web 的 `GET /api/cwd/browse`(见 `web/browse.py` 的文件头)。
+    # 只读、只列目录:权限面比已有的 bash 工具小得多,所以沿用同一道 guard。
+
+    @app.get("/api/fs/dirs", response_model=schemas.DirectoryListing,
+             dependencies=[Depends(guard)])
+    async def browse_dirs(path: str = Query("")) -> schemas.DirectoryListing:
+        """列某个目录下的子目录;`path` 省略 = 主目录(前端首屏就这样)。"""
+        try:
+            listing = browse.list_directories(path)
+        # 三条 except 各自可达:FileNotFoundError / NotADirectoryError / PermissionError
+        # 是 OSError 的三个**兄弟**(实测 MRO:NotADirectoryError → OSError → Exception),
+        # 互不为子类。pi-lens 的 unreachable-except 在这里是误报。
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="目录不存在") from None
+        except NotADirectoryError:
+            raise HTTPException(status_code=400, detail="这不是一个目录") from None
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="没有权限读取这个目录") from None
+        root = browse.resolve_dir(path)
+        return schemas.DirectoryListing(
+            path=str(root),
+            parent=browse.parent_of(root),
+            home=str(browse.home_dir()),
+            roots=[schemas.DirEntry(**d) for d in browse.windows_drives()],
+            entries=[schemas.DirEntry(**e) for e in listing],
+        )
 
     # ── AG-UI:单次 POST,响应即流 ──────────────────────────────
     #
@@ -270,6 +456,7 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
         ]
         return schemas.ConfigView(
             providers=providers, default_model=default.label,
+            default_model_name=default.model,
             default_model_source="settings" if default.model else "",
             router_model=(router.label if router.label != default.label else None),
             settings_files=[str(p) for p in runtime.settings_files],
@@ -294,6 +481,60 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
     async def list_plugins() -> schemas.PluginList:
         runtime = web.runtime_for(web.default_cwd)
         return schemas.PluginList(plugins=list(runtime.plugins))
+
+    def _mcp_info(spec, bound_by: list[str]) -> schemas.McpServerInfo:
+        """把一条 McpServerSpec 投成**只有结构、没有值**的形状。
+
+        三道不算计的脱敏,写在最靠近数据的地方:
+          · `env` / `headers` 只取**键名**;
+          · `stdio` 的 `command` / `args` 不回(它们是最容易直接塞明文密钥的字段:
+            `npx -y xx-mcp --token=sk-…`)—— 只回 "stdio" 这个事实;
+          · 非 dict 的 `config`(手改了 mcp.json)不猜,按空处理。
+        """
+        cfg = spec.config if isinstance(spec.config, dict) else {}
+        env = cfg.get("env")
+        headers = cfg.get("headers")
+        url = str(cfg.get("url", "") or "")
+        transport = str(cfg.get("type", "") or "")
+        is_stdio = bool(cfg.get("command")) or transport == "stdio"
+        return schemas.McpServerInfo(
+            name=spec.name,
+            transport=transport,
+            target=url or ("stdio" if is_stdio else ""),
+            env_keys=sorted(env) if isinstance(env, dict) else [],
+            header_keys=sorted(headers) if isinstance(headers, dict) else [],
+            bound_by=sorted(bound_by),
+        )
+
+    @app.get("/api/mcp", response_model=schemas.McpList, dependencies=[Depends(guard)])
+    async def list_mcp() -> schemas.McpList:
+        """MCP 声明的三处来源:全局 / 项目 / 各 agent 私有,供设置页展示。
+
+        `bound_by` 是**门控的结果**:全局/项目里的 server 只有在某个 agent 的
+        `mcp_servers` 里被声明才算"绑上了"(凭证敏感 → 默认无、显式声明)。
+        没有任何"已连接"字段 —— v1 没有 MCP client,那种状态不存在。
+        """
+        runtime = web.runtime_for(web.default_cwd)
+        units = runtime.registry.all()
+        bound: dict[str, list[str]] = {}
+        for unit in units:
+            for spec in unit.mcp_declared:
+                bound.setdefault(spec.name, []).append(unit.name)
+        sources: list[schemas.McpSource] = []
+        for scope, path, servers in load_mcp_scopes(web.default_cwd):
+            sources.append(schemas.McpSource(
+                scope=scope, path=str(path), exists=path.is_file(),
+                servers=[_mcp_info(s, bound.get(s.name, [])) for s in servers],
+            ))
+        for unit in units:
+            if not unit.mcp_private:
+                continue
+            f = unit.path / "mcp.json"
+            sources.append(schemas.McpSource(
+                scope="agent", owner=unit.name, path=str(f), exists=f.is_file(),
+                servers=[_mcp_info(s, [unit.name]) for s in unit.mcp_private],
+            ))
+        return schemas.McpList(sources=sources)
 
     @app.post("/api/auth/{provider}", status_code=204, dependencies=[Depends(guard)])
     async def set_auth(provider: str, body: schemas.AuthWrite,

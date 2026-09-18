@@ -12,11 +12,19 @@
  * 不再有"POST 拿 run_id → 再 GET /events"的两跳,也就没有"晚连上来的客户端"这件事。
  */
 import { CONTRACT_VERSION } from "./types";
+// 会话/工作区的写操作也在这里:分叉、改名、以及工作区的两个「人工决定」。
 import type {
   AgentInfo,
   AgentList,
   AguiEvent,
+  /** 手动压缩的结果(`POST /api/sessions/{id}/compact`)。 */
+  CompactionResult,
+  /** 批量删除的结果(`DELETE /api/sessions?scope=ungrouped`)。 */
+  DeletedSessions,
+  /** 目录选择器(`GET /api/fs/dirs`)。 */
+  DirectoryListing,
   ConfigView,
+  McpList,
   Meta,
   PluginList,
   RunAgentInput,
@@ -24,6 +32,8 @@ import type {
   SessionList,
   SessionSummary,
   SkillList,
+  WorkspaceDeleted,
+  WorkspaceNames,
 } from "./types";
 
 export class ApiError extends Error {
@@ -100,6 +110,78 @@ export const api = {
       method: "DELETE",
     }),
 
+  /**
+   * 清除「未分组」桶:**没有 cwd 的旧会话**会被一起删掉(不可恢复)。
+   *
+   * 作用域是闭集(`scope=ungrouped`),拼错会被后端 422 拒掉 —— 不能悄悄变成"删全部"。
+   */
+  clearUngrouped: () =>
+    request<DeletedSessions>("/api/sessions?scope=ungrouped", {
+      method: "DELETE",
+    }),
+
+  /**
+   * 导出会话 JSONL(`GET /api/sessions/{id}/export`)。
+   *
+   * 用 fetch + Blob,而不是 `window.location` 或 `<a href>`:前者能带上应用自己的
+   * 鉴权头、也能把 404/401 读成一句错误 —— 直接导航到 URL 只会得到浏览器自己的错误页。
+   * 文件名**由后端给**(`Content-Disposition` 里的 `<标题>-<id>.jsonl`),前端不拼名字 ——
+   * 标题可以出现任意字符,拼名字的规则只应该有一处。
+   */
+  exportSession: async (id: string): Promise<{ blob: Blob; name: string }> => {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/export`);
+    if (!res.ok) throw new ApiError(res.status, await detailOf(res));
+    const disposition = res.headers.get("Content-Disposition") ?? "";
+    // 后端按 RFC 5987 双写:优先 `filename*=UTF-8''…`(标题可以是中文),
+    // 回落到 ASCII 的 `filename="…"`。
+    const utf8 = /filename\*=UTF-8''([^;]+)/.exec(disposition)?.[1];
+    const name = utf8 === undefined
+      ? /filename="([^"]+)"/.exec(disposition)?.[1] ?? `${id}.jsonl`
+      : decodeURIComponent(utf8);
+    return { blob: await res.blob(), name };
+  },
+
+  /** 手动压缩上下文(= TUI 的 `/compact`)。运行中会被 409 拒掉。 */
+  compactSession: (id: string) =>
+    request<CompactionResult>(
+      `/api/sessions/${encodeURIComponent(id)}/compact`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
+
+  /** 分叉:把当前分支复制成**新会话**(后端 201 回新会话的摘要)。 */
+  forkSession: (id: string) =>
+    request<SessionSummary>(
+      `/api/sessions/${encodeURIComponent(id)}/fork`,
+      { method: "POST", body: JSON.stringify({}) },
+    ),
+
+  /**
+   * 列服务器上的子目录(`path` 省略 = 主目录)。
+   *
+   * **只读、只列目录**:权限面比已有的 bash 工具小得多,所以沿用同一道鉴权。
+   * 形状照 pi-web 的 `/api/cwd/browse`(见 `api/types.ts` 的 `DirectoryListing`)。
+   */
+  dirs: (path = "") =>
+    request<DirectoryListing>(
+      `/api/fs/dirs?path=${encodeURIComponent(path)}`,
+    ),
+
+  /** 工作区改过的显示名(目录 → 名字)。`name` 空串 = 取消改名(恢复成目录名)。 */
+  workspaces: () => request<WorkspaceNames>("/api/workspaces"),
+
+  renameWorkspace: (cwd: string, name: string) =>
+    request<WorkspaceNames>("/api/workspaces", {
+      method: "PATCH",
+      body: JSON.stringify({ cwd, name }),
+    }),
+
+  /** **删除工作区连同它的会话**(不可恢复;目录本身不删)。 */
+  deleteWorkspace: (cwd: string) =>
+    request<WorkspaceDeleted>(
+      `/api/workspaces?cwd=${encodeURIComponent(cwd)}`,
+      { method: "DELETE" },
+    ),
+
   agents: () => request<AgentList>("/api/agents"),
 
   agentList: async (): Promise<AgentInfo[]> => (await api.agents()).agents,
@@ -109,6 +191,9 @@ export const api = {
   skills: () => request<SkillList>("/api/skills"),
 
   plugins: () => request<PluginList>("/api/plugins"),
+
+  /** MCP 声明(全局 / 项目 / agent 私有)。老宿主回 404 → 调用方降级,不当作致命错误。 */
+  mcp: () => request<McpList>("/api/mcp"),
 
   /** 写凭证必须带确认头:后端也会拦(428),这是双保险。 */
   setAuth: (provider: string, key: string) =>

@@ -32,6 +32,11 @@ const DSH_TOKENS = join(
   DSH,
   "packages/client/ui-theme/src/styles/design-platform.css",
 );
+/** 字体阶梯的来源(dsh 把它放在这里,不在 design-platform.css)。 */
+const DSH_FONT = join(
+  DSH,
+  "packages/client/ui-theme/src/styles/gradient-shadow-text.css",
+);
 const QI_TOKENS = join(ROOT, "src/theme/tokens.css");
 
 let failures = 0;
@@ -249,6 +254,75 @@ if (nonColor.length > 0) {
 const qiOnly = [...qiTable.keys()].filter((k) => isTarget(k) && !dshLight.has(k) && !dshDark.has(k));
 if (qiOnly.length > 0) {
   console.log(`  · qi 自有令牌 ${qiOnly.length} 条(dsh 没有):${qiOnly.join(", ")}`);
+}
+
+// ── 字体阶梯:同一个门禁管两层,因为"和 dsh 一致"不只有颜色 ──────────
+// 这份阶梯曾经静默漂移过:`--dsw-font-xl-24` 的字重写成 500(dsh 是 600)、
+// `--dsw-font-xxxs-11` 的行高写成 16(dsh 是 14),而且 4 条 strong 变体整条缺失 ——
+// 颜色门禁一条都拦不住(它只管 alias/specific 颜色)。所以在这里逐条对拍。
+console.log("\n[dsh 字体阶梯] 逐条对拍 gradient-shadow-text.css");
+const isLadderKey = (name) =>
+  /^--dsw-font-[a-z0-9-]+$/.test(name) &&
+  !name.includes("markdown") &&
+  !/-(font-family|font-weight|line-height|font-size|font-style)$/.test(name);
+
+if (!existsSync(DSH_FONT)) {
+  console.log(`  · 跳过:没找到 ${DSH_FONT}（参照物缺失时不作通过判定）`);
+} else {
+  const dshFont = declarations(readFileSync(DSH_FONT, "utf8"));
+  const ladder = [...dshFont.keys()].filter(isLadderKey).sort();
+  /**
+   * 归一成可比较的形状。两件事:
+   *   · 斜杠两侧空格(dsh 写 `11px/14px`,qi 写 `11px / 14px`);
+   *   · **省略的字重就是 400**。`font: 14px/22px family` 在 CSS 里等于
+   *     `font: 400 14px/22px family`(简写省略 weight 时取 normal),所以
+   *     dsh 省略、qi 写全 400 不算错——但 500 与 600 的差别照样会被抓到。
+   */
+  const normalize = (v) => {
+    const flat = v.replace(/\s*\/\s*/g, "/").replace(/\s+/g, " ").trim();
+    return /^(\d{3}|normal|bold|bolder|lighter|italic|oblique)\b/.test(flat)
+      ? flat
+      : `400 ${flat}`;
+  };
+  let fontBad = 0;
+  for (const key of ladder) {
+    const want = dshFont.get(key);
+    const got = qiTable.get(key);
+    if (got === undefined) {
+      fail(`${key} 在 qi 的 tokens.css 里不存在(期望 ${want})`);
+      fontBad += 1;
+    } else if (normalize(got) !== normalize(want)) {
+      fail(`${key}\n      期望 ${want}\n      实际 ${got}`);
+      fontBad += 1;
+    }
+  }
+  console.log(
+    fontBad === 0
+      ? `  ✓ ${ladder.length} 条阶梯令牌全部一致`
+      : `  ✗ ${fontBad} / ${ladder.length} 条不一致`,
+  );
+
+  // 除阶梯之外,qi **自己声明**的 dsh 字体键(如 markdown 家族里 qi 真用到的那条)
+  // 也必须一致。否则可以“搬一半”:声明了键名、值却与 dsh 不同。
+  // 反过来不要求 qi 声明全部 markdown 键——它没有 markdown 渲染器的那部分
+  // 搬过来就是死令牌。
+  const opted = [...qiTable.keys()].filter(
+    (name) => /^--dsw-font-/.test(name) && !isLadderKey(name) && dshFont.has(name),
+  );
+  let optedBad = 0;
+  for (const key of opted) {
+    if (normalize(qiTable.get(key)) !== normalize(dshFont.get(key))) {
+      fail(`${key}(qi 声明了但值与 dsh 不同)\n      期望 ${dshFont.get(key)}\n      实际 ${qiTable.get(key)}`);
+      optedBad += 1;
+    }
+  }
+  if (opted.length > 0) {
+    console.log(
+      optedBad === 0
+        ? `  ✓ 另外 ${opted.length} 条 qi 自选的 dsh 字体键也一致(${opted.join(", ")})`
+        : `  ✗ ${optedBad} / ${opted.length} 条自选字体键不一致`,
+    );
+  }
 }
 
 console.log();

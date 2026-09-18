@@ -827,6 +827,153 @@ pre,
  white-space: pre-wrap;
  word-break: break-word;
 }
+
+/* ── markdown(回答正文)──────────────────────────────────────
+   间距与几何照 dsh `ui-primitives/.../MarkdownText.module.css`:段落 16px、
+   列表 16px + 左内衬 18、列表项之间 6、hr 是一条 0.5px 线、行内代码用
+   `--dsw-alias-markdown-inline-code` 底 + 0.5px 描边 + r6。
+   字号仍走 qi 的内容轴(`--dsh-content-font-size` = 14,行高 26)。 */
+.md {
+ font-size: var(--dsh-content-font-size);
+ line-height: calc(26px + var(--dsh-content-font-delta));
+ color: var(--dsw-alias-label-primary);
+ word-break: break-word;
+}
+.md > *:first-child { margin-top: 0; }
+.md > *:last-child { margin-bottom: 0; }
+.md p { margin: 16px 0; }
+.md h1, .md h2, .md h3, .md h4,
+.md h5, .md h6 { margin: 24px 0 12px; color: var(--dsw-alias-label-primary); }
+.md h1 { font: var(--dsw-font-markdown-h1); }
+.md h2 { font: var(--dsw-font-markdown-h2); }
+.md h3 { font: var(--dsw-font-markdown-h3); }
+.md h4 { font: var(--dsw-font-markdown-h4); }
+.md h5, .md h6 {
+ font-size: var(--dsh-content-font-size);
+ line-height: calc(24px + var(--dsh-content-font-delta));
+ font-weight: 600;
+}
+.md :where(ul, ol) { margin: 16px 0; padding-left: 18px; }
+.md li:not(:first-child) { margin-top: 6px; }
+.md li > :where(ul, ol) { margin: 4px 0; }
+.md li::marker { color: var(--dsw-alias-label-secondary); }
+/* 引用:与 dsh 同一条竖线(dsh 用 label-caption) */
+.md blockquote {
+ margin: 16px 0;
+ padding: 0 0 0 12px;
+ border-left: 2px solid var(--dsw-alias-label-caption);
+ color: var(--dsw-alias-label-secondary);
+}
+/* 链接:qi 的链接色令牌(dsh 那边是 near-black,qi 用 `--dsw-alias-link`) */
+.md a {
+ color: var(--dsw-alias-link);
+ text-decoration: none;
+}
+.md a:hover { text-decoration: underline; }
+.md hr {
+ height: 0.5px;
+ margin: 32px 0;
+ border: none;
+ background: var(--dsw-alias-border-l2);
+}
+.md strong { font-weight: 600; }
+/* 行内代码:底 + 发丝描边 + r6(照 dsh),字号相对正文缩到 0.875em */
+.md-inline-code {
+ padding: 0 5px;
+ border: 0.5px solid var(--dsw-alias-border-l1);
+ border-radius: 6px;
+ background: var(--dsw-alias-markdown-inline-code);
+ font-family: var(--ds-font-family-code);
+ font-size: 0.875em;
+}
+/* 裸 HTML(CommonMark 的 html 节点)只当文字显示:压暗 + 等宽,明确"这是原文" */
+.md-html {
+ color: var(--dsw-alias-label-tertiary);
+ font-family: var(--ds-font-family-code);
+ font-size: 0.875em;
+}
+/* 代码块:语言标签 + 复制,内容用证据块那档字号 */
+.md-code {
+ margin: 16px 0;
+ border: 0.5px solid var(--dsw-alias-border-l1);
+ border-radius: var(--dsw-radius-md);
+ background: var(--dsw-alias-markdown-code-block);
+ overflow: hidden;
+}
+.md-code__head {
+ display: flex;
+ align-items: center;
+ gap: 8px;
+ padding: 4px 6px 4px 10px;
+ border-bottom: 0.5px solid var(--dsw-alias-border-l1);
+ background: var(--dsw-alias-markdown-code-block-banner);
+}
+.md-code__lang {
+ flex: 1;
+ min-width: 0;
+ overflow: hidden;
+ color: var(--dsw-alias-label-tertiary);
+ font-family: var(--ds-font-family-code);
+ font-size: var(--dsw-font-markdown-code-block-font-size);
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+.md-code__copy {
+ display: inline-flex;
+ align-items: center;
+ justify-content: center;
+ flex: none;
+ width: 24px;
+ height: 24px;
+ padding: 0;
+ border: none;
+ border-radius: 50%;
+ background: transparent;
+ color: var(--dsw-alias-label-tertiary);
+}
+.md-code__copy:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+ color: var(--dsw-alias-label-secondary);
+}
+.md-code__pre {
+ margin: 0;
+ padding: 10px 12px;
+ color: var(--dsw-alias-label-secondary);
+ font-family: var(--ds-font-family-code);
+ font-size: var(--dsw-font-markdown-code-block-font-size);
+ line-height: 1.65;
+ white-space: pre-wrap;
+ word-break: break-word;
+ overflow-x: auto;
+}
+/* 表格:窄的撑满,宽的自己横向滚(包一层,不挤压正文) */
+.md-table {
+ margin: 16px 0;
+ overflow-x: auto;
+}
+.md-table table {
+ width: 100%;
+ border-collapse: collapse;
+ font-size: var(--dsh-content-font-size-secondary, 13px);
+}
+.md-table th, .md-table td {
+ padding: 6px 10px;
+ border-bottom: 0.5px solid var(--dsw-alias-border-l1);
+ text-align: left;
+}
+.md-table th {
+ border-bottom-color: var(--dsw-alias-border-l2);
+ color: var(--dsw-alias-label-secondary);
+ font-weight: 600;
+}
+/* 任务列表:形符 + 划线(不做真勾选框 —— 它不可交互,做成交互控件是骗人) */
+.md-task { list-style: none; }
+.md-task__mark { margin-right: 6px; color: var(--dsw-alias-label-tertiary); }
+.md-task[data-done="true"] { color: var(--dsw-alias-label-tertiary); }
+.md-footnote, .md-footnote-ref {
+ color: var(--dsw-alias-label-tertiary);
+ font-size: var(--dsh-content-font-size-secondary, 13px);
+}
 /* ── 过程块:一轮的思考 + 工具 + 叙述收成一个可折叠块 ──────────
    头部几何照 dsh `TurnProcessNodeView.module.css`:33px 一行;正文整体缩进一级(22px),
    与 dsh 把过程缩进在回答之下的关系一致。

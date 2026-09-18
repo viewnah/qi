@@ -2054,8 +2054,7 @@ cd web && npm run typecheck && npm test && npm run check:design && npm run build
 
 - **没有换掉"行语言"**:§17.4 记的那条偏离仍在 —— qi 的转录还是行粒度,不是 dsh 的按轮
   `TurnProcessNodeView` / `TurnNavigator`。这次只对齐了"哪些东西带壳、谁缩进"。
-- **markdown 仍未渲染**:回答是 `pre-wrap` 纯文本(qi 没有 markdown 渲染器),dsh 那边是完整 markdown。
-  这是独立的一件事(要引渲染器和它的 XSS 面)。
+- ~~**markdown 仍未渲染**~~ **已做**(见 §18.23):回答现在走 micromark + mdast → React 元素。
 - **悬停显形在触摸设备上一律常显**:照 dsh 的 `@media (hover: none)` 退路。
 
 #### 验证怎么跑
@@ -2146,4 +2145,88 @@ dsh 那条线在它那里看着对,是因为它**默认收起**:收起时「头�
 .venv/bin/python -m pytest -q                       # 434
 cd web && npm run typecheck && npm test             # 76(新增 groupProcess 4 项 + processLabel 4 项)
 npm run check:design && npm run build
+```
+
+### 18.23 回答渲染 markdown(2026-09,使用反馈)
+
+反馈:「会话页面没有 markdown 渲染,给加上。」
+
+管线:**micromark → mdast → React 元素**(`web/src/markdown/`)。与 dsh 同一族
+(`ui-primitives/src/markdown/`),砍掉它的两个子系统:数学(katex)与语法高亮。
+
+#### 为什么是「解析器 → React」,而不是「渲染成 HTML 串」
+
+markdown 是**唯一把模型给的文本变成结构**的入口 —— 也就是这个前端最需要小心的注入面。
+两条路:
+
+- 拼 HTML 串 + 消毒:消毒白名单漏一条就是 XSS,而且这类洞通常只在特定嵌套下出现;
+- **走 React 元素**:文本由 React 转义、属性由 React 序列化 —— 没有字符串拼接就没有注入面,
+  连 sanitizer 都不需要。
+
+qi 与 dsh 都是后者(**全仓没有任何 `dangerouslySetInnerHTML`**)。
+
+#### 四条安全 / 降级决定(都有单测钉住)
+
+| 输入 | 处理 | 为什么 |
+| --- | --- | --- |
+| 裸 HTML(`<script>`、`<img onerror=…>`) | 当**可见文字**显示(转义) | CommonMark 里它是 `html` 节点;解析执行等于把模型当成可信源 |
+| `javascript:` / `data:` / 相对路径链接 | **退化成纯文本** | 退化方向是「少一个链接」,不是「多一个可点的东西」;只放行 `http:` / `https:` / `mailto:` |
+| `![alt](https://…)` 图片 | 渲染成**链接**,不加载 | qi 没有图片代理:加载即把用户 IP / referrer 送给回答里出现的任意域名(还可能是一张 1×1 追踪像素) |
+| 未知节点类型 | 有子节点就照渲,**不丢** | 与插件 UI 词汇表同一条规矩:丢内容会变成不可诊断的问题 |
+
+#### 中文加粗:CJK 补丁(不是可选的美化)
+
+CommonMark 规定闭合星号必须「右侧成翼」:前面是标点、后面又是**非标点非空白**时**不能闭合**。
+中文写作最常见的形态恰好全落在这个死角上:
+
+```text
+中文**重点:**后面还有中文        ← 前面 `:`、后面 `中` → 闭不上,界面上会露出字面星号
+```
+
+所以照抄了 dsh 的 micromark 语法扩展(`web/src/markdown/cjk.ts`,逐字节同源):
+标记数 ≥2、前一字是 unicode 标点、后一字是 CJK 时也允许闭合。单测里有它 —— 包括反向的
+「补丁不能把不该闭合的也闭合了」。
+
+#### 支持的语法 + 样式来源
+
+CommonMark + GFM:段落 / h1–h6 / 粗体斜体删除线 / 行内代码 / 代码围栏(语言标签 + 复制按钮)/
+有序无序任务列表 / 表格(窄的撑满、宽的自己横向滚)/ 引用 / 分隔线 / 链接。
+
+- 字体阶梯逐条照 dsh 的 markdown 档:`--dsw-font-markdown-h1..h4`(700 21/19/18 + 600 14)
+- 间距照 `MarkdownText.module.css`:段落 16px、列表 `16px + 缩进 18`、列表项之间 6、
+  hr `32px / 0.5px`、行内代码「0.5px 描边 + r6 + 0.875em」
+- 颜色全部走 qi 已有的 `--dsw-alias-markdown-*` 令牌 —— 它们本来就在 `tokens.css` 里
+  (dsh 的 alias 族一起搬过来的),只是**一直没被任何东西消费**
+
+顺带改掉 `tokens.css` 里一句已经过时的注释:它原来写着「qi 没有 markdown 渲染器,markdown
+阶梯搬过来就是死令牌」。现在有了,于是 h1–h4 四条搬进来 —— 而且门禁会逐条对拍
+(`check-dsh-tokens.mjs` 的「qi 自选 dsh 字体键」那一条),以后漂移会被抓住。
+
+#### 没做的
+
+- **语法高亮**:dsh 有 shiki(`highlight.ts` 487 行 + 语法文件);qi 只给语言标签 + 复制按钮。
+  高亮是独立子系统(按需加载语法、流式分支),不在这次范围。
+- **数学(TeX / katex)**、脚注跳转、文件提及 chip:`$x$` 按普通文本显示。
+- **增量解析**:qi 每个流式增量重解析整段(答案通常几 KB);dsh 有只重解析尾巴的
+  `IncrementalMarkdownParser`。代价是长回答末期每个 token 多一次解析 —— 量级远小于 LLM 自身延迟。
+
+#### 实测(真实 Chrome/CDP,1440 宽)
+
+```text
+.md 存在 = true
+h2 = 「结论」· 700 19px / 28px            ← dsh 的 markdown h2 档
+代码块 = 语言 "python" · 复制按钮在 · 11px / 1.65
+加粗 = ["重点:", "不解析"]                ← 中文强调真的闭上了
+表格 = 1 张 / 3 行 / 2 个 <th scope="col">;行内代码 1 · 引用 1 · 分隔线 1
+链接 = 1 条:https://example.com/docs + rel="noreferrer noopener" + target="_blank"
+       而 javascript:alert(1) 那条**没有**变成 <a>
+图片 = 0 个 <img>;裸 HTML = 2 处文字;DOM 里 script 元素 = **0**
+页面错误 = 0(点代码块的复制按钮也没崩)
+```
+
+#### 验证怎么跑
+
+```bash
+cd web && npm run typecheck && npm test        # 88(新增 markdown 12 项:结构 / 安全 / 中文强调)
+npm run check:design && npm run check:tokens && npm run build
 ```

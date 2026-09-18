@@ -24,6 +24,7 @@ import {
   IconChevronDownOutline14,
   IconCopyOutline16,
 } from "./icons";
+import { Markdown } from "../markdown/render";
 import { processLabel } from "../state/stats";
 import type {
   Block,
@@ -357,7 +358,7 @@ function Process({ rows }: { rows: ProcessRow[] }) {
 // ── 助手文本 ──────────────────────────────────────────────
 
 /**
- * 回答:**无壳正文**(dsh 的 assistant 就是一段干净 markdown)。
+ * 回答:**无壳正文**,而且**渲染 markdown**(见 `markdown/`)。
  *
  * 原来的"回答 · <agent>"眉条去掉了两件事:左缘细线(反馈:「把回答左边的竖线去掉」)
  * 和人称式标签 —— agent 名字在紧跟其上的分派行里已经有了,不必说两遍。
@@ -380,10 +381,7 @@ function Say({
 }) {
   return (
     <Plain kind="say" attrs={{ "data-tone": row.tone }}>
-      <div className="say__text">
-        {row.text}
-        {row.live ? <span className="caret" /> : null}
-      </div>
+      <Markdown text={row.text} onCopy={onCopy} streaming={row.live} />
       {row.live ? null : (
         <MessageActions
           text={row.text}

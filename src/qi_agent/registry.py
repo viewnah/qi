@@ -7,8 +7,9 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,90 @@ __all__ = [
 EXTENSION_ENTRY_FILE = "extension.py"
 #: pip 通道的 entry point 组(v1 叫 `qi.plugins`;**cold cut,不留别名** —— 见 extensions.md E1)
 EXTENSION_ENTRY_POINT_GROUP = "qi.extensions"
+#: 宿主自己的 distribution 名(禁写进扩展的 dependencies —— 见 §5.5)
+HOST_DISTRIBUTION = "qi-agent"
+
+# `packaging` 是可选依赖:它在绝大多数环境里经由 setuptools/pip/pytest 存在,
+# 但 qi 自己不依赖它 —— 拿不到就只报告原始 spec,不猜“满不满足”。
+try:  # pragma: no cover - 取决于环境
+    from packaging.requirements import Requirement as _Requirement
+    from packaging.version import Version as _Version
+    _HAS_PACKAGING = True
+except Exception:  # noqa: BLE001
+    _Requirement = None            # type: ignore[assignment]
+    _Version = None                # type: ignore[assignment]
+    _HAS_PACKAGING = False
+
+_LEADING_NAME = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
+
+
+def _normalize_dist_name(name: str) -> str:
+    """PEP 503 归一:大小写与 `-_.` 都视为等价。"""
+    return re.sub(r"[-_.]+", "-", name or "").strip().lower()
+
+
+def _requirement_targets_host(req: str) -> bool:
+    """这条依赖是否指向宿主(不借助 packaging 也能判定 —— 它只影响诊断)。"""
+    name = ""
+    if _Requirement is not None:
+        try:
+            name = _Requirement(req).name
+        except Exception:  # noqa: BLE001 坏 spec 不拖垮装载
+            name = ""
+    if not name:
+        match = _LEADING_NAME.match(req)
+        name = match.group(1) if match else ""
+    return _normalize_dist_name(name) == _normalize_dist_name(HOST_DISTRIBUTION)
+
+
+def installed_host_version() -> str | None:
+    """当前装着的 qi-agent 版本(拿不到就 None)。"""
+    import importlib.metadata as metadata
+
+    try:
+        return metadata.version(HOST_DISTRIBUTION)
+    except Exception:  # noqa: BLE001 包元数据缺失(源码直跑等)
+        return None
+
+
+def _specifier_allows(reqs: list[str], version: str | None) -> bool | None:
+    """这些依赖约束是否被当前版本满足;None = 判定不了(没 packaging/没版本)。"""
+    if not _HAS_PACKAGING or version is None:
+        return None
+    try:
+        parsed = _Version(version)          # type: ignore[misc]
+        return all(parsed in _Requirement(r).specifier for r in reqs)  # type: ignore[misc]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def warn_host_dependency(name: str, dist: Any,
+                         report: Callable[[str], None] | None) -> None:
+    """报告“扩展把宿主写进了依赖”这件亊(§5.5 / E11)。
+
+    为什么不静默:pi 用 `peerDependencies` + `"*"` 表达“宿主提供、别自己打包”,
+    而 Python **没有** peer 这个概念 —— 扩展一旦写 `qi-agent==0.1.0`,pip 就会在解析时
+    把我们自己的 qi 降级(宿主被自己的扩展踢掉)。这类故障现场和根因隔得很远,
+    所以到了装完才报就晚了;装载时就指出。
+
+    **只报告不拒绝**:声明它本身不危险(危险的是被 pip 解成一棵冲突的树),
+    拒载会让一个本来能跑的扩展直接不可用 —— 而用户此刻需要的是“知道并去改 pyproject”。
+    """
+    if report is None or dist is None:
+        return
+    requires = [str(r) for r in (getattr(dist, "requires", None) or ())]
+    host_specs = [r for r in requires if _requirement_targets_host(r)]
+    if not host_specs:
+        return
+    installed = installed_host_version()
+    allowed = _specifier_allows(host_specs, installed)
+    verdict = ("" if allowed is None else
+               "当前版本**满足**它" if allowed else "当前版本**不满足**它")
+    detail = "" if allowed is not None else "(未能判定是否满足:缺 packaging 或版本信息)"
+    report(f"扩展 {name} 把宿主 {HOST_DISTRIBUTION} 写进了依赖:{'、'.join(host_specs)};"
+           f"当前 {HOST_DISTRIBUTION} {installed or '未知'}。{verdict}{detail} "
+           "宿主应当由 qi 自己提供,不该出现在扩展的 dependencies 里"
+           "(否则 pip 可能把 qi 自己降级)—— 请从 pyproject 里去掉。")
 
 
 class ToolCatalog:
@@ -121,6 +206,7 @@ def discover_extensions(catalog: ToolCatalog, capabilities: CapabilityRegistry,
                         cwd: Path | None = None, *,
                         bus: ExtensionBus,
                         host: Any = None,
+                        on_warning: Callable[[str], None] | None = None,
                         extra_dirs: Iterable[Path | tuple[Path, str]] | None = None,
                         project_trusted: bool = True) -> list[str]:
     """发现并装载扩展:目录通道 + entry points(`qi.extensions`)。返回扩展名列表。
@@ -131,6 +217,10 @@ def discover_extensions(catalog: ToolCatalog, capabilities: CapabilityRegistry,
     `host` 是工具集读写面(`setActiveTools` / `getActiveTools` 的后端)。**选填**:
     没给时 `getActiveTools` 退回“catalog 里的全部”,而 `setActiveTools` 会**报错**
     (不是静默无效)—— 失败看得见,所以不必像 bus 那样强制。
+
+    `on_warning` 收“装上了但有隐患”的报告(目前只有一件:扩展把宿主写进了依赖)。
+    它**不阻止装载** —— 那类问题的现场在 pip 的解析结果里,不在这一行,所以要做的是
+    让用户知道,而不是把扩展判死。
 
     优先级(先到先得,同名跳过):项目 `.qi/extensions/` → 全局 `<agent>/extensions/`
     → `extra_dirs`(settings.json 的 `extensions[]`)→ entry points。
@@ -154,6 +244,7 @@ def discover_extensions(catalog: ToolCatalog, capabilities: CapabilityRegistry,
                 continue
             register(api)
             capabilities.merge(api)
+            warn_host_dependency(name, origin.get("dist"), on_warning)
             loaded.append(name)
         except Exception as exc:  # 扩展坏 → 启动报错(不静默)
             raise RuntimeError(f"扩展 {name} 装载失败: {exc}") from exc
@@ -215,8 +306,7 @@ def _iter_extension_loaders(cwd: Path | None,
                 continue
             seen.add(name)
             yield name, _make_file_loader(name, entry), {
-                "path": str(entry), "scope": scope, "origin": "top-level"}
-    # entry point 通道(pip 包)
+                "path": str(entry), "scope": scope, "origin": "top-level"}    # entry point 通道(pip 包)
     for ep in metadata.entry_points(group=EXTENSION_ENTRY_POINT_GROUP):
         name = ep.name
         if name in seen:
@@ -225,7 +315,8 @@ def _iter_extension_loaders(cwd: Path | None,
         # 包通道的来源靠 distribution 定位;拿不到就留空(dist_info 缺失等)
         dist = getattr(ep, "dist", None)
         path = str(getattr(dist, "_path", "") or "") if dist is not None else ""
-        yield name, ep.load, {"path": path, "scope": "user", "origin": "package"}
+        yield name, ep.load, {"path": path, "scope": "user", "origin": "package",
+                              "dist": dist}
 
 
 def _make_file_loader(name: str, entry: Path):

@@ -126,6 +126,7 @@ def _env_catalog(*, approve_project: bool | None = None) -> tuple[ToolCatalog, l
     trusted, _reason = resolve_project_trust(settings, approve=approve_project)
     extensions = discover_extensions(
         catalog, caps, None, bus=ExtensionBus(),
+        on_warning=lambda msg: err_console.print(f"[yellow]{escape(msg)}[/yellow]"),
         extra_dirs=extension_dirs(None, trusted=trusted),
         project_trusted=trusted)
     return catalog, extensions

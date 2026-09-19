@@ -223,7 +223,8 @@ core → 解析等待中的 future   → 扩展拿到结果
 **安装目标(已定,E13):统一装进 qi 自己的解释器环境。** `qi install` 用 `[sys.executable, "-m", "pip", "install", ...]` —— 目标是 qi 所在的那个 venv,**不是**用户 cwd 的项目 venv(否则就是那个经典失败:"我在项目里 pip install 了,qi 就是 import 不到")。
 
 - **公开 import 白名单**(§5.5 —— pi 的 `## Available Imports` 对应物):扩展能 import 的只有 `qi_agent.extensions`:`ExtensionBus` / `ExtensionApi` / `ExtensionContext` / `EmitResult` / `Tool` / `ToolError` / `ToolExecutor` / `ToolOutcome` / `register_tool`。`Tool` 在 P-E2a **搬到了这里**(原来住在 `registry.py` —— 扩展要写工具就必然要这个类型,让它住在“注册表”里等于把内部结构当公开面);`registry` 仍**转发导入**这两个名字,所以旧写法不会断。
-- **禁止钉宿主版本**:pi 用 `peerDependencies` + `"*"`;Python 没有 peer,所以明文规定**扩展不得把 `qi-agent` 写进 `dependencies`**(否则 pip 会在解析时把 qi 自己降级 —— 宿主被自己的扩展踢掉)。装载时读 `importlib.metadata.requires()` 直接检查。
+- **禁止钉宿主版本**:pi 用 `peerDependencies` + `"*"`;Python 没有 peer,所以明文规定**扩展不得把 `qi-agent` 写进 `dependencies`**(否则 pip 会在解析时把 qi 自己降级 —— 宿主被自己的扩展踢掉)。
+  **P-E2d 已落地**:pip 通道装载时读 `importlib.metadata` 的 `requires`,命中就报(带版本满足判定与可执行动作)。**只报告不拒绝** —— 声明本身不危险,危险的是被 pip 解成一棵冲突的树;拒载会让本来能跑的扩展直接不可用。判定时按 PEP 503 归一(`Qi.Agent` / `qi_agent` 都算),但 `qi-agent-extra` 不算。目录通道没有 dist 元数据 → 这条只对 pip 通道生效(PEP 723 声明解析是 P-E6)。
 - **目录通道的声明**:PEP 723 inline metadata(`# /// script` + `dependencies`)。**声明仍然要做**(`qi install` 据此装、`qi doctor` 据此查),但**目标是同一个环境**,不再用 `--target` 私有目录(E13)。
 - **接受的代价**:所有扩展 + 宿主共用一棵解析树 → **版本冲突无处躲**。三层缓解:① 装载时读 `requires()` 比对已装版本,**不一致就报告**(不静默);② 冲突就拆成 MCP server(独立进程 + 自己的环境);③ 重依赖优先走 MCP。这条也是 §7.2 "进程内" 选择的同一个代价面。
 - **uv tool / pipx 的坑**:uv 文档原话 —— tool 环境 "may be upgraded via `uv tool upgrade`, or **re-created entirely** via subsequent `uv tool install`",所以 pip 装进去的扩展**会被重建抹掉**。规矩:声明永远在 `settings.packages`,靠 `qi install --sync` 补回;或者这类用户改用 `uv tool install qi-agent --with qi-mcp`(把扩展写进 uv 的托管依赖,升级不丢)。
@@ -342,13 +343,16 @@ core 技能发现:同理(私有技能自动绑定)
 | **P-E2b 运行时工具集 + `exec`** ✅ | 动态注册(装载后、事件里都能注册且**下一轮就能调**)+ `getAllTools`(元数据 + `source_info`)/ `getActiveTools` / `setActiveTools`(覆盖优先于 agent 的 `tools`,跳角色生效)+ `exec`(不经 shell) | `tests/test_extension_tools.py` 13 项:端到端证明覆盖**穿过 runner**(下一轮 tool schema 里真的只剩 `read`);无宿主时 `getActiveTools` 降级而 `setActiveTools` **报错**;`exec` 的超时/中断都真 kill、带空格参数不被拆 |
 | **P-E2c-1 输入面** ✅ | `input`(`transform` / `handled`)+ `before_agent_start`(链式 `system_prompt`)+ `bus.has()` 逐事件护栏 | `tests/test_extension_events.py` 12 项:`handled` **真的不跑 agent**(LLM 零调用);`transform` 影响模型看到的 + 落盘的;链式顺序;handler 崩了不拖垮这一轮;零扩展时行为与从前一致 |
 | **P-E2c-2 轮次与工具事件** ✅ | runner 侧派发点全部接上:`agent_start`/`agent_end`、`turn_start`/`turn_end`、`context`、`tool_call`、`tool_result`(`agent_settled` 不做,见 §3.1) | `tests/test_extension_runner_events.py` 10 项:`turn` 事件的**次数与 index** 钉住;`context` 换掉的列表就是真发出去的那份;`block` = 工具**真的没执行**(带一个“去掉 gate 就真跑”的对照组);handler 崩了 fail-safe 拦住;`tool_result` 的 patch 真的改到模型看到的 |
-| **P-E2d 依赖契约** | 装载时读 `importlib.metadata.requires()`:禁把 `qi-agent` 写进 `dependencies` + 已装版本不符就报告 | 钉了宿主版本的扩展被判出而不静默 |
+| **P-E2d 依赖契约** ✅ | 装载时检查 pip 通道扩展的 `requires()`:把宿主写进 `dependencies` 就报告(含版本满足判定与修复动作);`packaging` 可选,拿不到就只报原始 spec 不猜 | `tests/test_extension_deps.py` 9 项:归一化(`Qi.Agent` 算、`qi-agent-extra` 不算)· 版本不满足时说清“不满足”· **报告了但仍然装载** · 一路到 `runtime.notes` 看得见 |
 | **P-E3 命令与 UI + 会话面** | `registerCommand` / `registerShortcut` / `registerFlag` + **`ctx.ui` 通道(TUI)** + renderer 三件套 + `appendEntry` + `sendMessage`/`sendUserMessage` + `sessionManager` + `setModel`/thinking + 会话类事件 | 扩展能注册 `/cmd`、弹 confirm、落盘自定义 entry 并在 TUI 回放 |
 | **P-E4 core 收窄** | runner 入参从 `AgentUnit` 改 `{system_prompt, tools, model}`;**新增 `ctx.runAgent(spec, task)`(E12)**;`AgentRegistry`/`load_all_agents`/dispatcher 从 core 移出;**仓库自己的 4 个项目 agent 先搬进 `examples/`(E15)**;`events` 总线;`registerProvider` | `qi` 裸启动单 agent 跑通;core 不再 import `dispatcher`/`loader.load_all_agents`;core `dependencies` 去掉 `mcp`;`ctx.runAgent` 能在测试里跑完一个子任务 |
 | **P-E5 三件套迁移** | qi-mcp → qi-agents → qi-web(按依赖从少到多);**qi-agents 落地后把仓库 agents 搬回 `.qi/agents/`(E15)**;`ctx.ui` 的 web 侧 + `add_route`/`add_static` | 三个包各自可装可卸;不装时启动提示与 `qi doctor` 正确;`qi web` 由扩展提供;`qi --agent <name>` 由 qi-agents 提供 |
 | **P-E6 收尾** | 参考扩展样例(至少一个 `examples/extensions/` 下的完整例子)+ 目录通道的 PEP 723 声明解析 + 冲突报告 + 文档重写(agent-config.md / web.md / dispatcher.md 归档)+ 迁移提示打磨 | 新用户按 extensions.md 能写出并装上第一个扩展;声明与实装不一致时 `qi doctor` 报得出来 |
 
-**依赖关系**:P-E1a/b/c ✅ → **P-E1d ✅** → **P-E2a ✅** → **P-E2b ✅** → **P-E2c-1 ✅** → **P-E2c-2 ✅** → P-E2d → P-E3 顺序做;P-E4 可与 P-E3 并行;P-E5 依赖 P-E2 + P-E3 + P-E4;P-E6 最后。
+**依赖关系**:P-E1a/b/c ✅ → **P-E1d ✅** → **P-E2a ✅** → **P-E2b ✅** → **P-E2c-1 ✅** → **P-E2c-2 ✅** → **P-E2d ✅** → P-E3 顺序做;P-E4 可与 P-E3 并行;P-E5 依赖 P-E2 + P-E3 + P-E4;P-E6 最后。
+
+> **P-E2 整段完成**:工具面(注册 / 元数据 / 来源 / 运行时集合 / `exec`)+ 输入面(`input`、`before_agent_start`)+ 轮次与工具事件(`turn_*`、`context`、`tool_call`、`tool_result`)+ 依赖契约。
+> 剩下的 P-E6 尾巴:PEP 723 目录通道声明解析、冲突报告深度、`qi doctor` 汇总。
 
 **命名规则**(避免以后再纠结):**方法名照 pi 保留 camelCase**(`registerTool` / `getAllTools` / `setActiveTools` …) —— 那是扩展作者要背的那部分;qi **自己的数据结构用 snake_case**(`prompt_snippet` / `source_info` 的键)。v1 的旧名(`add_tool`)作为别名留着。
 

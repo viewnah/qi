@@ -135,6 +135,7 @@ class QiRuntime:
                 f"`extensions/`,请手动改名(不会自动改仓库内容)")
         self.extensions = discover_extensions(
             self.catalog, self.capabilities, self.cwd, bus=self.bus, host=self,
+            on_warning=self.notes.append,
             extra_dirs=extension_dirs(self.cwd, trusted=self.project_trusted,
                                       extra=list(extra_extension_paths or ())),
             project_trusted=self.project_trusted)

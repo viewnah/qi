@@ -29,7 +29,13 @@ from .compaction import (
 from .abort import AbortSignal
 from .config import ResolvedModel, load_config, resolve_default_model, resolve_router_model
 from .dispatcher import Decision, Dispatcher
-from .extensions import CommandRegistry, ExtensionBus, ExtensionContext, ExtensionUi
+from .extensions import (
+    CommandRegistry,
+    ExtensionBus,
+    ExtensionContext,
+    ExtensionUi,
+    FlagRegistry,
+)
 from .llm import (
     ChatMessage,
     LiteLLMClient,
@@ -89,7 +95,8 @@ class QiRuntime:
                  extra_extension_paths: Iterable[Path] | None = None,
                  approve_project: bool | None = None,
                  has_ui: bool = False,
-                 ui_frontend: Any = None):
+                 ui_frontend: Any = None,
+                 extension_flags: Iterable[str] | None = None):
         self.cwd = Path(cwd) if cwd else Path.cwd()
         # 旧版扁平布局 → ~/.qi/agent/(幂等;显式设了 QI_AGENT_HOME 时不动)
         paths.ensure_layout()
@@ -144,13 +151,30 @@ class QiRuntime:
         self.ui = ExtensionUi(frontend=ui_frontend, notes=self.notes)
         # 扩展命令/快捷键的汇合点(TUI 按它分发 `/cmd` 与按键)
         self.commands = CommandRegistry()
+        # CLI 旗标(扩展用 `registerFlag` 声明;值走 core 的 `--ext name=value`)
+        self.flags = FlagRegistry()
+        #: `--ext` 里**不能用**的那些(名字打错 / 值非法)。与 `notes` 分开:
+        #: 这个是致命的(用户打错了命令行),CLI 据此退出码 2;notes 只是告知。
+        self.flag_errors: list[str] = []
+        # 附加扩展目录先算好:嵌在 kwargs 里会让这次调用看不出“传了哪几样”
+        extra_extensions = extension_dirs(
+            self.cwd, trusted=self.project_trusted,
+            extra=list(extra_extension_paths or ()))
         self.extensions = discover_extensions(
-            self.catalog, self.capabilities, self.cwd, bus=self.bus, host=self,
+            self.catalog, self.capabilities, self.cwd,
+            bus=self.bus,
+            host=self,
             commands=self.commands,
+            flags=self.flags,
             on_warning=self.notes.append,
-            extra_dirs=extension_dirs(self.cwd, trusted=self.project_trusted,
-                                      extra=list(extra_extension_paths or ())),
+            extra_dirs=extra_extensions,
             project_trusted=self.project_trusted)
+        # `--ext` 的值要在**扩展声明之后**才能解析(名字与类型都在那边),所以放在这里
+        for pair in extension_flags or ():
+            problem = self.flags.provide(str(pair))
+            if problem:
+                self.flag_errors.append(problem)
+        self.notes.extend(self.flags.problems)
 
         # 顶层技能(~/ .agents > qi 全局 > .agents 项目 > qi 项目 > settings),agent 自带者优先
         self.top_skills = load_top_level_skills(

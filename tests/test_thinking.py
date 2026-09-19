@@ -246,6 +246,7 @@ class FakeRuntime:
         from qi_agent.extensions import CommandRegistry
 
         self.commands = CommandRegistry()
+        self.flag_errors: list[str] = []      # cli 会读它(打错的 --ext)
 
     async def start_session(self, session, reason: str = "startup") -> None:
         """真实 QiRuntime 的会话级事件;假运行时不用它(不派发任何事件)。"""

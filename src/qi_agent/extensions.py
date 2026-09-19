@@ -158,6 +158,110 @@ class ExtensionShortcut:
     source: str
 
 
+@dataclass
+class FlagSpec:
+    """扩展声明的一个 CLI 旗标(docs/extensions.md §11.8 选定的 b 方案)。
+
+    qi **不往 typer 的选项表里动态加东西**(实测:typer 的 `get_command` 每次重建,
+    往 `TyperGroup` 里塞裸 `click.Option` 会崩在它自己的内置属性上)。core 只静态声明
+    一个 `--ext name=value`(可重复),扩展旗标走它。
+    """
+
+    name: str
+    type: str = "boolean"          # boolean | string
+    default: Any = False
+    description: str = ""
+    source: str = ""
+
+
+#: `--ext` 里接受的真/假写法。未列全的一律当“值非法”报出来,不静默取默认值。
+_TRUTHY = ("true", "1", "yes", "on")
+_FALSY = ("false", "0", "no", "off")
+
+
+class FlagRegistry:
+    """扩展旗标的登记处 + `--ext` 传来的值的解析。
+
+    两条设计:
+    * **未知旗标名会被拒绝**(`provide` 返回 False)—— 这是 `--ext` 方案保留
+      “打错就报错”那一层保护的地方:没有它,`--ext agnet=reviewer` 会静静地什么也不做。
+    * **值非法也报出来**(不静默取默认值):`--ext plan=maybe` 应该是错,
+      而不是“用户以为开了、其实没开”。
+    """
+
+    def __init__(self) -> None:
+        self._specs: dict[str, FlagSpec] = {}
+        self._values: dict[str, Any] = {}
+        #: “提供了但没用上 / 用不对”的说明(调用方转成 notes 让人看见)
+        self.problems: list[str] = []
+
+    # ── 声明(扩展侧)──
+    def add(self, name: str, *, type: str = "boolean", default: Any = False,
+            description: str = "", source: str = "") -> None:
+        """重名时**第一条胜**,后来的记一条 problem(不静默丢掉,也不覆盖它)。"""
+        key = name.strip().lstrip("-")
+        if key in self._specs:
+            self.problems.append(
+                f"旗标 --{key} 已被 {self._specs[key].source} 声明"
+                f"({source} 的重复声明被忽略)")
+            return
+        self._specs[key] = FlagSpec(name=key, type=type, default=default,
+                                    description=description, source=source)
+
+    # ── 取值(扩展侧)──
+    def value(self, name: str) -> Any:
+        """旗标当前值:`--ext` 给的优先,否则声明的 default;未声明的 → None。"""
+        key = name.strip().lstrip("-")
+        if key in self._values:
+            return self._values[key]
+        spec = self._specs.get(key)
+        return spec.default if spec is not None else None
+
+    # ── 喂值(宿主侧,来自 `--ext`)──
+    def provide(self, pair: str) -> str | None:
+        """`name=value`(或裸 `name` = 布尔真)。**返回错误说明**(None = 没问题)。
+
+        返回字符串而不是布尔值:调用方需要把这句话**原样报给用户**,自己再拼一遍
+        容易和这里的判断漂开(新增一种非法写法时只改了一处)。
+        """
+        raw = pair.strip()
+        if not raw:
+            return None
+        name, sep, value = raw.partition("=")
+        key = name.strip().lstrip("-")
+        spec = self._specs.get(key)
+        if spec is None:
+            return (f"--ext {name} 没有对应的扩展旗标(是不是打错了?)"
+                    + (f";已注册的是: {', '.join(self.names)}" if self._specs else
+                       ";当前没有任何扩展声明旗标"))
+        if spec.type != "boolean":
+            self._values[key] = value if sep else ""
+            return None
+        if not sep:                                  # `--ext plan` = 打开
+            self._values[key] = True
+            return None
+        lowered = value.strip().lower()
+        if lowered in _TRUTHY:
+            self._values[key] = True
+            return None
+        if lowered in _FALSY:
+            self._values[key] = False
+            return None
+        return (f"--ext {key}={value} 不是布尔值"
+                f"(接受 {'/'.join(_TRUTHY + _FALSY)};写 --ext {key} 即打开)")
+
+    def specs(self) -> list[FlagSpec]:
+        return [self._specs[k] for k in sorted(self._specs)]
+
+    @property
+    def names(self) -> list[str]:
+        return sorted(self._specs)
+
+    @property
+    def is_empty(self) -> bool:
+        return not self._specs
+
+
 class CommandRegistry:
     """扩展命令与快捷键的登记处(与 `CapabilityRegistry` 并列的一个宿主侧汇合点)。
 
@@ -562,6 +666,8 @@ class ExtensionApi:
     _host: Any = None
     #: 命令与快捷键的登记处(由发现阶段注入);没给则 `registerCommand` 报错。
     _commands: CommandRegistry | None = None
+    #: CLI 旗标的登记处(同上);没给则 `registerFlag` 报错。
+    _flags: FlagRegistry | None = None
 
     # ── 工具 ──
     def registerTool(self, tool: Tool) -> None:      # noqa: N802 pi 的方法名,保持同形
@@ -642,6 +748,26 @@ class ExtensionApi:
         return [{"name": c.invocable, "description": c.description, "source": c.source}
                 for c in self._commands.all()]
 
+    # ── CLI 旗标 ──
+    def registerFlag(self, name: str, *, type: str = "boolean", default: Any = False,
+                     description: str = "") -> None:        # noqa: N802
+        """声明一个 CLI 旗标(pi 的 `registerFlag`)。
+
+        **值不走 `--plan` 这种短形式**,而是 `qi --ext plan=true` —— 原因见 §11.8:
+        typer 的选项表是静态的,为动态旗标放宽 `ignore_unknown_options` 会把用户
+        打错的选项变成一句 prompt。`--ext` 显式、可 grep、不可能和笔误混淆。
+        """
+        if self._flags is None:
+            raise RuntimeError("宿主没有提供旗标登记处:registerFlag 不可用")
+        self._flags.add(name, type=type, default=default,
+                        description=description, source=self._name)
+
+    def getFlag(self, name: str) -> Any:                     # noqa: N802
+        """读旗标当前值(`--ext` 给的优先,否则声明的 default)。"""
+        if self._flags is None:
+            return None
+        return self._flags.value(name)
+
     # ── 事件 ──
     def on(self, event: str, handler: ExtensionHandler) -> None:
         """订阅事件;来源自动带上本扩展名(诊断时能指到是谁)。"""
@@ -670,6 +796,8 @@ __all__ = [
     "ExtensionHandler",
     "ExtensionShortcut",
     "ExtensionUi",
+    "FlagRegistry",
+    "FlagSpec",
     "Tool",
     "ToolError",
     "ToolExecutor",

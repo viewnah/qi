@@ -124,8 +124,11 @@ class Dispatcher:
             if call:
                 agent = str(call.args.get("agent", ""))
                 if agent in self.registry.names:
-                    conf = float(call.args.get("confidence", 1.0))
+                    conf = self._confidence(call.args.get("confidence"))
                     reasoning = str(call.args.get("reasoning", ""))
+                    if conf is None:
+                        # 模型给的不是数字 → 退到兜底,而不是把回合打崩
+                        return self._fallback(text, "router 没给出可解析的 confidence")
                     if conf >= self.confidence_min:
                         return Decision(agent=agent, confidence=conf, source="router",
                                         reasoning=reasoning)
@@ -133,6 +136,29 @@ class Dispatcher:
                 if agent:  # 未知名 → 重试一次
                     continue
         return self._fallback(text, "router 无有效输出")
+
+    @staticmethod
+    def _confidence(raw: object) -> float | None:
+        """把模型给的 confidence 收敛成 float;不是数字就返回 None。
+
+    为什么需要它(实测):Router-LLM 不保证字段类型 —— `"high"` 会 ValueError、
+    `null` 会 TypeError,而这两句异常会**穿穿整个分派**(`decide_semantic` 没兜住它),
+    把一个回合直接打崩。而这里本来就有兜底路径(`_fallback` 派给 general),
+    所以“解析不了”应当降级,而不是崩。
+    """
+        if isinstance(raw, bool):        # bool 是 int 子类,但 `confidence: true` 没有含义
+            return None
+        if isinstance(raw, (int, float)):
+            try:
+                return float(raw)
+            except (TypeError, ValueError):   # 前面已收窄到 int/float;防的是子类实现异常
+                return None
+        if isinstance(raw, str):
+            try:
+                return float(raw.strip())
+            except ValueError:
+                return None
+        return None                      # None / 对象 / 列表… 都不算数字
 
     def _fallback(self, text: str, reason: str = "无规则/语义命中") -> Decision:
         general = self.registry.get("general")

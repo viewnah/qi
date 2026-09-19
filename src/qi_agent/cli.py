@@ -227,6 +227,8 @@ def root_callback(
     verbose: bool = typer.Option(False, "--verbose", help="显示分派与工具调用进度(默认只输出答案,对齐 pi)"),
     skill: list[str] = typer.Option(None, "--skill", help="额外技能文件/目录(可重复;叠加)"),
     no_skills: bool = typer.Option(False, "--no-skills", "-ns", help="关闭技能自动发现(--skill 仍生效)"),
+    ext: list[str] = typer.Option(None, "--ext",
+                                  help="扩展旗标:name=value(可重复;由扩展 registerFlag 声明)"),
     approve: bool = typer.Option(False, "--approve", "-a", help="信任项目 .qi(加载项目级扩展)"),
     no_approve: bool = typer.Option(False, "--no-approve", "-na", help="不信任项目 .qi(显式拒绝)"),
     thinking: str | None = typer.Option(None, "--thinking", help="思考级别: " + "/".join(THINKING_LEVELS)),
@@ -238,6 +240,9 @@ def root_callback(
         raise typer.Exit()
     messages = list(ctx.args)
     prompt = " ".join(messages).strip()
+    # 扩展旗标预先归一(交互与无头两条路径共用) —— 解析要等扩展声明完,
+    # 所以这里只把 `--ext` 原样接住,真正生效在 QiRuntime 里。
+    extension_flags = list(ext or [])
     # docs/cli.md §1 / 对齐 pi:不带 -p 恒为交互(`-p` 才是无头),也不再需要 `qi tui`;
     # 给了消息就进 TUI 并把它作为首条消息发出(pi 的 `pi "问题"` 同款)。
     # `--mode json` 是脚本路径(输出事件流,不是 TUI),仍走无头。
@@ -249,7 +254,8 @@ def root_callback(
             raise typer.Exit(code=0)
         _launch_tui(prompt or None, session_id=session_id, cont=cont, fork_id=fork_id,
                     no_session=no_session, name=name,
-                    approve_project=_trust_flag(approve, no_approve))
+                    approve_project=_trust_flag(approve, no_approve),
+                    extension_flags=extension_flags)
         return
     if not prompt:
         usage = (
@@ -271,6 +277,7 @@ def root_callback(
         runtime = QiRuntime(skills_enabled=not no_skills,
                             thinking_level=thinking,
                             approve_project=_trust_flag(approve, no_approve),
+                            extension_flags=extension_flags,
                             extra_skill_paths=[Path(p) for p in (skill or [])])
     except _LoadErr as exc:
         console.print(f"[red]装载失败:[/red] {escape(str(exc))}")
@@ -278,6 +285,12 @@ def root_callback(
     except _CfgErr as exc:
         console.print(f"[red]配置错误:[/red] {escape(str(exc))}")
         raise typer.Exit(code=2) from exc
+    # `--ext` 报错 → **退出码 2**(与未知 CLI 选项同类:这是命令行打错了,不是运行时失败)。
+    # 必须在这里拦:继续跑的话用户会以为旗标生效了,而实际值一个都没进去。
+    if runtime.flag_errors:
+        for problem in runtime.flag_errors:
+            err_console.print(f"[red]{escape(problem)}[/red]")
+        raise typer.Exit(code=2)
     store = runtime.sessions
     # 启动提示(未信任跳过项目级扩展、旧 plugins/ 目录残留…)走 stderr:
     # `-p` 的 stdout 是给脚本/管道用的,不能混入提示。
@@ -1250,7 +1263,8 @@ def _trust_flag(approve: bool, no_approve: bool) -> bool | None:
 def _launch_tui(initial_prompt: str | None = None, *, session_id: str | None = None,
                 cont: bool = False, fork_id: str | None = None,
                 no_session: bool = False, name: str | None = None,
-                approve_project: bool | None = None) -> None:
+                approve_project: bool | None = None,
+                extension_flags: list[str] | None = None) -> None:
     """启动 TUI(顶层 `qi` 的默认去向)。
 
     刻意不做成子命令:`pi` 也没有 `pi tui` —— 裸 `qi` 就是交互界面。
@@ -1263,7 +1277,8 @@ def _launch_tui(initial_prompt: str | None = None, *, session_id: str | None = N
         console.print(f"[red]TUI 不可用: {escape(str(exc))}[/red]")
         raise typer.Exit(code=1) from exc
     run_tui(initial_prompt, session_id=session_id, cont=cont, fork_id=fork_id,
-            no_session=no_session, name=name, approve_project=approve_project)
+            no_session=no_session, name=name, approve_project=approve_project,
+            extension_flags=extension_flags)
 
 
 def _port_free(host: str, port: int) -> bool:

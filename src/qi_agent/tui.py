@@ -1657,11 +1657,14 @@ class QiTui(App):
                  palette: Palette | None = None, session_id: str | None = None,
                  cont: bool = False, fork_id: str | None = None,
                  no_session: bool = False, name: str | None = None,
-                 approve_project: bool | None = None):
+                 approve_project: bool | None = None,
+                 extension_flags: list[str] | None = None):
         super().__init__()
         self._rt = runtime
         # 项目信任的三态(None = 看 settings.defaultProjectTrust);`qi -a` / `-na` 透传到这里
         self._approve_project = approve_project
+        # `qi --ext name=value` 原样带下去 —— 解析要等扩展声明完(在 QiRuntime 里)
+        self._extension_flags = list(extension_flags or [])
         self._initial_prompt = (initial_prompt or "").strip() or None
         # 会话选择(对齐 CLI/pi:`qi -c` / `--session` / `--fork` / `-n` / `--no-session`)
         self._want_session_id = session_id
@@ -1734,7 +1737,8 @@ class QiTui(App):
             if self._rt is None:
                 # `ui_frontend` 在这里装上:`ctx.ui.confirm/select/input` 才真会问人
                 self._rt = QiRuntime(has_ui=True, approve_project=self._approve_project,
-                                     ui_frontend=_TuiUi(self))
+                                     ui_frontend=_TuiUi(self),
+                                     extension_flags=self._extension_flags)
             self._bind_extension_shortcuts()
             self._renderer = TuiRenderer(self._palette, self._rt.cwd)
             self._select_session()
@@ -1759,6 +1763,9 @@ class QiTui(App):
             # runtime 自己不打印(不做 IO),所以展示归前端。
             for note in getattr(self._rt, "notes", []):
                 self._note(note, "warning")
+            # `--ext` 打错属致命:tui 没法给退出码,至少用红色说清楚旗标没生效
+            for problem in getattr(self._rt, "flag_errors", []):
+                self._note(problem, "error")
         except (LoadError, ConfigError) as exc:
             self._append(Static(Text(f"启动失败: {exc}", style=self._palette.hex("error")),
                                 classes="msg"))
@@ -2518,7 +2525,8 @@ class QiTui(App):
         """重载 agents / extensions / 配置(会话不变)。"""
         try:
             runtime = QiRuntime(has_ui=True, approve_project=self._approve_project,
-                                ui_frontend=_TuiUi(self))
+                                ui_frontend=_TuiUi(self),
+                                extension_flags=self._extension_flags)
         except (LoadError, ConfigError) as exc:
             self._note(f"重载失败: {exc}", "error")
             return
@@ -3539,7 +3547,8 @@ def _harden_inline_input() -> None:
 def run_tui(initial_prompt: str | None = None, *, session_id: str | None = None,
             cont: bool = False, fork_id: str | None = None,
             no_session: bool = False, name: str | None = None,
-            approve_project: bool | None = None) -> None:
+            approve_project: bool | None = None,
+            extension_flags: list[str] | None = None) -> None:
     """启动 TUI;`initial_prompt` 非空时进界面即提交(来自 `qi "问题"`)。
 
     会话选择参数与 headless 路径同义:`qi -c` / `--session` / `--fork` / `-n` / `--no-session`。
@@ -3559,5 +3568,6 @@ def run_tui(initial_prompt: str | None = None, *, session_id: str | None = None,
     # 崩溃的来源;关掉还顺带把原生文本选择/复制还给终端。
     QiTui(initial_prompt=initial_prompt, palette=palette, session_id=session_id, cont=cont,
           fork_id=fork_id, no_session=no_session, name=name,
-          approve_project=approve_project).run(
+          approve_project=approve_project,
+          extension_flags=extension_flags).run(
               inline=True, inline_no_clear=True, mouse=False)

@@ -31,6 +31,7 @@ class FakeRuntime:
         self.cwd = Path.cwd()          # 真实 QiRuntime 必有:cli 用它写会话头
         self.notes: list[str] = []     # 启动提示(未信任/旧目录残留),cli 往 stderr 打
         self.started: list[str] = []   # `session_start` 的 reason 记账(扩展事件链)
+        self.flag_errors: list[str] = []   # `--ext` 打错时的报错(cli 据此退出 2)
         self.prompts: list[str] = []
         self.overrides: list[str | None] = []
         CREATED.append(self)

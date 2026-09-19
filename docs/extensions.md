@@ -110,7 +110,7 @@ qi 曾需要的"每轮可换角色"hook **不加** —— 见 §7(多 agent 走 
 | `registerCommand(name, handler, opts)` | 斜杠命令;handler 收 `(args, ctx)`。**重名不覆盖**:都留着并变成 `name:1` / `name:2`(一个都不丢)。`getArgumentCompletions` 未做 | ✅ P-E3b |
 | `registerShortcut(key, handler, opts)` | 快捷键(key 用 textual 写法)。坏键名只提示,不让启动失败 | ✅ P-E3b |
 | `getCommands()` | 当前可输入的命令清单(含 `source`);`/help` 用它把扩展命令列出来 | ✅ P-E3b |
-| `registerFlag(name, opts)` | CLI 开关 —— **待定**,见 §11.8:typer 的选项表是静态的,动态加旗标要放宽 `ignore_unknown_options`,那会**把用户打错选项变成一句 prompt**。要拍板:接受这个代价,还是换一种“显式命名空间”的写法 | ⏸ |
+| `registerFlag(name, opts)` / `getFlag(name)` | CLI 旗标。**值走 core 的静态 `--ext name=value`(可重复)**,不是 `--plan` 这种短形式 —— 原因见 E19 / §11.8(实测 typer 的选项表真的加不上)。未知名字 → **退出码 2** | ✅ P-E3b-2 |
 | `sendMessage(msg, opts)` | 注入自定义消息(**进 LLM 上下文**),`deliverAs: steer\|followUp\|nextTurn` | P-E3 |
 | `sendUserMessage(content, opts)` | 注入用户消息(始终触发一轮) | P-E3 |
 | `appendEntry(customType, data)` | 落盘扩展自定义 entry(**不进 LLM 上下文**) | P-E3 |
@@ -317,7 +317,7 @@ def notify(message, *, level="info") -> None
 
 ### 7.3 必须从 core 拿到的通用能力(全不是"多 agent 专属")
 
-`ctx.runAgent(spec, task)`(**E12 新增的挂点**;内部 = `QiRuntime.stream()` + 内存会话)· `ctx.model` / `ctx.thinkingLevel` / `ctx.cwd` / `ctx.hasUI` / `ctx.isProjectTrusted()` / `ctx.ui.confirm` · 工具的 `onUpdate` 流式进度 · `details` 结构化通道 · `renderCall`/`renderResult` · `ctx.signal`(中断传播)· `appendEntry`(落盘子 agent 调用记录)· `registerFlag`(提供 `qi --agent <name>`,见 E14)。
+`ctx.runAgent(spec, task)`(**E12 新增的挂点**;内部 = `QiRuntime.stream()` + 内存会话)· `ctx.model` / `ctx.thinkingLevel` / `ctx.cwd` / `ctx.hasUI` / `ctx.isProjectTrusted()` / `ctx.ui.confirm` · 工具的 `onUpdate` 流式进度 · `details` 结构化通道 · `renderCall`/`renderResult` · `ctx.signal`(中断传播)· `appendEntry`(落盘子 agent 调用记录)· `registerFlag`(提供角色选择旗标,语法见 E19)。
 
 **这意味着 P-E1..P-E4 全是通用能力,qi-agents 只是消费者** —— 顺序上先做通用的,三件套最后迁。
 
@@ -350,7 +350,7 @@ core 技能发现:同理(私有技能自动绑定)
 | `qi web` | 没装 qi-web → **没有这条子命令**,提示 `qi install pip:qi-web` |
 | `.qi/agents/`、`~/.qi/agent/agents/` | 没装 qi-agents → 目录被忽略(要报**一条启动提示**,不是静默) |
 | `~/.qi/agent/mcp.json`、项目 `.qi/mcp.json`、agent 私有 `mcp.json` | 没装 qi-mcp → 不装载 + 启动提示 |
-| `--agent <name>`、auto 分派、`@点名` | 全归 qi-agents;core 不再有 `--agent` —— 由 qi-agents 用 `registerFlag` 提供(E14) |
+| `--agent <name>`、auto 分派、`@点名` | 全归 qi-agents;core 不再有 `--agent` —— 由 qi-agents 用 `registerFlag` + core 的 `--ext` 提供(**语法见 E19:`qi --ext agent=<name>`**) |
 | `data_sources.json` | 归提供该种类的扩展(现在是 db 插件) |
 | 会话里的 `agent_id` / `dispatch` / `opening_shown` | 变成扩展自定义 entry(旧会话**仍要能回放** —— 前端按 custom entry 容忍渲染) |
 
@@ -373,7 +373,7 @@ core 技能发现:同理(私有技能自动绑定)
 | **P-E2c-2 轮次与工具事件** ✅ | runner 侧派发点全部接上:`agent_start`/`agent_end`、`turn_start`/`turn_end`、`context`、`tool_call`、`tool_result`(`agent_settled` 不做,见 §3.1) | `tests/test_extension_runner_events.py` 10 项:`turn` 事件的**次数与 index** 钉住;`context` 换掉的列表就是真发出去的那份;`block` = 工具**真的没执行**(带一个“去掉 gate 就真跑”的对照组);handler 崩了 fail-safe 拦住;`tool_result` 的 patch 真的改到模型看到的 |
 | **P-E2d 依赖契约** ✅ | 装载时检查 pip 通道扩展的 `requires()`:把宿主写进 `dependencies` 就报告(含版本满足判定与修复动作);`packaging` 可选,拿不到就只报原始 spec 不猜 | `tests/test_extension_deps.py` 9 项:归一化(`Qi.Agent` 算、`qi-agent-extra` 不算)· 版本不满足时说清“不满足”· **报告了但仍然装载** · 一路到 `runtime.notes` 看得见 |
 | **P-E3a `ctx.ui`** ✅ | `ExtensionUi`(后端可选 + 无后端时按 `default` 回答 + `notify` 落 notes)+ TUI 后端(复用 `PickerScreen` 弹选择/确认,新增 `PromptScreen` 做输入)+ `ToolContext.ui` + 修好 `clarify` 从没问过人 | `tests/test_extension_ui.py` 20 项:无头时 `confirm` 必然 False 且**闸门真的拦住**;有人点“是”就放行;扩展自己抛错/前端抛错都走 default;`clarify` 回归 |
-| **P-E3b 命令与快捷键** ✅ | `registerCommand`(handler 收 `(args, ctx)`,重名加序号不覆盖)+ `registerShortcut`(textual 动态 `bind`)+ `getCommands`;TUI 侧:扩展命令**先于内置**认领(但保留 `/quit` `/help` `/hotkeys` 不被顶掉)、`/help` 列出扩展命令 | `tests/test_extension_commands.py` 13 项:重名变 `:1`/`:2` 且一个不丢 · 没登记处就**报错** · 真 textual 下 `/cmd` 真跑到 handler · **扩展不能顶掉 `/quit`** · `/help` 列得出来 |
+| **P-E3b 命令与快捷键 + 旗标** ✅ | `registerCommand`(handler 收 `(args, ctx)`,重名加序号不覆盖)+ `registerShortcut`(textual 动态 `bind`)+ `getCommands` + **`registerFlag` / `getFlag`**(值走 core 静态 `--ext name=value`,未知名字退 2);TUI 侧:扩展命令**先于内置**认领(保留 `/quit` `/help` `/hotkeys`)、`/help` 列出扩展命令 | `tests/test_extension_commands.py` 13 项 + `test_extension_flags.py` 15 项:重名变 `:1`/`:2` 且一个不丢 · 没登记处就**报错** · 真 textual 下 `/cmd` 真跑到 handler · **扩展不能顶掉 `/quit`** · `--ext` 的布尔/字符串/打错三种形态 · 打错**不退 0** |
 | **P-E3c 会话面** | `appendEntry`(落自定义 entry,不进 LLM 上下文)+ `sessionManager`(读 entries / 分支 / 标签)+ `sendMessage` / `sendUserMessage`(含 `deliverAs`)+ `before_agent_start` 的 `message` 注入 | 扩展能落盘自定义 entry 并在 TUI 回放里看到 |
 | **P-E3d 模型、思考级别与会话事件** | `setModel` / `get-setThinkingLevel` + `model_select` / `thinking_level_select` / `session_before_*` / `session_compact*` / `session_tree` / `session_info_changed` + renderer 三件套 | 各事件的派发点接上真实代码路径 |
 | **P-E4 core 收窄** | runner 入参从 `AgentUnit` 改 `{system_prompt, tools, model}`;**新增 `ctx.runAgent(spec, task)`(E12)**;`AgentRegistry`/`load_all_agents`/dispatcher 从 core 移出;**仓库自己的 4 个项目 agent 先搬进 `examples/`(E15)**;`events` 总线;`registerProvider` | `qi` 裸启动单 agent 跑通;core 不再 import `dispatcher`/`loader.load_all_agents`;core `dependencies` 去掉 `mcp`;`ctx.runAgent` 能在测试里跑完一个子任务 |
@@ -404,11 +404,12 @@ core 技能发现:同理(私有技能自动绑定)
 | E11 | 依赖 | 公开 import 白名单 + **禁把 `qi-agent` 写进 dependencies** + 目录通道用 PEP 723 作声明 |
 | E12 | 子 agent 执行 | **进程内**:新增 `ctx.runAgent(spec, task)`(复用 `AgentRunner` + 内存会话)。理由:Python 每进程首调 LLM 付 ~6.8s litellm import,子进程 = 6.8s×N(8 并行 ≈ 54s)vs Node 起一次 0.04s —— pi 的子进程模型不能平移;pi 自己的 SDK 也是进程内。子进程模式列为未来可选 |
 | E13 | 依赖安装目标 | **统一装进 qi 自己的解释器环境**(`sys.executable -m pip`);PEP 723 只作声明。接受"共用一棵解析树"的代价:冲突靠报告 + 走 MCP;uv tool 用户走 `uv tool install --with` |
-| E14 | `registerProfile` | **不做**。qi-agents 用 `registerFlag` + `before_agent_start` 自己提供 `qi --agent <name>`,core 零新增概念(少一个增量就离 pi 近一步) |
+| E14 | `registerProfile` | **不做**。qi-agents 用 `registerFlag` + `before_agent_start` 自己提供角色选择,core 零新增概念(少一个增量就离 pi 近一步)。**具体语法见 E19** |
 | E15 | 断点策略 | **P-E4 直接断**(core 不再认 agent),仓库自己的 4 个项目 agent 先搬 `examples/`,qi-agents 落地后搬回 `.qi/agents/`;**不留"先新增后移除"的中间态**(代价:P-E4→P-E5 期间仓库自己处于裸 core) |
 | E16 | headless 信任默认 | `defaultProjectTrust=ask` + 无 UI → **默认不信任**:跳过项目级扩展/agents/技能 + stderr 提示 `-a`;CI 必须显式信任(§5.3) |
 | E17 | agent 配置对齐 | **先不对齐**:不补 `model`、不改 `tools` 省略语义、不降级 `keywords`。与 CC / pi 的三方对照与理由见 §12;per-agent 模型若需要,走**工具参数**而非 `agent.md` 字段。**已知代价见 §11.7** |
 | E18 | 私有配置归属 | qi-agents 定义 **agent 目录 = 一个 scope**;配置种类提供者(qi-mcp / db 插件)按 scope 自取 —— 目录遍历只一处(§7.4) |
+| E19 | 扩展旗标 | 走 **core 的静态 `--ext name=value`**(可重复),不动态改 typer 的选项表。**实测依据**:`typer.main.get_command()` 每次重建(对返回值 append 白做);往 `TyperGroup` 里塞裸 `click.Option` 会崩(`'Context' object has no attribute '_param_default_explicit'`);纯 click 能 append 但 `expose_value=False` 时值不回 `ctx.params`、`True` 时又把参数当 kwarg 传给回调而破签名。**代价换来了什么**:未知名字一律报错退 2,即“打错旗标”仍然报错(而不是静默当成 prompt)。**对 E14 的影响**:qi-agents 的角色选择语法定为 `qi --ext agent=reviewer` |
 
 ## 11. 未定清单
 
@@ -419,8 +420,7 @@ core 技能发现:同理(私有技能自动绑定)
 5. **冲突报告的深度**:只报告"同一包被要求两个版本",还是做完整的解析预演(读全部 `requires()` + 已装版本 + 约束求解)
 6. **litellm 的 ~6.8s import**(与本设计无关的独立性能问题):它拖累每一次 `qi -p` 的首次响应。查瘦身开关(`LITELLM_MODE=PRODUCTION` 一类)或换 provider 直连 —— 它会同时放大 §7.2 选了进程内的那个理由
 7. **`agent.md` 的 `tools` 省略语义在 agent-as-tool 下有提权风险**(E17 决定先不动):父会话被 `-t` 收窄时,子 agent 按"省略 = catalog 全部"会拿到**全工具**。qi-agents 落地时二选一:① 在扩展里显式解析(用父的 active tools 作基,推荐,不动 `agent.md` 语义);② 改 `agent.md` 的省略语义为"继承父"
-8. **`registerFlag` 要不要做、怎么做**(P-E3b 暂未实现):typer 的选项表是**静态**的,动态加旗标只能放宽 `ignore_unknown_options` + 事后校验。代价很具体:一套没做好的事后校验会把 `qi --agnt x`(打错)**静默当成 prompt 的一部分**。三条路:(a) 接受代价,做“未知选项一律报错、除非它命中已注册的扩展旗标”的校验;(b) 只给一个显式命名的逃生口(如 `--ext name=value`),不蹭 pi 的 `--plan` 形式;(c) 不做,把这类参数改成环境变量 / 配置文件。
-   **这条会反过来影响 E14**:qi-agents 原先计划用 `registerFlag` 提供 `qi --agent <name>` —— 若选 (c),E14 要改成“角色选择走配置 / 会话内命令”
+8. ~~`registerFlag` 怎么做~~ → **已决(E19)**:走 `--ext name=value`。待定的是它的**远端形式**:若以后真出现多个需要短旗标的场景,再回头做 (a)(放宽 `ignore_unknown_options` + 自行校验)。
 
 ## 12. agent 配置对齐(Claude Code / pi / qi 三方对照)
 

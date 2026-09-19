@@ -268,6 +268,7 @@ def test_cli_fork_flag_copies_branch_into_new_session(tmp_path, monkeypatch):
             self.cfg = None
             self.notes: list[str] = []
             self.started: list[str] = []
+            self.flag_errors: list[str] = []      # cli 会读它(打错的 --ext)
 
         async def start_session(self, session, reason: str = "startup") -> None:
             """真实 QiRuntime 的会话级事件;假运行时只记账。"""

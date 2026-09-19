@@ -16,9 +16,10 @@ from typing import Any
 
 from . import paths
 from .extensions import (
-    ExtensionApi,
     CommandRegistry,
+    ExtensionApi,
     ExtensionBus,
+    FlagRegistry,
     Tool,
     ToolError,
     ToolExecutor,
@@ -49,11 +50,9 @@ HOST_DISTRIBUTION = "qi-agent"
 try:  # pragma: no cover - 取决于环境
     from packaging.requirements import Requirement as _Requirement
     from packaging.version import Version as _Version
-    _HAS_PACKAGING = True
 except Exception:  # noqa: BLE001
     _Requirement = None            # type: ignore[assignment]
     _Version = None                # type: ignore[assignment]
-    _HAS_PACKAGING = False
 
 _LEADING_NAME = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
 
@@ -88,12 +87,12 @@ def installed_host_version() -> str | None:
 
 
 def _specifier_allows(reqs: list[str], version: str | None) -> bool | None:
-    """这些依赖约束是否被当前版本满足;None = 判定不了(没 packaging/没版本)。"""
-    if not _HAS_PACKAGING or version is None:
-        return None
-    if _Requirement is None or _Version is None:
-        # 与上一行等价(`_HAS_PACKAGING` 已经表达了同一件事),这里只是**显式收窄**:
-        # 两个名字在导入失败时被赋成 None,不写这一行类型检查器就看不到“不能调用”。
+    """这些依赖约束是否被当前版本满足;None = 判定不了(没 packaging / 没版本号)。
+
+    只看两个名字是不是 None 就够 —— 不需要另一个 `_HAS_PACKAGING` 标志把同一件事
+    说两遍(那种重复校验最后总会有一次忘了同步)。
+    """
+    if _Requirement is None or _Version is None or version is None:
         return None
     try:
         parsed = _Version(version)
@@ -213,6 +212,7 @@ def discover_extensions(catalog: ToolCatalog, capabilities: CapabilityRegistry,
                         bus: ExtensionBus,
                         host: Any = None,
                         commands: CommandRegistry | None = None,
+                        flags: FlagRegistry | None = None,
                         on_warning: Callable[[str], None] | None = None,
                         extra_dirs: Iterable[Path | tuple[Path, str]] | None = None,
                         project_trusted: bool = True) -> list[str]:
@@ -228,6 +228,10 @@ def discover_extensions(catalog: ToolCatalog, capabilities: CapabilityRegistry,
     `on_warning` 收“装上了但有隐患”的报告(目前只有一件:扩展把宿主写进了依赖)。
     它**不阻止装载** —— 那类问题的现场在 pip 的解析结果里,不在这一行,所以要做的是
     让用户知道,而不是把扩展判死。
+
+    `commands` / `flags` 是扩展向宿主登记的入口(命令与快捷键 / CLI 旗标),与
+    `capabilities` 并列。**没给对应的汇合点时会报错**(不是静默无效):
+    `registerCommand` / `registerFlag` 注册了却没人收,扩展会以为它生效了。
 
     优先级(先到先得,同名跳过):项目 `.qi/extensions/` → 全局 `<agent>/extensions/`
     → `extra_dirs`(settings.json 的 `extensions[]`)→ entry points。
@@ -245,7 +249,7 @@ def discover_extensions(catalog: ToolCatalog, capabilities: CapabilityRegistry,
             api = ExtensionApi(catalog=catalog, bus=bus, _name=name,
                                _path=origin["path"], _scope=origin["scope"],
                                _origin=origin["origin"], _host=host,
-                               _commands=commands)
+                               _commands=commands, _flags=flags)
             module = load()
             register = getattr(module, "register", None)
             if not callable(register):

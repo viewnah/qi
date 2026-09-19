@@ -471,8 +471,37 @@ export function App() {
     return () => window.removeEventListener("hashchange", onHash);
   }, [openSession, sessions, sessionId]);
 
+  /**
+   * 回到**新会话页**(草稿态):只切视图,**不建会话文件**。
+   *
+   * 为什么是懒创建(使用反馈两次都指向这里):
+   *   · 「在新会话页面再次点新会话,不该再多一条新会话」—— 以前每点一次就 `POST /api/sessions`
+   *     建一个空文件,左栏于是堆起一排「未命名」;
+   *   · 「新会话页的工作区图标要还能点开,好切工作区或新建工作区」—— 会话一旦建好,
+   *     cwd 就是**会话自身的属性**(后端也只支持改名),chip 只能变成静态回声。
+   * 把文件推迟到**第一句话发出去**时才建,两个问题一起消失:草稿页上 chip 就是草稿的设置
+   * (`draftCwd`),点「新会话」也只是回到这个草稿,不存在"多一条空会话"。
+   */
+  const openDraft = useCallback((cwdForNew?: string) => {
+    setView("work");
+    setSessionId(null);
+    setTitle("");
+    setTurn(emptyTurn);
+    setSessionUsage(null);
+    // 不带目录就沿用当前的落点(打开会话时它已被同步成那条会话的 cwd,所以"在项目里点新会话"
+    // 默认还是同一个项目)。
+    if (cwdForNew) setDraftCwd(cwdForNew);
+  }, []);
+
+  /**
+   * 建会话。**只有带着第一句话时才落文件** —— 不带就是 `openDraft()`(见它的注释)。
+   */
   const createSession = useCallback(
     async (first?: string, cwdForNew?: string) => {
+      if (first === undefined) {
+        openDraft(cwdForNew);
+        return;
+      }
       try {
         const created = await api.createSession(
           "",
@@ -483,7 +512,7 @@ export function App() {
         setTitle(created.title);
         setTurn(emptyTurn);
         setSessionUsage(null);      // 新会话:还没有任何用量
-        if (first) void sendTo(created.id, first);
+        void sendTo(created.id, first);
       } catch (err) {
         setFatal(describe(err));
       }
@@ -491,7 +520,7 @@ export function App() {
     // `sendTo` **必须**列上:它带着「当前智能体」这个设置,而 `sendTo` 在智能体变化时
     // 会重建。漏掉它 → 在 hero 态选好智能体再发第一句时,这里调用的是**旧闭包**
     // (`agent` 还是 null),手动选择静默失效(实测踩过:分派行写的是 fallback)。
-    [draftCwd, meta, refreshSessions, sendTo],
+    [draftCwd, meta, openDraft, refreshSessions, sendTo],
   );
 
   const send = useCallback(() => {
@@ -578,23 +607,17 @@ export function App() {
   }, []);
 
   /**
-   * 目录选择器里点「选择此文件夹」之后:在这个目录下建一条会话并打开它。
+   * 目录选择器里点「选择此文件夹」之后:把这个目录设成**下一条会话**的落点(草稿态)。
    *
-   * 回 `null` = 成功(选择器据此关闭自己);回字符串 = 失败,**留在选择器里显示** ——
-   * 目录选完才失败(比如刚被删掉)是常见事,不该关掉弹层、更不该把整页打成错误屏。
+   * 与 `openDraft` 同一条懒创建规矩(见它的注释):这里也**不落文件**。所以它不再需要
+   * 请求后端,也就不会失败 —— 回 `null`(选择器据此关闭自己)是唯一结果。
    */
   const pickWorkspace = useCallback(
     async (path: string): Promise<string | null> => {
-      try {
-        const created = await api.createSession("", path);
-        await refreshSessions();
-        await openSession(created.id);
-        return null;
-      } catch (err) {
-        return describe(err);
-      }
+      openDraft(path);
+      return null;
     },
-    [openSession, refreshSessions],
+    [openDraft],
   );
 
   /**
@@ -674,6 +697,14 @@ export function App() {
   // 那时不画占用百分比 —— 而不是画一条永远 0% 的。
   const contextWindow = config?.default_model_context_window ?? 0;
   const empty = turn.rows.length === 0;
+  /**
+   * 「新会话页」= 还没说过话(草稿态,或早期"点了新会话就落文件"留下的空会话)。
+   *
+   * 两件事共用这一个判断(它们本来就是同一件事的两面):
+   *   · 工作区 chip 在这一态**必须可点**(切/新建工作区);
+   *   · 「新会话」在这一态是**空操作** —— 已经在新会话页了,再建一条只是多一个空文件。
+   */
+  const blank = empty && !running;
   // 输入卡右下只显示**裸模型名**(`provider/model` 在窄窗口里放不下);完整标签
   // (`provider/model`)留给 tooltip 与遥测抽屉 —— 同 id 不同 provider 时靠它分辨。
   // `default_model_name` 是本次新加的字段,老宿主不给就回落完整标签(不会变空)。
@@ -903,9 +934,17 @@ export function App() {
                     <ProjectMenu
                       options={projects}
                       value={sessionId ? cwd : draftCwd}
-                      // 会话一旦建好,cwd 就是它的属性了 —— chip 变成静态回声。
-                      disabled={sessionId !== null || projects.length === 0}
-                      onPick={setDraftCwd}
+                      // **新会话页(草稿)上必须可点** —— 反馈要的就是"在这儿切工作区或新建工作区"。
+                      // 会话一旦建好、并且已经说过话,cwd 才是它的属性(改成静态回声) ——
+                      // 那时换目录等于改历史,后端也只支持改名(docs/web.md §18.3)。
+                      disabled={projects.length === 0 || !blank}
+                      onPick={(picked) => {
+                        // 草稿页上换来换去只是改"下一条会话落在哪";若当前开着的是一条**空**会话
+                        // (早期"点了新会话就落文件"留下的),就把它从视图上放下、回到草稿 ——
+                        // 不删文件(删除是不可恢复动作,不该藏在换目录里)。
+                        setDraftCwd(picked);
+                        if (sessionId !== null) openDraft(picked);
+                      }}
                       onAddWorkspace={askAddWorkspace}
                     />
                   </div>

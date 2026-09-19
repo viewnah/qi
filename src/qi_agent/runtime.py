@@ -35,6 +35,7 @@ from .extensions import (
     ExtensionContext,
     ExtensionUi,
     FlagRegistry,
+    SessionView,
 )
 from .llm import (
     ChatMessage,
@@ -130,6 +131,9 @@ class QiRuntime:
         self._tool_override: set[str] | None = None
         # 信任门控(P-E1 / E16):未信任 → **不扫**项目级扩展(扩展是仓库控制的任意代码)。
         # 提示不在这里打印(runtime 不做 IO):攒进 `self.notes`,由前端决定怎么展示。
+        #: 当前回合绑定的会话(`api.appendEntry` / `ctx.session_manager` 靠它读/写)。
+        #: 由 `stream()` 的 wrapper 设置并在 `finally` 里清掉。
+        self._active_session: Session | None = None
         self.project_trusted, self.trust_reason = resolve_project_trust(
             self.settings, approve=approve_project, has_ui=has_ui)
         self.notes: list[str] = []
@@ -231,10 +235,15 @@ class QiRuntime:
         provider, model = getattr(spec, "provider", None), getattr(spec, "model", None)
         return f"{provider}/{model}" if provider and model else None
 
-    def extension_ctx(self, signal: AbortSignal | None = None) -> ExtensionContext:
+    def extension_ctx(self, signal: AbortSignal | None = None,
+                      session: Session | None = None) -> ExtensionContext:
         """构造 handler 用的 `ctx`(§3.3 的最小集)。
 
         **不是**缓存单例:每回合的信号不同(`signal`),而 ctx 冻结这些值。
+
+        `session` 缺省用回合绑定的那个(`_active_session`)—— 所以 runner 里的 handler
+        拿到的 `ctx.session_manager` 就是当前会话;回合外(如 TUI 命令)拿不到时
+        `available` 为 False、写口报错。
         """
         return ExtensionContext(
             cwd=self.cwd,
@@ -245,7 +254,25 @@ class QiRuntime:
             project_trusted=self.project_trusted,
             notes=self.notes,
             ui=self.ui,
+            session_manager=SessionView(session if session is not None
+                                        else self._active_session),
         )
+
+    def append_extension_entry(self, custom_type: str, data: dict, source: str) -> None:
+        """扩展自定义 entry 的**唯一写口**(`api.appendEntry` 走这里)。
+
+        章由宿主盖:`source`(哪个扩展写的)、`agent`(当时哪个角色在跑)。扩展自己拼 entry
+        的话迟早会出现两种形状,而回放/诊断都得同时认两种。
+
+        没有活动会话时**报错** —— 回合外的写往往是“想存但存错地方”的第一步。
+        """
+        session = self._active_session
+        if session is None:
+            raise RuntimeError("没有活动会话:appendEntry 只能在回合内调用")
+        self.sessions.append(session, {
+            "type": "custom", "custom_type": custom_type,
+            "source": source, "agent": self._active_agent(session),
+            "data": data})
 
     async def start_session(self, session: Session, reason: str = "startup") -> None:
         """告知扩展"会话已绑定"(pi 的 `session_start { reason }`)。
@@ -461,16 +488,19 @@ class QiRuntime:
                                "usage": {"turns": 0, "context_tokens": 0}})
 
     async def _before_agent_start(self, unit: AgentUnit, text: str,
-                                  abort: AbortSignal | None) -> str | None:
-        """派发 `before_agent_start`:可换 `system_prompt`(链式)。
+                                  abort: AbortSignal | None
+                                  ) -> tuple[str | None, str | None]:
+        """派发 `before_agent_start`:可换 `system_prompt`(链式)、可注入一条消息。
 
+        返回 `(system_prompt, 注入的消息)`;两个都是 None 表示没订阅 / 没改。
         只在**有人订阅**时才构建 prompt —— 零扩展时不走这条分支,行为与开销都与从前一致。
 
-        注入消息(`message`)没在这里做:它跟 `sendMessage` / `appendEntry` 是同一套语义
-        (进不进 LLM 上下文、要不要落盘),拿到 P-E3 一起做,免得造两种注入方式。
+        注入的消息(pi 的 `{message: …}`)收字符串或 `{"content": …}`。按 pi 的语义它是
+        **持久**的(落盘,下一轮仍在上下文里),所以落盘由调用方(`_stream_inner`)做,
+        文本再交给 runner 插到本轮 user 消息之后。
         """
         if not self.bus.has("before_agent_start"):
-            return None
+            return None, None
         tools = self.catalog.resolve(self.tool_names(unit))
         built = build_system_prompt(unit, self.base_prompt, tools=tools, cwd=self.workdir)
         result = await self.bus.emit(
@@ -480,7 +510,13 @@ class QiRuntime:
         for src, exc in result.errors:
             self.notes.append(f"扩展 {src} 的 before_agent_start 处理失败: {exc}")
         changed = result.payload.get("system_prompt")
-        return str(changed) if changed else built
+        raw = result.payload.get("message")
+        injected: str | None = None
+        if isinstance(raw, str):
+            injected = raw.strip() or None
+        elif isinstance(raw, dict):
+            injected = str(raw.get("content") or "").strip() or None
+        return (str(changed) if changed else built), injected
 
     async def stream(self, text: str, session: Session, agent_override: str | None = None,
                      abort: AbortSignal | None = None, source: str = "interactive"):
@@ -493,6 +529,20 @@ class QiRuntime:
         (`CancelledError`:web 的客户端 abort、TUI 的强制终止),本方法也会先把已有文本
         落盘再往上抛 —— 否则用户看过的半截回答在会话文件里消失(直播与回放不一致)。
         """
+        # 回合内把会话绑在 runtime 上:扩展的 `appendEntry` / `ctx.session_manager` 靠它。
+        # 用 wrapper + `finally` 而不是在主体里包 `try`:主体有十几个 `return`
+        # (handled 提前结束、无 agent、错误返回…),逐个清一定会漏 —— 而漏掉的后果是
+        # “回合外的写落到上一个会话里”,那是很难查的一类串状态。
+        self._active_session = session
+        try:
+            async for event in self._stream_inner(text, session, agent_override, abort, source):
+                yield event
+        finally:
+            self._active_session = None
+
+    async def _stream_inner(self, text: str, session: Session,
+                            agent_override: str | None, abort: AbortSignal | None,
+                            source: str):
         # 旧会话首次被使用时回填 cwd(只写一次);新会话在 create(cwd=…) 时已带
         self.sessions.ensure_cwd(session, self.cwd)
         # `input` 在**自动压缩之前**:它处理的是“用户说了什么”,与上下文体积无关;而且
@@ -564,20 +614,31 @@ class QiRuntime:
                              text=unit.config.opening.message,
                              data={"suggestions": unit.config.opening.suggestions})
 
+        # 顺序要紧:先取上下文(不含本轮),再把 user 消息立即落盘。
+        # 旧实现把 user 写在回合**结束后**,于是运行中刷新/断线就看不到自己说了什么;
+        # 而若先落盘再取 history,本轮输入会进上下文两次(两条同样的 user)。
+        history = self._history(session)
+        self.sessions.append(session, {"type": "message", "role": "user",
+                                       "content": text, "agent_id": unit.name})
+        # `before_agent_start` 在 user 落盘**之后**才 fire(pi 同款):扩展从
+        # `ctx.session_manager` 里就看得到本轮那句话,而且注入的 message 天然排在它后面。
+        system_prompt, injected = await self._before_agent_start(unit, text, abort)
+        if injected:
+            # 注入的消息**落盘**(下一轮仍在上下文里,pi 说的 persistent message),
+            # 同时交给 runner 插到本轮 user 之后 —— 取 history 时它还不存在,所以不会重复。
+            self.sessions.append(session, {"type": "message", "role": "user",
+                                           "content": injected, "agent_id": unit.name,
+                                           "injected_by": "before_agent_start"})
         runner = AgentRunner(unit, self.catalog, self.llm_exec,
                              RunnerSettings(stop_after=self.stop_after),
                              tool_ctx=self._tool_ctx(unit.name, unit),
                              base_prompt=self.base_prompt,
                              tool_names=self.tool_names(unit),
-                             system_prompt=await self._before_agent_start(unit, text, abort),
-                             bus=self.bus, extension_ctx=self.extension_ctx,
+                             system_prompt=system_prompt,
+                             injected_messages=[injected] if injected else None,
+                             bus=self.bus,
+                             extension_ctx=lambda signal: self.extension_ctx(signal, session),
                              report=self.notes.append)
-        # 顺序要紧:先取上下文(不含本轮),再把 user 消息立即落盘。
-        # 旧实现把 user 写在回合**结束后**,于是运行中刷新/断线就看不到自己说了什么;
-        # 而若先落盘再取 history,本轮输入会进上下文两次(prompt 里出现两条同样的 user)。
-        history = self._history(session)
-        self.sessions.append(session, {"type": "message", "role": "user",
-                                       "content": text, "agent_id": unit.name})
         final_text = ""
         partial = ""
         # 正常结束才有(RUN_FINISHED 的 usage);硬取消那条路径拿不到。

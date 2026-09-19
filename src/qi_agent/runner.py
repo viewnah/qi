@@ -133,6 +133,7 @@ class AgentRunner:
                  base_prompt: str | None = None,
                  tool_names: list[str] | None = None,
                  system_prompt: str | None = None,
+                 injected_messages: list[str] | None = None,
                  bus: ExtensionBus | None = None,
                  extension_ctx: Callable[[AbortSignal | None], ExtensionContext] | None = None,
                  report: Callable[[str], None] | None = None):
@@ -158,6 +159,7 @@ class AgentRunner:
         self.base_prompt = base_prompt
         self.tool_names = tool_names
         self.system_prompt = system_prompt
+        self.injected_messages = injected_messages
         self.bus = bus
         self.extension_ctx = extension_ctx
         self.report = report
@@ -213,6 +215,11 @@ class AgentRunner:
         if history:
             msgs.extend(history)
         msgs.append(ChatMessage(role="user", content=user_input))
+        for extra in self.injected_messages or ():
+            # 注入的消息紧跟在本轮 user 之后(`before_agent_start` 的 `message`)。
+            # 它是**追加的上下文**,不是替代用户输入 —— 角色也用 user,因为 qi 的上下文
+            # 只认 system/user/assistant/tool 四种,而这是“以用户身份进入对话的一段话”。
+            msgs.append(ChatMessage(role="user", content=extra))
 
         yield AgentEvent(kind="agent_start", agent=self.unit.name)
         await self._emit("agent_start", {"agent": self.unit.name}, abort)

@@ -503,6 +503,53 @@ class ExtensionUi:
             self._notes.append(message)
 
 
+class SessionView:
+    """`ctx.session_manager` —— 当前会话的**只读**视图。
+
+    为什么不让扩展直接拿 `Session` / `SessionStore`:
+    * 读——扩展要的只是“我说过什么、会话叫什么、分到哪个文件”,不需要知道 entry 形状;
+    * 写——写口只有 `api.appendEntry` **一个**(章由宿主盖:agent 归属、source、落盘时机)。
+      两个写口迟早写出两种 entry 形状。
+
+    `entries()` 返回**当前分支**(不是整个文件):会话是树,扩展没理由看到别的分支。
+    没有活动会话时读返回空 —— 写由 `api.appendEntry` 报错(不静默丢弃)。
+    """
+
+    def __init__(self, session: Any = None) -> None:
+        self._session = session
+
+    @property
+    def available(self) -> bool:
+        """有活动会话吗(回合外没有)。"""
+        return self._session is not None
+
+    @property
+    def session_id(self) -> str | None:
+        return getattr(self._session, "id", None)
+
+    @property
+    def path(self) -> str | None:
+        p = getattr(self._session, "path", None)
+        return str(p) if p is not None else None
+
+    @property
+    def title(self) -> str:
+        return str(getattr(self._session, "title", "") or "")
+
+    def entries(self) -> list[dict]:
+        """当前分支的全部 entry(原样,宿主不裁剪) —— 扩展自己按 `type` 过滤。"""
+        if self._session is None:
+            return []
+        return [dict(e) for e in self._session.branch()]
+
+    def custom_entries(self, custom_type: str | None = None) -> list[dict]:
+        """只取 `custom` entry(可再按 `custom_type` 过滤)—— 扩展存状态的常规做法。"""
+        out = [e for e in self.entries() if e.get("type") == "custom"]
+        if custom_type is not None:
+            out = [e for e in out if e.get("custom_type") == custom_type]
+        return out
+
+
 @dataclass(frozen=True)
 class ExtensionContext:
     """`ctx` —— 传给每个 handler 的只读上下文(P-E1d 是最小集,见 §3.3)。
@@ -524,6 +571,8 @@ class ExtensionContext:
     #: `ctx.ui` —— **总是存在**(不是 Optional):没前端时它按 `default` 回答,
     #: 所以扩展不必到处写 `if ctx.ui is not None`。要靠它做分支就查 `ctx.has_ui`。
     ui: ExtensionUi = field(default_factory=ExtensionUi)
+    #: `ctx.session_manager` —— 当前会话的只读视图(见 `SessionView`)。回合外 `available` 为 False。
+    session_manager: SessionView = field(default_factory=SessionView)
 
     def is_project_trusted(self) -> bool:
         """pi 是 `ctx.isProjectTrusted()`;保持方法形状,方便 qi-agents 直接照搬。"""
@@ -664,6 +713,7 @@ class ExtensionApi:
     #: 宿主(runtime)提供的工具集读写面 —— 鸭子类型,只要有两个方法:
     #:   `tool_names() -> list[str]`(本回合实际启用的工具名)
     #:   `set_tool_names(names) -> None`(覆盖,对后续回合生效)
+    #: 以及会话写口:`append_extension_entry(custom_type, data, source) -> None`。
     #: 用鸭子类型而不是 Protocol:`extensions` 不能 import runtime(成环),而协议
     #: 在这里只起文档作用 —— 类型检查器验不到实现方,不如把契约写在这里。
     #: 没给 host 时 `getActiveTools` 退回“catalog 里的全部”,`setActiveTools` 报错。
@@ -772,6 +822,20 @@ class ExtensionApi:
             return None
         return self._flags.value(name)
 
+    # ── 会话 ──
+    def appendEntry(self, custom_type: str, data: dict | None = None) -> None:   # noqa: N802
+        """落一条扩展自定义 entry(进会话文件,**不进 LLM 上下文**)。
+
+        这才是持久化扩展状态的正确位置:它不会污染对话上下文,但刷新/重开后还在
+        (`ctx.session_manager.custom_entries(name)` 读回来)。
+
+        回合外没有活动会话时**报错** —— 静默丢掉意味着“我存了但重启后没了”。
+        """
+        if self._host is None or not callable(
+                getattr(self._host, "append_extension_entry", None)):
+            raise RuntimeError("宿主没有提供会话写口:appendEntry 不可用")
+        self._host.append_extension_entry(custom_type, dict(data or {}), self._name)
+
     # ── 事件 ──
     def on(self, event: str, handler: ExtensionHandler) -> None:
         """订阅事件;来源自动带上本扩展名(诊断时能指到是谁)。"""
@@ -802,6 +866,7 @@ __all__ = [
     "ExtensionUi",
     "FlagRegistry",
     "FlagSpec",
+    "SessionView",
     "Tool",
     "ToolError",
     "ToolExecutor",

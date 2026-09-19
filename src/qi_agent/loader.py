@@ -16,9 +16,7 @@ from pathlib import Path
 import yaml
 
 from . import paths
-# McpScope(Literal["global","project"])与 agent 私有那层一起构成 MCP 的"来源层",
-# 定义在 models.py 里 —— 它是数据形状,不是装载细节。
-from .models import AgentConfig, AgentUnit, DataSource, McpScope, McpServerSpec, Skill
+from .models import Skill
 from .settings import (
     QiSettings,
     load_settings_by_scope,
@@ -33,10 +31,6 @@ SKILLS_DIR = "skills"
 # Agent Skills 标准的跨工具目录(~/.agents/skills、.agents/skills);
 # 不对应单一工具,见 docs/agent-config.md。
 CROSS_TOOL_DIR = ".agents"
-MCP_FILE = "mcp.json"
-DATA_SOURCES_FILE = "data_sources.json"
-AGENTS_DIR = "agents"
-BUILTIN_DIR = "builtin"        # 包内置内容目录(qi_agent/builtin)
 SYSTEM_FILE_NAME = "SYSTEM.md"  # 基座提示词覆盖文件
 
 _PLAINTEXT_KEY_RE = re.compile(
@@ -65,46 +59,6 @@ def split_frontmatter(text: str) -> tuple[dict, str]:
     meta = yaml.safe_load("\n".join(lines[1:end])) or {}
     body = "\n".join(lines[end + 1 :]).strip()
     return (meta if isinstance(meta, dict) else {}), body
-
-
-def builtin_agents_dir() -> Path | None:
-    """包内置 agent 目录(`qi_agent/builtin/agents`,随 wheel 发布)。
-
-    作为最低优先级来源,保证「零配置也能执行」:用户/项目同名 agent 会覆盖它。
-    包数据缺失(裁剪安装/打包故障)时返回 None,不影响其余来源。
-    """
-    import importlib.resources as resources
-
-    try:
-        path = Path(str(resources.files("qi_agent").joinpath(BUILTIN_DIR, AGENTS_DIR)))
-    except (ModuleNotFoundError, OSError, TypeError):
-        return None
-    return path if path.is_dir() else None
-
-
-def scan_agent_dirs(cwd: Path | None = None) -> dict[str, tuple[Path, str]]:
-    """收集 {name: (dir, source)}。
-
-    优先级(低 → 高,后者覆盖前者):内置 builtin → 用户 `~/.qi/agents/` →
-    项目 `<git根>/.qi/agents/`。低优先级先写入,高优先级覆盖,所以项目版胜出。
-    """
-    found: dict[str, tuple[Path, str]] = {}
-    roots: list[tuple[Path | None, str]] = [
-        (builtin_agents_dir(), "builtin"),
-        (paths.global_home() / AGENTS_DIR, "user"),
-        (paths.project_home(cwd) / AGENTS_DIR, "project"),
-    ]
-    for agents_dir, source in roots:
-        if agents_dir is None or not agents_dir.is_dir():
-            continue
-        for child in sorted(agents_dir.iterdir()):
-            if not child.is_dir():
-                continue
-            if (child / AGENT_FILE).is_file():
-                found[child.name] = (child, source)   # 高优先级在后写入,覆盖低优先级
-    return found
-
-
 def _skill_from_file(skill_file: Path, *, fallback_name: str, source: str) -> Skill | None:
     """从 SKILL.md(或根级 *.md)读出一个技能;frontmatter 无 description 时返回 None。"""
     try:
@@ -272,219 +226,6 @@ def load_top_level_skills(cwd: Path | None = None,
             add(skill)
 
     return list(merged.values())
-
-
-def load_data_sources(agent_dir: Path) -> list[DataSource]:
-    """data_sources.json 内容解析;是否装载由扩展门控(docs/extensions.md,在 registry 层决定)。"""
-    f = agent_dir / DATA_SOURCES_FILE
-    if not f.is_file():
-        return []
-    try:
-        raw = json.loads(f.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise LoadError(f"{f}: JSON 解析失败 {exc}") from exc
-    out: list[DataSource] = []
-    for item in raw.get("dataSources", []):
-        ds_id = str(item.get("id", ""))
-        if not ds_id:
-            raise LoadError(f"{f}: dataSource 缺少 id")
-        dsn = str(item.get("dsn", ""))
-        if "{env:" not in dsn and dsn:
-            raise LoadError(f"{f}: dsn 只允许 {{{{env:XXX}}}} 引用(禁止明文): {dsn}")
-        out.append(DataSource(id=ds_id, type=str(item.get("type", "")), dsn=dsn,
-                              description=str(item.get("description", ""))))
-    return out
-
-
-def read_mcp_file(f: Path) -> list[McpServerSpec]:
-    """解析一份 mcp.json(`{"mcpServers": {…}}`)。**文件必须存在**(调用方先探)。
-
-    agent 私有 / 全局 / 项目三处共用这一个解析器 —— 格式只有一份真相。
-    """
-    try:
-        raw = json.loads(f.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise LoadError(f"{f}: JSON 解析失败 {exc}") from exc
-    servers = raw.get("mcpServers", {})
-    if not isinstance(servers, dict):
-        raise LoadError(f"{f}: 缺少 mcpServers 对象")
-    return [McpServerSpec(name=name, config=cfg) for name, cfg in servers.items()]
-
-
-def load_private_mcp(agent_dir: Path) -> list[McpServerSpec]:
-    """agent 私有 mcp.json:写在自己目录里 → **自动绑定**,只本 agent 可见。"""
-    f = agent_dir / MCP_FILE
-    return read_mcp_file(f) if f.is_file() else []
-
-
-def mcp_scope_files(cwd: Path | None = None) -> list[tuple[McpScope, Path]]:
-    """全局/项目两处 mcp.json,**低 → 高**(项目同名覆盖全局)。
-
-    - 全局:`~/.qi/agent/mcp.json`(用户级基建)
-    - 项目:`<git根>/.qi/mcp.json`(跟项目走,可提交共享)
-
-    两处都只是**声明表**:哪个 agent 真能看到,由 agent.md 的 `mcp_servers` 决定
-    (凭证敏感 → 默认无、必须显式声明,见 agent-config.md §8.2)。
-    """
-    return [("global", paths.global_home() / MCP_FILE),
-            ("project", paths.project_home(cwd) / MCP_FILE)]
-
-
-def load_mcp_scopes(cwd: Path | None = None) -> list[tuple[McpScope, Path, list[McpServerSpec]]]:
-    """读全部作用域的声明表。
-
-    **不存在的文件也回**(servers 为空,路径照样给):设置页要能区分"这里没有文件"
-    与"文件在但没写 server",否则它只能靠猜。
-    """
-    return [(scope, f, read_mcp_file(f) if f.is_file() else [])
-            for scope, f in mcp_scope_files(cwd)]
-
-
-def mcp_name_index(cwd: Path | None = None) -> dict[str, McpServerSpec]:
-    """全局+项目合成一张按名查的表 —— agent.md 的 `mcp_servers` 拿它解析。"""
-    table: dict[str, McpServerSpec] = {}
-    for _scope, _f, servers in load_mcp_scopes(cwd):
-        for spec in servers:
-            table[spec.name] = spec            # 后写覆盖:项目 > 全局
-    return table
-
-
-def resolve_declared_mcp(declared: list[str], table: dict[str, McpServerSpec],
-                         origin: Path) -> list[McpServerSpec]:
-    """把 `mcp_servers` 的名字解析成 server 定义。
-
-    **未知名报错**,不静默跳过:声明了却指不到东西,就是"这个 agent 以为自己有
-    github、其实没有"——那比装载失败难查得多(对齐 tools 的未知名报错)。
-    """
-    missing = [name for name in declared if name not in table]
-    if missing:
-        available = ", ".join(sorted(table)) or "(无)"
-        raise LoadError(
-            f"{origin}: mcp_servers 里的 {missing} 在全局/项目 mcp.json 里都没有"
-            f"(可用的:{available})"
-        )
-    return [table[name] for name in declared]
-
-
-def scan_plaintext_secrets(agent_dir: Path) -> list[Path]:
-    """导入/装载前明文凭证扫描(只扫结构文件,不读技能正文)。"""
-    hits: list[Path] = []
-    for name in (MCP_FILE, DATA_SOURCES_FILE):
-        f = agent_dir / name
-        if f.is_file() and _PLAINTEXT_KEY_RE.search(f.read_text(encoding="utf-8")):
-            hits.append(f)
-    return hits
-
-
-def load_agent_dir(agent_dir: Path, source: str, catalog_names: set[str],
-                   has_data_source_provider: bool = False,
-                   ds_types: set[str] | None = None,
-                   extra_skills: list[Skill] | None = None,
-                   mcp_table: dict[str, McpServerSpec] | None = None) -> AgentUnit:
-    """解析单个 agent 目录(装载与 import 共用同一校验器)。
-
-    `extra_skills` 是顶层技能(低优先级):agent 自带技能同名时胜出 —— 越具体越优先。
-    `mcp_table` 是全局+项目合并后的 server 表(`mcp_name_index` 给)。传 `None`
-    表示调用方**没有作用域上下文**(import 时校验的是源目录,不是"装到哪"):
-    那时只校验声明形状,不解析名字。
-    """
-    entry = agent_dir / AGENT_FILE
-    if not entry.is_file():
-        raise LoadError(f"{agent_dir}: 缺少 {AGENT_FILE}")
-
-    meta, body = split_frontmatter(entry.read_text(encoding="utf-8"))
-    try:
-        config = AgentConfig.model_validate(meta)
-    except Exception as exc:  # pydantic.ValidationError
-        raise LoadError(f"{entry}: frontmatter 校验失败: {exc}") from exc
-
-    if config.name != agent_dir.name:
-        raise LoadError(f"{entry}: name {config.name!r} 与目录名 {agent_dir.name!r} 不一致")
-    if not config.description.strip():
-        raise LoadError(f"{entry}: description 必填(路由信号)")
-
-    # tools 解析与校验
-    try:
-        tools = config.resolves_tools(catalog_names)
-    except ValueError as exc:
-        raise LoadError(f"{entry}: {exc}") from exc
-
-    # include:assets 按序拼入 system prompt
-    parts = [body]
-    for rel in config.include:
-        inc = agent_dir / rel
-        if not inc.is_file() or agent_dir.resolve() not in inc.resolve().parents:
-            raise LoadError(f"{entry}: include {rel!r} 不存在或越界")
-        parts.append(inc.read_text(encoding="utf-8"))
-    system_prompt = "\n\n".join(p for p in parts if p.strip())
-
-    secrets = scan_plaintext_secrets(agent_dir)
-    if secrets:
-        raise LoadError(f"{agent_dir}: 检测到疑似明文凭证({[str(s) for s in secrets]});只允许 {{{{env:XXX}}}} 引用")
-
-    data_sources = load_data_sources(agent_dir) if has_data_source_provider else []
-    if data_sources:
-        supported = ds_types or set()
-        for ds in data_sources:
-            if ds.type not in supported:
-                raise LoadError(f"{entry}: 数据源 {ds.id} 类型 {ds.type!r} 无插件支持")
-
-    # 声明的全局 MCP:按名解析成定义(没有表就不解析 —— 见 docstring)。
-    mcp_declared = (resolve_declared_mcp(config.mcp_servers, mcp_table, entry)
-                    if mcp_table is not None else [])
-
-    unit = AgentUnit(
-        config=config,
-        source=source,
-        path=agent_dir,
-        system_prompt=system_prompt,
-        skills=_merge_skills(extra_skills, scan_skills(agent_dir)),
-        data_sources=data_sources,
-        mcp_private=load_private_mcp(agent_dir),
-        mcp_declared=mcp_declared,
-        tools=tools,
-    )
-    return unit
-
-
-def _merge_skills(extra: list[Skill] | None, own: list[Skill]) -> list[Skill]:
-    """合并技能:顶层技能(低)打底,agent 自带(高)覆盖同名。"""
-    merged: dict[str, Skill] = {s.name: s for s in (extra or [])}
-    for skill in own:
-        merged[skill.name] = skill
-    return list(merged.values())
-
-
-def load_all_agents(cwd: Path | None = None, catalog_names: set[str] | None = None,
-                    has_data_source_provider: bool = False,
-                    ds_types: set[str] | None = None,
-                    extra_skills: list[Skill] | None = None) -> dict[str, AgentUnit]:
-    """装载全部 agent(项目版已覆盖用户版)。坏 agent 抛 LoadError(启动报错)。"""
-    if catalog_names is None:
-        catalog_names = set()
-    mcp_table = mcp_name_index(cwd)
-    units: dict[str, AgentUnit] = {}
-    for name, (agent_dir, source) in scan_agent_dirs(cwd).items():
-        units[name] = load_agent_dir(agent_dir, source, catalog_names,
-                                     has_data_source_provider, ds_types,
-                                     extra_skills=extra_skills,
-                                     mcp_table=mcp_table)
-    return units
-
-
-# ── 基座系统提示词(SYSTEM.md 覆盖) ─────────────────
-#
-# 层级(高 → 低):
-#     1. <项目>/.qi/SYSTEM.md      # 跟项目走,可提交共享
-#     2. ~/.qi/agent/SYSTEM.md     # 全局
-#     3. (无覆盖)                  # 用代码内默认基座:qi_agent/system_prompt.py
-#
-# 语义(对齐 pi 的 SYSTEM.md / customPrompt):SYSTEM.md **整体替换**默认基座。
-# qi 仍保留自己的一层区分:**角色层**(agent.md 正文 + 技能清单 + 数据源)、
-# 项目上下文、工作目录始终追加 —— 多 agent 语义不变:换 agent = 换角色层。
-# 副作用见 docs/system-prompt.md(自定义基座会丢掉默认的「可用工具 / 指南」)。
-
-
 def system_file_candidates(cwd: Path | None = None) -> list[tuple[Path, str]]:
     """可能的 SYSTEM.md 路径,按优先级从高到低返回 (文件, 来源)。"""
     return [

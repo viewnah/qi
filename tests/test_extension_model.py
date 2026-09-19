@@ -82,7 +82,7 @@ def _runtime(tmp_path, monkeypatch, log: Path | None = None):
         _install(tmp_path, "recorder", _RECORDER.format(log=str(log)))
     from qi_agent.runtime import QiRuntime
 
-    return QiRuntime(cwd=project, disable_router=True, approve_project=True)
+    return QiRuntime(cwd=project, approve_project=True)
 
 
 def _events(log: Path | None) -> list[dict]:

@@ -312,7 +312,7 @@ async def _run(tmp_path, monkeypatch, llm, frontend=None):
     _env(tmp_path, monkeypatch)
     from qi_agent.runtime import QiRuntime
 
-    runtime = QiRuntime(cwd=tmp_path / "proj", disable_router=True,
+    runtime = QiRuntime(cwd=tmp_path / "proj",
                         approve_project=True, llm=llm, ui_frontend=frontend)
     session = runtime.sessions.create("t", cwd=runtime.cwd)
     events = [e async for e in runtime.stream("跑一下", session)]
@@ -375,7 +375,7 @@ async def test_clarify_can_now_actually_ask(tmp_path, monkeypatch):
     from qi_agent.runtime import QiRuntime
 
     front = _Frontend(["预发布"])
-    runtime = QiRuntime(cwd=tmp_path, disable_router=True, llm=llm, ui_frontend=front)
+    runtime = QiRuntime(cwd=tmp_path, llm=llm, ui_frontend=front)
     session = runtime.sessions.create("t", cwd=runtime.cwd)
     async for _e in runtime.stream("帮我部署", session):
         pass
@@ -384,7 +384,7 @@ async def test_clarify_can_now_actually_ask(tmp_path, monkeypatch):
 
     # 2) 无前端 → 与从前一致(不吃 stdin,不挂住)
     llm2 = _ScriptedLLM([_call("clarify", {"question": "要哪个环境?"}), ChatResponse(text="好")])
-    runtime2 = QiRuntime(cwd=tmp_path, disable_router=True, llm=llm2)
+    runtime2 = QiRuntime(cwd=tmp_path, llm=llm2)
     session2 = runtime2.sessions.create("t", cwd=runtime2.cwd)
     async for _e in runtime2.stream("帮我部署", session2):
         pass

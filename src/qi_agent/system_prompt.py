@@ -156,22 +156,28 @@ def render_project_context(files: Sequence[tuple[Path, str]]) -> str:
 
 # ── 组装 ────────────────────────────────────────────────────
 
-def build_system_prompt(unit: AgentUnit, base_prompt: str | None = None, *,
+def build_system_prompt(base_prompt: str | None = None, *,
                         cwd: Path | None = None,
                         tools: Sequence[Tool] = (),
-                        context_files: Sequence[tuple[Path, str]] | None = None) -> str:
-    """拼出完整 system prompt。
+                        context_files: Sequence[tuple[Path, str]] | None = None,
+                        skills: Sequence[Skill] = ()) -> str:
+    """拼出 core 的 system prompt:**基座 → 项目上下文 → 技能 → 工作目录**。
 
     参数:
       - `base_prompt`:自定义基座(`SYSTEM.md` 正文)。空/None → 默认基座;
         非空 → **整体替换**默认基座(pi 的 customPrompt 语义)。
-      - `tools`:该 agent 解析后的工具集,决定「可用工具 / 指南 / 技能能否被读取」。
+      - `tools`:本回合实际可用的工具集,决定「可用工具 / 指南 / 技能能否被读取」。
       - `cwd`:会话工作目录,写进 prompt 末尾;`context_files=None` 时也用它去找
         `AGENTS.md`(`context_files=[]` 表示显式不注入)。
+      - `skills`:**顶层**技能(六层来源,见 loader)。
+
+    **没有“角色层”与“数据源”** —— 两者都是 agent 的概念,归 qi-agents(E1.1/E15):
+    角色说明由它通过 `before_agent_start` 拼进来(那个钩子的返回值是链式的),数据源
+    实例也在 agent 目录里。core 只负责“基座 + 项目上下文 + 技能 + cwd”。
     """
     tool_names = [t.name for t in tools]
     base = (base_prompt or "").strip() or default_base_prompt(tools)
-    parts: list[str] = [base, unit.system_prompt or f"你是 {unit.config.name}。"]
+    parts: list[str] = [base]
 
     if context_files is None:
         from .loader import load_project_context   # 延迟导入:避免 loader ↔ 本模块静态环
@@ -181,15 +187,9 @@ def build_system_prompt(unit: AgentUnit, base_prompt: str | None = None, *,
     if ctx:
         parts.append(ctx)
 
-    skills = render_skills(unit.skills, tool_names)
-    if skills:
-        parts.append(skills)
-
-    if unit.data_sources:
-        lines = "\n".join(f"- {ds.id} ({ds.type}): {ds.description or ds.dsn}"
-                          for ds in unit.data_sources)
-        parts.append("可用数据源(db 工具需 data_source_id 属于以下清单):\n" + lines
-                     + "\n规则:先查 schema 确认表结构,只读查询,禁止写操作。")
+    rendered_skills = render_skills(skills, tool_names)
+    if rendered_skills:
+        parts.append(rendered_skills)
 
     parts.append(f"当前工作目录: {Path(cwd) if cwd else Path.cwd()}")
     return "\n\n".join(p for p in parts if p and p.strip())

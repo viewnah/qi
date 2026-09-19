@@ -78,12 +78,6 @@ def test_print_mode_joins_multiple_tokens(fake_runtime):
     assert _last(fake_runtime).prompts == ["分析 这个仓库"]
 
 
-def test_print_mode_with_agent_override(fake_runtime):
-    res = runner.invoke(app, ["-p", "--agent", "writer", "写点东西"])
-    assert res.exit_code == 0, res.output
-    assert _last(fake_runtime).prompts == ["写点东西"]
-    assert _last(fake_runtime).overrides == ["writer"]
-
 
 def test_print_mode_after_double_dash(fake_runtime):
     res = runner.invoke(app, ["-p", "--", "你好"])
@@ -152,39 +146,7 @@ def test_help_still_works(fake_runtime):
 
 # ── qi agents list / show:渲染 display_name ────────────────
 
-def test_agents_list_renders_display_name(tmp_path, monkeypatch):
-    """display_name 必须真的被渲染(此前写了却没人读)。"""
-    monkeypatch.setenv("QI_AGENT_HOME", str(tmp_path / "home"))
-    monkeypatch.chdir(tmp_path)
-    res = runner.invoke(app, ["agents", "list"])
-    assert res.exit_code == 0, res.output
-    assert "显示名" in res.output          # 列存在
-    assert "general" in res.output         # name
-    assert "qi" in res.output              # display_name(内置 general)
-    assert "builtin" in res.output         # 来源
 
-
-def test_agents_list_display_name_falls_back_to_dash(tmp_path, monkeypatch):
-    """未设 display_name 的 agent 回落为 '-'，不是空白。"""
-    home = tmp_path / "home"
-    d = home / "agents" / "writer"
-    d.mkdir(parents=True)
-    (d / "agent.md").write_text(
-        "---\nname: writer\ndescription: 写文档\nkeywords: []\ntools: [\"*\"]\n---\n你是写手。",
-        encoding="utf-8")
-    monkeypatch.setenv("QI_AGENT_HOME", str(home))
-    monkeypatch.chdir(tmp_path)
-    res = runner.invoke(app, ["agents", "list"])
-    assert res.exit_code == 0, res.output
-    assert "writer" in res.output
-
-
-def test_agents_show_prints_display_name(tmp_path, monkeypatch):
-    monkeypatch.setenv("QI_AGENT_HOME", str(tmp_path / "home"))
-    monkeypatch.chdir(tmp_path)
-    res = runner.invoke(app, ["agents", "show", "general"])
-    assert res.exit_code == 0, res.output
-    assert "显示名: qi" in res.output
 
 
 # ── 无头输出分流:答案走 stdout,诊断走 stderr ────────────────

@@ -175,40 +175,6 @@ def test_clone_copies_whole_active_branch(tmp_path):
 # ── 4. 上下文只走当前分支 ─────────────────────────────────
 
 
-def test_history_and_active_agent_follow_the_branch(tmp_path):
-    store = _store(tmp_path)
-    session = store.create("t", cwd=tmp_path)
-    store.append(session, {"type": "message", "role": "user", "content": "Q1"})
-    fork_point = session.entries[-1]["id"]
-    store.append(session, {"type": "state", "key": "active_agent", "value": "writer"})
-    store.append(session, {"type": "message", "role": "assistant", "content": "A1"})
-
-    runtime = object.__new__(QiRuntime)      # 不跑 __init__:这里只测纯方法
-    assert runtime._active_agent(session) == "writer"
-    assert [m.content for m in runtime._history(session)] == ["Q1", "A1"]
-
-    # 回到 state 之前的节点继续:新分支看不到 writer
-    assert store.set_position(session, fork_point) is True
-    store.append(session, {"type": "message", "role": "user", "content": "另一问"})
-
-    assert runtime._active_agent(session) is None
-    assert [m.content for m in runtime._history(session)] == ["Q1", "另一问"]
-
-
-def test_opening_shown_is_per_branch(tmp_path):
-    store = _store(tmp_path)
-    session = store.create("t", cwd=tmp_path)
-    store.append(session, {"type": "message", "role": "user", "content": "Q1"})
-    fork_point = session.entries[-1]["id"]
-    store.append(session, {"type": "custom", "custom_type": "opening_shown", "agent": "w"})
-
-    runtime = object.__new__(QiRuntime)
-    assert runtime._opening_shown(session, "w") is True
-
-    # 在开场白之前分叉:新分支应该重新展示开场白
-    assert store.set_position(session, fork_point) is True
-    store.append(session, {"type": "message", "role": "user", "content": "Q2"})
-    assert runtime._opening_shown(session, "w") is False
 
 
 # ── 5. 坏文件不炸 ─────────────────────────────────────────

@@ -161,7 +161,7 @@ def _runtime(tmp_path, monkeypatch, flags: list[str] | None = None):
     _install(tmp_path, "plan-ext", _PLAN_EXTENSION)
     from qi_agent.runtime import QiRuntime
 
-    return QiRuntime(cwd=project, disable_router=True, approve_project=True,
+    return QiRuntime(cwd=project, approve_project=True,
                      extension_flags=flags)
 
 

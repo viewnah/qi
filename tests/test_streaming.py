@@ -16,6 +16,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from qi_agent.system_prompt import build_system_prompt  # noqa: E402
 
 from qi_agent.abort import AbortSignal
 from qi_agent.auth import AuthStore
@@ -29,10 +30,8 @@ from qi_agent.llm import (
     merged_tool_calls,
     stream_llm,
 )
-from qi_agent.loader import load_agent_dir
 from qi_agent.registry import ToolCatalog
-from qi_agent.runner import (AgentRunner, RunnerSettings, spec_from_unit,
-                              stop_after_turns)
+from qi_agent.runner import AgentRunner, RunnerSettings, RunSpec, stop_after_turns
 from qi_agent.tools import ToolContext, register_builtin_tools
 
 
@@ -82,15 +81,16 @@ def _catalog() -> ToolCatalog:
     return c
 
 
-def _agent_unit(tmp_path: Path, catalog: ToolCatalog):
-    d = tmp_path / "w"
-    d.mkdir(parents=True, exist_ok=True)
-    (d / "agent.md").write_text(
-        '---\nname: w\ndescription: w 的用途\nkeywords: []\ntools: ["*"]\n---\n你是 w。\n',
-        encoding="utf-8")
-    return load_agent_dir(d, "user", catalog.names)
+def _agent_unit(tmp_path, catalog, name: str = "w"):
+    """一个最小**运行单元**(P-E4c 起 core 不再有 agent,所以直接造 spec)。
 
-
+    名字与签名保持原样只是为了少改调用点;`tmp_path` 不再需要 —— 角色(agent.md)归 qi-agents。
+    """
+    del tmp_path
+    tools = sorted(catalog.names)
+    return RunSpec(name=name,
+                   prompt=build_system_prompt(None, tools=catalog.resolve(tools)),
+                   tools=tools)
 def _spec() -> ResolvedModel:
     return ResolvedModel(provider="ollama", model="x", api="openai-completions",
                          base_url="http://localhost:11434/v1", api_key_ref=None,
@@ -252,7 +252,7 @@ async def test_runner_emits_text_deltas_in_true_order(tmp_path):
         # 第 2 轮:给结论
         [_text_delta("找到"), _text_delta("了"), _finished(usage={"prompt_tokens": 20})],
     ])
-    runner = AgentRunner(spec_from_unit(unit, catalog), catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)),
+    runner = AgentRunner(unit, catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)),
                          tool_ctx=ToolContext(agent_name=unit.name, workdir=tmp_path))
     events = [e async for e in runner.run("找 hello")]
 
@@ -282,7 +282,7 @@ async def test_runner_keeps_working_with_chat_only_llm(tmp_path):
     catalog = _catalog()
     unit = _agent_unit(tmp_path, catalog)
     llm = ChatOnlyLLM(ChatResponse(text="就这些"))
-    runner = AgentRunner(spec_from_unit(unit, catalog), catalog, llm, RunnerSettings(stop_after=stop_after_turns(3)),
+    runner = AgentRunner(unit, catalog, llm, RunnerSettings(stop_after=stop_after_turns(3)),
                          tool_ctx=ToolContext(agent_name=unit.name, workdir=tmp_path))
     events = [e async for e in runner.run("hi")]
     assert [e.text for e in events if e.kind == "text_delta"] == ["就这些"]
@@ -411,7 +411,7 @@ async def test_hung_stream_is_not_killed_by_a_loop_timeout(tmp_path):
         await asyncio.sleep(0.1)
         abort.abort()
 
-    runner = AgentRunner(spec_from_unit(unit, catalog), catalog, HangingLLM(), RunnerSettings(),
+    runner = AgentRunner(unit, catalog, HangingLLM(), RunnerSettings(),
                          tool_ctx=ToolContext(agent_name=unit.name, workdir=tmp_path))
 
     async def consume() -> list:
@@ -440,7 +440,7 @@ async def test_runner_declares_each_assistant_message(tmp_path):
                                     args={"pattern": "hello", "path": "a.txt"})])],
         [_text_delta("找到了"), _finished()],
     ])
-    runner = AgentRunner(spec_from_unit(unit, catalog), catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)),
+    runner = AgentRunner(unit, catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)),
                          tool_ctx=ToolContext(agent_name=unit.name, workdir=tmp_path))
     events = [e async for e in runner.run("找 hello")]
 
@@ -477,7 +477,7 @@ async def test_runtime_persists_narration_before_its_tools(tmp_path, monkeypatch
         [_text_delta("找到了"), _finished()],
     ])
     rt = QiRuntime(cwd=tmp_path, runtime_cfg=RuntimeConfig(workdir=tmp_path),
-                   session_store=sessions, llm=llm, disable_router=True)
+                   session_store=sessions, llm=llm)
     session = sessions.create("t", cwd=tmp_path)
     _ = [e async for e in rt.stream("找 hello", session)]
 

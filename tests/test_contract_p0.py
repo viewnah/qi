@@ -13,14 +13,14 @@ import shutil
 from pathlib import Path
 
 import pytest
+from qi_agent.system_prompt import build_system_prompt  # noqa: E402
 
 from qi_agent import paths
 from qi_agent.llm import ChatResponse, ToolCallOut, usage_to_dict
-from qi_agent.loader import load_agent_dir
 from qi_agent.models import TOOL_ERROR, TOOL_OK, AgentEvent, ToolOutcome
 from qi_agent.registry import Tool, ToolCatalog
-from qi_agent.runner import (AgentRunner, RunnerSettings, _accumulate_usage,
-                              spec_from_unit, stop_after_turns)
+from qi_agent.runner import (AgentRunner, RunnerSettings, RunSpec,
+                              _accumulate_usage, stop_after_turns)
 from qi_agent.session import SessionStore
 from qi_agent.tools import ToolContext, _bash, register_builtin_tools
 
@@ -43,17 +43,16 @@ def _catalog() -> ToolCatalog:
     return catalog
 
 
-def _agent_unit(tmp_path: Path, catalog: ToolCatalog, name: str = "w"):
-    """装一个 tools=["*"] 的最小 agent。"""
-    d = tmp_path / name
-    d.mkdir(parents=True, exist_ok=True)
-    (d / "agent.md").write_text(
-        f'---\nname: {name}\ndescription: {name} 的用途\nkeywords: []\ntools: ["*"]\n---\n你是 {name}。\n',
-        encoding="utf-8",
-    )
-    return load_agent_dir(d, "user", catalog.names)
+def _agent_unit(tmp_path, catalog, name: str = "w"):
+    """一个最小**运行单元**(P-E4c 起 core 不再有 agent,所以直接造 spec)。
 
-
+    名字与签名保持原样只是为了少改调用点;`tmp_path` 不再需要 —— 角色(agent.md)归 qi-agents。
+    """
+    del tmp_path
+    tools = sorted(catalog.names)
+    return RunSpec(name=name,
+                   prompt=build_system_prompt(None, tools=catalog.resolve(tools)),
+                   tools=tools)
 def _minimal_config(base: Path, monkeypatch) -> Path:
     """最小可运行配置(默认模型写在 settings.json,对齐 pi)。"""
     (base / "models.json").write_text(
@@ -75,7 +74,7 @@ def _runtime(tmp_path: Path, monkeypatch, llm, sessions: SessionStore):
 
     _minimal_config(tmp_path, monkeypatch)
     return QiRuntime(cwd=tmp_path, runtime_cfg=RuntimeConfig(workdir=tmp_path),
-                     session_store=sessions, llm=llm, disable_router=True)
+                     session_store=sessions, llm=llm)
 
 
 def _tool_call(name: str, args: dict, call_id: str = "c1") -> ChatResponse:
@@ -105,7 +104,7 @@ async def test_tool_end_carries_structured_status(tmp_path):
         _tool_call("grep", {"pattern": "hello", "path": "a.txt"}),
         ChatResponse(text="找到了"),
     ])
-    runner = AgentRunner(spec_from_unit(unit, catalog), catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)), tool_ctx=ctx)
+    runner = AgentRunner(unit, catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)), tool_ctx=ctx)
     events = [e async for e in runner.run("找 hello")]
 
     end = next(e for e in events if e.kind == "tool_end")
@@ -143,7 +142,7 @@ async def test_extension_details_reach_the_event(tmp_path):
         _tool_call("extension_tool", {}),
         ChatResponse(text="做完了"),
     ])
-    runner = AgentRunner(spec_from_unit(unit, catalog), catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)), tool_ctx=ctx)
+    runner = AgentRunner(unit, catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)), tool_ctx=ctx)
     events = [e async for e in runner.run("做点事")]
 
     end = next(e for e in events if e.kind == "tool_end")
@@ -199,7 +198,7 @@ async def test_unknown_tool_is_structured_error(tmp_path):
     catalog = _catalog()
     unit = _agent_unit(tmp_path, catalog)
     llm = StubLLM([_tool_call("nope", {}), ChatResponse(text="继续")])
-    runner = AgentRunner(spec_from_unit(unit, catalog), catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)),
+    runner = AgentRunner(unit, catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)),
                          tool_ctx=ToolContext(agent_name=unit.name, workdir=tmp_path))
     events = [e async for e in runner.run("用不存在的工具")]
     end = next(e for e in events if e.kind == "tool_end")
@@ -214,7 +213,7 @@ async def test_tool_error_is_tagged_tool_error(tmp_path):
     catalog = _catalog()
     unit = _agent_unit(tmp_path, catalog)
     llm = StubLLM([_tool_call("read", {"path": "/etc/hostname"}), ChatResponse(text="好的")])
-    runner = AgentRunner(spec_from_unit(unit, catalog), catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)),
+    runner = AgentRunner(unit, catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)),
                          tool_ctx=ToolContext(agent_name=unit.name, workdir=tmp_path))
     events = [e async for e in runner.run("读目录外的文件")]
     end = next(e for e in events if e.kind == "tool_end")
@@ -298,7 +297,7 @@ async def test_agent_end_reports_accumulated_usage(tmp_path):
         ChatResponse(text="完成",
                      usage={"prompt_tokens": 20, "completion_tokens": 7, "total_tokens": 27}),
     ])
-    runner = AgentRunner(spec_from_unit(unit, catalog), catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)),
+    runner = AgentRunner(unit, catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)),
                          tool_ctx=ToolContext(agent_name=unit.name, workdir=tmp_path))
     events = [e async for e in runner.run("找 hello")]
 
@@ -521,7 +520,7 @@ async def test_custom_tool_returning_tool_outcome_is_respected(tmp_path):
     unit = _agent_unit(tmp_path, catalog)
 
     llm = StubLLM([_tool_call("custom", {}), ChatResponse(text="继续")])
-    runner = AgentRunner(spec_from_unit(unit, catalog), catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)),
+    runner = AgentRunner(unit, catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)),
                          tool_ctx=ToolContext(agent_name=unit.name, workdir=tmp_path))
     events = [e async for e in runner.run("调用自定义工具")]
 

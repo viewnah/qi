@@ -45,14 +45,10 @@ from .llm import THINKING_LEVELS, ThinkingLLMClient
 from .extensions import ExtensionBus
 from .loader import (
     LoadError,
-    load_agent_dir,
-    load_all_agents,
     load_top_level_skills,
-    scan_agent_dirs,
 )
-from .models import AgentUnit
 from .paths import MODELS_FILE_NAME, SETTINGS_FILE_NAME, global_home, project_home
-from .registry import AgentRegistry, CapabilityRegistry, ToolCatalog, discover_extensions
+from .registry import CapabilityRegistry, ToolCatalog, discover_extensions
 from .session import SessionStore
 from .settings import (
     SCOPES,
@@ -142,56 +138,6 @@ app = typer.Typer(
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True,
                       "help_option_names": ["-h", "--help"]},
 )
-
-
-def _env_catalog(*, approve_project: bool | None = None) -> tuple[ToolCatalog, list[str]]:
-    """内置工具 + 已发现扩展(catalog 名字,用于装载校验/import)。
-
-    信任门控跟跑一次的真实路径保持一致:未信任就不扫项目 `.qi/extensions/`,
-    也不把项目级 settings 的 `extensions[]` 算进来——否则 `qi agents list` 看到的
-    工具集与实际执行时不一样。settings 坏掉按未信任处理(宁少不多)。
-
-    总线用一次性的:这里只要“注册了哪些工具”,不派发任何事件。
-    """
-    catalog = ToolCatalog()
-    register_builtin_tools(catalog)
-    caps = CapabilityRegistry()
-    try:
-        settings, _files = load_settings()
-    except SettingsError:
-        settings = None
-    trusted, _reason = resolve_project_trust(settings, approve=approve_project)
-    extensions = discover_extensions(
-        catalog, caps, None, bus=ExtensionBus(),
-        on_warning=lambda msg: err_console.print(f"[yellow]{escape(msg)}[/yellow]"),
-        extra_dirs=extension_dirs(None, trusted=trusted),
-        project_trusted=trusted)
-    return catalog, extensions
-
-
-def _load_registry(catalog: ToolCatalog, cwd: Path | None = None) -> AgentRegistry:
-    """装载 agent(含顶层技能);`qi agents list/show` 与 TUI 共用。"""
-    try:
-        settings, _files = load_settings(cwd)
-        top_skills = load_top_level_skills(cwd, settings, enabled=settings.skillsEnabled)
-    except SettingsError:
-        top_skills = None      # settings 坏了不阻止列出 agent;`qi config` / doctor 会报细节
-    try:
-        units = load_all_agents(cwd, catalog_names=catalog.names, ds_types=set(),
-                                extra_skills=top_skills)
-    except LoadError as exc:
-        console.print(f"[red]装载失败:[/red] {escape(str(exc))}")
-        raise typer.Exit(code=1) from exc
-    reg = AgentRegistry()
-    reg.register_all(units)
-    return reg
-
-
-def _display_name(unit: AgentUnit) -> str:
-    """UI 显示名;未设 display_name 时回落为 "-"(`name` 已在单独一列)。"""
-    return (unit.config.display_name or "").strip() or "-"
-
-
 def _replay_names(entries: list[dict]) -> dict[str, str]:
     """会话回放用映射:agent 名 → 记录时的展示名。
 
@@ -205,19 +151,6 @@ def _replay_names(entries: list[dict]) -> dict[str, str]:
         if e.get("type") == "dispatch" and e.get("agent"):
             names[str(e["agent"])] = str(e.get("display_name") or e["agent"])
     return names
-
-
-def _print_agents_table(reg: AgentRegistry, catalog: ToolCatalog | None = None) -> None:
-    table = Table(title=f"agents({len(reg.names)})")
-    table.add_column("name"); table.add_column("显示名"); table.add_column("来源")
-    table.add_column("工具"); table.add_column("描述")
-    for unit in reg.all():
-        tools = ",".join(unit.tools) if unit.tools else "(全部)"
-        desc = unit.config.description.splitlines()[0] if unit.config.description else ""
-        table.add_row(unit.name, _display_name(unit), unit.source, tools, desc[:60])
-    console.print(table)
-
-
 def _tool_snippet(text: str, limit: int = 400) -> str:
     """工具结果摘要:保留换行结构(便于看 ls/grep 这类多行输出),超长时附提示。
 
@@ -253,7 +186,6 @@ def _short_cwd(cwd: str | None, limit: int = 48) -> str:
 def root_callback(
     ctx: typer.Context,
     print_mode: bool = typer.Option(False, "--print", "-p", help="无头一次执行(auto 分派)"),
-    agent: str | None = typer.Option(None, "--agent", help="指定 agent(manual)"),
     cont: bool = typer.Option(False, "--continue", "-c", help="续上次会话"),
     session_id: str | None = typer.Option(None, "--session", help="指定会话 id"),
     fork_id: str | None = typer.Option(None, "--fork", help="从已有会话分叉出新会话(path|id 前缀)"),
@@ -383,7 +315,7 @@ def root_callback(
             no_session=no_session, fork_id=fork_id, session_id=session_id, cont=cont))
         # 对齐 pi 的 `-p`:默认只输出答案;分派行/工具进度仅在 --verbose 时显示
         # (且走 stderr,不污染 stdout)。`--mode json` 本就输出全部事件,不受此开关影响。
-        async for ev in runtime.stream(prompt, session, agent_override=agent):
+        async for ev in runtime.stream(prompt, session):
             if mode == "json":
                 console.print_json(data={"kind": ev.kind, "agent": ev.agent,
                                          "tool": ev.tool, "text": ev.text, "data": ev.data})
@@ -597,89 +529,6 @@ def models_list() -> None:
         rk = resolve_key(spec.provider, spec.api_key_ref, store)
         table.add_row("*", spec.provider, spec.model, spec.api, str(spec.context_window), rk.describe())
     console.print(table)
-
-
-# ── agents ──────────────────────────────────────────────
-
-agents_app = typer.Typer(help="agent 查看/导入/导出")
-app.add_typer(agents_app, name="agents")
-
-
-@agents_app.command("list")
-def agents_list() -> None:
-    """列出已装载 agent(来源/工具/描述)。"""
-    catalog, _extensions = _env_catalog()
-    reg = _load_registry(catalog)
-    _print_agents_table(reg, catalog)
-
-
-@agents_app.command("show")
-def agents_show(name: str = typer.Argument(...)) -> None:
-    """单 agent 解析诊断。"""
-    catalog, _extensions = _env_catalog()
-    reg = _load_registry(catalog)
-    unit = reg.get(name)
-    if unit is None:
-        console.print(f"[red]agent {name} 不存在[/red]")
-        raise typer.Exit(code=1)
-    console.print(f"[bold]{unit.name}[/bold](来源: {unit.source}) 目录: {unit.path}")
-    console.print(f"显示名: {_display_name(unit)}")
-    console.print(f"描述: {unit.config.description}")
-    console.print(f"工具: {', '.join(unit.tools) if unit.tools else '(全部)'}")
-    console.print(f"技能: {', '.join(s.name for s in unit.skills) or '(无)'}")
-    if unit.data_sources:
-        console.print("数据源: " + ", ".join(f"{d.id}({d.type})" for d in unit.data_sources))
-    if unit.mcp_private:
-        console.print("私有 MCP: " + ", ".join(s.name for s in unit.mcp_private))
-    if unit.mcp_declared:
-        # 名字 + 它是在哪一层定义的,因为同一个名字在项目/全局里可以是两份配置
-        console.print("声明绑定 MCP: " + ", ".join(s.name for s in unit.mcp_declared))
-    if unit.config.opening:
-        console.print(f"opening: {unit.config.opening.message[:60]}")
-
-
-@agents_app.command("import")
-def agents_import(source: str = typer.Argument(...),
-                  local: bool = typer.Option(False, "--local", "-l", help="导入到项目 .qi"),
-                  force: bool = typer.Option(False, "--force", help="覆盖同名"),
-                  rename: str | None = typer.Option(None, "--rename", help="改目录名导入")) -> None:
-    """导入 agent:拷贝 + 复用装载校验器 + 明文凭证扫描。"""
-    src = Path(source).expanduser()
-    if src.is_file() and src.name == "agent.md":
-        src = src.parent
-    if not src.is_dir():
-        console.print(f"[red]源不是 agent 目录: {src}[/red]")
-        raise typer.Exit(code=2)
-    catalog, _extensions = _env_catalog()
-    try:
-        load_agent_dir(src, "source", catalog.names)   # 先校验(坏包不放行)
-    except LoadError as exc:
-        console.print(f"[red]导入校验失败:[/red] {escape(str(exc))}")
-        raise typer.Exit(code=1) from exc
-    target_root = project_home() if local else global_home()
-    dst_name = rename or src.name
-    dst = target_root / "agents" / dst_name
-    if dst.exists() and not force:
-        console.print(f"[yellow]目标已存在 {dst};--force 覆盖或 --rename 改名。[/yellow]")
-        raise typer.Exit(code=1)
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(src, dst, dirs_exist_ok=force)
-    console.print(f"[green]已导入 {src} → {dst}[/green]")
-
-
-@agents_app.command("export")
-def agents_export(name: str = typer.Argument(...),
-                  out: str = typer.Option(".", "-o", help="输出目录")) -> None:
-    """导出 agent 目录(产物可直接 import)。"""
-    catalog, _extensions = _env_catalog()
-    reg = _load_registry(catalog)
-    unit = reg.get(name)
-    if unit is None:
-        console.print(f"[red]agent {name} 不存在[/red]")
-        raise typer.Exit(code=1)
-    dst = Path(out).expanduser() / unit.name
-    shutil.copytree(unit.path, dst, dirs_exist_ok=True)
-    console.print(f"[green]已导出 → {dst}[/green]")
 
 
 # ── sessions ────────────────────────────────────────────

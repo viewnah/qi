@@ -112,7 +112,7 @@ async def test_first_turn_names_the_session_once(tmp_path):
     store = SessionStore(root=tmp_path / "sessions")
     stub = _TurnStub()
     runtime = QiRuntime(cwd=tmp_path, runtime_cfg=RuntimeConfig(workdir=tmp_path),
-                        session_store=store, llm=stub, disable_router=True)
+                        session_store=store, llm=stub)
     session = store.create("", cwd=tmp_path)
     assert session.title == ""                      # 新会话:未命名
 
@@ -142,7 +142,7 @@ async def test_naming_failure_leaves_the_turn_intact(tmp_path):
 
     store = SessionStore(root=tmp_path / "sessions")
     runtime = QiRuntime(cwd=tmp_path, runtime_cfg=RuntimeConfig(workdir=tmp_path),
-                        session_store=store, llm=_Boom(), disable_router=True)
+                        session_store=store, llm=_Boom())
     session = store.create("", cwd=tmp_path)
     async for _ in runtime.stream("你好", session):
         pass
@@ -161,7 +161,7 @@ async def test_naming_an_old_session_uses_its_first_message(tmp_path):
     store = SessionStore(root=tmp_path / "sessions")
     stub = _TurnStub()
     runtime = QiRuntime(cwd=tmp_path, runtime_cfg=RuntimeConfig(workdir=tmp_path),
-                        session_store=store, llm=stub, disable_router=True)
+                        session_store=store, llm=stub)
     session = store.create("", cwd=tmp_path)                    # 有历史、没有标题
     store.append(session, {"type": "message", "role": "user", "content": "最早那句:看下仓库结构"})
     store.append(session, {"type": "message", "role": "assistant", "content": "好"})

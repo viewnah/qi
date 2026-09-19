@@ -109,7 +109,7 @@ def _runtime(tmp_path, monkeypatch, llm):
     _env(tmp_path, monkeypatch)
     from qi_agent.runtime import QiRuntime
 
-    return QiRuntime(cwd=tmp_path / "proj", disable_router=True,
+    return QiRuntime(cwd=tmp_path / "proj",
                      approve_project=True, llm=llm)
 
 
@@ -326,5 +326,5 @@ api.on("agent_end", note("end"))
     await _drain(runtime, "一次就完", session)
 
     rows = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
-    assert rows[0] == {"kind": "start", "agent": "general", "turns": None}
-    assert rows[1] == {"kind": "end", "agent": "general", "turns": 1}
+    assert rows[0] == {"kind": "start", "agent": "qi", "turns": None}
+    assert rows[1] == {"kind": "end", "agent": "qi", "turns": 1}

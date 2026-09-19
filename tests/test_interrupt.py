@@ -20,16 +20,15 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from qi_agent.system_prompt import build_system_prompt  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from qi_agent.abort import AbortSignal  # noqa: E402
 from qi_agent.llm import ChatMessage, ChatResponse, LLMDelta, ToolCallOut  # noqa: E402
-from qi_agent.loader import load_agent_dir  # noqa: E402
 from qi_agent.models import ToolOutcome  # noqa: E402
 from qi_agent.registry import ToolCatalog  # noqa: E402
-from qi_agent.runner import (AgentRunner, RunnerSettings, spec_from_unit,
-                              stop_after_turns)  # noqa: E402
+from qi_agent.runner import AgentRunner, RunnerSettings, RunSpec, stop_after_turns  # noqa: E402
 from qi_agent.runtime import QiRuntime, RuntimeConfig  # noqa: E402
 from qi_agent.session import SessionStore  # noqa: E402
 from qi_agent.tools import ToolContext, register_builtin_tools  # noqa: E402
@@ -85,10 +84,14 @@ class StreamingLLM:
 
 
 def _runner(tmp_path: Path, llm, settings: RunnerSettings, tools=None) -> AgentRunner:
+    """P-E4c 起直接造运行单元(角色归 qi-agents,core 不再需要 agent.md)。"""
     catalog = _catalog()
-    unit = load_agent_dir(_write_agent(tmp_path, tools=tools), "user", catalog.names)
-    ctx = ToolContext(agent_name=unit.name, workdir=tmp_path)
-    return AgentRunner(spec_from_unit(unit, catalog), catalog, llm, settings, tool_ctx=ctx)
+    names = list(tools) if tools else sorted(catalog.names)
+    spec = RunSpec(name="w",
+                   prompt=build_system_prompt(None, tools=catalog.resolve(names)),
+                   tools=names)
+    ctx = ToolContext(agent_name=spec.name, workdir=tmp_path)
+    return AgentRunner(spec, catalog, llm, settings, tool_ctx=ctx)
 
 
 def _tool_call(i: int, name: str = "read") -> ToolCallOut:
@@ -282,8 +285,7 @@ async def test_runtime_persists_partial_text_on_hard_cancel(tmp_path, monkeypatc
 
     sessions = SessionStore(root=tmp_path / "sessions")
     rt = QiRuntime(cwd=tmp_path, runtime_cfg=RuntimeConfig(workdir=tmp_path),
-                   session_store=sessions, llm=StreamingLLM(["半截", "回答"], hang=True),
-                   disable_router=True)
+                   session_store=sessions, llm=StreamingLLM(["半截", "回答"], hang=True))
     session = sessions.create("t")
 
     async def consume() -> None:

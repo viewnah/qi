@@ -55,7 +55,7 @@ def _runtime(tmp_path, monkeypatch):
     _env(tmp_path, monkeypatch)
     from qi_agent.runtime import QiRuntime
 
-    return QiRuntime(cwd=project, disable_router=True, approve_project=True)
+    return QiRuntime(cwd=project, approve_project=True)
 
 
 def _log(path: Path) -> list[dict]:

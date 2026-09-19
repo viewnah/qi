@@ -177,6 +177,8 @@ class FakeRuntime:
         # 与 QiRuntime 对齐的可写字段(思考级别相关)
         self.thinking_level = "off"
         self.llm_exec = SimpleNamespace(thinking_level="off", reasoning_dropped=False)
+        self.top_skills: list = []      # 顶层技能(core 的能力,TUI banner 用它)
+        self.extensions: list = []      # /reload 的提示读它
         self.notes: list[str] = []      # 启动提示(TUI 会逐条展示)
         # TUI 的 `_command` / `_help_text` 会读扩展命令登记处
         from qi_agent.extensions import CommandRegistry
@@ -283,7 +285,8 @@ async def test_tui_renders_pi_blocks_and_footer(tmp_path, monkeypatch):
         footer = app.footer_text.plain
         assert "↑12k ↓678" in footer
         assert "deepseek/deepseek-v4.1-flash • thinking off" in footer
-        assert "qi · auto" in footer
+        # P-E4c:状态行不再报分派模式(auto 已取消),但模型/思考级别仍在
+        assert "qi" in footer and "deepseek" in footer
 
 
 # ── `/` 命令:对齐 pi 的部分 + “计划中”不冒充未知 ──────────

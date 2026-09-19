@@ -24,9 +24,7 @@ from .extensions import (
     ToolError,
     ToolExecutor,
 )
-from .models import AgentUnit
 __all__ = [
-    "AgentRegistry",
     "CapabilityRegistry",
     "CommandRegistry",
     "EXTENSION_ENTRY_FILE",
@@ -156,33 +154,6 @@ class ToolCatalog:
     def llm_schemas(self, names: list[str] | None = None) -> list[dict]:
         source = [self._tools[n] for n in names] if names is not None else list(self._tools.values())
         return [t.to_llm_schema() for t in source]
-
-
-class AgentRegistry:
-    """装载后的 agent 集合(项目版已覆盖全局版)。"""
-
-    def __init__(self) -> None:
-        self._agents: dict[str, AgentUnit] = {}
-
-    def register_all(self, units: dict[str, AgentUnit]) -> None:
-        self._agents = dict(units)
-
-    def get(self, name: str) -> AgentUnit | None:
-        return self._agents.get(name)
-
-    @property
-    def names(self) -> list[str]:
-        return sorted(self._agents)
-
-    def all(self) -> list[AgentUnit]:
-        return [self._agents[n] for n in self.names]
-
-
-# ── 扩展能力注册表(docs/extensions.md:provides_config)──────────────────────
-# `ExtensionApi` 现在住在 extensions.py(扩展宿主的公开面);这里只做转发导入,
-# 旧的 `from qi_agent.registry import ExtensionApi` 写法仍然有效。
-
-
 class CapabilityRegistry:
     """汇总所有已发现扩展的消费型配置能力(动态装载门控)。"""
 

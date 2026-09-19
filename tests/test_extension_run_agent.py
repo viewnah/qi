@@ -78,7 +78,7 @@ def _runtime(tmp_path, monkeypatch, llm, **kw):
     _env(tmp_path, monkeypatch)
     from qi_agent.runtime import QiRuntime
 
-    return QiRuntime(cwd=project, disable_router=True, approve_project=True, llm=llm, **kw)
+    return QiRuntime(cwd=project, approve_project=True, llm=llm, **kw)
 
 
 async def _drain(runtime, text: str, session) -> list:

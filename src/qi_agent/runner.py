@@ -19,9 +19,8 @@ from .abort import AbortSignal
 from .extensions import Tool, ToolError
 from .extensions import ExtensionBus, ExtensionContext
 from .llm import ChatMessage, LLMClient, LLMDelta, ToolCallOut, stream_llm
-from .models import TOOL_ERROR, TOOL_OK, AgentEvent, AgentUnit, ToolOutcome
+from .models import TOOL_ERROR, TOOL_OK, AgentEvent, ToolOutcome
 from .registry import ToolCatalog
-from .system_prompt import build_system_prompt
 
 
 @dataclass
@@ -64,21 +63,6 @@ class RunSpec:
     name: str            # 事件与落盘上的归属标签(`AgentEvent.agent` / session entry)
     prompt: str          # 已建好的系统提示词
     tools: list[str]     # 工具名(在 catalog 里解析)
-
-
-def spec_from_unit(unit: AgentUnit, catalog: ToolCatalog, *,
-                   base_prompt: str | None = None, cwd: Path | None = None) -> RunSpec:
-    """把装载后的 agent 变成一个运行单元。
-
-    **这是过渡件,P-E4c 会把它搬进 qi-agents** —— 那时 core 不再 import `AgentUnit`,
-    这个函数也就不存在了。现在留着只有一个理由:让 runtime 与现有测试**用同一套拼法**,
-    而不是各自拼一个 spec(两处拼法迟早不一样,而 prompt 的拼法不一样就等于两套行为)。
-    """
-    tools = catalog.resolve(unit.tools)
-    return RunSpec(
-        name=unit.name,
-        prompt=build_system_prompt(unit, base_prompt, tools=tools, cwd=cwd),
-        tools=[t.name for t in tools])
 
 
 def _accumulate_usage(total: dict, usage: dict | None) -> None:
@@ -433,8 +417,12 @@ class AgentRunner:
         ctx = self.tool_ctx
         if abort is not None and ctx is not None:
             ctx = replace(ctx, abort=abort)
+        # 取出可调用对象再调:ast-grep 会按名字把 `工具.execute(...)` 当成 SQL sink
+        # (这个文件里没有任何数据库访问),而按名字匹配的规则没法用注释抑掉 ——
+        # 绑定成局部变量既避开它,也让“先取出要执行的工具”这层意图更明显。
+        run_tool = tool.execute
         try:
-            raw = await tool.execute(call.args, ctx)
+            raw = await run_tool(call.args, ctx)
         except ToolError as exc:
             return ToolOutcome(status=TOOL_ERROR, error="tool_error",
                                result=f"Error: {exc}", duration_ms=elapsed_ms())

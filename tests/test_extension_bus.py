@@ -324,7 +324,7 @@ def register(api):
 
     from qi_agent.runtime import QiRuntime
 
-    runtime = QiRuntime(cwd=project, disable_router=True, approve_project=True)
+    runtime = QiRuntime(cwd=project, approve_project=True)
     assert runtime.extensions == ["watcher"]
     assert runtime.project_trusted is True
 
@@ -362,7 +362,7 @@ def register(api):
 
     from qi_agent.runtime import QiRuntime
 
-    runtime = QiRuntime(cwd=project, disable_router=True, approve_project=True)
+    runtime = QiRuntime(cwd=project, approve_project=True)
     session = runtime.sessions.create("t", cwd=project)
     await runtime.start_session(session)
     await runtime.start_session(session)            # 再来一次
@@ -388,7 +388,7 @@ def register(api):
 
     from qi_agent.runtime import QiRuntime
 
-    runtime = QiRuntime(cwd=project, disable_router=True, approve_project=True)
+    runtime = QiRuntime(cwd=project, approve_project=True)
     session = runtime.sessions.create("t", cwd=project)
     await runtime.start_session(session)            # 不抛
     assert any("broken" in note and "session_start" in note for note in runtime.notes)
@@ -410,7 +410,7 @@ def register(api):
 
     from qi_agent.runtime import QiRuntime
 
-    runtime = QiRuntime(cwd=project, disable_router=True, approve_project=False)
+    runtime = QiRuntime(cwd=project, approve_project=False)
     assert runtime.extensions == []
     assert not marker.exists()
     assert any("未信任" in note for note in runtime.notes)

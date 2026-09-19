@@ -14,6 +14,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from qi_agent.system_prompt import build_system_prompt  # noqa: E402
 from typer.testing import CliRunner
 
 from qi_agent import runtime as runtime_mod
@@ -32,11 +33,9 @@ from qi_agent.llm import (
     normalize_thinking_level,
     reasoning_text_of,
 )
-from qi_agent.loader import load_agent_dir
 from qi_agent.models import AgentEvent
 from qi_agent.registry import ToolCatalog
-from qi_agent.runner import (AgentRunner, RunnerSettings, spec_from_unit,
-                              stop_after_turns)
+from qi_agent.runner import AgentRunner, RunnerSettings, RunSpec, stop_after_turns
 from qi_agent.theme import load_palette
 from qi_agent.tools import ToolContext, register_builtin_tools
 
@@ -166,20 +165,21 @@ class _ReasoningLLM:
         yield LLMDelta(finished=True, usage={"prompt_tokens": 5})
 
 
-def _agent_unit(tmp_path: Path, catalog: ToolCatalog):
-    d = tmp_path / "w"
-    d.mkdir(parents=True, exist_ok=True)
-    (d / "agent.md").write_text(
-        '---\nname: w\ndescription: w 的用途\nkeywords: []\ntools: ["*"]\n---\n你是 w。\n',
-        encoding="utf-8")
-    return load_agent_dir(d, "user", catalog.names)
+def _agent_unit(tmp_path, catalog, name: str = "w"):
+    """一个最小**运行单元**(P-E4c 起 core 不再有 agent,所以直接造 spec)。
 
-
+    名字与签名保持原样只是为了少改调用点;`tmp_path` 不再需要 —— 角色(agent.md)归 qi-agents。
+    """
+    del tmp_path
+    tools = sorted(catalog.names)
+    return RunSpec(name=name,
+                   prompt=build_system_prompt(None, tools=catalog.resolve(tools)),
+                   tools=tools)
 def test_runner_emits_thinking_delta_and_keeps_answer_clean(tmp_path):
     catalog = ToolCatalog()
     register_builtin_tools(catalog)
     unit = _agent_unit(tmp_path, catalog)
-    runner = AgentRunner(spec_from_unit(unit, catalog), catalog, _ReasoningLLM(), RunnerSettings(stop_after=stop_after_turns(3)),
+    runner = AgentRunner(unit, catalog, _ReasoningLLM(), RunnerSettings(stop_after=stop_after_turns(3)),
                          tool_ctx=ToolContext(agent_name=unit.name, workdir=tmp_path))
     events = asyncio.run(_collect(runner.run("问题")))
 
@@ -242,6 +242,8 @@ class FakeRuntime:
         self.registry = _FakeRegistry()
         self.thinking_level = "off"
         self.llm_exec = SimpleNamespace(thinking_level="off", reasoning_dropped=False)
+        self.top_skills: list = []      # 顶层技能(core 的能力,TUI banner 用它)
+        self.extensions: list = []      # /reload 的提示读它
         self.notes: list[str] = []
         # TUI 的 `_command` / `_help_text` 会读扩展命令登记处
         from qi_agent.extensions import CommandRegistry
@@ -561,7 +563,7 @@ async def test_thinking_is_persisted_before_the_answer_and_stays_out_of_context(
     store = SessionStore(root=tmp_path / "sessions")
     # 与 test_web_api 的 runtime 构造同形:agent 走包内置的 general,catalog 由 runtime 自建。
     runtime = QiRuntime(cwd=tmp_path, runtime_cfg=RuntimeConfig(workdir=tmp_path),
-                        session_store=store, llm=ThinkingStub(), disable_router=True)
+                        session_store=store, llm=ThinkingStub())
     session = store.create("思考", cwd=tmp_path)
     async for _ in runtime.stream("看下目录", session):
         pass

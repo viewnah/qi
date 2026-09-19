@@ -86,8 +86,7 @@ def _app(tmp_path: Path, monkeypatch, llm=None, provider: str = "ollama", **kwar
 
     def factory(cwd):
         return QiRuntime(cwd=Path(cwd), runtime_cfg=RuntimeConfig(workdir=Path(cwd)),
-                         session_store=sessions, llm=llm or StreamingStub(),
-                         disable_router=True)
+                         session_store=sessions, llm=llm or StreamingStub())
 
     state = WebState(tmp_path, runtime_factory=factory)
     # 工作区偏好落在 tmp:不传的话默认会写进真实 `~/.qi/agent/workspaces.json`
@@ -227,8 +226,9 @@ async def test_turn_streams_full_event_sequence(client, tmp_path):
     # 工具三段式:Start 之后必须有 Args(规范要求"一个或多个"),然后是 Result
     assert "TOOL_CALL_ARGS" in kinds and "TOOL_CALL_RESULT" in kinds
 
-    # 分派是 qi 独有 → 走 CUSTOM,不污染标准事件
-    assert any(e.get("type") == "CUSTOM" and e.get("name") == "qi.dispatch" for e in events)
+    # P-E4c:core 是单 agent、不再分派 → 不再有 `qi.dispatch` 这种 CUSTOM 分派事件。
+    # “宿主自定义内容走 CUSTOM、不污染标准事件”这条规矩仍由历史快照守着。
+    assert any(e.get("type") == "CUSTOM" and e.get("name") == "qi.history" for e in events)
 
 
 @pytest.mark.asyncio
@@ -255,7 +255,8 @@ async def test_turn_result_is_persisted_and_replayed(client, tmp_path):
 
     detail = (await client.get(f"/api/sessions/{sid}")).json()
     types = [e.get("type") for e in detail["entries"]]
-    assert "dispatch" in types
+    # P-E4c:core 不再写 `dispatch` entry(单 agent,无分派)
+    assert "message" in types
     assert types.count("message") >= 2          # user + assistant
     assert "tool" in types                      # 工具往返落盘(第五类 entry)
     assert "custom" in types                    # 叙述落成 custom(不进 LLM 上下文)
@@ -387,16 +388,6 @@ async def test_keyless_provider_is_not_reported_as_missing(client):
 
 
 # ── agents ────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_agents_endpoint_lists_general(client):
-    body = (await client.get("/api/agents")).json()
-    assert any(a["name"] == "general" for a in body["agents"])
-    general = next(a for a in body["agents"] if a["name"] == "general")
-    assert general["tools"]            # tools=["*"] 解析后的实际清单
-    assert general["source"] == "builtin"
-
-
 @pytest.mark.asyncio
 async def test_skills_and_extensions_endpoints(client):
     """设置页要的两块数据:顶层技能清单与已装载插件名。
@@ -412,51 +403,6 @@ async def test_skills_and_extensions_endpoints(client):
     extensions = (await client.get("/api/extensions")).json()
     assert isinstance(extensions["extensions"], list)
     assert all(isinstance(name, str) for name in extensions["extensions"])
-
-
-@pytest.mark.asyncio
-async def test_mcp_endpoint_lists_declarations_without_values(client, tmp_path):
-    """设置页的 MCP 节:`/api/mcp` 只回**结构**,不回任何值。
-
-    这条用例的重点是**不泄露**:mcp.json 的 env 值不像 data_sources 的 dsn 那样被
-    强制 `{env:XXX}`,用户手写明文完全可能 —— 所以 env / headers 只回键名,stdio 的
-    command / args 一律不回(那是最容易写成 `--token=sk-…` 的地方)。
-    """
-    secret = "sk-LIVE-SECRET-abcdef"
-    (tmp_path / ".qi").mkdir(exist_ok=True)
-    (tmp_path / ".qi" / "mcp.json").write_text(json.dumps({"mcpServers": {
-        "github": {"type": "streamable-http", "url": "https://api.githubcopilot.com/mcp/"},
-        "local-db": {"type": "stdio", "command": "npx",
-                     "args": ["-y", "db-mcp", f"--token={secret}"],
-                     "env": {"DB_TOKEN": f"{secret}-env"},
-                     "headers": {"Authorization": f"Bearer {secret}"}},
-    }}, ensure_ascii=False), encoding="utf-8")
-    agent = tmp_path / ".qi" / "agents" / "analyst"
-    agent.mkdir(parents=True)
-    (agent / "agent.md").write_text(
-        "---\nname: analyst\ndescription: 分析。\nkeywords: [分析]\ntools: [\"*\"]\n"
-        "mcp_servers: [github]\n---\n正文\n", encoding="utf-8")
-
-    res = await client.get("/api/mcp")
-    assert res.status_code == 200
-    body = res.json()
-    assert [s["scope"] for s in body["sources"]][:2] == ["global", "project"]
-    global_, project = body["sources"][0], body["sources"][1]
-    assert global_["exists"] is False and global_["servers"] == []   # 没文件也要回一层
-    assert project["exists"] is True and project["path"].endswith(".qi/mcp.json")
-
-    by_name = {s["name"]: s for s in project["servers"]}
-    assert by_name["github"]["target"] == "https://api.githubcopilot.com/mcp/"
-    assert by_name["github"]["bound_by"] == ["analyst"]     # 门控:声明了才绑
-    assert by_name["local-db"]["bound_by"] == []            # 没声明 → 没人绑
-    assert by_name["local-db"]["target"] == "stdio"         # stdio 不回 command/args
-    assert by_name["local-db"]["env_keys"] == ["DB_TOKEN"]
-    assert by_name["local-db"]["header_keys"] == ["Authorization"]
-
-    for leaked in (secret, f"--token={secret}", "npx", "db-mcp"):
-        assert leaked not in res.text, f"{leaked} 泄露到了前端"
-
-
 # ── 安全 ──────────────────────────────────────────────────
 
 @pytest.mark.asyncio

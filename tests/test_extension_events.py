@@ -73,7 +73,7 @@ def _runtime(tmp_path, monkeypatch, llm):
     _env(tmp_path, monkeypatch)
     from qi_agent.runtime import QiRuntime
 
-    return QiRuntime(cwd=tmp_path / "proj", disable_router=True,
+    return QiRuntime(cwd=tmp_path / "proj",
                      approve_project=True, llm=llm)
 
 
@@ -299,7 +299,7 @@ def register(api):
 
     payload = json.loads((tmp_path / "payload.json").read_text(encoding="utf-8"))
     assert payload["prompt"] == "问点什么"
-    assert payload["agent"] == "general"                   # 内置兜底角色
+    assert payload["agent"] == "qi"                   # 内置兜底角色
     assert payload["has_prompt"] is True                   # 已经建好了才交给扩展
 
 

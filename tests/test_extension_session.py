@@ -71,7 +71,7 @@ def _runtime(tmp_path, monkeypatch, llm, flags: list[str] | None = None):
     _env(tmp_path, monkeypatch)
     from qi_agent.runtime import QiRuntime
 
-    return QiRuntime(cwd=project, disable_router=True, approve_project=True, llm=llm,
+    return QiRuntime(cwd=project, approve_project=True, llm=llm,
                      extension_flags=flags)
 
 
@@ -125,7 +125,7 @@ async def test_append_entry_persists_and_stays_out_of_context(tmp_path, monkeypa
     assert len(rows) == 1
     assert rows[0]["data"] == {"count": 1}
     assert rows[0]["source"] == "state"          # 哪个扩展写的
-    assert rows[0]["agent"] == "general"         # 当时哪个角色在跑
+    assert rows[0]["agent"] == "qi"         # 当时哪个角色在跑
 
     # 上下文里只有 system + user(entry 不该出现)
     contents = llm.contents(0)

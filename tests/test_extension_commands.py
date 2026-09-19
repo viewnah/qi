@@ -78,6 +78,8 @@ class _TuiStub:
         self.thinking_level = "off"
         self.llm_exec = SimpleNamespace(thinking_level="off", reasoning_dropped=False)
         self.notes: list[str] = []
+        self.top_skills: list = []      # TUI banner 读它(core 持有技能)
+        self.extensions: list = []      # /reload 的提示读它
 
     def extension_ctx(self):
         from qi_agent.extensions import ExtensionContext
@@ -256,7 +258,7 @@ async def test_extension_registers_command_and_shortcut(tmp_path, monkeypatch):
 
     from qi_agent.runtime import QiRuntime
 
-    runtime = QiRuntime(cwd=project, disable_router=True, approve_project=True)
+    runtime = QiRuntime(cwd=project, approve_project=True)
     assert runtime.extensions == ["probe-ext"]
     command = runtime.commands.find("probe")
     assert command is not None and command.description == "探针命令"

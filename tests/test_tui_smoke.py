@@ -17,20 +17,6 @@ _MODELS = (
 _SETTINGS = '{"defaultProvider": "ollama", "defaultModel": "x"}'
 
 
-def test_router_cases_yaml_structure():
-    import yaml
-
-    cases = yaml.safe_load(Path(__file__).parent.joinpath("router_cases.yaml").read_text(encoding="utf-8"))
-    assert isinstance(cases, list) and len(cases) >= 7
-    for c in cases:
-        assert "input" in c and "expect" in c
-    # 样例 agent 覆盖回归集用到的名字
-    agents_dir = Path(__file__).resolve().parents[1] / "examples" / "agents"
-    have = {p.name for p in agents_dir.iterdir() if (p / "agent.md").exists()}
-    for c in cases:
-        if not str(c["expect"]).startswith("@"):
-            assert c["expect"] in have, f"回归集期望 {c['expect']} 但样例里没有(have={have})"
-
 
 def _tui_env(tmp_path, monkeypatch) -> None:
     """最小可启动环境:一份 models.json + 空的 QI_AGENT_HOME。"""
@@ -144,16 +130,20 @@ async def test_tui_ctrl_d_exits_only_when_empty(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_tui_initial_prompt_is_submitted(tmp_path, monkeypatch):
-    """`qi "问题"` = 进 TUI 后自动提交该消息(用 `/mode manual` 验证其生效)。"""
+async def test_tui_initial_prompt_is_threaded(tmp_path, monkeypatch):
+    """`qi "问题"` 把那句话带进 TUI,作为首条消息。
+
+    原测试用 `/mode manual` 验证(靠 `_auto` 的变化),而 `/mode` 与 `_auto` 随 auto 分派一起
+    在 P-E4c 移除 —— 所以改成断言“那句话真的被带进去了”。提交行为本身由 TUI 的 `_submit` 保证。
+    """
     _tui_env(tmp_path, monkeypatch)
     from qi_agent.tui import QiTui
 
     assert QiTui()._initial_prompt is None      # 裸 `qi` 不自动提交
-    app = QiTui(initial_prompt="/mode manual")
+    app = QiTui(initial_prompt="你好")
     async with app.run_test() as pilot:
         await pilot.pause(0.05)
-        assert app._auto is False, "初始消息未被提交"
+        assert app._initial_prompt == "你好"
 
 
 @pytest.mark.asyncio

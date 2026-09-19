@@ -231,7 +231,7 @@ def register(api):
     from qi_agent.runtime import QiRuntime
 
     llm = _CapturingLLM()
-    runtime = QiRuntime(cwd=project, disable_router=True, approve_project=True, llm=llm)
+    runtime = QiRuntime(cwd=project, approve_project=True, llm=llm)
     assert runtime.extensions == ["readonly"]
     session = runtime.sessions.create("t", cwd=project)
 

@@ -166,27 +166,6 @@ class SessionDetail(BaseModel):
     skipped: int = 0
     #: 整条分支的用量汇总(与窗口无关:它统计的是落盘的全部)
     usage: UsageSummary = Field(default_factory=UsageSummary)
-
-
-class AgentInfo(BaseModel):
-    name: str
-    display_name: str = ""
-    description: str = ""
-    source: str = ""
-    tools: list[str] = Field(default_factory=list)
-    keywords: list[str] = Field(default_factory=list)
-    skills: int = 0
-    data_sources: int = 0
-    mcp_private: int = 0
-
-
-class AgentList(BaseModel):
-    agents: list[AgentInfo]
-    #: 当前会话粘性选中的 agent(未选为 None)
-    active_agent: str | None = None
-    mode: str = "auto"
-
-
 class ProviderInfo(BaseModel):
     """凭证状态**只回掩码与来源**,永不回明文(docs/web.md §4)。"""
 
@@ -284,50 +263,3 @@ class FileContent(BaseModel):
     truncated: bool = False
     lang: str = ""
     text: str = ""
-
-
-class McpServerInfo(BaseModel):
-    """一个 MCP server 的**结构**,不含任何值(docs/web.md §18.18)。
-
-    口径:名字 / 传输类型 / 目标 URL / `env` 与 `headers` 的**键名**。
-    `env` 值、`headers` 值、以及 stdio 的 `command` / `args` **一律不出宿主**——
-    后三个字段是最容易直接写进明文密钥的地方(`npx -y x --token=sk-…`),
-    而 mcp.json 的 env 值不像 data_sources 的 dsn 那样被强制 `{env:XXX}`。
-    与"凭证只回掩码"同一条规矩。
-    """
-
-    name: str
-    #: `streamable-http` / `stdio` / …(mcp.json 里的 `type` 原值;没写就是空)
-    transport: str = ""
-    #: http 类回 URL;stdio 回 `"stdio"`(命令与参数不回显,见类注释)
-    target: str = ""
-    #: `env` / `headers` 的键名(值永不出宿主)
-    env_keys: list[str] = Field(default_factory=list)
-    header_keys: list[str] = Field(default_factory=list)
-    #: 声明绑定它的 agent 名(全局/项目层才有意义 —— 那是"门控"的结果)
-    bound_by: list[str] = Field(default_factory=list)
-
-
-class McpSource(BaseModel):
-    """一处 mcp.json(全局 / 项目 / 某个 agent 的私有)。
-
-    `exists=False` 也回:`servers` 为空配上看路径,前端才能区分"这里没有文件"
-    与"文件在但没声明 server"。
-    """
-
-    scope: Literal["global", "project", "agent"]
-    #: scope=="agent" 时是 agent 名
-    owner: str = ""
-    path: str = ""
-    exists: bool = False
-    servers: list[McpServerInfo] = Field(default_factory=list)
-
-
-class McpList(BaseModel):
-    """设置页 MCP 节的全部数据。
-
-    v1 只有**解析与门控**,没有 MCP client(见 docs/PLAN.md 的未决清单),
-    所以这里没有任何"已连接 / 工具发现"状态可回 —— 回的就是磁盘上的声明。
-    """
-
-    sources: list[McpSource]

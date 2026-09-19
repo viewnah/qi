@@ -175,7 +175,7 @@ def web(tmp_path, monkeypatch):
     sessions = SessionStore(root=tmp_path / "sessions")
     state = WebState(proj, runtime_factory=lambda cwd: QiRuntime(
         cwd=Path(cwd), runtime_cfg=RuntimeConfig(workdir=Path(cwd)),
-        session_store=sessions, disable_router=True))
+        session_store=sessions))
     app = create_app(cwd=proj, state=state,
                      workspace_store=WorkspaceStore(tmp_path / "ws.json"))
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app),

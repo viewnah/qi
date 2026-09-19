@@ -87,8 +87,8 @@ def test_entry_tokens_counts_only_context_visible_parts():
     # 叙述 / dispatch / state 不进上下文 → 0(与 runtime._history 一致)
     assert entry_tokens({"type": "custom", "custom_type": "assistant_narration",
                          "content": "a" * 400}) == 0
-    assert entry_tokens({"type": "dispatch", "agent": "g"}) == 0
-    assert entry_tokens({"type": "state", "key": "active_agent", "value": "g"}) == 0
+    # P-E4c:`dispatch` / `state(active_agent)` 两类 entry 已随分派一起移除,
+    # 所以不再需要“它们不计入上下文”的断言 —— 同类规矩由上面 custom 那条守着。
 
 
 def test_context_tokens_sums_visible_entries():
@@ -387,7 +387,7 @@ async def test_runtime_auto_compaction_triggers_and_appends_entry(tmp_path, monk
     monkeypatch.chdir(tmp_path)
     _env(tmp_path, monkeypatch, reserve=100)
     llm = _RuntimeLLM(window=1500)
-    runtime = QiRuntime(cwd=tmp_path, disable_router=True, llm=llm)
+    runtime = QiRuntime(cwd=tmp_path, llm=llm)
 
     session = runtime.sessions.create("t", cwd=tmp_path)
     for n in range(6):                            # 灌到超过 1500-100 token
@@ -400,7 +400,8 @@ async def test_runtime_auto_compaction_triggers_and_appends_entry(tmp_path, monk
     events = [e async for e in runtime.stream("新问题", session)]
     kinds = [e.kind for e in events]
     assert "compaction_start" in kinds
-    assert kinds.index("compaction_start") < kinds.index("dispatch")   # 压缩在开跑之前
+    # P-E4c:分派事件没了(auto 取消)→ 用 `agent_start` 当“开跑”的标记(同一条不变量)
+    assert kinds.index("compaction_start") < kinds.index("agent_start")
     assert "compaction_end" in kinds
     assert llm.summaries == 1
 
@@ -425,7 +426,7 @@ async def test_runtime_auto_compaction_respects_disabled(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     _env(tmp_path, monkeypatch, reserve=100, enabled=False)
     llm = _RuntimeLLM(window=1500)
-    runtime = QiRuntime(cwd=tmp_path, disable_router=True, llm=llm)
+    runtime = QiRuntime(cwd=tmp_path, llm=llm)
     session = runtime.sessions.create("t", cwd=tmp_path)
     for n in range(6):
         runtime.sessions.append(session, {"type": "message", "role": "user",
@@ -444,7 +445,7 @@ async def test_runtime_manual_compact_and_branch_summary(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     _env(tmp_path, monkeypatch, reserve=100)
     llm = _RuntimeLLM(window=100000)             # 窗口很大 → 不会自动压
-    runtime = QiRuntime(cwd=tmp_path, disable_router=True, llm=llm)
+    runtime = QiRuntime(cwd=tmp_path, llm=llm)
     session = runtime.sessions.create("t", cwd=tmp_path)
     for n in range(6):
         runtime.sessions.append(session, {"type": "message", "role": "user",
@@ -483,7 +484,7 @@ async def test_compact_session_returns_none_when_nothing_to_do(tmp_path, monkeyp
 
     monkeypatch.chdir(tmp_path)
     _env(tmp_path, monkeypatch, reserve=100)
-    runtime = QiRuntime(cwd=tmp_path, disable_router=True, llm=_RuntimeLLM(window=100000))
+    runtime = QiRuntime(cwd=tmp_path, llm=_RuntimeLLM(window=100000))
     session = runtime.sessions.create("t", cwd=tmp_path)
     runtime.sessions.append(session, {"type": "message", "role": "user", "content": "太短"})
     assert await runtime.compact_session(session) is None

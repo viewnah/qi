@@ -29,7 +29,6 @@ from .compaction import (
 from .abort import AbortSignal
 from .config import (ProviderConfig, ResolvedModel, load_config, resolve_default_model,
                      resolve_model, resolve_router_model)
-from .dispatcher import Decision, Dispatcher
 from .extensions import (
     CommandRegistry,
     ExtensionBus,
@@ -46,15 +45,21 @@ from .llm import (
     chat_message_from_dict,
     normalize_thinking_level,
 )
-from .loader import LoadError, load_all_agents, load_top_level_skills, resolve_base_prompt
+from .loader import LoadError, load_top_level_skills, resolve_base_prompt
 from .system_prompt import build_system_prompt, default_base_prompt
-from .models import AgentEvent, AgentUnit
-from .registry import AgentRegistry, CapabilityRegistry, ToolCatalog, discover_extensions
+from .models import AgentEvent
+from .registry import CapabilityRegistry, ToolCatalog, discover_extensions
 from .runner import AgentRunner, RunnerSettings, RunSpec
 from .session import Session, SessionStore
 from .titling import suggest_title
 from .settings import extension_dirs, load_settings, resolve_project_trust, session_dir
 from .tools import ToolContext, register_builtin_tools
+
+
+#: core 里那个**唯一**的运行单元的标签(事件归属 + 会话 entry 的 `agent_id`)。
+#: 角色概念整体交给 qi-agents(E1.1/E15),所以 core 只需要一个固定名字。
+#: 选 "qi" 而不是 "general":基座提示词的身份就是 qi,而且它不再是“兼底角色”。
+CORE_AGENT_NAME = "qi"
 
 
 @dataclass
@@ -63,7 +68,8 @@ class RuntimeConfig:
     # 轮次与请求超时都不在这里:
     #  · 轮次是 `QiRuntime(stop_after=…)` 的谓词(对齐 pi 的 shouldStopAfterTurn);
     #  · 请求级超时/重试归 provider 层(settings.json 的 `retry.provider`,见 llm.py)。
-    confidence_min: float = 0.6
+    #
+    # P-E4c 删掉了 `confidence_min`:那是 Dispatcher 的旋钮,而分派已移出 core(E15)。
 
 
 # 落盘工具结果的字符上限。tools/ 内置工具已自行截断(200 行 / 50k 字符),
@@ -89,8 +95,6 @@ class QiRuntime:
     def __init__(self, cwd: Path | None = None, runtime_cfg: RuntimeConfig | None = None,
                  session_store: SessionStore | None = None,
                  llm: LLMClient | None = None,
-                 router_llm: LLMClient | None = None,
-                 disable_router: bool = False,
                  skills_enabled: bool = True,
                  thinking_level: str | None = None,
                  stop_after: Callable[[int], bool] | None = None,
@@ -190,18 +194,13 @@ class QiRuntime:
                 self.flag_errors.append(problem)
         self.notes.extend(self.flags.problems)
 
-        # 顶层技能(~/ .agents > qi 全局 > .agents 项目 > qi 项目 > settings),agent 自带者优先
+        # 顶层技能(~/ .agents > qi 全局 > .agents 项目 > qi 项目 > settings)。
+        # v3:技能是 **core** 的能力(与角色无关),所以它直接进提示词,不再“随 agent 绑定”。
         self.top_skills = load_top_level_skills(
             self.cwd, self.settings,
             list(extra_skill_paths or ()),
             enabled=skills_enabled and self.settings.skillsEnabled,
         )
-        units = load_all_agents(self.cwd, self.catalog.names,
-                                has_data_source_provider=self.capabilities.has_provider("data_sources"),
-                                ds_types=self.capabilities.types("data_sources"),
-                                extra_skills=self.top_skills)
-        self.registry = AgentRegistry()
-        self.registry.register_all(units)
 
         auth = AuthStore()
         #: 换模型时要重建客户端,所以凭证存储要留在身上(`set_model` 用)
@@ -212,19 +211,15 @@ class QiRuntime:
         self.thinking_level = normalize_thinking_level(level)
         self.llm_exec = llm or LiteLLMClient(default, auth, thinking_level=self.thinking_level,
                                             retry=self.settings.retry)
-        if disable_router:
-            self.router_llm = None
-        else:
-            router_spec = resolve_router_model(self.cfg, self.cwd)
-            self.router_llm = router_llm if router_llm is not None else LiteLLMClient(
-                router_spec, auth, retry=self.settings.retry)
-        self.dispatcher = Dispatcher(self.registry, self.router_llm,
-                                     confidence_min=self.runtime_cfg.confidence_min)
 
     # ── 工具上下文(每个会话独立) ──
-    def _tool_ctx(self, agent_name: str, unit) -> ToolContext:
+    def _tool_ctx(self, agent_name: str) -> ToolContext:
+        """工具上下文。
+
+        v3 里没有 `data_sources` 了 —— 数据源实例住在 agent 目录里,而 agent 归 qi-agents
+        (E15/E18:它会把作用域交给提供该配置种类的扩展自己去读)。
+        """
         return ToolContext(agent_name=agent_name, workdir=self.workdir,
-                           data_sources=unit.data_sources,
                            ask=self._ask,
                            shell_path=self.settings.shellPath,
                            ui=self.ui)
@@ -355,7 +350,7 @@ class QiRuntime:
             raise RuntimeError("没有活动会话:appendEntry 只能在回合内调用")
         self.sessions.append(session, {
             "type": "custom", "custom_type": custom_type,
-            "source": source, "agent": self._active_agent(session),
+            "source": source, "agent": CORE_AGENT_NAME,
             "data": data})
 
     def queue_extension_message(self, text: str, deliver_as: str, source: str,
@@ -389,7 +384,7 @@ class QiRuntime:
             for text, source, kind in bucket:
                 self.sessions.append(session, {
                     "type": "message", "role": "user", "content": text,
-                    "agent_id": self._active_agent(session),
+                    "agent_id": CORE_AGENT_NAME,
                     "injected_by": kind, "deliver_as": deliver_as, "source": source})
         bucket.clear()
         return texts
@@ -416,21 +411,18 @@ class QiRuntime:
             self.notes.append(f"扩展 {source} 的 session_start 处理失败: {exc}")
 
     # ── 工具集(扩展 `setActiveTools` / `getActiveTools` 的后端)──
-    def tool_names(self, unit: AgentUnit | None = None) -> list[str]:
+    def tool_names(self) -> list[str]:
         """本回合实际启用的工具名。
 
-        覆盖(`setActiveTools`)优先于 agent 的 `tools` —— plan-mode 那种“从此只读”
-        需要它**跳角色生效**。没有覆盖时按 agent 解析;对 `tools: ["*"]` 的 agent
-        是**当场重算**,所以运行时新注册的工具下一轮就能调(pi 的 "no reload needed")。
-
+        覆盖(`setActiveTools`)优先;没有覆盖时就是 catalog 里的全部。
+        v3 里 agent 不再声明 `tools`(角色归 qi-agents),所以这里不再需要 unit 参数 ——
+        需要收窄的场景就是 `setActiveTools`,那一条路径已经独立。
         覆盖里已经不在 catalog 的名字会被滤掉(`setActiveTools` 允许先写名字、
         工具随后才注册)。
         """
         if self._tool_override is not None:
             return [n for n in sorted(self._tool_override) if n in self.catalog.names]
-        if unit is None:
-            return sorted(self.catalog.names)
-        return unit.config.resolves_tools(self.catalog.names)
+        return sorted(self.catalog.names)
 
     def set_tool_names(self, names: Iterable[str]) -> None:
         """覆盖工具集(扩展走的入口是 `api.setActiveTools`),对**后续回合**生效。"""
@@ -513,29 +505,6 @@ class QiRuntime:
             return
 
     # ── 主流程 ──
-    def _active_agent(self, session: Session) -> str | None:
-        # 只用**当前分支**:别的分支上的 state 不能影响这一条
-        for e in reversed(session.branch()):
-            if e.get("type") == "state" and e.get("key") == "active_agent":
-                return e.get("value")
-        return None
-
-    def _set_active(self, session: Session, agent: str | None) -> None:
-        self.sessions.append(session, {"type": "state", "key": "active_agent", "value": agent})
-
-    def _opening_shown(self, session: Session, agent: str) -> bool:
-        """该 agent 的开场白是否已在本会话展示过。
-
-        必须扫描**当前分支的全部** entry:旧实现只看 `entries[-1]`,而首轮末尾已是 assistant
-        消息,.get("opening_shown") 恒为 None → 开场白每轮都重复显示。
-        按 agent 记(非按会话记),所以切换到另一个 agent 时会展示它自己的开场白。
-        """
-        return any(
-            e.get("type") == "custom" and e.get("custom_type") == "opening_shown"
-            and e.get("agent") == agent
-            for e in session.branch()
-        )
-
     def _history(self, session: Session) -> list:
         """当前分支的上下文 = 最近一次压缩摘要 + 压缩点之后的消息(+ 分支摘要)。
 
@@ -675,7 +644,7 @@ class QiRuntime:
         没给 `reply` 时给一句占位:`ctx.ui` 要到 P-E3 才有,现在扩展没有别的展示
         通道,静默吞掉会让用户以为程序卡了。
         """
-        agent = self._active_agent(session) or "extension"
+        agent = "extension"
         reply = str(verdict.get("reply") or "").strip()
         self._persist_final(session, agent, reply or INPUT_HANDLED_PLACEHOLDER)
         yield AgentEvent(kind="text", agent=agent, text=reply or INPUT_HANDLED_PLACEHOLDER)
@@ -683,23 +652,27 @@ class QiRuntime:
                          data={"messages": [], "handled_by": source,
                                "usage": {"turns": 0, "context_tokens": 0}})
 
-    async def _before_agent_start(self, unit: AgentUnit, text: str,
+    async def _before_agent_start(self, text: str, tools: list[str],
                                   abort: AbortSignal | None) -> tuple[str, str | None]:
-        """派发 `before_agent_start`:可换 `system_prompt`(链式)、可注入一条消息。
+        """造出本轮的 system prompt,并坐许扩展改它(`before_agent_start`,链式)。
 
-        返回 `(system_prompt, 注入的消息)` —— 提示词**总是**有值(没扩展时自己建)。
+        返回 `(system_prompt, 注入的消息)`。
+
+        **角色层不在 core 里**:qi-agents 通过这个钩子把角色说明拼进来(它返回的
+        `system_prompt` 会链式生效)。core 只拼「基座 + 项目上下文 + 技能 + cwd」。
 
         注入的消息(pi 的 `{message: …}`)收字符串或 `{"content": …}`。按 pi 的语义它是
-        **持久**的(落盘,下一轮仍在上下文里),所以落盘由调用方(`_stream_inner`)做,
-        文本再交给 runner 插到本轮 user 消息之后。
+        **持久**的(落盘,下一轮仍在上下文里),所以落盘由调用方(`_stream_inner`)做。
         """
-        tools = self.catalog.resolve(self.tool_names(unit))
-        built = build_system_prompt(unit, self.base_prompt, tools=tools, cwd=self.workdir)
+        built = build_system_prompt(self.base_prompt,
+                                    cwd=self.workdir,
+                                    tools=self.catalog.resolve(tools),
+                                    skills=self.top_skills)
         if not self.bus.has("before_agent_start"):
             return built, None
         result = await self.bus.emit(
             "before_agent_start",
-            {"prompt": text, "system_prompt": built, "agent": unit.name},
+            {"prompt": text, "system_prompt": built, "agent": CORE_AGENT_NAME},
             ctx=self.extension_ctx(abort))
         for src, exc in result.errors:
             self.notes.append(f"扩展 {src} 的 before_agent_start 处理失败: {exc}")
@@ -747,8 +720,7 @@ class QiRuntime:
         text, handled, handled_by = await self._emit_input(text, session, source, abort)
         if handled is not None:
             self.sessions.append(session, {"type": "message", "role": "user",
-                                           "content": text,
-                                           "agent_id": self._active_agent(session) or "extension"})
+                                           "content": text, "agent_id": "extension"})
             async for event in self._handled_turn(session, handled, handled_by):
                 yield event
             return
@@ -763,74 +735,30 @@ class QiRuntime:
                 suggest_title(self.llm_exec, self.first_user_text(session) or text))
         async for event in self._maybe_auto_compact(session):
             yield event
-        active = self._active_agent(session)
-        decision: Decision | None = None
-
-        if agent_override and self.registry.get(agent_override):
-            decision = Decision(agent=agent_override, confidence=1.0, source="manual",
-                                reasoning="manual 指定")
-        else:
-            decision = self.dispatcher.rule_decide(text, active)
-            if decision is None:
-                decision = await self.dispatcher.decide_semantic(text, active)
-
-        if decision is None:
-            decision = Decision(agent=None, confidence=0.0, source="fallback",
-                                reasoning="无匹配")
-        unit = self.registry.get(decision.agent) if decision.agent else None
-        # 展示用名:display_name 优先(如内置 general 显示为 "qi"),便于与 agents list 一致
-        shown = (unit.config.display_name.strip() if unit and unit.config.display_name
-                 else (decision.agent or "?"))
-        yield AgentEvent(kind="dispatch", agent=decision.agent,
-                         text=f"{shown} ({decision.source}, {decision.confidence:.2f})",
-                         data={"confidence": decision.confidence, "source": decision.source,
-                               "agent": decision.agent, "display_name": shown,
-                               "reasoning": decision.reasoning})
-        self.sessions.append(session, {"type": "dispatch", "agent": decision.agent,
-                                       "display_name": (shown if decision.agent else None),
-                                       "confidence": decision.confidence,
-                                       "source": decision.source,
-                                       "reasoning": decision.reasoning})
-
-        if decision.agent is None:
-            yield AgentEvent(kind="error", text="没有合适的 agent 且无 general,请装一个 general 或用 @ 点名")
-            return
-        if unit is None:
-            yield AgentEvent(kind="error", text=f"agent {decision.agent} 不存在")
-            return
-
-        if active != unit.name:
-            self._set_active(session, unit.name)
-
-        # opening:每个 agent 在本会话内只展示一次(前端负责渲染)
-        if unit.config.opening and unit.config.opening.message \
-                and not self._opening_shown(session, unit.name):
-            self.sessions.append(session, {"type": "custom", "custom_type": "opening_shown",
-                                           "agent": unit.name})
-            yield AgentEvent(kind="opening", agent=unit.name,
-                             text=unit.config.opening.message,
-                             data={"suggestions": unit.config.opening.suggestions})
-
+        # 单 agent:core 不认识“角色”,所以这里没有分派 —— 就一个固定的运行单元。
+        # 角色(qi-agents)通过 `before_agent_start` 改提示词参与(§1.1),
+        # 而不是让 core 去选一个 agent。下面直接选上下文、落 user 消息。
         # 顺序要紧:先取上下文(不含本轮),再把 user 消息立即落盘。
         # 旧实现把 user 写在回合**结束后**,于是运行中刷新/断线就看不到自己说了什么;
         # 而若先落盘再取 history,本轮输入会进上下文两次(两条同样的 user)。
         history = self._history(session)
         self.sessions.append(session, {"type": "message", "role": "user",
-                                       "content": text, "agent_id": unit.name})
+                                       "content": text, "agent_id": CORE_AGENT_NAME})
         # `before_agent_start` 在 user 落盘**之后**才 fire(pi 同款):扩展从
         # `ctx.session_manager` 里就看得到本轮那句话,而且注入的 message 天然排在它后面。
-        system_prompt, injected = await self._before_agent_start(unit, text, abort)
+        tools = self.tool_names()
+        system_prompt, injected = await self._before_agent_start(text, tools, abort)
         if injected:            # 注入的消息**落盘**(下一轮仍在上下文里,pi 说的 persistent message),
             # 同时交给 runner 插到本轮 user 之后 —— 取 history 时它还不存在,所以不会重复。
             self.sessions.append(session, {"type": "message", "role": "user",
-                                           "content": injected, "agent_id": unit.name,
+                                           "content": injected, "agent_id": CORE_AGENT_NAME,
                                            "injected_by": "before_agent_start"})
         runner = AgentRunner(
             # 运行单元:core 只认识“提示词 + 工具名单 + 名字”(见 `RunSpec`)
-            RunSpec(name=unit.name, prompt=system_prompt, tools=self.tool_names(unit)),
+            RunSpec(name=CORE_AGENT_NAME, prompt=system_prompt, tools=tools),
             self.catalog, self.llm_exec,
             RunnerSettings(stop_after=self.stop_after),
-            tool_ctx=self._tool_ctx(unit.name, unit),
+            tool_ctx=self._tool_ctx(CORE_AGENT_NAME),
             injected_messages=[injected] if injected else None,
             drain_injections=self._drain_messages,
             bus=self.bus,
@@ -853,29 +781,29 @@ class QiRuntime:
                     partial = event.text or ""        # 该轮的权威全文
                     # 思考**先**落:它发生在这条消息之前。顺序反了,回放就成了
                     # "先回答、再思考"。
-                    self._persist_thinking(session, unit.name,
+                    self._persist_thinking(session, CORE_AGENT_NAME,
                                            str((event.data or {}).get("thinking") or ""))
                     if event.text and event.data.get("tool_calls"):
                         # 宣布了工具调用的助手消息是"过程"而非最终回答 → 立刻落成 custom entry。
                         # **立即**落盘而不缓冲到下一轮:否则它将被写在它触发的工具卡片**之后**,
                         # 回放顺序就变成"工具卡 → 叙述",与真实因果相反。
                         # 不带工具调用那条由回合末尾的 message entry 代表,所以不会重复。
-                        self._persist_narration(session, unit.name, event.text)
+                        self._persist_narration(session, CORE_AGENT_NAME, event.text)
                 elif event.kind == "tool_start":
                     pending_tool = {"tool": event.tool, "args": event.data.get("args") or {}}
                 elif event.kind == "tool_end":
-                    self._persist_tool(session, unit.name, event, pending_tool)
+                    self._persist_tool(session, CORE_AGENT_NAME, event, pending_tool)
                     pending_tool = None
                 yield event
         except asyncio.CancelledError:
             # 硬取消:收尾不做任何 await(已在取消状态),只做同步落盘
-            self._persist_final(session, unit.name, _salvaged(final_text, partial))
+            self._persist_final(session, CORE_AGENT_NAME, _salvaged(final_text, partial))
             if title_task is not None:
                 title_task.cancel()      # 别把它漏在后台(它还会往会话里写)
             raise
 
         # 助手侧在回合结束后落盘(与旧版一致;tool 往返已在上方单独落盘)
-        self._persist_final(session, unit.name, final_text, usage=end_usage)
+        self._persist_final(session, CORE_AGENT_NAME, final_text, usage=end_usage)
         if title_task is not None:
             await self._apply_title(session, title_task)
 

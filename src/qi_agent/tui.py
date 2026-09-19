@@ -47,7 +47,6 @@ from textual.worker import Worker, WorkerState
 
 from .abort import AbortSignal
 from .auth import AuthStore
-from .cli import _load_registry
 from .config import ConfigError, ResolvedModel, resolve_default_model, resolve_model
 from .llm import THINKING_LEVELS, LiteLLMClient, ThinkingLLMClient, normalize_thinking_level
 from .loader import LoadError
@@ -99,9 +98,6 @@ qi TUI 命令(实现状态以本表为准)
   /changelog         显示 CHANGELOG.md(本仓库暂无)
 
  qi 独有
-  /agents            列出 agent
-  /mode auto|manual  切换分派模式
-  /agent <name>      manual 模式锁定执行 agent
   /tools             当前/全部 agent 工具清单
   /clear             清屏
   @name 开头         直接点名 agent
@@ -152,9 +148,6 @@ TUI_COMMANDS: dict[str, str] = {
     "/logout": "删除已存凭证",
     "/changelog": "显示 CHANGELOG.md",
     "/compact": "压缩上下文(摘要旧消息)",
-    "/agents": "列出 agent",
-    "/mode": "切换分派模式",
-    "/agent": "manual 锁定执行 agent",
     "/tools": "工具清单",
 }
 """`/` 补全的候选(命令 → 说明);与 `_command` 的已实现分支一一对应。"""
@@ -1681,8 +1674,6 @@ class QiTui(App):
         self.theme = theme.name
         self._renderer = TuiRenderer(self._palette, Path.cwd())
         self._session = None
-        self._agent: str | None = None      # manual 锁定
-        self._auto = True
         self._shown_name = "?"
         self._working = False
         self._frame = 0
@@ -1749,9 +1740,11 @@ class QiTui(App):
             self._thinking_level = normalize_thinking_level(
                 getattr(self._rt, "thinking_level", None))
             self._apply_ui_settings()
-            skills = sorted({s.name for unit in self._rt.registry.all() for s in unit.skills})
+            # P-E4c:技能是 core 的能力(顶层六层来源),不再从 agent 汇总;
+            # agent 列表那一段 banner 里不再有(core 没有角色概念了)。
+            skills = sorted({s.name for s in self._rt.top_skills})
             banner = None if self._quiet_startup else self._renderer.banner(
-                _version(), self._rt.registry.names, skills)
+                _version(), [], skills)
             if self._session is not None and self._session.branch():
                 self._replay_branch(self._session, banner=banner)   # 恢复历史(banner 在最上)
             elif banner is not None:
@@ -2051,11 +2044,10 @@ class QiTui(App):
         self._append(UserMessage(text, self._renderer, self._palette))
         if self._session is None:
             self._session = self._session_store().create("tui", cwd=rt.cwd)
-        override = None if self._auto else self._agent
-        self.run_worker(self._run(text, override), exclusive=False, exit_on_error=False)
+        self.run_worker(self._run(text), exclusive=False, exit_on_error=False)
 
     # -- 事件循环 -------------------------------------------------------
-    async def _run(self, text: str, override: str | None) -> None:
+    async def _run(self, text: str) -> None:
         if self._rt is None or self._session is None:      # 防御:worker 可能在切换会话后跑
             return
         runtime, session = self._rt, self._session
@@ -2067,15 +2059,8 @@ class QiTui(App):
         self._set_working(True)
         interrupted = False
         try:
-            async for ev in runtime.stream(text, session, agent_override=override,
-                                           abort=abort):
-                if ev.kind == "dispatch":
-                    self._shown_name = str(ev.data.get("display_name") or ev.agent or "?")
-                    self._append(Static(renderer.dispatch_line(ev.agent, ev.data), classes="msg"))
-                elif ev.kind == "opening":
-                    self._append(Static(Text(ev.text, style=Style(color=self._palette.hex("muted"))),
-                                        classes="msg"))
-                elif ev.kind == "compaction_start":
+            async for ev in runtime.stream(text, session, abort=abort):
+                if ev.kind == "compaction_start":
                     self._compacting = True
                     self._flash(str(ev.text or "正在压缩上下文…"), 120)
                 elif ev.kind == "compaction_end":
@@ -2211,8 +2196,6 @@ class QiTui(App):
         elif cmd == "/new":
             if rt is None:
                 return
-            self._agent = None
-            self._auto = True
             self._switch_session(store.create("tui", cwd=rt.cwd), note="已开新会话(auto)")
         elif cmd in ("/resume", "/sessions"):
             sessions = store.list()
@@ -2391,33 +2374,6 @@ class QiTui(App):
             self._note(self._changelog())
 
         # ── qi 独有 ──────────────────────────────────────────
-        elif cmd == "/agents":
-            catalog = ToolCatalog()
-            register_builtin_tools(catalog)
-            reg = _load_registry(catalog)
-            lines = []
-            for u in reg.all():
-                shown = (u.config.display_name or "").strip() or u.name
-                lines.append(f"{shown} ({u.name} · {u.source}) tools={','.join(u.tools) or '全部'}")
-                desc = u.config.description.splitlines()[0] if u.config.description else ""
-                lines.append(f"   {desc}")
-            self._note("\n".join(lines), "text")
-        elif cmd == "/mode":
-            mode = arg.lower()
-            if mode in ("auto", "manual"):
-                self._auto = mode == "auto"
-                self._note(f"模式: {mode}")
-                self._restore_status()
-            else:
-                self._note("用法: /mode auto|manual", "warning")
-        elif cmd == "/agent":
-            if arg and rt is not None and rt.registry.get(arg):
-                self._agent = arg
-                self._auto = False
-                self._note(f"锁定 agent: {arg}(manual)")
-                self._restore_status()
-            else:
-                self._note(f"未知 agent: {arg};可用 /agents 查看", "error")
         elif cmd == "/tools":
             self._note("内置工具: read ls find grep write edit bash clarify")
         elif cmd in PLANNED_COMMANDS:
@@ -2547,7 +2503,7 @@ class QiTui(App):
         except ConfigError:
             self._model = None
         self._refresh_footer()
-        self._note(f"已重载:{len(runtime.registry.names)} 个 agent。"
+        self._note(f"已重载:{len(runtime.extensions)} 个扩展。"
                    "主题改动需重开 qi。")
 
     @staticmethod
@@ -3463,8 +3419,9 @@ class QiTui(App):
 
     # -- 底部状态行的瞬时提示(pi 的状态区,不加额外 chrome)----------
     def _default_status(self) -> str:
-        mode = "auto" if self._auto else f"manual:{self._agent or '-'}"
-        status = f"qi · {mode}"
+        # P-E4c:"分派模式"不再存在(core 是单 agent,auto 取消) —— 所以状态行不再报模式。
+        # 角色(qi-agents)要显示自己的东西就走 `ctx.ui.setStatus`(P-E3 的接口)。
+        status = "qi"
         if self._queue_count():
             status += f" · 排队 {self._queue_count()}"
         return status

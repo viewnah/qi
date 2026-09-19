@@ -21,8 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from .. import __version__
 from ..auth import AuthStore, resolve_key
 from ..config import ConfigError, load_config, resolve_default_model, resolve_router_model
-from ..loader import LoadError, load_mcp_scopes
-from ..registry import AgentRegistry
+from ..loader import LoadError
 from ..session import usage_summary
 from ..workspaces import WorkspaceStore, normalize
 from . import agui, browse, files as fileapi, schemas
@@ -511,21 +510,6 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
         })
 
     # ── agent / 配置(只读) + 凭证(写需二次确认) ──────────
-    @app.get("/api/agents", response_model=schemas.AgentList, dependencies=[Depends(guard)])
-    async def list_agents() -> schemas.AgentList:
-        runtime = web.runtime_for(web.default_cwd)
-        registry: AgentRegistry = runtime.registry
-        agents = []
-        for unit in registry.all():
-            cfg = unit.config
-            agents.append(schemas.AgentInfo(
-                name=unit.name, display_name=(cfg.display_name or "").strip(),
-                description=cfg.description, source=unit.source, tools=unit.tools,
-                keywords=cfg.keywords, skills=len(unit.skills),
-                data_sources=len(unit.data_sources), mcp_private=len(unit.mcp_private),
-            ))
-        return schemas.AgentList(agents=agents)
-
     @app.get("/api/config", response_model=schemas.ConfigView, dependencies=[Depends(guard)])
     async def get_config() -> schemas.ConfigView:
         runtime = web.runtime_for(web.default_cwd)
@@ -576,60 +560,6 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
     async def list_extensions() -> schemas.ExtensionList:
         runtime = web.runtime_for(web.default_cwd)
         return schemas.ExtensionList(extensions=list(runtime.extensions))
-
-    def _mcp_info(spec, bound_by: list[str]) -> schemas.McpServerInfo:
-        """把一条 McpServerSpec 投成**只有结构、没有值**的形状。
-
-        三道不算计的脱敏,写在最靠近数据的地方:
-          · `env` / `headers` 只取**键名**;
-          · `stdio` 的 `command` / `args` 不回(它们是最容易直接塞明文密钥的字段:
-            `npx -y xx-mcp --token=sk-…`)—— 只回 "stdio" 这个事实;
-          · 非 dict 的 `config`(手改了 mcp.json)不猜,按空处理。
-        """
-        cfg = spec.config if isinstance(spec.config, dict) else {}
-        env = cfg.get("env")
-        headers = cfg.get("headers")
-        url = str(cfg.get("url", "") or "")
-        transport = str(cfg.get("type", "") or "")
-        is_stdio = bool(cfg.get("command")) or transport == "stdio"
-        return schemas.McpServerInfo(
-            name=spec.name,
-            transport=transport,
-            target=url or ("stdio" if is_stdio else ""),
-            env_keys=sorted(env) if isinstance(env, dict) else [],
-            header_keys=sorted(headers) if isinstance(headers, dict) else [],
-            bound_by=sorted(bound_by),
-        )
-
-    @app.get("/api/mcp", response_model=schemas.McpList, dependencies=[Depends(guard)])
-    async def list_mcp() -> schemas.McpList:
-        """MCP 声明的三处来源:全局 / 项目 / 各 agent 私有,供设置页展示。
-
-        `bound_by` 是**门控的结果**:全局/项目里的 server 只有在某个 agent 的
-        `mcp_servers` 里被声明才算"绑上了"(凭证敏感 → 默认无、显式声明)。
-        没有任何"已连接"字段 —— v1 没有 MCP client,那种状态不存在。
-        """
-        runtime = web.runtime_for(web.default_cwd)
-        units = runtime.registry.all()
-        bound: dict[str, list[str]] = {}
-        for unit in units:
-            for spec in unit.mcp_declared:
-                bound.setdefault(spec.name, []).append(unit.name)
-        sources: list[schemas.McpSource] = []
-        for scope, path, servers in load_mcp_scopes(web.default_cwd):
-            sources.append(schemas.McpSource(
-                scope=scope, path=str(path), exists=path.is_file(),
-                servers=[_mcp_info(s, bound.get(s.name, [])) for s in servers],
-            ))
-        for unit in units:
-            if not unit.mcp_private:
-                continue
-            f = unit.path / "mcp.json"
-            sources.append(schemas.McpSource(
-                scope="agent", owner=unit.name, path=str(f), exists=f.is_file(),
-                servers=[_mcp_info(s, [unit.name]) for s in unit.mcp_private],
-            ))
-        return schemas.McpList(sources=sources)
 
     @app.post("/api/auth/{provider}", status_code=204, dependencies=[Depends(guard)])
     async def set_auth(provider: str, body: schemas.AuthWrite,

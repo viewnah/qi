@@ -156,6 +156,6 @@ async def test_runtime_surfaces_the_warning_in_notes(tmp_path, monkeypatch, entr
 
     from qi_agent.runtime import QiRuntime
 
-    runtime = QiRuntime(cwd=tmp_path, disable_router=True)
+    runtime = QiRuntime(cwd=tmp_path)
     assert runtime.extensions == ["from-pip"]
     assert any("qi-agent" in n and "dependencies" in n for n in runtime.notes)

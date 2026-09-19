@@ -572,10 +572,10 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
             for skill in runtime.top_skills
         ])
 
-    @app.get("/api/plugins", response_model=schemas.PluginList, dependencies=[Depends(guard)])
-    async def list_plugins() -> schemas.PluginList:
+    @app.get("/api/extensions", response_model=schemas.ExtensionList, dependencies=[Depends(guard)])
+    async def list_extensions() -> schemas.ExtensionList:
         runtime = web.runtime_for(web.default_cwd)
-        return schemas.PluginList(plugins=list(runtime.plugins))
+        return schemas.ExtensionList(extensions=list(runtime.extensions))
 
     def _mcp_info(spec, bound_by: list[str]) -> schemas.McpServerInfo:
         """把一条 McpServerSpec 投成**只有结构、没有值**的形状。

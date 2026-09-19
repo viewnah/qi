@@ -29,9 +29,15 @@ class FakeRuntime:
 
         self.sessions = SessionStore()
         self.cwd = Path.cwd()          # 真实 QiRuntime 必有:cli 用它写会话头
+        self.notes: list[str] = []     # 启动提示(未信任/旧目录残留),cli 往 stderr 打
+        self.started: list[str] = []   # `session_start` 的 reason 记账(扩展事件链)
         self.prompts: list[str] = []
         self.overrides: list[str | None] = []
         CREATED.append(self)
+
+    async def start_session(self, session, reason: str = "startup") -> None:
+        """真实 QiRuntime 的会话级事件;假运行时只记账。"""
+        self.started.append(reason)
 
     async def stream(self, prompt, session, agent_override=None):
         self.prompts.append(prompt)

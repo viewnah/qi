@@ -29,6 +29,7 @@ from .compaction import (
 from .abort import AbortSignal
 from .config import ResolvedModel, load_config, resolve_default_model, resolve_router_model
 from .dispatcher import Decision, Dispatcher
+from .extensions import ExtensionBus, ExtensionContext
 from .llm import (
     ChatMessage,
     LiteLLMClient,
@@ -39,11 +40,11 @@ from .llm import (
 from .loader import LoadError, load_all_agents, load_top_level_skills, resolve_base_prompt
 from .system_prompt import default_base_prompt
 from .models import AgentEvent
-from .registry import AgentRegistry, CapabilityRegistry, ToolCatalog, discover_plugins
+from .registry import AgentRegistry, CapabilityRegistry, ToolCatalog, discover_extensions
 from .runner import AgentRunner, RunnerSettings
 from .session import Session, SessionStore
 from .titling import suggest_title
-from .settings import load_settings, session_dir
+from .settings import extension_dirs, load_settings, resolve_project_trust, session_dir
 from .tools import ToolContext, register_builtin_tools
 
 
@@ -80,12 +81,18 @@ class QiRuntime:
                  skills_enabled: bool = True,
                  thinking_level: str | None = None,
                  stop_after: Callable[[int], bool] | None = None,
-                 extra_skill_paths: Iterable[Path] | None = None):
+                 extra_skill_paths: Iterable[Path] | None = None,
+                 extra_extension_paths: Iterable[Path] | None = None,
+                 approve_project: bool | None = None,
+                 has_ui: bool = False):
         self.cwd = Path(cwd) if cwd else Path.cwd()
         # 旧版扁平布局 → ~/.qi/agent/(幂等;显式设了 QI_AGENT_HOME 时不动)
         paths.ensure_layout()
         self.cfg, self.config_files = load_config(self.cwd)
         self.settings, self.settings_files = load_settings(self.cwd)
+        self._has_ui = has_ui          # `ctx.has_ui`:交互式前端=True,`-p`/脚本=False
+        #: 同一 runtime 对同一会话只发一次 `session_start`(见 `start_session`)
+        self._started_sessions: set[str] = set()
         self.runtime_cfg = runtime_cfg or RuntimeConfig(workdir=self.cwd)
         # 轮次政策由嵌入方给(对齐 pi 的 shouldStopAfterTurn):None = 不限
         # (qi 自己不设上限 —— 钩子留着但生产代码不传,同 pi 定义了却不实现它)
@@ -104,7 +111,27 @@ class QiRuntime:
         self.catalog = ToolCatalog()
         register_builtin_tools(self.catalog)
         self.capabilities = CapabilityRegistry()
-        self.plugins = discover_plugins(self.catalog, self.capabilities, self.cwd)
+        # 事件总线:扩展在 `register(api)` 里 `api.on(...)` 订阅的东西都落在这里。
+        # 零扩展时 `is_empty` = True,宿主可以据此跳过整条派发路径。
+        self.bus = ExtensionBus()
+        # 信任门控(P-E1 / E16):未信任 → **不扫**项目级扩展(扩展是仓库控制的任意代码)。
+        # 提示不在这里打印(runtime 不做 IO):攒进 `self.notes`,由前端决定怎么展示。
+        self.project_trusted, self.trust_reason = resolve_project_trust(
+            self.settings, approve=approve_project, has_ui=has_ui)
+        self.notes: list[str] = []
+        if not self.project_trusted and paths.project_extensions_dir(self.cwd).is_dir():
+            self.notes.append(
+                f"未信任项目({self.trust_reason}):`.qi/extensions/` 未加载;用 `qi -a` 信任")
+        legacy_ext = paths.legacy_project_extensions_dir(self.cwd)
+        if legacy_ext is not None:
+            self.notes.append(
+                f"检测到旧目录 `{legacy_ext.relative_to(self.cwd)}` —— 已改名为 "
+                f"`extensions/`,请手动改名(不会自动改仓库内容)")
+        self.extensions = discover_extensions(
+            self.catalog, self.capabilities, self.cwd, bus=self.bus,
+            extra_dirs=extension_dirs(self.cwd, trusted=self.project_trusted,
+                                      extra=list(extra_extension_paths or ())),
+            project_trusted=self.project_trusted)
 
         # 顶层技能(~/ .agents > qi 全局 > .agents 项目 > qi 项目 > settings),agent 自带者优先
         self.top_skills = load_top_level_skills(
@@ -145,6 +172,49 @@ class QiRuntime:
     async def _ask(self, question: str) -> str | None:
         """clarify:headless 默认无可交互输入。"""
         return None
+
+    # ── 扩展上下文与事件 ──
+    def _model_label(self) -> str | None:
+        """`"provider/model"`(与 pi 的 `ctx.model` 同形);拿不到 spec 就 None。"""
+        spec = getattr(self.llm_exec, "spec", None)
+        provider, model = getattr(spec, "provider", None), getattr(spec, "model", None)
+        return f"{provider}/{model}" if provider and model else None
+
+    def extension_ctx(self, signal: AbortSignal | None = None) -> ExtensionContext:
+        """构造 handler 用的 `ctx`(§3.3 的最小集)。
+
+        **不是**缓存单例:每回合的信号不同(`signal`),而 ctx 冻结这些值。
+        """
+        return ExtensionContext(
+            cwd=self.cwd,
+            model=self._model_label(),
+            thinking_level=self.thinking_level,
+            signal=signal,
+            has_ui=self._has_ui,
+            project_trusted=self.project_trusted,
+            notes=self.notes,
+        )
+
+    async def start_session(self, session: Session, reason: str = "startup") -> None:
+        """告知扩展"会话已绑定"(pi 的 `session_start { reason }`)。
+
+        **幂等**:同一 runtime 对同一会话只派发一次。前端可能会在多个时机绑定同一会话,
+        重复派发会把扩展的"开一次资源"变成开 N 次 —— 宿主自己记账,扩展不必防重。
+
+        handler 抛异常不往外传(§4 规则 3):记进 `notes`,会话照跑。扩展坏在启动时,
+        用户至少能在界面上看到一行字,而不是"啥都没发生"。
+        """
+        if session.id in self._started_sessions:
+            return
+        self._started_sessions.add(session.id)
+        if self.bus.is_empty:
+            return
+        event = await self.bus.emit(
+            "session_start",
+            {"reason": reason, "session": session.id, "cwd": str(self.cwd)},
+            ctx=self.extension_ctx())
+        for source, exc in event.errors:
+            self.notes.append(f"扩展 {source} 的 session_start 处理失败: {exc}")
 
     # ── 主流程 ──
     def _active_agent(self, session: Session) -> str | None:

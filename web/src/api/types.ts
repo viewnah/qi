@@ -255,9 +255,9 @@ export interface SkillList {
    skills: SkillInfo[];
 }
 
-/** 已装载的插件名。`discover_plugins()` 只返回名字,所以这里也只回名字。 */
-export interface PluginList {
-   plugins: string[];
+/** 已装载的扩展名。`discover_extensions()` 只返回名字,所以这里也只回名字。 */
+export interface ExtensionList {
+   extensions: string[];
 }
 
 /** 文件树里的一行(`GET /api/files`)。路径一律相对会话目录。 */

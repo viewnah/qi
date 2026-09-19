@@ -275,7 +275,7 @@ def load_top_level_skills(cwd: Path | None = None,
 
 
 def load_data_sources(agent_dir: Path) -> list[DataSource]:
-    """data_sources.json 内容解析;是否装载由插件门控(plugins.md,在 registry 层决定)。"""
+    """data_sources.json 内容解析;是否装载由扩展门控(docs/extensions.md,在 registry 层决定)。"""
     f = agent_dir / DATA_SOURCES_FILE
     if not f.is_file():
         return []

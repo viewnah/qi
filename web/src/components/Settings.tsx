@@ -17,7 +17,7 @@
  *      真正的二维数据上。
  *
  * 内容仍然**只放 qi 真有的**:取值来自 `/api/config`、`/api/agents`、`/api/skills`、
- * `/api/plugins`、`/api/mcp`;没有的字段就不显示 —— 不编造 dsh 有而 qi 没有的节
+ * `/api/extensions`、`/api/mcp`;没有的字段就不显示 —— 不编造 dsh 有而 qi 没有的节
  * (它的沙箱 / 审批 / 遥测开关 qi 都还没有)。
  *
  * 唯一可写动作是**凭证**:必须过二次确认层(显示目标文件绝对路径 + 掩码值),
@@ -29,10 +29,10 @@ import { api, ApiError } from "../api/client";
 import type {
    AgentInfo,
    ConfigView,
+   ExtensionList,
    McpList,
    McpServerInfo,
    McpSource,
-   PluginList,
    SkillInfo,
 } from "../api/types";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -52,7 +52,7 @@ export type SettingsSectionKey =
    | "agents"
    | "skills"
    | "mcp"
-   | "plugins"
+   | "extensions"
    | "sessions"
    | "diagnostics";
 
@@ -72,8 +72,8 @@ const SECTIONS: {
    { key: "skills", label: "技能", icon: <IconSkillOutline16 size={16} /> },
    { key: "mcp", label: "MCP", icon: <IconLinkOutline16 size={16} /> },
    {
-      key: "plugins",
-      label: "插件",
+      key: "extensions",
+      label: "扩展",
       icon: <IconPersonalizationOutline16 size={16} />,
    },
    { key: "sessions", label: "会话与路径", icon: <IconFolderOpen16 size={16} /> },
@@ -170,7 +170,7 @@ export function Settings({
    const [section, setSection] = useState<SettingsSectionKey>(initialSection);
    const [agents, setAgents] = useState<AgentInfo[]>([]);
    const [skills, setSkills] = useState<SkillInfo[]>([]);
-   const [plugins, setPlugins] = useState<string[]>([]);
+   const [extensions, setExtensions] = useState<string[]>([]);
    const [mcp, setMcp] = useState<McpList | null>(null);
    /** 老宿主没有 `/api/mcp` → 这一节降级显示,不把整页打成错误屏。 */
    const [mcpMissing, setMcpMissing] = useState(false);
@@ -236,15 +236,15 @@ export function Settings({
       let alive = true;
       void (async () => {
          try {
-            const [agentList, skillList, pluginList] = await Promise.all([
+            const [agentList, skillList, extensionList] = await Promise.all([
                api.agents(),
                api.skills(),
-               api.plugins(),
+               api.extensions(),
             ]);
             if (!alive) return;
             setAgents(agentList.agents);
             setSkills(skillList.skills);
-            setPlugins((pluginList as PluginList).plugins);
+            setExtensions((extensionList as ExtensionList).extensions);
          } catch (err) {
             onError(err instanceof ApiError ? err.detail : String(err));
          }
@@ -669,27 +669,27 @@ export function Settings({
                      </Section>
                   ) : null}
 
-                  {section === "plugins" ? (
+                  {section === "extensions" ? (
                      <Section
-                        title={`插件(${plugins.length})`}
+                        title={`扩展(${extensions.length})`}
                         intro={
                            <>
-                              两条通道:pip entry point <code>qi.plugins</code> +
+                              两条通道:pip entry point <code>qi.extensions</code> +
                               本地目录:全局{" "}
                               <code>
-                                 ~/.qi/agent/plugins/&lt;名&gt;/plugin.py
+                                 ~/.qi/agent/extensions/&lt;名&gt;/extension.py
                               </code>
                               ,项目级是{" "}
-                              <code>&lt;项目&gt;/.qi/plugins/&lt;名&gt;/</code>
+                              <code>&lt;项目&gt;/.qi/extensions/&lt;名&gt;/</code>
                               (需信任)。
                            </>
                         }
                      >
-                        {plugins.length === 0 ? (
-                           <p className="set-sec__empty">未装载任何插件。</p>
+                        {extensions.length === 0 ? (
+                           <p className="set-sec__empty">未装载任何扩展。</p>
                         ) : (
                            <ul className="set-rows">
-                              {plugins.map((name) => (
+                              {extensions.map((name) => (
                                  <li className="set-row" key={name}>
                                     <Dot
                                        ok

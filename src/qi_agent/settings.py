@@ -293,6 +293,45 @@ def project_trust_default(settings: QiSettings) -> str:
     return value if value in ("ask", "always", "never") else "ask"
 
 
+def resolve_project_trust(settings: QiSettings | None, *,
+                          approve: bool | None = None,
+                          has_ui: bool = False) -> tuple[bool, str]:
+    """项目信任判定 → `(trusted, reason)`(docs/extensions.md §5.3 / E16)。
+
+    优先级:CLI 显式(`-a` / `-na`) > `settings.defaultProjectTrust`。
+
+    `ask` 表示"问用户",但交互式询问要等 `ctx.ui` 通道(P-E3),所以现在**保守判
+    不信任** —— 扩展是仓库控制的任意代码,fail-safe 只能是"不执行";用户用 `-a`
+    显式放行,或在 settings 里写 `always`。
+    """
+    if approve is not None:                 # 三态:None = 没在 CLI 上表态
+        return approve, ("CLI -a" if approve else "CLI -na")
+    if settings is None:
+        return False, "无 settings"
+    default = project_trust_default(settings)
+    if default == "always":
+        return True, "settings.defaultProjectTrust=always"
+    if default == "never":
+        return False, "settings.defaultProjectTrust=never"
+    where = "有 UI 但询问未实现" if has_ui else "无 UI"
+    return False, f"defaultProjectTrust=ask({where};用 -a 信任)"
+
+
+def extension_dirs(cwd: Path | None = None, *, trusted: bool,
+                   extra: list[Path] | None = None) -> list[Path]:
+    """`settings.extensions[]` 解析出的附加扩展目录。
+
+    项目级 settings 的那份**只在信任时**返回 —— 它随仓库走,未信任时它不是用户的意图。
+    `extra` 是调用方自己的追加路径(如 CLI 的临时扩展)。
+    """
+    scopes = load_settings_by_scope(cwd)
+    out = [Path(p) for p in (extra or ())]
+    out += settings_include_paths(scopes.get("user"), "user", "extensions", cwd)
+    if trusted:
+        out += settings_include_paths(scopes.get("project"), "project", "extensions", cwd)
+    return out
+
+
 DOUBLE_ESCAPE_ACTIONS = ("tree", "fork", "none")
 """`doubleEscapeAction` 的合法取值(对齐 pi 的 settings-manager)。"""
 

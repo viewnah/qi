@@ -1,4 +1,4 @@
-"""P8:插件消费型配置(data_sources)动态装载门控 + MCP 解析/工具桥。"""
+"""P8:扩展消费型配置(data_sources)动态装载门控 + MCP 解析/工具桥。"""
 
 from __future__ import annotations
 
@@ -18,7 +18,8 @@ from qi_agent.loader import (  # noqa: E402
     load_mcp_scopes,
     mcp_name_index,
 )
-from qi_agent.registry import CapabilityRegistry, PluginApi, ToolCatalog  # noqa: E402
+from qi_agent.extensions import ExtensionBus  # noqa: E402
+from qi_agent.registry import CapabilityRegistry, ExtensionApi, ToolCatalog  # noqa: E402
 from qi_agent.tools import register_builtin_tools  # noqa: E402
 
 
@@ -34,7 +35,7 @@ def _agent_with_ds(base: Path) -> Path:
     return d
 
 
-def test_data_sources_ignored_without_plugin(tmp_path):
+def test_data_sources_ignored_without_extension(tmp_path):
     """插件缺席:data_sources.json 不装载、不校验、不报错。"""
     d = _agent_with_ds(tmp_path)
     catalog = ToolCatalog()
@@ -43,14 +44,14 @@ def test_data_sources_ignored_without_plugin(tmp_path):
     assert unit.data_sources == []
 
 
-def test_data_sources_loaded_and_validated_with_plugin(tmp_path):
+def test_data_sources_loaded_and_validated_with_extension(tmp_path):
     """插件在场:装载 + type 校验(无支持类型 → 报错)。"""
     d = _agent_with_ds(tmp_path)
     catalog = ToolCatalog()
     register_builtin_tools(catalog)
     # 插件声明消费 data_sources,支持 mysql
     caps = CapabilityRegistry()
-    api = PluginApi(catalog=catalog, _name="db-tools")
+    api = ExtensionApi(catalog=catalog, bus=ExtensionBus(), _name="db-tools")
     api.provides_config("data_sources", ["mysql", "postgresql"])
     caps.merge(api)
     unit = load_agent_dir(d, "user", catalog.names,
@@ -87,32 +88,32 @@ def test_private_mcp_parsed(tmp_path):
     assert unit.mcp_private[0].config["url"].startswith("https://")
 
 
-def test_directory_plugin_discovery(tmp_path, monkeypatch):
-    """本地目录插件通道:plugins/<name>/plugin.py 被发现并提供工具 + 能力。"""
+def test_directory_extension_discovery(tmp_path, monkeypatch):
+    """本地目录扩展通道:extensions/<name>/extension.py 被发现并提供工具 + 能力。"""
     from qi_agent import paths
 
     home = tmp_path / "home"
-    plugin_dir = home / "plugins" / "db-tools"
-    plugin_dir.mkdir(parents=True)
-    (plugin_dir / "plugin.py").write_text(
+    ext_dir = home / "extensions" / "db-tools"
+    ext_dir.mkdir(parents=True)
+    (ext_dir / "extension.py").write_text(
         "from qi_agent.registry import Tool\n"
         "def register(api):\n"
         "    api.add_tool(Tool('db_query', '只读查询', {'type':'object','properties':{}}, None))\n"
         "    api.provides_config('data_sources', ['mysql'])\n", encoding="utf-8")
     monkeypatch.setenv(paths.QI_AGENT_HOME, str(home))
-    from qi_agent.registry import discover_plugins
+    from qi_agent.registry import discover_extensions
 
     catalog = ToolCatalog()
     register_builtin_tools(catalog)
     caps = CapabilityRegistry()
-    plugins = discover_plugins(catalog, caps)
-    assert "db-tools" in plugins
+    extensions = discover_extensions(catalog, caps, bus=ExtensionBus())
+    assert "db-tools" in extensions
     assert catalog.get("db_query") is not None
     assert caps.has_provider("data_sources")
     assert caps.types("data_sources") == {"mysql"}
 
 
-def test_plugin_required_for_data_source_load_all(tmp_path, monkeypatch):
+def test_extension_required_for_data_source_load_all(tmp_path, monkeypatch):
     """动态装载端到端:插件在场才装载 data_sources;缺席则跳过。"""
     from qi_agent import paths
 

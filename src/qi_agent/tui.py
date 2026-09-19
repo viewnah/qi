@@ -90,7 +90,7 @@ qi TUI 命令(实现状态以本表为准)
   /export [文件]     导出会话 JSONL(默认 ./qi-<id>.jsonl)
   /compact [提示]    压缩上下文:把旧消息压成摘要(可给一句关注点)
   /import <文件>     从 JSONL 导入并切换会话
-  /reload            重载 agents / plugins / 配置
+  /reload            重载 agents / extensions / 配置
 
  回答与凭证
   /copy              复制最后一条回答到剪贴板
@@ -1578,9 +1578,12 @@ class QiTui(App):
     def __init__(self, runtime: QiRuntime | None = None, initial_prompt: str | None = None,
                  palette: Palette | None = None, session_id: str | None = None,
                  cont: bool = False, fork_id: str | None = None,
-                 no_session: bool = False, name: str | None = None):
+                 no_session: bool = False, name: str | None = None,
+                 approve_project: bool | None = None):
         super().__init__()
         self._rt = runtime
+        # 项目信任的三态(None = 看 settings.defaultProjectTrust);`qi -a` / `-na` 透传到这里
+        self._approve_project = approve_project
         self._initial_prompt = (initial_prompt or "").strip() or None
         # 会话选择(对齐 CLI/pi:`qi -c` / `--session` / `--fork` / `-n` / `--no-session`)
         self._want_session_id = session_id
@@ -1651,7 +1654,7 @@ class QiTui(App):
         self.console.push_theme(rich_theme(self._palette))
         try:
             if self._rt is None:
-                self._rt = QiRuntime()
+                self._rt = QiRuntime(has_ui=True, approve_project=self._approve_project)
             self._renderer = TuiRenderer(self._palette, self._rt.cwd)
             self._select_session()
             try:
@@ -1671,6 +1674,10 @@ class QiTui(App):
             if self._startup_note:
                 tone = "warning" if "不存在" in self._startup_note else "dim"
                 self._note(self._startup_note, tone)
+            # runtime 攒下的启动提示(未信任跳过项目级扩展、旧 plugins/ 目录残留…)。
+            # runtime 自己不打印(不做 IO),所以展示归前端。
+            for note in getattr(self._rt, "notes", []):
+                self._note(note, "warning")
         except (LoadError, ConfigError) as exc:
             self._append(Static(Text(f"启动失败: {exc}", style=self._palette.hex("error")),
                                 classes="msg"))
@@ -2361,14 +2368,20 @@ class QiTui(App):
         self._note(f"已导入并切换到 {sid}(消息 {session.message_count} 条)")
 
     def _reload_runtime(self) -> None:
-        """重载 agents / plugins / 配置(会话不变)。"""
+        """重载 agents / extensions / 配置(会话不变)。"""
         try:
-            runtime = QiRuntime()
+            runtime = QiRuntime(has_ui=True, approve_project=self._approve_project)
         except (LoadError, ConfigError) as exc:
             self._note(f"重载失败: {exc}", "error")
             return
         self._rt = runtime
         self._renderer = TuiRenderer(self._palette, runtime.cwd)
+        for note in runtime.notes:
+            self._note(note, "warning")
+        if self._session is not None:
+            # 新 runtime 的“已发过”记账是空的 → 这里会再发一次(扩展据此重开资源)
+            self.run_worker(runtime.start_session(self._session, reason="reload"),
+                            exclusive=False, exit_on_error=False)
         self._branch = git_branch(str(runtime.cwd))
         try:
             self._model = resolve_default_model(runtime.cfg, runtime.cwd)
@@ -2867,11 +2880,27 @@ class QiTui(App):
         self._scroll_end()
 
     def _select_session(self) -> None:
-        """按 CLI 传来的意图选/建会话(对齐 `qi -c` / `--session` / `--fork` / `-n` / `--no-session`)。
+        """按 CLI 传来的意图选/建会话,并把“会话已绑定”告知扩展。
 
         以前 TUI 无视这些参数、每次都新建一个名叫 `tui` 的会话 —— 文档里写了 `-c` 支持,
         但进 TUI 就失效了。现在与 headless 路径用同一套规则。
         """
+        self._pick_session()
+        self._notify_session_start()
+
+    def _notify_session_start(self) -> None:
+        """派发 `session_start`(扩展的会话级初始化)。
+
+        走 worker 而不是 `await`:选会话有多个**同步**调用点(on_mount / /new / /resume /
+        /fork / /import),把它们全改成 async 的收益不抵风险。runtime 自己是幂等的
+        (同一会话至多一次),所以这里“可能多调度一次”不会让扩展把资源开两遍。
+        """
+        if self._rt is None or self._session is None:
+            return
+        self.run_worker(self._rt.start_session(self._session), exclusive=False,
+                        exit_on_error=False)
+
+    def _pick_session(self) -> None:
         store = self._session_store()
         cwd = self._rt.cwd if self._rt is not None else Path.cwd()
         name = (self._want_name or "").strip()
@@ -3340,7 +3369,8 @@ def _harden_inline_input() -> None:
 
 def run_tui(initial_prompt: str | None = None, *, session_id: str | None = None,
             cont: bool = False, fork_id: str | None = None,
-            no_session: bool = False, name: str | None = None) -> None:
+            no_session: bool = False, name: str | None = None,
+            approve_project: bool | None = None) -> None:
     """启动 TUI;`initial_prompt` 非空时进界面即提交(来自 `qi "问题"`)。
 
     会话选择参数与 headless 路径同义:`qi -c` / `--session` / `--fork` / `-n` / `--no-session`。
@@ -3359,5 +3389,6 @@ def run_tui(initial_prompt: str | None = None, *, session_id: str | None = None,
     # 不支持 SGR(1006)的终端退回旧式 X10 报文 —— 正是 _harden_inline_input 里那类
     # 崩溃的来源;关掉还顺带把原生文本选择/复制还给终端。
     QiTui(initial_prompt=initial_prompt, palette=palette, session_id=session_id, cont=cont,
-          fork_id=fork_id, no_session=no_session, name=name).run(
+          fork_id=fork_id, no_session=no_session, name=name,
+          approve_project=approve_project).run(
               inline=True, inline_no_clear=True, mouse=False)

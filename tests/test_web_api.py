@@ -165,7 +165,7 @@ def test_tool_details_survive_the_agui_layer():
     """`tool_end.data.details` 必须原样出现在 `TOOL_CALL_RESULT.metadata["qi.tool"]`。
 
     这是插件 UI 通道的**最后一跳**:runner 已经把 details 放进 data(见
-    test_contract_p0 的 test_plugin_details_reach_the_event),这里确认 AG-UI
+    test_contract_p0 的 test_extension_details_reach_the_event),这里确认 AG-UI
     映射层没有把它丢掉 —— 两处都通,插件才真的能渲染。
     """
     from qi_agent.models import AgentEvent, TOOL_OK
@@ -398,10 +398,10 @@ async def test_agents_endpoint_lists_general(client):
 
 
 @pytest.mark.asyncio
-async def test_skills_and_plugins_endpoints(client):
+async def test_skills_and_extensions_endpoints(client):
     """设置页要的两块数据:顶层技能清单与已装载插件名。
 
-    插件只回名字是**故意的**:`discover_plugins()` 的职责是装载而非描述,
+    扩展只回名字是**故意的**:`discover_extensions()` 的职责是装载而非描述,
     它拿不到版本/作者就不编造。
     """
     skills = (await client.get("/api/skills")).json()
@@ -409,9 +409,9 @@ async def test_skills_and_plugins_endpoints(client):
     for skill in skills["skills"]:
         assert set(skill) == {"name", "description", "source", "path"}
 
-    plugins = (await client.get("/api/plugins")).json()
-    assert isinstance(plugins["plugins"], list)
-    assert all(isinstance(name, str) for name in plugins["plugins"])
+    extensions = (await client.get("/api/extensions")).json()
+    assert isinstance(extensions["extensions"], list)
+    assert all(isinstance(name, str) for name in extensions["extensions"])
 
 
 @pytest.mark.asyncio

@@ -2,7 +2,7 @@
 
 两条为什么需要:
 
-* `QiRuntime.__init__` 要装载 config / settings / plugins / agents / skills,代价高,
+* `QiRuntime.__init__` 要装载 config / settings / extensions / agents / skills,代价高,
   而且**绑定一个 cwd**(项目级 `.qi` 的发现靠它)→ 按 cwd 缓存(LRU)。
 * `QiRuntime.stream()` 会往同一个会话文件追加 → **必须每会话串行**,否则 JSONL 交错。
 

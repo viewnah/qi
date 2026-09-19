@@ -24,11 +24,12 @@ import type {
   /** 目录选择器(`GET /api/fs/dirs`)。 */
   DirectoryListing,
   ConfigView,
+  /** 已装载的扩展名(`GET /api/extensions`)。 */
+  ExtensionList,
   FileContent,
   FileListing,
   McpList,
   Meta,
-  PluginList,
   RunAgentInput,
   SessionDetail,
   SessionList,
@@ -196,7 +197,7 @@ export const api = {
 
   skills: () => request<SkillList>("/api/skills"),
 
-  plugins: () => request<PluginList>("/api/plugins"),
+  extensions: () => request<ExtensionList>("/api/extensions"),
 
   /** MCP 声明(全局 / 项目 / agent 私有)。老宿主回 404 → 调用方降级,不当作致命错误。 */
   mcp: () => request<McpList>("/api/mcp"),

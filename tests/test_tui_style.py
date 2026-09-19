@@ -176,6 +176,10 @@ class FakeRuntime:
         # 与 QiRuntime 对齐的可写字段(思考级别相关)
         self.thinking_level = "off"
         self.llm_exec = SimpleNamespace(thinking_level="off", reasoning_dropped=False)
+        self.notes: list[str] = []      # 启动提示(TUI 会逐条展示)
+
+    async def start_session(self, session, reason: str = "startup") -> None:
+        """真实 QiRuntime 的会话级事件;假运行时不用它(不派发任何事件)。"""
 
     async def compact_session(self, session, instructions=None):
         return None                    # 测试默认:没什么可压

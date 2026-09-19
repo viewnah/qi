@@ -241,6 +241,10 @@ class FakeRuntime:
         self.registry = _FakeRegistry()
         self.thinking_level = "off"
         self.llm_exec = SimpleNamespace(thinking_level="off", reasoning_dropped=False)
+        self.notes: list[str] = []
+
+    async def start_session(self, session, reason: str = "startup") -> None:
+        """真实 QiRuntime 的会话级事件;假运行时不用它(不派发任何事件)。"""
 
     async def stream(self, prompt, session, agent_override=None):
         yield AgentEvent(kind="assistant_message", agent="general", text="ok",

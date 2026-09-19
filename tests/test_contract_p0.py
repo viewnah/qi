@@ -116,7 +116,7 @@ async def test_tool_end_carries_structured_status(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_plugin_details_reach_the_event(tmp_path):
+async def test_extension_details_reach_the_event(tmp_path):
     """**插件唯一的 UI 下行通道**:`ToolOutcome.details` 必须原样到达 `tool_end.data`。
 
     这条测试守着一个具体的坑:`runner` 里 `tool_end` 的 `data` 原本是**硬编码的 4 个键**,
@@ -131,15 +131,15 @@ async def test_plugin_details_reach_the_event(tmp_path):
         ]},
         {"type": "kv", "rows": [["模型", "x"]]},
     ]}
-    async def _plugin(args, ctx):
+    async def _extension(args, ctx):
         # 工具执行必须是 async(ToolExecutor 契约),不是可选的风格问题
         return ToolOutcome(result="ok", details=payload)
 
-    catalog.register(Tool("plugin_tool", "插件工具", {"type": "object", "properties": {}}, _plugin))
+    catalog.register(Tool("extension_tool", "扩展工具", {"type": "object", "properties": {}}, _extension))
     unit = _agent_unit(tmp_path, catalog)
     ctx = ToolContext(agent_name=unit.name, workdir=tmp_path)
     llm = StubLLM([
-        _tool_call("plugin_tool", {}),
+        _tool_call("extension_tool", {}),
         ChatResponse(text="做完了"),
     ])
     runner = AgentRunner(unit, catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)), tool_ctx=ctx)
@@ -159,7 +159,7 @@ async def test_details_are_persisted_with_a_cap(tmp_path, monkeypatch):
     前端解析失败会把整条工具卡弄坏,比截断更糟。
 
     这里直接测落盘策略本身:`runner → event` 那一段由上面
-    `test_plugin_details_reach_the_event` 覆盖;两者合起来才是完整链路。
+    `test_extension_details_reach_the_event` 覆盖;两者合起来才是完整链路。
     走不到端到端是因为内置 `general` agent 的工具清单是**列举**的(不是 `["*"]`),
     插件工具进不去那个循环 —— 这是插件机制的事,与 details 无关。
     """

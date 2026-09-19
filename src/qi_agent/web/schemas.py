@@ -236,14 +236,14 @@ class SkillList(BaseModel):
     skills: list[SkillInfo]
 
 
-class PluginList(BaseModel):
-    """已装载的插件名。
+class ExtensionList(BaseModel):
+    """已装载的扩展名。
 
-    `discover_plugins()` 只返回名字(它的职责是装载,不是描述),所以这里就只回名字——
+    `discover_extensions()` 只返回名字(它的职责是装载,不是描述),所以这里就只回名字——
     不编造版本/作者之类拿不到的信息。
     """
 
-    plugins: list[str]
+    extensions: list[str]
 
 
 class FileEntry(BaseModel):

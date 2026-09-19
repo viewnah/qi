@@ -27,7 +27,8 @@ SETTINGS_FILE_NAME = "settings.json"
 SYSTEM_FILE_NAME = "SYSTEM.md"
 SESSIONS_DIR_NAME = "sessions"
 AGENTS_DIR_NAME = "agents"
-PLUGINS_DIR_NAME = "plugins"
+PLUGINS_DIR_NAME = "plugins"        # ⚠️ v0.1 旧名,仅用于迁移;新代码用 EXTENSIONS_DIR_NAME
+EXTENSIONS_DIR_NAME = "extensions"  # 扩展目录(P-E1 改名:plugins → extensions)
 SKILLS_DIR_NAME = "skills"
 CROSS_TOOL_DIR_NAME = ".agents"   # Agent Skills 标准的跨工具目录(~/.agents, .agents)
 
@@ -43,10 +44,13 @@ LEGACY_GLOBAL_ENTRIES = (
     SETTINGS_FILE_NAME,
     SYSTEM_FILE_NAME,
     AGENTS_DIR_NAME,
-    PLUGINS_DIR_NAME,
+    PLUGINS_DIR_NAME,      # 旧名,落地时按 LEGACY_ENTRY_RENAMES 改成 extensions/
     SKILLS_DIR_NAME,
     SESSIONS_DIR_NAME,
 )
+
+#: 旧条目名 → 现名(改名过的)。搬运时按**现名**落点,否则搬过去也没人读。
+LEGACY_ENTRY_RENAMES = {PLUGINS_DIR_NAME: EXTENSIONS_DIR_NAME}
 
 
 def config_root() -> Path:
@@ -59,7 +63,7 @@ def global_home() -> Path:
     """全局 agent 目录(`~/.qi/agent`,可用 QI_AGENT_HOME 覆盖)。
 
     这是全部用户级状态的挂载点:settings.json / models.json / auth.json /
-    sessions / skills / agents / plugins。对齐 pi 的 `getAgentDir()`。
+    sessions / skills / agents / extensions。对齐 pi 的 `getAgentDir()`。
     """
     override = os.environ.get(QI_AGENT_HOME)
     return Path(override).expanduser() if override else config_root() / AGENT_DIR_NAME
@@ -144,7 +148,7 @@ def migrate_legacy_layout() -> list[tuple[Path, Path]]:
     target = global_home()
     moved: list[tuple[Path, Path]] = []
     for name in LEGACY_GLOBAL_ENTRIES:
-        src, dst = root / name, target / name
+        src, dst = root / name, target / LEGACY_ENTRY_RENAMES.get(name, name)
         if not src.exists() or dst.exists():
             continue
         try:
@@ -152,11 +156,64 @@ def migrate_legacy_layout() -> list[tuple[Path, Path]]:
             shutil.move(str(src), str(dst))
         except OSError:
             continue
+        if name == PLUGINS_DIR_NAME:
+            _migrate_extension_entries(dst)
         moved.append((src, dst))
     return moved
 
 
+#: 扩展目录内的旧入口名(registry.EXTENSION_ENTRY_FILE 的旧值)。
+#: 这里写字面量而不是从 registry 导入:registry 反过来依赖 paths,不能成环。
+_LEGACY_EXTENSION_ENTRY = "plugin.py"
+
+
+def _migrate_extension_entries(root: Path) -> None:
+    """把已搬进 `extensions/` 的入口 `plugin.py` 改成 `extension.py`。
+
+    不改名等于**搬了个没人读的目录** —— 目录名对了、入口名还是旧的,扩展不会加载。
+    仍然只在目标不存在时改,不覆盖任何东西。
+    """
+    if not root.is_dir():
+        return
+    for child in sorted(root.iterdir()):
+        old, new = child / _LEGACY_EXTENSION_ENTRY, child / "extension.py"
+        if old.is_file() and not new.exists():
+            try:
+                old.rename(new)
+            except OSError:
+                continue
+
+
+def project_extensions_dir(cwd: Path | None = None) -> Path:
+    """项目级扩展目录(`<项目>/.qi/extensions`)。"""
+    return project_home(cwd) / EXTENSIONS_DIR_NAME
+
+
+def migrate_extensions_dir() -> list[tuple[Path, Path]]:
+    """`<agent 目录>/plugins/`(v1 名)→ `extensions/`。
+
+    **只动用户自己的 agent 目录**。项目 `.qi/` 属于仓库内容,擅自搬迁会改 git 状态,
+    所以那边只提示(见 `legacy_project_extensions_dir`)。仍然遵守"目标存在则不动"。
+    """
+    target = global_home()
+    src, dst = target / PLUGINS_DIR_NAME, target / EXTENSIONS_DIR_NAME
+    if not src.is_dir() or dst.exists():
+        return []
+    try:
+        shutil.move(str(src), str(dst))
+    except OSError:
+        return []
+    _migrate_extension_entries(dst)
+    return [(src, dst)]
+
+
+def legacy_project_extensions_dir(cwd: Path | None = None) -> Path | None:
+    """项目里残留的旧 `.qi/plugins/`(存在则返回路径)—— 专供启动提示,不自动搬。"""
+    legacy = project_home(cwd) / PLUGINS_DIR_NAME
+    return legacy if legacy.is_dir() else None
+
+
 def ensure_layout() -> list[tuple[Path, Path]]:
-    """启动时调用:建好 agent 目录并完成旧布局迁移,返回搬迁记录。"""
+    """启动时调用:建好目录 + 完成旧布局迁移,返回搬迁记录。"""
     global_home().mkdir(parents=True, exist_ok=True)
-    return migrate_legacy_layout()
+    return migrate_legacy_layout() + migrate_extensions_dir()

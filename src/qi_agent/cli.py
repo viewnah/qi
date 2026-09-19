@@ -42,6 +42,7 @@ from .config import (
     save_models_file,
 )
 from .llm import THINKING_LEVELS, ThinkingLLMClient
+from .extensions import ExtensionBus
 from .loader import (
     LoadError,
     load_agent_dir,
@@ -51,16 +52,18 @@ from .loader import (
 )
 from .models import AgentUnit
 from .paths import MODELS_FILE_NAME, SETTINGS_FILE_NAME, global_home, project_home
-from .registry import AgentRegistry, CapabilityRegistry, ToolCatalog, discover_plugins
+from .registry import AgentRegistry, CapabilityRegistry, ToolCatalog, discover_extensions
 from .session import SessionStore
 from .settings import (
     SCOPES,
     QiSettings,
     SettingsError,
+    extension_dirs,
     load_settings,
     load_settings_by_scope,
     load_settings_raw,
     parse_value,
+    resolve_project_trust,
     save_settings,
     set_value,
     settings_scope_path,
@@ -104,13 +107,28 @@ app = typer.Typer(
 )
 
 
-def _env_catalog() -> tuple[ToolCatalog, list[str]]:
-    """内置工具 + 已发现插件(catalog 名字,用于装载校验/import)。"""
+def _env_catalog(*, approve_project: bool | None = None) -> tuple[ToolCatalog, list[str]]:
+    """内置工具 + 已发现扩展(catalog 名字,用于装载校验/import)。
+
+    信任门控跟跑一次的真实路径保持一致:未信任就不扫项目 `.qi/extensions/`,
+    也不把项目级 settings 的 `extensions[]` 算进来——否则 `qi agents list` 看到的
+    工具集与实际执行时不一样。settings 坏掉按未信任处理(宁少不多)。
+
+    总线用一次性的:这里只要“注册了哪些工具”,不派发任何事件。
+    """
     catalog = ToolCatalog()
     register_builtin_tools(catalog)
     caps = CapabilityRegistry()
-    plugins = discover_plugins(catalog, caps)
-    return catalog, plugins
+    try:
+        settings, _files = load_settings()
+    except SettingsError:
+        settings = None
+    trusted, _reason = resolve_project_trust(settings, approve=approve_project)
+    extensions = discover_extensions(
+        catalog, caps, None, bus=ExtensionBus(),
+        extra_dirs=extension_dirs(None, trusted=trusted),
+        project_trusted=trusted)
+    return catalog, extensions
 
 
 def _load_registry(catalog: ToolCatalog, cwd: Path | None = None) -> AgentRegistry:
@@ -208,6 +226,8 @@ def root_callback(
     verbose: bool = typer.Option(False, "--verbose", help="显示分派与工具调用进度(默认只输出答案,对齐 pi)"),
     skill: list[str] = typer.Option(None, "--skill", help="额外技能文件/目录(可重复;叠加)"),
     no_skills: bool = typer.Option(False, "--no-skills", "-ns", help="关闭技能自动发现(--skill 仍生效)"),
+    approve: bool = typer.Option(False, "--approve", "-a", help="信任项目 .qi(加载项目级扩展)"),
+    no_approve: bool = typer.Option(False, "--no-approve", "-na", help="不信任项目 .qi(显式拒绝)"),
     thinking: str | None = typer.Option(None, "--thinking", help="思考级别: " + "/".join(THINKING_LEVELS)),
 ) -> None:
     if ctx.invoked_subcommand is not None:
@@ -227,7 +247,8 @@ def root_callback(
             console.print("交互界面需要 TTY;无头用法: qi -p \"问题\" [--agent name]")
             raise typer.Exit(code=0)
         _launch_tui(prompt or None, session_id=session_id, cont=cont, fork_id=fork_id,
-                    no_session=no_session, name=name)
+                    no_session=no_session, name=name,
+                    approve_project=_trust_flag(approve, no_approve))
         return
     if not prompt:
         usage = (
@@ -248,6 +269,7 @@ def root_callback(
         # 与 pi 定义了却从不实现 `shouldStopAfterTurn` 同形)。
         runtime = QiRuntime(skills_enabled=not no_skills,
                             thinking_level=thinking,
+                            approve_project=_trust_flag(approve, no_approve),
                             extra_skill_paths=[Path(p) for p in (skill or [])])
     except _LoadErr as exc:
         console.print(f"[red]装载失败:[/red] {escape(str(exc))}")
@@ -256,6 +278,10 @@ def root_callback(
         console.print(f"[red]配置错误:[/red] {escape(str(exc))}")
         raise typer.Exit(code=2) from exc
     store = runtime.sessions
+    # 启动提示(未信任跳过项目级扩展、旧 plugins/ 目录残留…)走 stderr:
+    # `-p` 的 stdout 是给脚本/管道用的,不能混入提示。
+    for note in runtime.notes:
+        err_console.print(f"[yellow]{escape(note)}[/yellow]")
     session = None
     if no_session:
         session = store.create(name or "ephemeral", cwd=runtime.cwd)
@@ -283,6 +309,9 @@ def root_callback(
     assert session is not None
 
     async def _run() -> None:
+        # 会话已绑定 → 通知扩展(pi 的 `session_start { reason }`);错误进 notes,不挡这一轮
+        await runtime.start_session(session, reason=_session_reason(
+            no_session=no_session, fork_id=fork_id, session_id=session_id, cont=cont))
         # 对齐 pi 的 `-p`:默认只输出答案;分派行/工具进度仅在 --verbose 时显示
         # (且走 stderr,不污染 stdout)。`--mode json` 本就输出全部事件,不受此开关影响。
         async for ev in runtime.stream(prompt, session, agent_override=agent):
@@ -510,7 +539,7 @@ app.add_typer(agents_app, name="agents")
 @agents_app.command("list")
 def agents_list() -> None:
     """列出已装载 agent(来源/工具/描述)。"""
-    catalog, _plugins = _env_catalog()
+    catalog, _extensions = _env_catalog()
     reg = _load_registry(catalog)
     _print_agents_table(reg, catalog)
 
@@ -518,7 +547,7 @@ def agents_list() -> None:
 @agents_app.command("show")
 def agents_show(name: str = typer.Argument(...)) -> None:
     """单 agent 解析诊断。"""
-    catalog, _plugins = _env_catalog()
+    catalog, _extensions = _env_catalog()
     reg = _load_registry(catalog)
     unit = reg.get(name)
     if unit is None:
@@ -552,7 +581,7 @@ def agents_import(source: str = typer.Argument(...),
     if not src.is_dir():
         console.print(f"[red]源不是 agent 目录: {src}[/red]")
         raise typer.Exit(code=2)
-    catalog, _plugins = _env_catalog()
+    catalog, _extensions = _env_catalog()
     try:
         load_agent_dir(src, "source", catalog.names)   # 先校验(坏包不放行)
     except LoadError as exc:
@@ -573,7 +602,7 @@ def agents_import(source: str = typer.Argument(...),
 def agents_export(name: str = typer.Argument(...),
                   out: str = typer.Option(".", "-o", help="输出目录")) -> None:
     """导出 agent 目录(产物可直接 import)。"""
-    catalog, _plugins = _env_catalog()
+    catalog, _extensions = _env_catalog()
     reg = _load_registry(catalog)
     unit = reg.get(name)
     if unit is None:
@@ -1048,7 +1077,7 @@ def _current_default(local: bool) -> tuple[str | None, str | None]:
 
 
 def _write_models(target_dir: Path, target_file: Path, data: dict) -> None:
-    for sub in ("agents", "plugins", "sessions"):
+    for sub in ("agents", "extensions", "sessions"):
         (target_dir / sub).mkdir(parents=True, exist_ok=True)
     save_models_file(target_file, data)
     console.print(f"[green]✓[/green] Configuration saved to {target_file}")
@@ -1187,9 +1216,40 @@ def version() -> None:
     console.print(f"qi {__version__}")
 
 
+def _session_reason(*, no_session: bool, fork_id: str | None,
+                    session_id: str | None, cont: bool) -> str:
+    """`session_start` 的 reason(对齐 pi 的 startup / new / resume / fork)。
+
+    `ephemeral` 是 qi 自己的:`--no-session` 不落盘,扩展据此可以跳过“往会话里存状态”。
+    """
+    if no_session:
+        return "ephemeral"
+    if fork_id:
+        return "fork"
+    if session_id or cont:
+        return "resume"
+    return "new"
+
+
+def _trust_flag(approve: bool, no_approve: bool) -> bool | None:
+    """`-a` / `-na` → 三态信任参数(None = 没表态,交给 settings 与默认策略)。
+
+    两个都给是矛盾输入 → 报错退出,不猜(与 `-t`/`-xt` 的处理同形)。
+    """
+    if approve and no_approve:
+        console.print("[red]-a 与 -na 不能同时给[/red]")
+        raise typer.Exit(code=2)
+    if approve:
+        return True
+    if no_approve:
+        return False
+    return None
+
+
 def _launch_tui(initial_prompt: str | None = None, *, session_id: str | None = None,
                 cont: bool = False, fork_id: str | None = None,
-                no_session: bool = False, name: str | None = None) -> None:
+                no_session: bool = False, name: str | None = None,
+                approve_project: bool | None = None) -> None:
     """启动 TUI(顶层 `qi` 的默认去向)。
 
     刻意不做成子命令:`pi` 也没有 `pi tui` —— 裸 `qi` 就是交互界面。
@@ -1202,7 +1262,7 @@ def _launch_tui(initial_prompt: str | None = None, *, session_id: str | None = N
         console.print(f"[red]TUI 不可用: {escape(str(exc))}[/red]")
         raise typer.Exit(code=1) from exc
     run_tui(initial_prompt, session_id=session_id, cont=cont, fork_id=fork_id,
-            no_session=no_session, name=name)
+            no_session=no_session, name=name, approve_project=approve_project)
 
 
 def _port_free(host: str, port: int) -> bool:

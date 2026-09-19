@@ -14,9 +14,10 @@ from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field, replace
 
 from .abort import AbortSignal
+from .extensions import Tool, ToolError
 from .llm import ChatMessage, LLMClient, LLMDelta, ToolCallOut, stream_llm
 from .models import TOOL_ERROR, TOOL_OK, AgentEvent, AgentUnit, ToolOutcome
-from .registry import Tool, ToolCatalog, ToolError
+from .registry import ToolCatalog
 from .system_prompt import build_system_prompt
 
 

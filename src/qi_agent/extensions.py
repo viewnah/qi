@@ -1,13 +1,15 @@
-"""扩展宿主:事件总线 + 扩展上下文 + 传给 `register(api)` 的接口。
+"""扩展宿主:事件总线 + 扩展上下文 + 工具定义 + 传给 `register(api)` 的接口。
 
-对应 pi 的 `ExtensionAPI` / `ExtensionContext` / 事件订阅(docs/extensions.md §3、§4)。
+对应 pi 的 `ExtensionAPI` / `ExtensionContext` / 事件订阅 / `registerTool`
+(docs/extensions.md §3、§4)。
 
-**公开面白名单**(§5.5 —— pi 的 `## Available Imports` 对应物)。当前承诺:
+**公开面白名单**(§5.5 —— pi 的 `## Available Imports` 对应物)。承诺的只有本模块:
 
-    ExtensionBus / ExtensionApi / ExtensionContext / EmitResult    ← 本模块
-    Tool / ToolError / ToolOutcome                                ← qi_agent.registry / qi_agent.models
+    ExtensionBus / ExtensionApi / ExtensionContext / EmitResult
+    Tool / ToolError / ToolExecutor / ToolOutcome / register_tool
 
-`Tool` 暂时仍住在 `registry.py`(本模块被 registry 反向导入,不能成环),P-E6 收口时搬过来。
+P-E2a 把 `Tool` 从 `registry.py` 搬了过来(那里只留 `ToolCatalog`):扩展要写工具
+就必然要这个类型,让它住在“注册表”里等于把内部结构当公开面。
 
 ## 三条硬规则(§4,由本模块**实现**而不只是文档)
 
@@ -37,6 +39,70 @@ from .models import ToolOutcome
 #: `handler(payload, ctx) -> dict | None | Awaitable[...]`
 #: `payload` 是本次派发的那一个 dict(原地改 = 对后续 handler 可见)。
 ExtensionHandler = Callable[[dict, "ExtensionContext"], Any | Awaitable[Any]]
+
+#: 工具执行函数签名:`async def execute(args, ctx) -> str | ToolOutcome`
+#: 返回 `str` 即视为成功;需要上报 status/exit_code 的工具返回 `ToolOutcome`。
+ToolExecutor = Callable[[dict, Any], Awaitable[str | ToolOutcome]]
+
+
+class ToolError(Exception):
+    """工具执行错误:以结果文本返回给模型,**不中断会话**(runner 会包成 error 结果)。"""
+
+
+@dataclass
+class Tool:
+    """一个可被模型调用的工具。
+
+    `description` 与 `prompt_snippet` 是**两个不同的面向**(pi 同款区分):
+
+    * `description` 进 tool schema —— 模型在“要不要调这个工具”时看的说明,可以长一些;
+    * `prompt_snippet` 进系统提示词「可用工具」那一行(省略则回落到 `description`)。
+
+    合并写会让 schema 里塞进一整段散文 / 提示词里又缺一行摘要。`prompt_guidelines`
+    是该工具被启用时才追加的指南 bullet(pi 的 `promptGuidelines`),**必须自带工具名**:
+    指南是平铺追加的,写“用这个工具…”模型分不清“这个”指谁。
+    """
+
+    name: str
+    description: str
+    parameters: dict                        # JSON Schema
+    execute: ToolExecutor                   # async def execute(args, ctx) -> str | ToolOutcome
+    keywords: list[str] = field(default_factory=list)
+    prompt_snippet: str = ""
+    prompt_guidelines: list[str] = field(default_factory=list)
+    #: 谁装的(由 `register_tool` 盖):`{source, path, scope, origin}`。
+    #: `getAllTools()` 按它过滤/诊断 —— 扩展工具与内置工具靠这个区分。
+    source_info: dict | None = None
+
+    @property
+    def prompt_line(self) -> str:
+        """系统提示词「可用工具」里那一行。回落规则只此一处。"""
+        return self.prompt_snippet or self.description
+
+    def to_llm_schema(self) -> dict:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
+        }
+
+
+def register_tool(catalog: Any, tool: Tool, *, source: str = "", path: str = "",
+                  scope: str = "", origin: str = "") -> None:
+    """把工具注册进 catalog,**并盖上来源**(`source_info`)。
+
+    盖章只在这一处:让每个调用点自己拼一个 dict,迟早会漏字段,而 `source_info`
+    是 `getAllTools()` 过滤和“这个工具到底谁装的”唯一依据。键名照 pi 的 `sourceInfo`。
+
+    已带 `source_info` 的工具不覆盖(工具可以自己声明更精确的来源)。
+    """
+    if tool.source_info is None:
+        tool.source_info = {"source": source or "unknown", "path": path,
+                           "scope": scope or "temporary", "origin": origin or "top-level"}
+    catalog.register(tool)
 
 
 def _handler_name(handler: Any) -> str:
@@ -200,11 +266,20 @@ class ExtensionApi:
     _config_kinds: set[str] = field(default_factory=set)
     _types: dict[str, set[str]] = field(default_factory=dict)
     _name: str = ""
+    #: 来源信息(`source_info` 的四个键;由发现阶段告诉 api 它是从哪来的)
+    _path: str = ""
+    _scope: str = "temporary"      # user | project | temporary
+    _origin: str = "top-level"     # top-level | package
 
     # ── 工具 ──
-    def add_tool(self, tool: Any) -> None:
-        """注册工具(进 ToolCatalog)。`registerTool` 是 P-E2 的正式名,届时成为别名入口。"""
-        self.catalog.register(tool)
+    def registerTool(self, tool: Tool) -> None:      # noqa: N802 pi 的方法名,保持同形
+        """注册工具(进 ToolCatalog),并盖上本扩展的来源。"""
+        register_tool(self.catalog, tool, source=self._name, path=self._path,
+                      scope=self._scope, origin=self._origin)
+
+    def add_tool(self, tool: Tool) -> None:
+        """v1 旧名;`registerTool` 是正式名(对齐 pi)。"""
+        self.registerTool(tool)
 
     # ── 事件 ──
     def on(self, event: str, handler: ExtensionHandler) -> None:
@@ -229,5 +304,9 @@ __all__ = [
     "ExtensionBus",
     "ExtensionContext",
     "ExtensionHandler",
+    "Tool",
+    "ToolError",
+    "ToolExecutor",
     "ToolOutcome",
+    "register_tool",
 ]

@@ -107,6 +107,42 @@ def test_default_base_prompt_lists_resolved_tools() -> None:
     assert "- grep: " not in text           # 没给的工具不能出现
 
 
+def test_tool_list_prefers_prompt_snippet_over_description() -> None:
+    """`description` 进 tool schema,`prompt_snippet` 进提示词清单 —— 两个面向。
+
+    回落规则只此一处(`Tool.prompt_line`):没写 snippet 就退到 description,
+    所以老写法(只给 description)的行为一字不变。
+    """
+    from qi_agent.extensions import Tool
+
+    async def _noop(args: dict, ctx: object) -> str:
+        return ""
+
+    long_desc = "这是一段写给模型看的、比较长的工具说明。"
+    bare = Tool("bare", long_desc, {"type": "object", "properties": {}}, _noop)
+    snip = Tool("snip", long_desc, {"type": "object", "properties": {}}, _noop,
+                prompt_snippet="一行摘要")
+
+    text = default_base_prompt([bare, snip])
+    assert f"- bare: {long_desc}" in text      # 无 snippet → 回落 description
+    assert "- snip: 一行摘要" in text          # 有 snippet → 用它
+    assert f"- snip: {long_desc}" not in text
+    # schema 里仍然是 description(snippet 不进 schema)
+    assert snip.to_llm_schema()["function"]["description"] == long_desc
+
+
+def test_tool_prompt_guidelines_appear_only_when_the_tool_is_active() -> None:
+    """工具自带的指南随工具启用而出现(pi 的 `promptGuidelines`)。"""
+    read_line = "用 read 读文件,不要用 bash 的 cat/sed/head/tail 代替(带行号且省 token)。"
+
+    with_read = "\n".join(build_guidelines(["read", "bash"], _tools("read", "bash")))
+    assert read_line in with_read
+
+    # 指南绑的是**实际启用**的工具:把 read 换掉后它就不该在
+    without = "\n".join(build_guidelines(["bash"], _tools("bash")))
+    assert read_line not in without
+
+
 def test_guidelines_follow_available_tools() -> None:
     """对齐 pi:有 shell 但没有 grep/find/ls 时才提示用 shell 做文件操作,按组合分三种措辞。"""
     bash_only = ["read", "bash"]

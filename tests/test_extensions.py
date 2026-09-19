@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pytest  # noqa: E402
 
 from qi_agent import paths  # noqa: E402
+from qi_agent.extensions import ExtensionBus, Tool  # noqa: E402
 from qi_agent.registry import (  # noqa: E402
     EXTENSION_ENTRY_FILE,
     EXTENSION_ENTRY_POINT_GROUP,
@@ -57,6 +58,24 @@ def _catalog() -> tuple[ToolCatalog, CapabilityRegistry]:
     catalog = ToolCatalog()
     register_builtin_tools(catalog)
     return catalog, CapabilityRegistry()
+
+
+def _tool(catalog: ToolCatalog, name: str) -> Tool:
+    """`ToolCatalog.get()` 返回 `Tool | None`:显式收窄(与本仓其它测试同一写法)。"""
+    tool = catalog.get(name)
+    assert tool is not None, f"工具未注册: {name}"
+    return tool
+
+
+def _source_info(catalog: ToolCatalog, name: str) -> dict:
+    """取某个工具的 `source_info`(同样要收窄两次)。
+
+    注意不要叫 `_source`:本文件已有一个 `_source(*tool_names)` 用来**生成扩展源码**,
+    同名会把那个的调用点全部改解析到这里。
+    """
+    info = _tool(catalog, name).source_info
+    assert info is not None, f"工具未盖来源: {name}"
+    return info
 
 
 def _project(tmp_path: Path, name: str = "proj") -> Path:
@@ -111,7 +130,11 @@ def test_project_extension_wins_over_global_on_name_collision(tmp_path, monkeypa
 # ── settings.extensions ─────────────────────────────────
 
 def test_settings_extensions_is_trust_gated_per_scope(tmp_path, monkeypatch):
-    """项目级 settings 的 `extensions[]` 随仓库走 → 未信任时不算数;用户级照常。"""
+    """项目级 settings 的 `extensions[]` 随仓库走 → 未信任时不算数;用户级照常。
+
+    返回值带**作用域标签**:它进工具的 `source_info.scope`,一律记 temporary 会让
+    `getAllTools()` 的诊断面擒谎 —— 所以标签也一并钉住。
+    """
     home = tmp_path / "home"
     monkeypatch.setenv(paths.QI_AGENT_HOME, str(home))
     project = _project(tmp_path)
@@ -126,9 +149,9 @@ def test_settings_extensions_is_trust_gated_per_scope(tmp_path, monkeypatch):
         json.dumps({"extensions": [str(proj_dir)]}), encoding="utf-8")
 
     untrusted = extension_dirs(project, trusted=False)
-    assert user_dir in untrusted
-    assert proj_dir not in untrusted
-    assert proj_dir in extension_dirs(project, trusted=True)
+    assert (user_dir, "user") in untrusted
+    assert proj_dir not in [p for p, _ in untrusted]
+    assert (proj_dir, "project") in extension_dirs(project, trusted=True)
 
 
 def test_settings_extensions_accepts_a_single_extension_dir(tmp_path, monkeypatch):
@@ -268,5 +291,105 @@ def test_extension_failure_is_loud(tmp_path, monkeypatch):
 
     catalog, caps = _catalog()
     with pytest.raises(RuntimeError, match="boom"):
-        discover_extensions(catalog, caps, tmp_path, bus=ExtensionBus(), extra_dirs=[tmp_path / "bad"],
-                            project_trusted=False)
+        discover_extensions(catalog, caps, tmp_path, bus=ExtensionBus(),
+                            extra_dirs=[tmp_path / "bad"], project_trusted=False)
+
+
+# ── 工具注册与来源(P-E2a)────────────────────────────────
+
+_TOOL_TEMPLATE = """
+from qi_agent.extensions import Tool
+
+def register(api):
+    api.registerTool(Tool(
+        {name!r}, "描述", {{"type": "object", "properties": {{}}}}, None,
+        prompt_snippet="一行摘要",
+        prompt_guidelines=["用 {name} 做某件事。"],
+    ))
+    api.add_tool(Tool("alias_tool", "靠 add_tool 注册",
+                      {{"type": "object", "properties": {{}}}}, None))
+"""
+
+
+def test_register_tool_stamps_source_info(tmp_path, monkeypatch):
+    """`source_info` 在注册那一刻盖上 —— “这个工具谁装的”不靠事后回查。"""
+    monkeypatch.setenv(paths.QI_AGENT_HOME, str(tmp_path / "home"))
+    project = _project(tmp_path)
+    root = paths.project_home(project) / paths.EXTENSIONS_DIR_NAME
+    d = root / "stamper"
+    d.mkdir(parents=True)
+    (d / EXTENSION_ENTRY_FILE).write_text(_TOOL_TEMPLATE.format(name="stamped_tool"),
+                                         encoding="utf-8")
+
+    catalog, caps = _catalog()
+    discover_extensions(catalog, caps, project, bus=ExtensionBus(),
+                        project_trusted=True)
+
+    info = _source_info(catalog, "stamped_tool")
+    assert info["source"] == "stamper"          # 扩展名
+    assert info["path"].endswith(f"stamper/{EXTENSION_ENTRY_FILE}")
+    assert info["scope"] == "project"           # 来自项目目录
+    assert info["origin"] == "top-level"
+    # add_tool 是 registerTool 的别名,走同一条盖章路径
+    assert _source_info(catalog, "alias_tool")["source"] == "stamper"
+
+
+def test_builtin_tools_are_stamped_as_builtin(tmp_path):
+    """内置工具用同一把尺子标记,`getAllTools()` 才能区分内置与扩展。"""
+    catalog, _caps = _catalog()
+    info = _source_info(catalog, "read")
+    assert info == {"source": "builtin", "path": "<builtin:read>",
+                    "scope": "temporary", "origin": "top-level"}
+    assert all(_source_info(catalog, n)["source"] == "builtin" for n in catalog.names)
+
+
+def test_tool_can_declare_its_own_source_info(tmp_path, monkeypatch):
+    """工具自带的 `source_info` 不被覆盖(它可能知道得比装载器更准)。"""
+    monkeypatch.setenv(paths.QI_AGENT_HOME, str(tmp_path / "home"))
+    project = _project(tmp_path)
+    d = paths.project_home(project) / paths.EXTENSIONS_DIR_NAME / "custom"
+    d.mkdir(parents=True)
+    (d / EXTENSION_ENTRY_FILE).write_text("""
+from qi_agent.extensions import Tool
+
+def register(api):
+    tool = Tool("self_declared", "描述", {"type": "object", "properties": {}}, None,
+                source_info={"source": "我自己说的", "path": "x",
+                             "scope": "user", "origin": "package"})
+    api.registerTool(tool)
+""", encoding="utf-8")
+
+    catalog, caps = _catalog()
+    discover_extensions(catalog, caps, project, bus=ExtensionBus(),
+                        project_trusted=True)
+    assert _source_info(catalog, "self_declared")["source"] == "我自己说的"
+
+
+def test_extra_dirs_scope_labels(tmp_path, monkeypatch):
+    """`extra_dirs` 两种形状:裸 `Path` 记 temporary,`(Path, scope)` 用给定标签。"""
+    monkeypatch.setenv(paths.QI_AGENT_HOME, str(tmp_path / "home"))
+    bare = tmp_path / "bare"
+    _write_extension(bare, "b", "tool_b")
+    tagged = tmp_path / "tagged"
+    _write_extension(tagged, "t", "tool_t")
+
+    catalog, caps = _catalog()
+    names = discover_extensions(catalog, caps, tmp_path, bus=ExtensionBus(),
+                                extra_dirs=[bare, (tagged, "user")],
+                                project_trusted=False)
+    assert names == ["b", "t"]
+    assert _source_info(catalog, "tool_b")["scope"] == "temporary"
+    assert _source_info(catalog, "tool_t")["scope"] == "user"
+
+
+def test_tool_is_the_same_class_from_registry_and_extensions():
+    """公开面搬家后的兼容底线:两条 import 路径必须是**同一个类**。
+
+    否则 `isinstance` 判断会在“旧写法建的 Tool”与“新写法建的 Tool”之间失效 ——
+    那是很难从现象反推的一类 bug。
+    """
+    from qi_agent import extensions as ext
+    from qi_agent import registry as reg
+
+    assert reg.Tool is ext.Tool
+    assert reg.ToolError is ext.ToolError

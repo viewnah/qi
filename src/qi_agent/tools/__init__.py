@@ -15,8 +15,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..abort import AbortSignal
+from ..extensions import Tool, ToolError, register_tool
 from ..models import TOOL_ERROR, TOOL_OK, ToolOutcome
-from ..registry import Tool, ToolError
 from .shell import (
     POWERSHELL_UTF8_PREFIX,
     ShellError,
@@ -275,25 +275,50 @@ def _schema(props: dict, required: list[str] | None = None) -> dict:
 
 
 def register_builtin_tools(catalog) -> None:
-    catalog.register(Tool("read", "读取文件内容,支持行范围。路径相对会话目录。", _schema(
+    """注册内置工具。
+
+    P-E2a **dogfood**:走的是扩展同一个 `register_tool`(不是 `catalog.register`),
+    来源照 pi 的写法记 `source="builtin"` / `path="<builtin:名>"` —— 于是
+    `getAllTools()` 能用同一把尺子区分内置与扩展工具,而不需要额外维护一张名单。
+
+    `description` 进 tool schema(模型决定调不调时的说明),`prompt_snippet` 进系统
+    提示词「可用工具」那一行(更短);`prompt_guidelines` 只在该工具启用时追加。
+    """
+    def add(tool: Tool) -> None:
+        register_tool(catalog, tool, source="builtin", path=f"<builtin:{tool.name}>",
+                      scope="temporary", origin="top-level")
+
+    add(Tool("read", "读取文件内容,支持行范围。路径相对会话目录。", _schema(
         {"path": {"type": "string", "description": "文件路径"},
          "start_line": {"type": "integer"},
-         "end_line": {"type": "integer"}}, ["path"]), _read))
-    catalog.register(Tool("ls", "列出目录内容(前缀 d=目录/f=文件)。", _schema(
-        {"path": {"type": "string"}}), _ls))
-    catalog.register(Tool("find", "按文件名/glob 搜索(如 *.py)。", _schema(
-        {"path": {"type": "string"}, "pattern": {"type": "string"}}, ["pattern"]), _find))
-    catalog.register(Tool("grep", "正则搜索文件内容,返回 文件:行号:行。", _schema(
+         "end_line": {"type": "integer"}}, ["path"]), _read,
+        prompt_snippet="读取文件(可给行范围)",
+        prompt_guidelines=["用 read 读文件,不要用 bash 的 cat/sed/head/tail 代替(带行号且省 token)。"]))
+    add(Tool("ls", "列出目录内容(前缀 d=目录/f=文件)。", _schema(
+        {"path": {"type": "string"}}), _ls,
+        prompt_snippet="列出目录内容"))
+    add(Tool("find", "按文件名/glob 搜索(如 *.py)。", _schema(
+        {"path": {"type": "string"}, "pattern": {"type": "string"}}, ["pattern"]), _find,
+        prompt_snippet="按文件名/glob 找文件"))
+    add(Tool("grep", "正则搜索文件内容,返回 文件:行号:行。", _schema(
         {"pattern": {"type": "string"}, "path": {"type": "string"}, "ignore_case": {"type": "boolean"},
-         "context": {"type": "integer"}, "max_count": {"type": "integer"}}, ["pattern"]), _grep))
-    catalog.register(Tool("write", "整写文件(新建/覆盖)。", _schema(
-        {"path": {"type": "string"}, "content": {"type": "string"}}, ["path", "content"]), _write))
-    catalog.register(Tool("edit", "diff 精确编辑:old_text 必须唯一匹配后替换为 new_text。", _schema(
+         "context": {"type": "integer"}, "max_count": {"type": "integer"}}, ["pattern"]), _grep,
+        prompt_snippet="正则搜文件内容"))
+    add(Tool("write", "整写文件(新建/覆盖)。", _schema(
+        {"path": {"type": "string"}, "content": {"type": "string"}}, ["path", "content"]), _write,
+        prompt_snippet="整写文件(新建/覆盖)",
+        prompt_guidelines=["用 write 建新文件;改已有文件用 edit。"]))
+    add(Tool("edit", "diff 精确编辑:old_text 必须唯一匹配后替换为 new_text。", _schema(
         {"path": {"type": "string"}, "old_text": {"type": "string"}, "new_text": {"type": "string"}},
-        ["path", "old_text", "new_text"]), _edit))
-    catalog.register(Tool("bash", "执行 bash 命令(工作目录=会话目录);输出截断 + timeout。", _schema(
-        {"command": {"type": "string"}, "timeout": {"type": "number"}}, ["command"]), _bash))
-    catalog.register(Tool("powershell", "执行 PowerShell 命令(仅 Windows;输出走 UTF-8)。", _schema(
-        {"command": {"type": "string"}, "timeout": {"type": "number"}}, ["command"]), _powershell))
-    catalog.register(Tool("clarify", "向用户提出澄清问题,等待回答。拿不准需求时使用。", _schema(
-        {"question": {"type": "string"}}, ["question"]), _clarify))
+        ["path", "old_text", "new_text"]), _edit,
+        prompt_snippet="精确替换(唯一匹配)",
+        prompt_guidelines=["改已有文件优先用 edit(精确替换),不要用 write 整写覆盖。"]))
+    add(Tool("bash", "执行 bash 命令(工作目录=会话目录);输出截断 + timeout。", _schema(
+        {"command": {"type": "string"}, "timeout": {"type": "number"}}, ["command"]), _bash,
+        prompt_snippet="执行 bash 命令"))
+    add(Tool("powershell", "执行 PowerShell 命令(仅 Windows;输出走 UTF-8)。", _schema(
+        {"command": {"type": "string"}, "timeout": {"type": "number"}}, ["command"]), _powershell,
+        prompt_snippet="执行 PowerShell 命令(仅 Windows)"))
+    add(Tool("clarify", "向用户提出澄清问题,等待回答。拿不准需求时使用。", _schema(
+        {"question": {"type": "string"}}, ["question"]), _clarify,
+        prompt_snippet="向用户澄清"))

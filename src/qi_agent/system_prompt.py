@@ -22,9 +22,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Sequence
 
 if TYPE_CHECKING:                                  # 只为类型标注,避免运行期耦合
+    from .extensions import Tool
     from .loader import AgentUnit
     from .models import Skill
-    from .registry import Tool
 
 # ── 默认基座:静态文案 ───────────────────────────────────────
 
@@ -46,12 +46,16 @@ DEFAULT_METHOD = """做法:
 4. **务实**:能一步到位的不要拆成五步;不要为了完整而完整。"""
 
 
-def build_guidelines(tool_names: Sequence[str]) -> list[str]:
+def build_guidelines(tool_names: Sequence[str], tools: Sequence[Tool] = ()) -> list[str]:
     """按**实际可用工具**生成指南(pi 的条件化 guidelines)。
 
     pi 只在「有 bash/powershell 但没有 grep/find/ls」时提示用 shell 做文件操作,
     并按两者是否同时存在分三种措辞。qi 的默认工具集自带 ls/find/grep,所以这条通常
     不出现,但收窄到 `["read","bash","edit","write"]` 时就会出现 —— 与 pi 同形。
+
+    `tools` 非空时额外追加**工具自带的指南**(pi 的 `promptGuidelines`):它们随工具
+    启用而出现,所以写工具的人不必把“用这个工具而不是那个”塞进 description。
+    自带指南**必须点名工具**(平铺追加时“这个”指谁看不出来)。
     """
     has = set(tool_names)
     out: list[str] = []
@@ -67,6 +71,9 @@ def build_guidelines(tool_names: Sequence[str]) -> list[str]:
             add("用 PowerShell 做文件操作:列目录、搜索、找文件")
         else:
             add("用 bash 做文件操作:列目录、搜索、找文件")
+    for tool in tools:
+        for line in tool.prompt_guidelines:
+            add(line)
     add("结论先行,简明扼要")
     add("涉及文件时把路径写清楚")
     add("使用与用户一致的语言(默认中文)")
@@ -80,8 +87,8 @@ def default_base_prompt(tools: Sequence[Tool] = ()) -> str:
     (`ToolCatalog.resolve` 的结果),清单即模型可调用的全集 —— 所以这里不写
     pi 那句“你可能还有别的工具”:qi 不会给出清单外的工具。
     """
-    listed = "\n".join(f"- {t.name}: {t.description}" for t in tools) or "(无)"
-    guidelines = "\n".join(f"- {g}" for g in build_guidelines([t.name for t in tools]))
+    listed = "\n".join(f"- {t.name}: {t.prompt_line}" for t in tools) or "(无)"
+    guidelines = "\n".join(f"- {g}" for g in build_guidelines([t.name for t in tools], tools))
     return "\n\n".join([
         DEFAULT_IDENTITY,
         f"可用工具:\n{listed}",

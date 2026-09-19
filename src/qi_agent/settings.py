@@ -318,17 +318,23 @@ def resolve_project_trust(settings: QiSettings | None, *,
 
 
 def extension_dirs(cwd: Path | None = None, *, trusted: bool,
-                   extra: list[Path] | None = None) -> list[Path]:
-    """`settings.extensions[]` 解析出的附加扩展目录。
+                   extra: list[Path] | None = None) -> list[tuple[Path, str]]:
+    """`settings.extensions[]` 解析出的附加扩展目录 → `[(路径, 作用域)]`。
 
-    项目级 settings 的那份**只在信任时**返回 —— 它随仓库走,未信任时它不是用户的意图。
-    `extra` 是调用方自己的追加路径(如 CLI 的临时扩展)。
+    作用域(`user` / `project` / `temporary`)会进工具的 `source_info.scope`,
+    所以必须按**各自 settings.json 所在的作用域**标注 —— 一律记 temporary 会让
+    `getAllTools()` 的诊断面撒谎(那是它存在的唯一理由)。
+
+    项目级那份**只在信任时**返回 —— 它随仓库走,未信任时它不是用户的意图。
+    `extra` 是调用方自己的追加路径(如 CLI 的 `-e`),记 temporary。
     """
     scopes = load_settings_by_scope(cwd)
-    out = [Path(p) for p in (extra or ())]
-    out += settings_include_paths(scopes.get("user"), "user", "extensions", cwd)
+    out: list[tuple[Path, str]] = [(Path(p), "temporary") for p in (extra or ())]
+    out += [(p, "user")
+            for p in settings_include_paths(scopes.get("user"), "user", "extensions", cwd)]
     if trusted:
-        out += settings_include_paths(scopes.get("project"), "project", "extensions", cwd)
+        out += [(p, "project") for p in
+                settings_include_paths(scopes.get("project"), "project", "extensions", cwd)]
     return out
 
 

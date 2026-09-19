@@ -523,7 +523,9 @@ class QiRuntime:
                              tool_ctx=self._tool_ctx(unit.name, unit),
                              base_prompt=self.base_prompt,
                              tool_names=self.tool_names(unit),
-                             system_prompt=await self._before_agent_start(unit, text, abort))
+                             system_prompt=await self._before_agent_start(unit, text, abort),
+                             bus=self.bus, extension_ctx=self.extension_ctx,
+                             report=self.notes.append)
         # 顺序要紧:先取上下文(不含本轮),再把 user 消息立即落盘。
         # 旧实现把 user 写在回合**结束后**,于是运行中刷新/断线就看不到自己说了什么;
         # 而若先落盘再取 history,本轮输入会进上下文两次(prompt 里出现两条同样的 user)。

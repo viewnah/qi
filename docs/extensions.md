@@ -71,12 +71,13 @@ qi 要拆的三样(MCP / 多 agent / web)**正好落在这份清单上**。
 | `resources_discover` | `session_start` 后 | `{skillPaths, promptPaths, themePaths}` | P-E1 |
 | `input` | 收到用户输入(自动压缩之前) | `continue` / `transform`(改 **`text`** = 改写后的用户输入)/ `handled`(**首胜**,链停,`reply` = 给用户的答复) | ✅ P-E2c-1 |
 | `before_agent_start` | 用户消息后、agent loop 前 | `{system_prompt?}`(**链式**,已是建好的全文);`message` 注入延到 P-E3(与 `sendMessage` 同一套语义) | ✅ P-E2c-1 |
-| `agent_start` / `agent_end` / `agent_settled` | 回合起止 / 无重试与压缩残留 | 通知 | P-E2c-2 |
-| `turn_start` / `turn_end` | 每轮(一次 LLM 响应 + 工具) | **通知**(pi 也是通知 —— 这是"不做每轮换角色"的直接后果) | P-E2c-2 |
-| `context` | 每次 LLM 调用前 | `{messages}`(可换列表 / 裁剪;**别就地改消息对象** —— 返回新列表) | P-E2c-2 |
+| `agent_start` / `agent_end` | 回合起止 | 通知。payload:`{agent}` / `{agent, text, turns, aborted}` | ✅ P-E2c-2 |
+| `agent_settled` | 无重试与压缩残留 | **不做**:qi 没有回合级重试/重压机制,这个时机不存在(是“不做”不是“待做”) | ❌ |
+| `turn_start` / `turn_end` | 每轮(一次 LLM 响应 + 工具) | **通知**(pi 也是通知 —— 这是“不做每轮换角色”的直接后果)。payload:`{turn_index, timestamp}` / `{turn_index, text, tool_calls}` | ✅ P-E2c-2 |
+| `context` | 每次 LLM 调用前 | `{messages}`:可换列表 / 裁剪。**要改就返回新列表** —— 就地把消息对象改掉会污染跨轮上下文 | ✅ P-E2c-2 |
 | `message_start` / `message_update` / `message_end` | 消息生命周期 | `message_end` 可 `{message}`(role 必须不变) | P-E3 |
-| `tool_call` | 工具执行前 | 可原地改 `input`;`{block, reason?, terminate?}`;出错时 fail-safe **拦住** | P-E2c-2 |
-| `tool_result` | 工具执行后 | patch: `{result?, details?, status?}` | P-E2c-2 |
+| `tool_call` | 工具执行前 | payload `{tool_name, tool_call_id, input}`;可改 `input`(改动真生效、**不重校**);`{block, reason?}` 拦住;handler 抛异常时 **fail-safe 拦住** | ✅ P-E2c-2 |
+| `tool_result` | 工具执行后 | payload `{tool_name, tool_call_id, input, result, details, status, exit_code}`;patch 语义:返回 `{result?, details?, status?}` | ✅ P-E2c-2 |
 | `user_bash` | 用户 `!` 命令 | `{operations}` / `{result}` | P-E3 |
 | `model_select` / `thinking_level_select` | 模型 / 思考级别变化 | 通知 | P-E3 |
 | `session_before_switch` / `session_before_fork` | `/new` / `/resume` / `/fork` | `{cancel}` | P-E3 |
@@ -85,6 +86,17 @@ qi 要拆的三样(MCP / 多 agent / web)**正好落在这份清单上**。
 | `session_info_changed` | 会话改名 | 通知 | P-E3 |
 
 qi 曾需要的"每轮可换角色"hook **不加** —— 见 §7(多 agent 走 agent-as-tool,不需要它)。
+
+> **payload 的键名用 snake_case**(`tool_name` / `system_prompt` / `turn_index`),方法名照 pi 保留
+> camelCase —— 见 §9 末尾的命名规则。写扩展时以本节为准。
+>
+> **一处刻意与 pi 不同**:pi 的顺序是 `tool_execution_start` → `tool_call`,所以它的 tool-start
+> 看到的是**未被闸门改过**的参数。qi 反过来(**先过闸门再发 `tool_start`**):qi 的事件流同时是
+> **持久化来源**(`_persist_tool` 落 `args`),两者不一致会让回放出现“看到的参数不是跑过的” ——
+> 形式对齐让位于这一条。
+>
+> 被拦下的调用以 `status=error` + `error="denied"` 的结果还给模型(不是抛异常):
+> 模型看到“被拦了 + 原因”才能换个思路,而抛异常会把整个回合打成失败。
 
 ### 3.2 方法(`api.*`)
 
@@ -329,14 +341,14 @@ core 技能发现:同理(私有技能自动绑定)
 | **P-E2a 工具注册面** ✅ | `Tool` 搬到公开面(带 `prompt_snippet` / `prompt_guidelines` / `source_info`)+ `registerTool`(正式名)/ `add_tool`(别名)+ `register_tool` 统一盖章 + **内置工具改走 `registerTool`**(dogfood,来源记 `builtin`) | `tests/test_extensions.py` 5 项 + `test_system_prompt.py` 2 项:来源四个键逐条钉住;两条 import 路径是**同一个类**;snippet 回落规则;snippet 不进 tool schema;工具自带指南只随**实际启用**的工具出现 |
 | **P-E2b 运行时工具集 + `exec`** ✅ | 动态注册(装载后、事件里都能注册且**下一轮就能调**)+ `getAllTools`(元数据 + `source_info`)/ `getActiveTools` / `setActiveTools`(覆盖优先于 agent 的 `tools`,跳角色生效)+ `exec`(不经 shell) | `tests/test_extension_tools.py` 13 项:端到端证明覆盖**穿过 runner**(下一轮 tool schema 里真的只剩 `read`);无宿主时 `getActiveTools` 降级而 `setActiveTools` **报错**;`exec` 的超时/中断都真 kill、带空格参数不被拆 |
 | **P-E2c-1 输入面** ✅ | `input`(`transform` / `handled`)+ `before_agent_start`(链式 `system_prompt`)+ `bus.has()` 逐事件护栏 | `tests/test_extension_events.py` 12 项:`handled` **真的不跑 agent**(LLM 零调用);`transform` 影响模型看到的 + 落盘的;链式顺序;handler 崩了不拖垮这一轮;零扩展时行为与从前一致 |
-| **P-E2c-2 轮次与工具事件** | 把 runner 侧的派发点接上:`turn_start` / `turn_end` / `context` / `tool_call` / `tool_result` / `agent_start` / `agent_end` | `tool_call` block 能拦住 bash;`tool_result` 的 patch 真的改到模型看到的结果 |
+| **P-E2c-2 轮次与工具事件** ✅ | runner 侧派发点全部接上:`agent_start`/`agent_end`、`turn_start`/`turn_end`、`context`、`tool_call`、`tool_result`(`agent_settled` 不做,见 §3.1) | `tests/test_extension_runner_events.py` 10 项:`turn` 事件的**次数与 index** 钉住;`context` 换掉的列表就是真发出去的那份;`block` = 工具**真的没执行**(带一个“去掉 gate 就真跑”的对照组);handler 崩了 fail-safe 拦住;`tool_result` 的 patch 真的改到模型看到的 |
 | **P-E2d 依赖契约** | 装载时读 `importlib.metadata.requires()`:禁把 `qi-agent` 写进 `dependencies` + 已装版本不符就报告 | 钉了宿主版本的扩展被判出而不静默 |
 | **P-E3 命令与 UI + 会话面** | `registerCommand` / `registerShortcut` / `registerFlag` + **`ctx.ui` 通道(TUI)** + renderer 三件套 + `appendEntry` + `sendMessage`/`sendUserMessage` + `sessionManager` + `setModel`/thinking + 会话类事件 | 扩展能注册 `/cmd`、弹 confirm、落盘自定义 entry 并在 TUI 回放 |
 | **P-E4 core 收窄** | runner 入参从 `AgentUnit` 改 `{system_prompt, tools, model}`;**新增 `ctx.runAgent(spec, task)`(E12)**;`AgentRegistry`/`load_all_agents`/dispatcher 从 core 移出;**仓库自己的 4 个项目 agent 先搬进 `examples/`(E15)**;`events` 总线;`registerProvider` | `qi` 裸启动单 agent 跑通;core 不再 import `dispatcher`/`loader.load_all_agents`;core `dependencies` 去掉 `mcp`;`ctx.runAgent` 能在测试里跑完一个子任务 |
 | **P-E5 三件套迁移** | qi-mcp → qi-agents → qi-web(按依赖从少到多);**qi-agents 落地后把仓库 agents 搬回 `.qi/agents/`(E15)**;`ctx.ui` 的 web 侧 + `add_route`/`add_static` | 三个包各自可装可卸;不装时启动提示与 `qi doctor` 正确;`qi web` 由扩展提供;`qi --agent <name>` 由 qi-agents 提供 |
 | **P-E6 收尾** | 参考扩展样例(至少一个 `examples/extensions/` 下的完整例子)+ 目录通道的 PEP 723 声明解析 + 冲突报告 + 文档重写(agent-config.md / web.md / dispatcher.md 归档)+ 迁移提示打磨 | 新用户按 extensions.md 能写出并装上第一个扩展;声明与实装不一致时 `qi doctor` 报得出来 |
 
-**依赖关系**:P-E1a/b/c ✅ → **P-E1d ✅** → **P-E2a ✅** → **P-E2b ✅** → **P-E2c-1 ✅** → P-E2c-2/d → P-E3 顺序做;P-E4 可与 P-E3 并行;P-E5 依赖 P-E2 + P-E3 + P-E4;P-E6 最后。
+**依赖关系**:P-E1a/b/c ✅ → **P-E1d ✅** → **P-E2a ✅** → **P-E2b ✅** → **P-E2c-1 ✅** → **P-E2c-2 ✅** → P-E2d → P-E3 顺序做;P-E4 可与 P-E3 并行;P-E5 依赖 P-E2 + P-E3 + P-E4;P-E6 最后。
 
 **命名规则**(避免以后再纠结):**方法名照 pi 保留 camelCase**(`registerTool` / `getAllTools` / `setActiveTools` …) —— 那是扩展作者要背的那部分;qi **自己的数据结构用 snake_case**(`prompt_snippet` / `source_info` 的键)。v1 的旧名(`add_tool`)作为别名留着。
 

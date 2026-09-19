@@ -15,6 +15,7 @@ from dataclasses import dataclass, field, replace
 
 from .abort import AbortSignal
 from .extensions import Tool, ToolError
+from .extensions import ExtensionBus, ExtensionContext
 from .llm import ChatMessage, LLMClient, LLMDelta, ToolCallOut, stream_llm
 from .models import TOOL_ERROR, TOOL_OK, AgentEvent, AgentUnit, ToolOutcome
 from .registry import ToolCatalog
@@ -102,19 +103,53 @@ def _interrupted_outcome() -> ToolOutcome:
                        result="操作已中断(用户中止本回合)")
 
 
+def _blocked_outcome(reason: str) -> ToolOutcome:
+    """被扩展拦下的工具调用。
+
+    以 **error 结果**还给模型(不抛异常):模型看到“被拦了 + 原因”才能换个思路,
+    而抛异常会把这个回合打成失败。`error="denied"` 是 models.py 里已经预留的机器可读值。
+    """
+    return ToolOutcome(status=TOOL_ERROR, error="denied",
+                       result=f"Error: 工具调用被扩展拦截:{reason or '未说明原因'}")
+
+
+def _apply_result_patch(outcome: ToolOutcome, patch: dict) -> None:
+    """把 `tool_result` 的 patch 应用到结果上(省略字段保持当前值 —— patch 语义)。
+
+    `patch` 是链结束后的合并 payload,所以“没提到的字段”拿到的就是原值。
+    """
+    if patch.get("result") is not None:
+        outcome.result = str(patch["result"])
+    if "details" in patch:
+        outcome.details = patch["details"]
+    status = patch.get("status")
+    if status in (TOOL_OK, TOOL_ERROR):
+        outcome.status = status
+
+
 class AgentRunner:
     def __init__(self, unit: AgentUnit, catalog: ToolCatalog, llm: LLMClient,
                  settings: RunnerSettings | None = None, tool_ctx=None,
                  base_prompt: str | None = None,
                  tool_names: list[str] | None = None,
-                 system_prompt: str | None = None):
+                 system_prompt: str | None = None,
+                 bus: ExtensionBus | None = None,
+                 extension_ctx: Callable[[AbortSignal | None], ExtensionContext] | None = None,
+                 report: Callable[[str], None] | None = None):
         """`tool_names` 非空时**覆盖** `unit.tools`(扩展的 `setActiveTools` 走这里)。
 
         为什么要这个参数而不是直接改 unit:`unit` 是装载期的快照,而工具集可以在
         运行时被扩展改(`/plan` 那种只读档)—— 混淆两者会让“改了没生效”变成谜。
 
         `system_prompt` 非空时直接用给定的(宿主经 `before_agent_start` 链后的结果)。
+
+        三个扩展相关的参数:`bus`(事件总线)、`extension_ctx`(按回合的 ctx 工厂 ——
+        `signal` 每回合不同所以不能缓存)、`report`(把 handler 异常报到宿主的 notes)。
+        **给了 bus 就必须给 extension_ctx**,否则 handler 拿到的 ctx 是 None ——
+        那种“静默少传一个”会在扩展里变成看不懂的 AttributeError。
         """
+        if bus is not None and extension_ctx is None:
+            raise ValueError("给了 bus 就必须给 extension_ctx(否则 handler 拿不到 ctx)")
         self.unit = unit
         self.catalog = catalog
         self.llm = llm
@@ -123,6 +158,34 @@ class AgentRunner:
         self.base_prompt = base_prompt
         self.tool_names = tool_names
         self.system_prompt = system_prompt
+        self.bus = bus
+        self.extension_ctx = extension_ctx
+        self.report = report
+
+    async def _emit(self, event: str, payload: dict, abort: AbortSignal | None, *,
+                    stop_keys: tuple[str, ...] = (),
+                    stop_values: dict[str, tuple[str, ...]] | None = None,
+                    on_error_result: dict | None = None):
+        """派发一个扩展事件。**零订阅时直接返回 None** —— 不建 payload、不建结果对象,
+        所以“零扩展等于零开销”是写在各派发点上的一行判断,而不是一句承诺。"""
+        if self.bus is None or not self.bus.has(event):
+            return None
+        if self.extension_ctx is None:
+            # `__init__` 已经保证“有 bus 就有 extension_ctx”;这里是给类型检查器的显式收窄。
+            return None
+        ctx = self.extension_ctx(abort)
+        if stop_keys or stop_values:
+            return await self.bus.emit_until(event, payload, ctx=ctx, stop_keys=stop_keys,
+                                             stop_values=stop_values,
+                                             on_error_result=on_error_result)
+        return await self.bus.emit(event, payload, ctx=ctx)
+
+    def _report(self, event: str, result) -> None:
+        """把 handler 的异常报到宿主(`EmitResult.errors` 不能只存在对象里)。"""
+        if result is None or self.report is None:
+            return
+        for source, exc in result.errors:
+            self.report(f"扩展 {source} 的 {event} 处理失败: {exc}")
 
     def _tools(self) -> list[Tool]:
         names = self.unit.tools if self.tool_names is None else self.tool_names
@@ -152,6 +215,7 @@ class AgentRunner:
         msgs.append(ChatMessage(role="user", content=user_input))
 
         yield AgentEvent(kind="agent_start", agent=self.unit.name)
+        await self._emit("agent_start", {"agent": self.unit.name}, abort)
         last_text = ""
         usage_total: dict = {}
         #: 最后一次 LLM 调用看到的 prompt 大小 = **当前上下文占用**。
@@ -165,10 +229,21 @@ class AgentRunner:
         try:
             while True:                      # 无轮次上限:退出靠模型停 / 中断 / stop_after(对齐 pi)
                 turn += 1
+                await self._emit("turn_start",
+                                 {"turn_index": turn, "timestamp": time.time()}, abort)
                 acc_text = ""
                 acc_thinking = ""
                 tool_calls: list[ToolCallOut] = []
                 usage: dict = {}
+                # `context`:每次 LLM 调用前可换消息表(裁剪 / 注入)。返回里的 `messages`
+                # 就是这一轮要发出去的那一份 —— 要改就返回**新列表**,别就地改消息对象
+                # (它们是会话历史的来源,就地改会污染跨轮上下文)。
+                patched = await self._emit("context", {"messages": msgs}, abort)
+                if patched is not None:
+                    self._report("context", patched)
+                    replacement = patched.payload.get("messages")
+                    if isinstance(replacement, list):
+                        msgs = replacement
                 # 请求级超时归 provider/SDK(见 llm.py 的 retry.provider),不在这里套 asyncio.timeout
                 async for delta in _iter_until_abort(
                         stream_llm(self.llm, msgs, tools=schemas), abort):
@@ -206,16 +281,44 @@ class AgentRunner:
                                        "thinking": acc_thinking,
                                        "tool_calls": [c.name for c in tool_calls]})
                 if not tool_calls:
-                    break
+                    pass                  # 空列表 → 下面的 for 自然跳过;`turn_end` 仍要发
                 for call in tool_calls:
+                    # `tool_call`:可改 `input`(改动真生效、不重校)、可 `block`。
+                    # 出错时 **fail-safe 拦住** —— “装了闸门反而放行”是最坏的结果。
+                    verdict = await self._emit(
+                        "tool_call",
+                        {"tool_name": call.name, "tool_call_id": call.id, "input": call.args},
+                        abort, stop_keys=("block",),
+                        on_error_result={"block": True, "reason": "扩展闸门异常"})
+                    if verdict is not None:
+                        self._report("tool_call", verdict)
+                        patched_args = verdict.payload.get("input")
+                        if isinstance(patched_args, dict):
+                            call.args = patched_args
+                    # 顺序:**先**过闸门再发 `tool_start` —— 事件里的 args 必须是真正要执行的
+                    # 那一份(前端与落盘都读它)。pi 是反的(tool_execution_start 在前),
+                    # 但 qi 的事件流同时是持久化来源,args 对不上会变成“回放里看到的参数
+                    # 不是跑过的”—— 那种不一致比事件顺序上的形式对齐更重要。
                     yield AgentEvent(kind="tool_start", agent=self.unit.name,
                                      tool=call.name, data={"args": call.args})
                     if abort is not None and abort.aborted:
                         # 剩下的调用一律不跑:补结果而不是默默消失,否则两边记录不一致
                         aborted = True
                         outcome = _interrupted_outcome()
+                    elif verdict is not None and verdict.result is not None:
+                        outcome = _blocked_outcome(str(verdict.result.get("reason") or ""))
                     else:
                         outcome = await self._execute(tools, call, abort)
+                    # `tool_result`:patch 语义(可改模型看到的结果 / 结构化 details / status)
+                    patched = await self._emit(
+                        "tool_result",
+                        {"tool_name": call.name, "tool_call_id": call.id, "input": call.args,
+                         "result": outcome.result, "details": outcome.details,
+                         "status": outcome.status, "exit_code": outcome.exit_code},
+                        abort)
+                    if patched is not None:
+                        self._report("tool_result", patched)
+                        _apply_result_patch(outcome, patched.payload)
                     # 结构化结果:前端工具卡片靠 status/duration_ms/exit_code 渲染,
                     # 不再解析 text 前缀;text 仍是模型可见的原文(与旧版一致)。
                     yield AgentEvent(kind="tool_end", agent=self.unit.name, tool=call.name,
@@ -230,7 +333,10 @@ class AgentRunner:
                                            "details": outcome.details})
                     msgs.append(ChatMessage(role="tool", content=outcome.result,
                                             tool_call_id=call.id))
-                if aborted:
+                await self._emit("turn_end",
+                                 {"turn_index": turn, "text": acc_text,
+                                  "tool_calls": [c.name for c in tool_calls]}, abort)
+                if not tool_calls or aborted:
                     break
                 # pi 的 shouldStopAfterTurn:每轮结束问一次嵌入方,而不是比较一个数字。
                 # 注意必须显式 break —— 旧实现靠 `for turn in range(limit)` 自然耗尽,
@@ -243,6 +349,8 @@ class AgentRunner:
             raise                                    # 硬取消照旧上抛(收尾由 runtime.stream 做)
         if last_text:
             yield AgentEvent(kind="text", agent=self.unit.name, text=last_text)
+        await self._emit("agent_end", {"agent": self.unit.name, "text": last_text,
+                                        "turns": turns_used, "aborted": aborted}, abort)
         end_data: dict = {"messages": [m.to_dict() for m in msgs[1:]],
                           "usage": {"turns": turns_used, "context_tokens": context_tokens,
                                     **usage_total}}

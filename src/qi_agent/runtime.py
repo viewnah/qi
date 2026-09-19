@@ -134,6 +134,11 @@ class QiRuntime:
         #: 当前回合绑定的会话(`api.appendEntry` / `ctx.session_manager` 靠它读/写)。
         #: 由 `stream()` 的 wrapper 设置并在 `finally` 里清掉。
         self._active_session: Session | None = None
+        #: 扩展主动发的消息(`api.sendMessage` / `sendUserMessage`),按**送达时机**分桶。
+        #: 元素是 `(文本, 来源扩展, 调用方式)`。steer / follow_up 由 runner 在回合内排空;
+        #: next_turn 留到下一次用户输入(见 `_drain_messages` 与 `_stream_inner` 开头)。
+        self._pending_messages: dict[str, list[tuple[str, str, str]]] = {
+            "steer": [], "follow_up": [], "next_turn": []}
         self.project_trusted, self.trust_reason = resolve_project_trust(
             self.settings, approve=approve_project, has_ui=has_ui)
         self.notes: list[str] = []
@@ -273,6 +278,42 @@ class QiRuntime:
             "type": "custom", "custom_type": custom_type,
             "source": source, "agent": self._active_agent(session),
             "data": data})
+
+    def queue_extension_message(self, text: str, deliver_as: str, source: str,
+                                kind: str = "sendMessage") -> None:
+        """扩展消息的唯一入队口(`api.sendMessage` / `sendUserMessage` 走这里)。
+
+        **不在这里落盘**:送达时机在 runner 手里(每次 LLM 调用前 / 本该收工时 / 下次输入),
+        而“什么时候进对话”与“什么时候进文件”必须是同一个时刻 —— 先落盘会让历史里出现一条
+        还没送达的消息。落盘在 `_drain_messages` 里做,与排空同时。
+        """
+        bucket = self._pending_messages.get(deliver_as)
+        if bucket is None:                       # `api` 侧已经挡过,这里只是双保险
+            raise ValueError(f"未知的 deliver_as: {deliver_as!r}")
+        bucket.append((text, source, kind))
+
+    def _drain_messages(self, deliver_as: str) -> list[str]:
+        """排空某一档的待发消息,**同时落盘**。
+
+        落盘放这里而不是 runner 里:runner 不认识会话(它的 `msgs` 是本地上下文表),
+        而“谁负责落盘”只有一个答案才是稳的。
+
+        回合外(`_active_session` 为空)只排空不落盘 —— 那种情况只可能是 next_turn
+        在输入之前被取走,而它本来就还没进对话。
+        """
+        bucket = self._pending_messages.get(deliver_as) or []
+        if not bucket:
+            return []
+        texts = [text for text, _source, _kind in bucket]
+        session = self._active_session
+        if session is not None:
+            for text, source, kind in bucket:
+                self.sessions.append(session, {
+                    "type": "message", "role": "user", "content": text,
+                    "agent_id": self._active_agent(session),
+                    "injected_by": kind, "deliver_as": deliver_as, "source": source})
+        bucket.clear()
+        return texts
 
     async def start_session(self, session: Session, reason: str = "startup") -> None:
         """告知扩展"会话已绑定"(pi 的 `session_start { reason }`)。
@@ -545,6 +586,9 @@ class QiRuntime:
                             source: str):
         # 旧会话首次被使用时回填 cwd(只写一次);新会话在 create(cwd=…) 时已带
         self.sessions.ensure_cwd(session, self.cwd)
+        # `next_turn` 档在这里送达:它说的就是“下一次用户输入时再说”,而这就是那个时刻。
+        # 排空 + 落盘之后,下面的 `_history()` 会自然把它算进上下文。
+        self._drain_messages("next_turn")
         # `input` 在**自动压缩之前**:它处理的是“用户说了什么”,与上下文体积无关;而且
         # 改写后的文本要影响下游全部(标题、分派、历史)。
         text, handled, handled_by = await self._emit_input(text, session, source, abort)
@@ -636,6 +680,7 @@ class QiRuntime:
                              tool_names=self.tool_names(unit),
                              system_prompt=system_prompt,
                              injected_messages=[injected] if injected else None,
+                             drain_injections=self._drain_messages,
                              bus=self.bus,
                              extension_ctx=lambda signal: self.extension_ctx(signal, session),
                              report=self.notes.append)

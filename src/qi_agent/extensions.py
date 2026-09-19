@@ -714,6 +714,7 @@ class ExtensionApi:
     #:   `tool_names() -> list[str]`(本回合实际启用的工具名)
     #:   `set_tool_names(names) -> None`(覆盖,对后续回合生效)
     #: 以及会话写口:`append_extension_entry(custom_type, data, source) -> None`。
+    #: 与消息队列:`queue_extension_message(text, deliver_as, source, kind) -> None`。
     #: 用鸭子类型而不是 Protocol:`extensions` 不能 import runtime(成环),而协议
     #: 在这里只起文档作用 —— 类型检查器验不到实现方,不如把契约写在这里。
     #: 没给 host 时 `getActiveTools` 退回“catalog 里的全部”,`setActiveTools` 报错。
@@ -835,6 +836,42 @@ class ExtensionApi:
                 getattr(self._host, "append_extension_entry", None)):
             raise RuntimeError("宿主没有提供会话写口:appendEntry 不可用")
         self._host.append_extension_entry(custom_type, dict(data or {}), self._name)
+
+    def sendMessage(self, message: str | dict, *, deliver_as: str = "steer") -> None:  # noqa: N802
+        """往当前对话插一条消息(**进** LLM 上下文;与 `appendEntry` 相反)。
+
+        `deliver_as` 决定**什么时候**送达(照搬 pi 的三档):
+
+        * `steer`(默认)—— 本轮的**下一次 LLM 调用**之前(即当前这轮工具跑完之后)。
+          适合“工具结果里发现了个事,先告诉模型”。
+        * `follow_up` —— 等 agent **本该收工**时才送:有排队消息就不收工,继续跑一轮。
+          适合“顺手再做一件事”。
+        * `next_turn` —— 不打断本轮,留到**下一次用户输入**。
+
+        收字符串或 `{"content": …}`(与 `before_agent_start` 的 `message` 同形)。
+        """
+        text = message if isinstance(message, str) else str(message.get("content") or "")
+        self._queue_message(text, deliver_as, "sendMessage")
+
+    def sendUserMessage(self, content: str, *, deliver_as: str = "steer") -> None:   # noqa: N802
+        """插一条**用户**消息(送达时机与 `sendMessage` 相同,只是语义上是“用户说的”)。
+
+        **qi 不自动开一轮**:pi 的 `sendUserMessage` 在 agent 空闲时会`triggerTurn`,
+        而那需要“在处理器里嵌套跑一轮”的能力(嵌套流式)。qi 现在的做法是**排队**,
+        由前端决定要不要因此开一轮 —— 这条差别写在 §11.9。
+        """
+        self._queue_message(content, deliver_as, "sendUserMessage")
+
+    def _queue_message(self, text: str, deliver_as: str, kind: str) -> None:
+        body = (text or "").strip()
+        if not body:
+            return                                   # 空白不入队(与 message 注入一致)
+        if deliver_as not in ("steer", "follow_up", "next_turn"):
+            raise ValueError(f"deliver_as 只能是 steer / follow_up / next_turn,收到 {deliver_as!r}")
+        if self._host is None or not callable(
+                getattr(self._host, "queue_extension_message", None)):
+            raise RuntimeError("宿主没有提供消息队列:sendMessage 不可用")
+        self._host.queue_extension_message(body, deliver_as, self._name, kind)
 
     # ── 事件 ──
     def on(self, event: str, handler: ExtensionHandler) -> None:

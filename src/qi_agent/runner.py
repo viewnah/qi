@@ -134,6 +134,7 @@ class AgentRunner:
                  tool_names: list[str] | None = None,
                  system_prompt: str | None = None,
                  injected_messages: list[str] | None = None,
+                 drain_injections: Callable[[str], list[str]] | None = None,
                  bus: ExtensionBus | None = None,
                  extension_ctx: Callable[[AbortSignal | None], ExtensionContext] | None = None,
                  report: Callable[[str], None] | None = None):
@@ -160,9 +161,18 @@ class AgentRunner:
         self.tool_names = tool_names
         self.system_prompt = system_prompt
         self.injected_messages = injected_messages
+        #: `mode -> list[str]`:排空宿主那边的扩展消息队列(`sendMessage` 的送达时机)。
+        #: 由 runtime 提供(它才知道会话),runner 只管“什么时候取”。
+        self.drain_injections = drain_injections
         self.bus = bus
         self.extension_ctx = extension_ctx
         self.report = report
+
+    def _drain(self, mode: str) -> list[str]:
+        """取某一档的待发消息(排空;宿主同时会把它落盘)。没宿主就空。"""
+        if self.drain_injections is None:
+            return []
+        return [str(x) for x in (self.drain_injections(mode) or [])]
 
     async def _emit(self, event: str, payload: dict, abort: AbortSignal | None, *,
                     stop_keys: tuple[str, ...] = (),
@@ -251,6 +261,10 @@ class AgentRunner:
                     replacement = patched.payload.get("messages")
                     if isinstance(replacement, list):
                         msgs = replacement
+                # `steer`:`sendMessage` 的默认档 —— 本轮的**下一次 LLM 调用**之前送达。
+                # 放在 `context` 之后:这样扩展剥掉的消息不会把刚插进来的那条也带走。
+                for extra in self._drain("steer"):
+                    msgs.append(ChatMessage(role="user", content=extra))
                 # 请求级超时归 provider/SDK(见 llm.py 的 retry.provider),不在这里套 asyncio.timeout
                 async for delta in _iter_until_abort(
                         stream_llm(self.llm, msgs, tools=schemas), abort):
@@ -343,8 +357,21 @@ class AgentRunner:
                 await self._emit("turn_end",
                                  {"turn_index": turn, "text": acc_text,
                                   "tool_calls": [c.name for c in tool_calls]}, abort)
-                if not tool_calls or aborted:
+                if aborted:
                     break
+                if not tool_calls:
+                    # `follow_up`:agent 本该收工 —— 先问一次队列。有就继续跑(不停在
+                    # “模型说完了”),没有才真的结束。这是 pi 的 `deliverAs: "followUp"`。
+                    follow = self._drain("follow_up")
+                    if not follow:
+                        break
+                    if self.settings.stop_after is not None and self.settings.stop_after(turns_used):
+                        # 有排队消息但已经到了调用方的轮次上限:上限优先(与有工具调用时同一条政策)
+                        yield AgentEvent(kind="error", agent=self.unit.name,
+                                         text=f"达到轮次上限 {turns_used},已停止")
+                        break
+                    msgs.extend(ChatMessage(role="user", content=x) for x in follow)
+                    continue
                 # pi 的 shouldStopAfterTurn:每轮结束问一次嵌入方,而不是比较一个数字。
                 # 注意必须显式 break —— 旧实现靠 `for turn in range(limit)` 自然耗尽,
                 # 换成 `while True` 之后只发事件不退出会跑飞(有测试钉住这一条)。

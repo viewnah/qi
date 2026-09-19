@@ -111,7 +111,8 @@ qi 曾需要的"每轮可换角色"hook **不加** —— 见 §7(多 agent 走 
 | `registerShortcut(key, handler, opts)` | 快捷键(key 用 textual 写法)。坏键名只提示,不让启动失败 | ✅ P-E3b |
 | `getCommands()` | 当前可输入的命令清单(含 `source`);`/help` 用它把扩展命令列出来 | ✅ P-E3b |
 | `registerFlag(name, opts)` / `getFlag(name)` | CLI 旗标。**两种写法**:直接 `--name` / `--name=value`,或 `--ext name=value`(可重复;两者同显时**直接写的胜**)。规则照 pi:长旗标宽容、**短旗标报错**、`--` 之后全字面;装载后对账:**未注册的名字**或**字符串旗标缺值** → 退出码 2。**一处刻意差异**:qi 不消费 `--flag` 后面的 token(pi 会吃掉,于是 `pi --plan "问题"` 里那句 prompt 就没了) | ✅ P-E3b-2 |
-| `sendMessage(msg, opts)` | 注入自定义消息(**进 LLM 上下文**),`deliverAs: steer\|followUp\|nextTurn` | P-E3 |
+| `sendMessage(msg, opts)` | 注入消息(**进 LLM 上下文**;与 `appendEntry` 相反),收字符串或 `{content}`。`deliver_as` 三档(**已实现**):`steer` = 本轮下一次 LLM 调用前;`follow_up` = 本该收工时(有排队就不收工,再跑一轮);`next_turn` = 下一次用户输入 | ✅ P-E3c-2 |
+| `sendUserMessage(content, opts)` | 同上,只是落盘时标成“用户说的”(`injected_by`)。**qi 不自动开一轮**(pi 会在空闲时 `triggerTurn`)—— 那条差别记在 §11.9 | ✅ P-E3c-2 |
 | `sendUserMessage(content, opts)` | 注入用户消息(始终触发一轮) | P-E3 |
 | `appendEntry(customType, data)` | 落盘扩展自定义 entry(**不进 LLM 上下文**)。写口**只此一个**,章由宿主盖(`source` / `agent` / `data`) | ✅ P-E3c-1 |
 | `registerMessageRenderer` / `registerEntryRenderer` / `registerMarkdownTransformer` | TUI 渲染 | P-E3 |
@@ -375,13 +376,13 @@ core 技能发现:同理(私有技能自动绑定)
 | **P-E3a `ctx.ui`** ✅ | `ExtensionUi`(后端可选 + 无后端时按 `default` 回答 + `notify` 落 notes)+ TUI 后端(复用 `PickerScreen` 弹选择/确认,新增 `PromptScreen` 做输入)+ `ToolContext.ui` + 修好 `clarify` 从没问过人 | `tests/test_extension_ui.py` 20 项:无头时 `confirm` 必然 False 且**闸门真的拦住**;有人点“是”就放行;扩展自己抛错/前端抛错都走 default;`clarify` 回归 |
 | **P-E3b 命令与快捷键 + 旗标** ✅ | `registerCommand`(handler 收 `(args, ctx)`,重名加序号不覆盖)+ `registerShortcut`(textual 动态 `bind`)+ `getCommands` + **`registerFlag` / `getFlag`**(值走 core 静态 `--ext name=value`,未知名字退 2);TUI 侧:扩展命令**先于内置**认领(保留 `/quit` `/help` `/hotkeys`)、`/help` 列出扩展命令 | `tests/test_extension_commands.py` 13 项 + `test_extension_flags.py` 15 项:重名变 `:1`/`:2` 且一个不丢 · 没登记处就**报错** · 真 textual 下 `/cmd` 真跑到 handler · **扩展不能顶掉 `/quit`** · `--ext` 的布尔/字符串/打错三种形态 · 打错**不退 0** |
 | **P-E3c-1 会话读写** ✅ | `appendEntry`(唯一写口 + 宿主盖章;**回合外报错**)+ `ctx.session_manager`(只读视图)+ `before_agent_start` 的 `message` 注入(持久:落盘 + 本轮进上下文)+ 回合内把会话绑在 runtime 上(wrapper + `finally`) | `tests/test_extension_session.py` 7 项:**跨回合读回来**(第一轮写、第二轮读入 prompt);custom entry **不进**上下文;user 先落盘再 fire hook;注入只发生一次 |
-| **P-E3c-2 主动发消息** | `sendMessage` / `sendUserMessage`(含 `deliverAs`:steer / followUp / nextTurn)—— 需要 runner 的注入队列(在每次 LLM 调用前排空) | 回合中注入的消息在**下一次 LLM 调用**前就能被看到 |
+| **P-E3c-2 主动发消息** ✅ | `sendMessage` / `sendUserMessage` + 三档 `deliver_as`(`steer` 在每次 LLM 调用前排空、`follow_up` 在本该收工时排空且**不停**、`next_turn` 留到下一次输入)+ 排空与落盘**同一时刻**(不会出现“历史里有但还没送达”) | `tests/test_extension_messages.py` 7 项:三档各自的送达时机(含“第几次 LLM 调用才看得到”);排空**只送一次**;`follow_up` 真的多跑一轮;**轮次上限优先**(带 `turn_end` 持续入队的跑飞场景);非法 `deliver_as` 进 notes |
 | **P-E3d 模型、思考级别与会话事件** | `setModel` / `get-setThinkingLevel` + `model_select` / `thinking_level_select` / `session_before_*` / `session_compact*` / `session_tree` / `session_info_changed` + renderer 三件套 | 各事件的派发点接上真实代码路径 |
 | **P-E4 core 收窄** | runner 入参从 `AgentUnit` 改 `{system_prompt, tools, model}`;**新增 `ctx.runAgent(spec, task)`(E12)**;`AgentRegistry`/`load_all_agents`/dispatcher 从 core 移出;**仓库自己的 4 个项目 agent 先搬进 `examples/`(E15)**;`events` 总线;`registerProvider` | `qi` 裸启动单 agent 跑通;core 不再 import `dispatcher`/`loader.load_all_agents`;core `dependencies` 去掉 `mcp`;`ctx.runAgent` 能在测试里跑完一个子任务 |
 | **P-E5 三件套迁移** | qi-mcp → qi-agents → qi-web(按依赖从少到多);**qi-agents 落地后把仓库 agents 搬回 `.qi/agents/`(E15)**;`ctx.ui` 的 web 侧 + `add_route`/`add_static` | 三个包各自可装可卸;不装时启动提示与 `qi doctor` 正确;`qi web` 由扩展提供;`qi --agent <name>` 由 qi-agents 提供 |
 | **P-E6 收尾** | 参考扩展样例(至少一个 `examples/extensions/` 下的完整例子)+ 目录通道的 PEP 723 声明解析 + 冲突报告 + 文档重写(agent-config.md / web.md / dispatcher.md 归档)+ 迁移提示打磨 | 新用户按 extensions.md 能写出并装上第一个扩展;声明与实装不一致时 `qi doctor` 报得出来 |
 
-**依赖关系**:P-E1 ✅ → **P-E2 ✅** → **P-E3a ✅** → **P-E3b ✅** → **P-E3c-1 ✅** → P-E3c-2/d → P-E4 顺序做;P-E4 可与 P-E3 并行;P-E5 依赖 P-E2 + P-E3 + P-E4;P-E6 最后。
+**依赖关系**:P-E1 ✅ → **P-E2 ✅** → **P-E3a ✅** → **P-E3b ✅** → **P-E3c-1 ✅** → **P-E3c-2 ✅** → P-E3d → P-E4 顺序做;P-E4 可与 P-E3 并行;P-E5 依赖 P-E2 + P-E3 + P-E4;P-E6 最后。
 
 > **P-E2 整段完成**:工具面(注册 / 元数据 / 来源 / 运行时集合 / `exec`)+ 输入面(`input`、`before_agent_start`)+ 轮次与工具事件(`turn_*`、`context`、`tool_call`、`tool_result`)+ 依赖契约。
 > 剩下的 P-E6 尾巴:PEP 723 目录通道声明解析、冲突报告深度、`qi doctor` 汇总。
@@ -422,6 +423,7 @@ core 技能发现:同理(私有技能自动绑定)
 6. **litellm 的 ~6.8s import**(与本设计无关的独立性能问题):它拖累每一次 `qi -p` 的首次响应。查瘦身开关(`LITELLM_MODE=PRODUCTION` 一类)或换 provider 直连 —— 它会同时放大 §7.2 选了进程内的那个理由
 7. **`agent.md` 的 `tools` 省略语义在 agent-as-tool 下有提权风险**(E17 决定先不动):父会话被 `-t` 收窄时,子 agent 按"省略 = catalog 全部"会拿到**全工具**。qi-agents 落地时二选一:① 在扩展里显式解析(用父的 active tools 作基,推荐,不动 `agent.md` 语义);② 改 `agent.md` 的省略语义为"继承父"
 8. ~~`registerFlag` 怎么做~~ → **已决(E19)**,已实现:宽容长旗标 + `--ext` 两条并存。仍待定的两条尾巴:① **与 core 选项同名的扩展旗标收不到**(click 先吃掉,如 `--agent`;现在无诊断,只写在文档里);② 短旗标是否要开放给扩展(现照 pi 一律拒绝)。
+9. **`sendUserMessage` 不自开一轮**(P-E3c-2 已实现,但有意缺这一步):pi 在 agent 空闲时 `triggerTurn`,那需要“在处理器里嵌套跑一轮”的能力(嵌套流式、与当前回合共享会话写入)。qi 现在只**排队**,由前端决定要不要因此开一轮。要补就与 `ctx.runAgent`(E12)一起做 —— 同一套“宿主内起一个受管子运行”的机制。
 
 ## 12. agent 配置对齐(Claude Code / pi / qi 三方对照)
 

@@ -32,7 +32,7 @@ code-analyst/
 ## 样例列表
 
 | agent | 用途 | 工具 |
-|---|---|---|
+| --- | --- | --- |
 | code-analyst | 代码分析(只读) | read, ls, grep, find, bash |
 | writer | 文档撰写 | read, write, edit, ls, grep |
 | general | 全能兜底(auto fallback) | 全部 |

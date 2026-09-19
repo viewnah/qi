@@ -1053,6 +1053,33 @@ class Editor(TextArea):
         self.load_text("")
 
 
+class PromptScreen(ModalScreen[str | None]):
+    """一行文本输入(`ctx.ui.input`)。enter 提交,escape 取消(→ None)。
+
+    外壳 id 故意复用选择器的 `#model-box` / `#model-hint` —— 模态的视觉（底色、边距、
+    提示行位置）已经在 CSS 里定好了,新开一套迟早会和它们漂开。
+    """
+
+    BINDINGS = [("escape", "dismiss(None)", "取消")]
+
+    def __init__(self, title: str, default: str = "", secret: bool = False) -> None:
+        super().__init__()
+        self._title = title
+        self._default = default
+        self._secret = secret
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="model-box"):
+            yield Static(self._title, id="model-hint")
+            yield Input(value=self._default, password=self._secret, id="prompt-input")
+
+    def on_mount(self) -> None:
+        self.query_one("#prompt-input", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value)
+
+
 class PickerScreen(ModalScreen[str | None]):
     """通用选择器(模型 / 会话树 / fork 点共用同一套模态外壳)。
 
@@ -1498,6 +1525,49 @@ class TreeSelector(ModalScreen[str | None]):
         self.dismiss(str(event.option.id))
 
 
+class _TuiUi:
+    """`ctx.ui` 的 TUI 后端(把扩展的交互请求接到 qi 的模态框上)。
+
+    为什么可以直接 `await`:扩展 handler 跑在 TUI 进程的 worker 里(**同一个事件循环**),
+    所以“弹模态 + 等结果”就是一个 future。web 不行(前端在浏览器里),那边要经 AG-UI 的
+    Custom 事件往返 —— 归 P-E5。
+
+    escape 关掉模态 = “没回答”,一律回落到调用方给的 `default`,与无界面时的语义一致 ——
+    否则“取消”在 TUI 里和 `-p` 里会得到不同结果,而扩展没办法同时处理两种。
+    """
+
+    def __init__(self, app: Any) -> None:
+        # `app` 只鸭子用到两样:`_note(text, tone)` 与 `await_screen(screen)`。
+        # 不写成 `QiTui`:测试用 stub app 时不渲染,而且用 Protocol 声明一个只为了
+        # 写注解的接口, lint 与类型检查器都不认(试过两个写法都报)。
+        self._app = app
+
+    def notify(self, message: str, *, level: str = "info") -> None:
+        tone = {"error": "error", "warning": "warning", "warn": "warning"}.get(level, "dim")
+        self._app._note(message, tone)
+
+    async def confirm(self, message: str, *, title: str | None = None,
+                      default: bool = False) -> bool:
+        picked = await self._app.await_screen(PickerScreen(
+            f"{title or '确认'}:{message}",
+            [("yes", "是(默认)" if default else "是"),
+             ("no", "否(默认)" if not default else "否")]))
+        if picked is None:
+            return default
+        return picked == "yes"
+
+    async def select(self, message: str, options: list[str], *,
+                     title: str | None = None, default: str | None = None) -> str | None:
+        picked = await self._app.await_screen(PickerScreen(
+            f"{title or '选择'}:{message}", [(o, o) for o in options], current=default))
+        return None if picked is None else str(picked)
+
+    async def input(self, message: str, *, title: str | None = None,
+                    default: str | None = None, secret: bool = False) -> str | None:
+        return await self._app.await_screen(PromptScreen(
+            f"{title or '输入'}:{message}", default=default or "", secret=secret))
+
+
 class QiTui(App):
     TITLE = "qi"
     SUB_TITLE = "多 agent · auto 分派"
@@ -1654,7 +1724,9 @@ class QiTui(App):
         self.console.push_theme(rich_theme(self._palette))
         try:
             if self._rt is None:
-                self._rt = QiRuntime(has_ui=True, approve_project=self._approve_project)
+                # `ui_frontend` 在这里装上:`ctx.ui.confirm/select/input` 才真会问人
+                self._rt = QiRuntime(has_ui=True, approve_project=self._approve_project,
+                                     ui_frontend=_TuiUi(self))
             self._renderer = TuiRenderer(self._palette, self._rt.cwd)
             self._select_session()
             try:
@@ -2370,7 +2442,8 @@ class QiTui(App):
     def _reload_runtime(self) -> None:
         """重载 agents / extensions / 配置(会话不变)。"""
         try:
-            runtime = QiRuntime(has_ui=True, approve_project=self._approve_project)
+            runtime = QiRuntime(has_ui=True, approve_project=self._approve_project,
+                                ui_frontend=_TuiUi(self))
         except (LoadError, ConfigError) as exc:
             self._note(f"重载失败: {exc}", "error")
             return
@@ -2878,6 +2951,26 @@ class QiTui(App):
         if note:
             self._note(note)
         self._scroll_end()
+
+    async def await_screen(self, screen: ModalScreen[Any]) -> Any:
+        """弹一个模态并**等**它的结果。
+
+        textual 的 `push_screen` 是回调式的,所以这里包一层 future —— 扩展的 `ctx.ui`
+        是 await 风格(它本来就在 async handler 里),回调式会让每个调用点都写成回调地狱。
+
+        界面不在跑(构造了 App 但没 `run`)时直接返回 None:没人可问,让调用方走 default,
+        而不是在这里挂死一个永远不会被解析的 future。
+        """
+        if not self.is_running:
+            return None
+        future: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+
+        def done(value: Any) -> None:
+            if not future.done():
+                future.set_result(value)
+
+        self.push_screen(screen, done)
+        return await future
 
     def _select_session(self) -> None:
         """按 CLI 传来的意图选/建会话,并把“会话已绑定”告知扩展。

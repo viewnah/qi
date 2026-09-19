@@ -10,7 +10,7 @@ import json
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Any, Callable, Iterable
 
 from . import paths
 from .auth import AuthStore
@@ -29,7 +29,7 @@ from .compaction import (
 from .abort import AbortSignal
 from .config import ResolvedModel, load_config, resolve_default_model, resolve_router_model
 from .dispatcher import Decision, Dispatcher
-from .extensions import ExtensionBus, ExtensionContext
+from .extensions import ExtensionBus, ExtensionContext, ExtensionUi
 from .llm import (
     ChatMessage,
     LiteLLMClient,
@@ -88,7 +88,8 @@ class QiRuntime:
                  extra_skill_paths: Iterable[Path] | None = None,
                  extra_extension_paths: Iterable[Path] | None = None,
                  approve_project: bool | None = None,
-                 has_ui: bool = False):
+                 has_ui: bool = False,
+                 ui_frontend: Any = None):
         self.cwd = Path(cwd) if cwd else Path.cwd()
         # 旧版扁平布局 → ~/.qi/agent/(幂等;显式设了 QI_AGENT_HOME 时不动)
         paths.ensure_layout()
@@ -133,6 +134,14 @@ class QiRuntime:
             self.notes.append(
                 f"检测到旧目录 `{legacy_ext.relative_to(self.cwd)}` —— 已改名为 "
                 f"`extensions/`,请手动改名(不会自动改仓库内容)")
+        # `ctx.ui`:前端(TUI)在构造时把自己的实现递进来;没有前端时它按调用方给的
+        # default 回答,所以 `-p` 不会卡在这里。notes 共用同一个列表 —— 无界面时
+        # `ui.notify` 落进来就自动变成启动提示。
+        #
+        # 为什么走构造参数而不是一个 `set_ui_frontend()`:后者多一个“别忘了调”的次序隐患,
+        # 而且每次给假运行时加方法都会撞一遍。
+        # (web 不行 —— 每个浏览器连接是一个不同的前端,那边要按回合解析,见 §5.1。)
+        self.ui = ExtensionUi(frontend=ui_frontend, notes=self.notes)
         self.extensions = discover_extensions(
             self.catalog, self.capabilities, self.cwd, bus=self.bus, host=self,
             on_warning=self.notes.append,
@@ -174,11 +183,19 @@ class QiRuntime:
         return ToolContext(agent_name=agent_name, workdir=self.workdir,
                            data_sources=unit.data_sources,
                            ask=self._ask,
-                           shell_path=self.settings.shellPath)
+                           shell_path=self.settings.shellPath,
+                           ui=self.ui)
 
     async def _ask(self, question: str) -> str | None:
-        """clarify:headless 默认无可交互输入。"""
-        return None
+        """`clarify` 工具的交互入口。
+
+        有 UI 前端时走 `ctx.ui.input` —— 这修掉一个旧缺陷:`_ask` 以前无条件返回 None,
+        所以**内置的 clarify 在 TUI 里也从没问过人**(它一直只会说“无人可问”)。
+        没前端(无头/脚本)仍返回 None,保持“不吃 stdin”的行为。
+        """
+        if not self.ui.has_frontend:
+            return None
+        return await self.ui.input(question, title="澄清")
 
     # ── 扩展上下文与事件 ──
     def _model_label(self) -> str | None:
@@ -200,6 +217,7 @@ class QiRuntime:
             has_ui=self._has_ui,
             project_trusted=self.project_trusted,
             notes=self.notes,
+            ui=self.ui,
         )
 
     async def start_session(self, session: Session, reason: str = "startup") -> None:

@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..abort import AbortSignal
-from ..extensions import Tool, ToolError, register_tool
+from ..extensions import ExtensionUi, Tool, ToolError, register_tool
 from ..models import TOOL_ERROR, TOOL_OK, ToolOutcome
 from .shell import (
     POWERSHELL_UTF8_PREFIX,
@@ -41,6 +41,9 @@ class ToolContext:
     ask: AskFn | None = None             # async (text)->str|None,供 clarify 用
     shell_path: str | None = None        # settings.shellPath:显式指定 bash(对齐 pi)
     abort: AbortSignal | None = None     # 本回合的中断信号(runner 按回合注入)
+    #: 扩展工具要问人时的入口。**总是存在**(没前端就按 default 回答),与 handler 侧的
+    #: `ctx.ui` 同一套规则 —— 否则“扩展工具不能问人”会变成一个说不清的例外。
+    ui: ExtensionUi = field(default_factory=ExtensionUi)
 
     def guard(self, p: str | Path) -> Path:
         """路径必须落在 workdir 内(防越界,对齐 hikqin validate_path 思想)。"""

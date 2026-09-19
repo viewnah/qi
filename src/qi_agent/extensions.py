@@ -226,6 +226,92 @@ def _is_verdict(returned: dict, stop_keys: tuple[str, ...] | None,
     return False
 
 
+class ExtensionUi:
+    """`ctx.ui` —— 扩展向前端要交互的唯一入口(docs/extensions.md §5.1)。
+
+    前端(TUI / web)提供一个鸭子类型的 backend,四个方法:`confirm` / `select` /
+    `input`(异步,有返回值)与 `notify`(同步)。**backend 可选** —— 拿不到就走下面两条硬规则。
+
+    1. **没有 backend 时必须有确定结果**:每个方法返回调用方给的 `default`。
+       `confirm` 的 `default` 默认 **False**(拒绝是安全边),`select`/`input` 默认 None(取消)。
+       “默认值由调用方给”是刻意的 —— 只有它知道“这里是拒绝安全还是继续安全”;
+       而一个确定的结果就是 `-p` 永远不会卡在这里的原因。
+    2. `notify` 在没有 backend 时**不丢弃**,落进宿主 `notes`。否则“扩展说了一句话”
+       就凭空消失 —— 事情发生了但没人看见,是最难诊断的一类。
+
+    backend 抛异常也走 `default`(记一条 note):交互是辅助手段,不该成为新的失败点。
+    """
+
+    def __init__(self, frontend: Any = None, notes: list[str] | None = None) -> None:
+        self._frontend = frontend
+        self._notes = notes if notes is not None else []
+
+    @property
+    def frontend(self) -> Any:
+        return self._frontend
+
+    @frontend.setter
+    def frontend(self, value: Any) -> None:
+        self._frontend = value
+
+    @property
+    def has_frontend(self) -> bool:
+        """有人能弹交互吗(与 `ctx.has_ui` 不同:后者是“有人在看”)。"""
+        return self._frontend is not None
+
+    def _report(self, method: str, exc: Exception) -> None:
+        self._notes.append(f"扩展的 ui.{method} 前端处理失败: {type(exc).__name__}: {exc}")
+
+    async def confirm(self, message: str, *, title: str | None = None,
+                      default: bool = False) -> bool:
+        """问一个是/否。**默认 False** —— “拿不准就不做”是安全边。"""
+        if self._frontend is None:
+            return default
+        try:
+            value = await self._frontend.confirm(message, title=title, default=default)
+        except Exception as exc:  # noqa: BLE001 界面坏不等于回合该失败
+            self._report("confirm", exc)
+            return default
+        return default if value is None else bool(value)
+
+    async def select(self, message: str, options: Sequence[str], *,
+                     title: str | None = None, default: str | None = None) -> str | None:
+        """让用户从 `options` 里选一个。取消 → None。"""
+        if self._frontend is None:
+            return default
+        try:
+            value = await self._frontend.select(message, list(options),
+                                                title=title, default=default)
+        except Exception as exc:  # noqa: BLE001
+            self._report("select", exc)
+            return default
+        return default if value is None else str(value)
+
+    async def input(self, message: str, *, title: str | None = None,
+                    default: str | None = None, secret: bool = False) -> str | None:
+        """要一行文本。取消 → None(注意:空字符串是“用户按了回车”,不是取消)。"""
+        if self._frontend is None:
+            return default
+        try:
+            value = await self._frontend.input(message, title=title, default=default,
+                                               secret=secret)
+        except Exception as exc:  # noqa: BLE001
+            self._report("input", exc)
+            return default
+        return default if value is None else str(value)
+
+    def notify(self, message: str, *, level: str = "info") -> None:
+        """说一句不需要回答的话。无界面时进 `notes`,**不丢弃**。"""
+        if self._frontend is None:
+            self._notes.append(message)
+            return
+        try:
+            self._frontend.notify(message, level=level)
+        except Exception as exc:  # noqa: BLE001
+            self._report("notify", exc)
+            self._notes.append(message)
+
+
 @dataclass(frozen=True)
 class ExtensionContext:
     """`ctx` —— 传给每个 handler 的只读上下文(P-E1d 是最小集,见 §3.3)。
@@ -244,6 +330,9 @@ class ExtensionContext:
     has_ui: bool = False
     project_trusted: bool = True
     notes: list[str] = field(default_factory=list)
+    #: `ctx.ui` —— **总是存在**(不是 Optional):没前端时它按 `default` 回答,
+    #: 所以扩展不必到处写 `if ctx.ui is not None`。要靠它做分支就查 `ctx.has_ui`。
+    ui: ExtensionUi = field(default_factory=ExtensionUi)
 
     def is_project_trusted(self) -> bool:
         """pi 是 `ctx.isProjectTrusted()`;保持方法形状,方便 qi-agents 直接照搬。"""
@@ -465,6 +554,7 @@ __all__ = [
     "ExtensionBus",
     "ExtensionContext",
     "ExtensionHandler",
+    "ExtensionUi",
     "Tool",
     "ToolError",
     "ToolExecutor",

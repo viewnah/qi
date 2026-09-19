@@ -123,7 +123,7 @@ qi 曾需要的"每轮可换角色"hook **不加** —— 见 §7(多 agent 走 
 
 | 成员 | 说明 |
 | --- | --- |
-| `ctx.ui` | **宿主无关的交互面**(见 §5.1):`select` / `confirm` / `input` / `notify` / `setStatus` / `setWidget` / `custom` |
+| `ctx.ui` | **宿主无关的交互面**(见 §5.1):`confirm` / `select` / `input` / `notify`。**总是存在**(没后端就按调用方的 `default` 回答)✅ P-E3a |
 | `ctx.sessionManager` | 读 entries、分支、标签 |
 | `ctx.model` / `ctx.thinkingLevel` | 当前模型与思考级别 |
 | `ctx.cwd` | 工作目录 |
@@ -155,21 +155,47 @@ qi 曾需要的"每轮可换角色"hook **不加** —— 见 §7(多 agent 走 
 
 ## 5. 前置件(不做这些,hook 系统是空壳)
 
-### 5.1 `ctx.ui` 双向通道(P-E3,先 TUI)
+### 5.1 `ctx.ui`(P-E3a 已落地:后端对象,不是往返事件)
 
-qi **现在完全没有上行通道**:web.md 的 §16 明确记着"插件 UI 里的交互回传需要上行通道,qi 现在没有"。
+qi 以前**完全没有上行通道**(web.md §16 记着这件事)。
 
-需要新增一类**宿主 ↔ 前端**的往返事件(不是扩展事件,是 core 的事件流扩展):
+**实现方式与原计划的差异**:原设计是“core 发 `ui_request` / 前端回 `ui_response`”的
+往返事件。实际做成的是**后端对象**:`ctx.ui` 包一个鸭子类型的 backend,前端实现它的四个
+方法。因为 TUI 与 runtime **在同进程同一个事件循环**里,“弹模态 + 等结果”就是一个
+future —— 往返事件在这里只是多一层序列化。
 
-```text
-扩展 → api.ui.confirm(...)  → core 发 ui_request{id, method, args}
-前端 → 用户操作              → 回 ui_response{id, value}
-core → 解析等待中的 future   → 扩展拿到结果
+```python
+# 前端实现(TUI 在 QiRuntime(ui_frontend=…) 时递进来)
+async def confirm(message, *, title=None, default=False) -> bool
+async def select(message, options, *, title=None, default=None) -> str | None
+async def input(message, *, title=None, default=None, secret=False) -> str | None
+def notify(message, *, level="info") -> None
 ```
 
-- **TUI 先实现**(P-E3),web 在 P-E5 迁移时跟上(经 AG-UI 的 `Custom` 事件)
-- 无 UI 时(`ctx.hasUI == false`)`confirm`/`select` **必须有确定默认值**(否则 `-p` 卡死)—— 默认拒绝写入类、默认继续只读类,写进文档
-- pi 的 method 集是 9 个(`select`/`confirm`/`input`/`editor`/`notify`/`setStatus`/`setWidget`/`setFooter`/`custom`);qi 先做子集
+**两条硬规则**(§4 同级的契约,有测试钉住):
+
+1. **没有后端时每个方法返回调用方给的 `default`**,于是“交互”退化成“按事先声明好的
+   策略走”,而**永远不会挂住**。`confirm` 的 `default` 默认 **False**(拒绝是安全边);
+   `select`/`input` 默认 None(取消)。默认值由**调用方**给 —— 只有它知道“这里是拒绝
+   安全还是继续安全”。
+2. `notify` 没有后端时**落进 `notes`**,不丢弃(否则“扩展说了一句话”就凭空消失)。
+
+后端自己抛异常也走 `default`(记一条 note):交互是辅助手段,不该成为新的失败点。
+
+**与 pi 的差异**:pi 的 method 集有 9 个(`select`/`confirm`/`input`/`editor`/`notify`/
+`setStatus`/`setWidget`/`setFooter`/`custom`)。qi 先做前 4 个里能问的 3 个 + `notify` ——
+`editor`(多行)与那几个“常驻 UI 元素”等真有需求再加。
+
+**已知尾巴**:
+
+- **web 不能直接用这套**:每个浏览器连接是一个**不同的前端**,所以 web 需要“按回合解析
+  前端”而不是构造时固定一个(AG-UI 的 `Custom` 事件往返归 P-E5)。
+- TUI 侧只做了 `confirm`/`select`/`input`/`notify`;`has_ui` 与 `ui.has_frontend` 是
+  两个不同的问法(“有人在看” vs “能弹交互”),TUI 两者都置真。
+- **顺带修掉一个旧缺陷**:`clarify` 以前**从没问过人** —— `QiRuntime._ask` 无条件返回
+  None。现在有前端时走 `ui.input`,无头时行为不变(不吃 stdin、不挂住)。
+- **扩展工具也能问人**:`ToolContext` 也带上了 `ui`(与 handler 侧同一套规则)—— 否则
+  “扩展工具不能问人”会变成一个说不清的例外。
 
 ### 5.2 中间件链语义 → §4
 
@@ -344,12 +370,12 @@ core 技能发现:同理(私有技能自动绑定)
 | **P-E2c-1 输入面** ✅ | `input`(`transform` / `handled`)+ `before_agent_start`(链式 `system_prompt`)+ `bus.has()` 逐事件护栏 | `tests/test_extension_events.py` 12 项:`handled` **真的不跑 agent**(LLM 零调用);`transform` 影响模型看到的 + 落盘的;链式顺序;handler 崩了不拖垮这一轮;零扩展时行为与从前一致 |
 | **P-E2c-2 轮次与工具事件** ✅ | runner 侧派发点全部接上:`agent_start`/`agent_end`、`turn_start`/`turn_end`、`context`、`tool_call`、`tool_result`(`agent_settled` 不做,见 §3.1) | `tests/test_extension_runner_events.py` 10 项:`turn` 事件的**次数与 index** 钉住;`context` 换掉的列表就是真发出去的那份;`block` = 工具**真的没执行**(带一个“去掉 gate 就真跑”的对照组);handler 崩了 fail-safe 拦住;`tool_result` 的 patch 真的改到模型看到的 |
 | **P-E2d 依赖契约** ✅ | 装载时检查 pip 通道扩展的 `requires()`:把宿主写进 `dependencies` 就报告(含版本满足判定与修复动作);`packaging` 可选,拿不到就只报原始 spec 不猜 | `tests/test_extension_deps.py` 9 项:归一化(`Qi.Agent` 算、`qi-agent-extra` 不算)· 版本不满足时说清“不满足”· **报告了但仍然装载** · 一路到 `runtime.notes` 看得见 |
-| **P-E3 命令与 UI + 会话面** | `registerCommand` / `registerShortcut` / `registerFlag` + **`ctx.ui` 通道(TUI)** + renderer 三件套 + `appendEntry` + `sendMessage`/`sendUserMessage` + `sessionManager` + `setModel`/thinking + 会话类事件 | 扩展能注册 `/cmd`、弹 confirm、落盘自定义 entry 并在 TUI 回放 |
+| **P-E3a `ctx.ui`** ✅ | `ExtensionUi`(后端可选 + 无后端时按 `default` 回答 + `notify` 落 notes)+ TUI 后端(复用 `PickerScreen` 弹选择/确认,新增 `PromptScreen` 做输入)+ `ToolContext.ui` + 修好 `clarify` 从没问过人 | `tests/test_extension_ui.py` 20 项:无头时 `confirm` 必然 False 且**闸门真的拦住**;有人点“是”就放行;扩展自己抛错/前端抛错都走 default;`clarify` 回归 |
 | **P-E4 core 收窄** | runner 入参从 `AgentUnit` 改 `{system_prompt, tools, model}`;**新增 `ctx.runAgent(spec, task)`(E12)**;`AgentRegistry`/`load_all_agents`/dispatcher 从 core 移出;**仓库自己的 4 个项目 agent 先搬进 `examples/`(E15)**;`events` 总线;`registerProvider` | `qi` 裸启动单 agent 跑通;core 不再 import `dispatcher`/`loader.load_all_agents`;core `dependencies` 去掉 `mcp`;`ctx.runAgent` 能在测试里跑完一个子任务 |
 | **P-E5 三件套迁移** | qi-mcp → qi-agents → qi-web(按依赖从少到多);**qi-agents 落地后把仓库 agents 搬回 `.qi/agents/`(E15)**;`ctx.ui` 的 web 侧 + `add_route`/`add_static` | 三个包各自可装可卸;不装时启动提示与 `qi doctor` 正确;`qi web` 由扩展提供;`qi --agent <name>` 由 qi-agents 提供 |
 | **P-E6 收尾** | 参考扩展样例(至少一个 `examples/extensions/` 下的完整例子)+ 目录通道的 PEP 723 声明解析 + 冲突报告 + 文档重写(agent-config.md / web.md / dispatcher.md 归档)+ 迁移提示打磨 | 新用户按 extensions.md 能写出并装上第一个扩展;声明与实装不一致时 `qi doctor` 报得出来 |
 
-**依赖关系**:P-E1a/b/c ✅ → **P-E1d ✅** → **P-E2a ✅** → **P-E2b ✅** → **P-E2c-1 ✅** → **P-E2c-2 ✅** → **P-E2d ✅** → P-E3 顺序做;P-E4 可与 P-E3 并行;P-E5 依赖 P-E2 + P-E3 + P-E4;P-E6 最后。
+**依赖关系**:P-E1 ✅ → **P-E2 ✅** → **P-E3a ✅** → P-E3b/c/d → P-E4 顺序做;P-E4 可与 P-E3 并行;P-E5 依赖 P-E2 + P-E3 + P-E4;P-E6 最后。
 
 > **P-E2 整段完成**:工具面(注册 / 元数据 / 来源 / 运行时集合 / `exec`)+ 输入面(`input`、`before_agent_start`)+ 轮次与工具事件(`turn_*`、`context`、`tool_call`、`tool_result`)+ 依赖契约。
 > 剩下的 P-E6 尾巴:PEP 723 目录通道声明解析、冲突报告深度、`qi doctor` 汇总。

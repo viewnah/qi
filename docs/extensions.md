@@ -70,7 +70,7 @@ qi 要拆的三样(MCP / 多 agent / web)**正好落在这份清单上**。
 | `session_start` / `session_shutdown` | 会话建立 / 拆除 | 通知 | P-E1 |
 | `resources_discover` | `session_start` 后 | `{skillPaths, promptPaths, themePaths}` | P-E1 |
 | `input` | 收到用户输入(自动压缩之前) | `continue` / `transform`(改 **`text`** = 改写后的用户输入)/ `handled`(**首胜**,链停,`reply` = 给用户的答复) | ✅ P-E2c-1 |
-| `before_agent_start` | 用户消息后、agent loop 前 | `{system_prompt?}`(**链式**,已是建好的全文);`message` 注入延到 P-E3(与 `sendMessage` 同一套语义) | ✅ P-E2c-1 |
+| `before_agent_start` | 用户消息**已落盘**后、agent loop 前 | `{system_prompt?}`(**链式**,已是建好的全文);`message` = 注入一条**持久**消息(字符串或 `{content}`;落盘 + 本轮就进上下文,排在 user 之后) | ✅ P-E2c-1 / P-E3c-1 |
 | `agent_start` / `agent_end` | 回合起止 | 通知。payload:`{agent}` / `{agent, text, turns, aborted}` | ✅ P-E2c-2 |
 | `agent_settled` | 无重试与压缩残留 | **不做**:qi 没有回合级重试/重压机制,这个时机不存在(是“不做”不是“待做”) | ❌ |
 | `turn_start` / `turn_end` | 每轮(一次 LLM 响应 + 工具) | **通知**(pi 也是通知 —— 这是“不做每轮换角色”的直接后果)。payload:`{turn_index, timestamp}` / `{turn_index, text, tool_calls}` | ✅ P-E2c-2 |
@@ -113,7 +113,7 @@ qi 曾需要的"每轮可换角色"hook **不加** —— 见 §7(多 agent 走 
 | `registerFlag(name, opts)` / `getFlag(name)` | CLI 旗标。**两种写法**:直接 `--name` / `--name=value`,或 `--ext name=value`(可重复;两者同显时**直接写的胜**)。规则照 pi:长旗标宽容、**短旗标报错**、`--` 之后全字面;装载后对账:**未注册的名字**或**字符串旗标缺值** → 退出码 2。**一处刻意差异**:qi 不消费 `--flag` 后面的 token(pi 会吃掉,于是 `pi --plan "问题"` 里那句 prompt 就没了) | ✅ P-E3b-2 |
 | `sendMessage(msg, opts)` | 注入自定义消息(**进 LLM 上下文**),`deliverAs: steer\|followUp\|nextTurn` | P-E3 |
 | `sendUserMessage(content, opts)` | 注入用户消息(始终触发一轮) | P-E3 |
-| `appendEntry(customType, data)` | 落盘扩展自定义 entry(**不进 LLM 上下文**) | P-E3 |
+| `appendEntry(customType, data)` | 落盘扩展自定义 entry(**不进 LLM 上下文**)。写口**只此一个**,章由宿主盖(`source` / `agent` / `data`) | ✅ P-E3c-1 |
 | `registerMessageRenderer` / `registerEntryRenderer` / `registerMarkdownTransformer` | TUI 渲染 | P-E3 |
 | `sessionManager` / `getSessionName()` / `setSessionName()` / `setLabel()` | 会话读写 | P-E3 |
 | `setModel(model)` / `getThinkingLevel()` / `setThinkingLevel(lv)` | 模型与思考级别 | P-E3 |
@@ -126,7 +126,7 @@ qi 曾需要的"每轮可换角色"hook **不加** —— 见 §7(多 agent 走 
 | 成员 | 说明 |
 | --- | --- |
 | `ctx.ui` | **宿主无关的交互面**(见 §5.1):`confirm` / `select` / `input` / `notify`。**总是存在**(没后端就按调用方的 `default` 回答)✅ P-E3a |
-| `ctx.sessionManager` | 读 entries、分支、标签 |
+| `ctx.session_manager` | 当前会话的**只读**视图(`entries()` / `custom_entries(type)` / `session_id` / `path` / `title` / `available`)✅ P-E3c-1;写走 `api.appendEntry` |
 | `ctx.model` / `ctx.thinkingLevel` | 当前模型与思考级别 |
 | `ctx.cwd` | 工作目录 |
 | `ctx.hasUI` | 是否有人在看(TUI/web=真,`-p`=假) |
@@ -374,13 +374,14 @@ core 技能发现:同理(私有技能自动绑定)
 | **P-E2d 依赖契约** ✅ | 装载时检查 pip 通道扩展的 `requires()`:把宿主写进 `dependencies` 就报告(含版本满足判定与修复动作);`packaging` 可选,拿不到就只报原始 spec 不猜 | `tests/test_extension_deps.py` 9 项:归一化(`Qi.Agent` 算、`qi-agent-extra` 不算)· 版本不满足时说清“不满足”· **报告了但仍然装载** · 一路到 `runtime.notes` 看得见 |
 | **P-E3a `ctx.ui`** ✅ | `ExtensionUi`(后端可选 + 无后端时按 `default` 回答 + `notify` 落 notes)+ TUI 后端(复用 `PickerScreen` 弹选择/确认,新增 `PromptScreen` 做输入)+ `ToolContext.ui` + 修好 `clarify` 从没问过人 | `tests/test_extension_ui.py` 20 项:无头时 `confirm` 必然 False 且**闸门真的拦住**;有人点“是”就放行;扩展自己抛错/前端抛错都走 default;`clarify` 回归 |
 | **P-E3b 命令与快捷键 + 旗标** ✅ | `registerCommand`(handler 收 `(args, ctx)`,重名加序号不覆盖)+ `registerShortcut`(textual 动态 `bind`)+ `getCommands` + **`registerFlag` / `getFlag`**(值走 core 静态 `--ext name=value`,未知名字退 2);TUI 侧:扩展命令**先于内置**认领(保留 `/quit` `/help` `/hotkeys`)、`/help` 列出扩展命令 | `tests/test_extension_commands.py` 13 项 + `test_extension_flags.py` 15 项:重名变 `:1`/`:2` 且一个不丢 · 没登记处就**报错** · 真 textual 下 `/cmd` 真跑到 handler · **扩展不能顶掉 `/quit`** · `--ext` 的布尔/字符串/打错三种形态 · 打错**不退 0** |
-| **P-E3c 会话面** | `appendEntry`(落自定义 entry,不进 LLM 上下文)+ `sessionManager`(读 entries / 分支 / 标签)+ `sendMessage` / `sendUserMessage`(含 `deliverAs`)+ `before_agent_start` 的 `message` 注入 | 扩展能落盘自定义 entry 并在 TUI 回放里看到 |
+| **P-E3c-1 会话读写** ✅ | `appendEntry`(唯一写口 + 宿主盖章;**回合外报错**)+ `ctx.session_manager`(只读视图)+ `before_agent_start` 的 `message` 注入(持久:落盘 + 本轮进上下文)+ 回合内把会话绑在 runtime 上(wrapper + `finally`) | `tests/test_extension_session.py` 7 项:**跨回合读回来**(第一轮写、第二轮读入 prompt);custom entry **不进**上下文;user 先落盘再 fire hook;注入只发生一次 |
+| **P-E3c-2 主动发消息** | `sendMessage` / `sendUserMessage`(含 `deliverAs`:steer / followUp / nextTurn)—— 需要 runner 的注入队列(在每次 LLM 调用前排空) | 回合中注入的消息在**下一次 LLM 调用**前就能被看到 |
 | **P-E3d 模型、思考级别与会话事件** | `setModel` / `get-setThinkingLevel` + `model_select` / `thinking_level_select` / `session_before_*` / `session_compact*` / `session_tree` / `session_info_changed` + renderer 三件套 | 各事件的派发点接上真实代码路径 |
 | **P-E4 core 收窄** | runner 入参从 `AgentUnit` 改 `{system_prompt, tools, model}`;**新增 `ctx.runAgent(spec, task)`(E12)**;`AgentRegistry`/`load_all_agents`/dispatcher 从 core 移出;**仓库自己的 4 个项目 agent 先搬进 `examples/`(E15)**;`events` 总线;`registerProvider` | `qi` 裸启动单 agent 跑通;core 不再 import `dispatcher`/`loader.load_all_agents`;core `dependencies` 去掉 `mcp`;`ctx.runAgent` 能在测试里跑完一个子任务 |
 | **P-E5 三件套迁移** | qi-mcp → qi-agents → qi-web(按依赖从少到多);**qi-agents 落地后把仓库 agents 搬回 `.qi/agents/`(E15)**;`ctx.ui` 的 web 侧 + `add_route`/`add_static` | 三个包各自可装可卸;不装时启动提示与 `qi doctor` 正确;`qi web` 由扩展提供;`qi --agent <name>` 由 qi-agents 提供 |
 | **P-E6 收尾** | 参考扩展样例(至少一个 `examples/extensions/` 下的完整例子)+ 目录通道的 PEP 723 声明解析 + 冲突报告 + 文档重写(agent-config.md / web.md / dispatcher.md 归档)+ 迁移提示打磨 | 新用户按 extensions.md 能写出并装上第一个扩展;声明与实装不一致时 `qi doctor` 报得出来 |
 
-**依赖关系**:P-E1 ✅ → **P-E2 ✅** → **P-E3a ✅** → **P-E3b ✅** → P-E3c/d → P-E4 顺序做;P-E4 可与 P-E3 并行;P-E5 依赖 P-E2 + P-E3 + P-E4;P-E6 最后。
+**依赖关系**:P-E1 ✅ → **P-E2 ✅** → **P-E3a ✅** → **P-E3b ✅** → **P-E3c-1 ✅** → P-E3c-2/d → P-E4 顺序做;P-E4 可与 P-E3 并行;P-E5 依赖 P-E2 + P-E3 + P-E4;P-E6 最后。
 
 > **P-E2 整段完成**:工具面(注册 / 元数据 / 来源 / 运行时集合 / `exec`)+ 输入面(`input`、`before_agent_start`)+ 轮次与工具事件(`turn_*`、`context`、`tool_call`、`tool_result`)+ 依赖契约。
 > 剩下的 P-E6 尾巴:PEP 723 目录通道声明解析、冲突报告深度、`qi doctor` 汇总。

@@ -1,0 +1,179 @@
+"""`subagent` 工具:把一个任务交给另一个角色。
+
+这是 E12 定下的形态 —— **进程内受管子运行**(`api.runAgent`),不是子进程:
+Python 每进程首调 LLM 要付 ~6.8s 的 litellm import,子进程等于 6.8s × N(8 并行 ≈ 54s),
+而 Node 起一次只要 0.04s。pi 的子进程模型不能平移到这里。
+
+三种模式(照搬 pi 官方 subagent 扩展的已验证形状):
+
+    single    {agent, task}
+    parallel  {tasks: [{agent, task}, …]}      并发 4,最多 8 个任务
+    chain     {chain: [{agent, task}, …]}      顺序,`{previous}` 占位符传上一棒输出
+
+**递归防护是结构性的**:子运行的工具清单里**去掉 `subagent` 本身**,所以子 agent 不可能
+再起子 agent —— 比"记一个深度计数"更难写错(那种要靠每层都记得加一)。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from typing import Any
+
+from qi_agent.extensions import Tool
+
+from .discovery import AgentScope, Role, discover, format_roles
+
+MAX_PARALLEL_TASKS = 8
+MAX_CONCURRENCY = 4
+PER_TASK_CAP = 50_000          # 单个子结果进文本前截断(与工具输出同档)
+
+_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "agent": {"type": "string", "description": "single 模式:角色名"},
+        "task": {"type": "string", "description": "single 模式:任务"},
+        "tasks": {"type": "array", "description": "parallel 模式:[{agent, task}]",
+                  "items": {"type": "object", "properties": {
+                      "agent": {"type": "string"}, "task": {"type": "string"}},
+                      "required": ["agent", "task"]}},
+        "chain": {"type": "array", "description": "chain 模式:[{agent, task}],task 里可用 {previous}",
+                  "items": {"type": "object", "properties": {
+                      "agent": {"type": "string"}, "task": {"type": "string"}},
+                      "required": ["agent", "task"]}},
+        "agentScope": {"type": "string", "enum": ["user", "project", "both"],
+                       "description": '看哪一层的角色。默认 "user"(项目角色是仓库控制的提示词)'},
+        "confirmProjectAgents": {"type": "boolean",
+                                 "description": "用项目角色前先问一句(默认 true)",
+                                 "default": True},
+    },
+}
+
+
+def _clip(text: str) -> str:
+    return text if len(text) <= PER_TASK_CAP else text[:PER_TASK_CAP] + "\n…(已截断)"
+
+
+def _tasks_of(args: dict) -> list[dict]:
+    """三种模式归一成任务列表(parallel 与 chain 的差别只在是否传 `{previous}`)。"""
+    if isinstance(args.get("tasks"), list):
+        return [t for t in args["tasks"] if isinstance(t, dict)]
+    if isinstance(args.get("chain"), list):
+        return [t for t in args["chain"] if isinstance(t, dict)]
+    if args.get("agent") and args.get("task"):
+        return [{"agent": args["agent"], "task": args["task"]}]
+    return []
+
+
+def _resolve(roles: dict[str, Role], name: object) -> Role | None:
+    """按名字找角色。入参收 `object` —— 它来自 `args`(模型给的 JSON),什么都可能是。"""
+    return roles.get(str(name or "").strip())
+
+
+def _require(roles: dict[str, Role], name: object) -> Role:
+    """调用前已校验过“没有未知角色”,这里是给类型检查器的显式收窄。"""
+    role = _resolve(roles, name)
+    if role is None:                      # 到不了:调用点已经排除了这种情形
+        raise KeyError(str(name))
+    return role
+
+
+async def _run_one(api: Any, role: Role, task: str, ctx: Any,
+                   sem: asyncio.Semaphore | None = None) -> dict:
+    """跑一个角色。返回结构化结果(带 usage/错误),失败**不抛**给上层 ——
+    一个子任务失败不该把另外几个已经跑完的结果一起扔掉。"""
+    tools = role.tools
+    if tools is not None:
+        # 子运行里不再给 `subagent`:递归防护做成结构性的,而不是靠计数
+        tools = [t for t in tools if t != "subagent"]
+    spec = {"system_prompt": role.prompt or f"你是 {role.name}。",
+            "name": role.name, "tools": tools, "model": role.model}
+    try:
+        if sem is not None:
+            async with sem:
+                text = await api.runAgent(spec, task, abort=getattr(ctx, "abort", None))
+        else:
+            text = await api.runAgent(spec, task, abort=getattr(ctx, "abort", None))
+        return {"agent": role.name, "task": task, "ok": True, "output": text}
+    except Exception as exc:  # noqa: BLE001 子运行失败 → 结果里如实说
+        return {"agent": role.name, "task": task, "ok": False,
+                "error": f"{type(exc).__name__}: {exc}"}
+
+
+def _render(results: list[dict]) -> str:
+    """给**模型**看的散文(与 `details` 分开:那个是给界面看的结构化数据)。"""
+    parts: list[str] = []
+    for r in results:
+        head = f"## {r['agent']}"
+        if not r["ok"]:
+            parts.append(f"{head}\n[失败] {r['error']}")
+        else:
+            parts.append(f"{head}\n{_clip(r['output'])}")
+    return "\n\n".join(parts) or "(没有任务)"
+
+
+def build_tool(api: Any) -> Tool:
+    async def run_subagent(args: dict, ctx: Any) -> Any:
+        from qi_agent.models import TOOL_ERROR, ToolOutcome
+
+        scope: AgentScope = args.get("agentScope") or "user"
+        cwd = getattr(ctx, "workdir", None)
+        roles = discover(cwd, scope)
+        tasks = _tasks_of(args)
+        if not tasks:
+            return (f"用法:single 给 `agent` + `task`;parallel 给 `tasks:[{{agent,task}}]`;"
+                    f"chain 给 `chain:[…]`(task 里可用 {{previous}})\n可用角色:"
+                    f"{format_roles(roles)}")
+        if len(tasks) > MAX_PARALLEL_TASKS:
+            return f"任务太多({len(tasks)} > {MAX_PARALLEL_TASKS},上限在求稳)"
+
+        unknown = sorted({str(t.get("agent") or "") for t in tasks
+                          if _resolve(roles, t.get("agent")) is None})
+        if unknown:
+            return f"未知角色 {unknown};可用角色:{format_roles(roles)}"
+
+        # 项目级角色 = 仓库控制的提示词 → 先用前问一句(无界面时保守拒绝)
+        if scope in ("project", "both") and bool(args.get("confirmProjectAgents", True)):
+            wanted = [str(t.get("agent")) for t in tasks]
+            from .discovery import project_roles
+
+            risky = project_roles(cwd, wanted)
+            if risky and not getattr(ctx, "project_trusted", True):
+                ok = await ctx.ui.confirm(
+                    "要用项目里的角色吗?",
+                    title="项目级角色",
+                    default=False) if getattr(ctx, "ui", None) is not None else False
+                if not ok:
+                    return f"已取消:项目级角色未获批准({[r.name for r in risky]})"
+
+        chain = isinstance(args.get("chain"), list)
+        if chain:
+            results: list[dict] = []
+            previous = ""
+            for item in tasks:
+                task = str(item.get("task") or "").replace("{previous}", previous)
+                out = await _run_one(api, _require(roles, item.get("agent")), task, ctx)
+                results.append(out)
+                previous = out.get("output", "") if out["ok"] else previous
+                if not out["ok"]:
+                    break                      # 链断在哪儿,后面的就没意义了
+        else:
+            sem = asyncio.Semaphore(MAX_CONCURRENCY) if len(tasks) > 1 else None
+            results = await asyncio.gather(*[
+                _run_one(api, _require(roles, t.get("agent")), str(t.get("task") or ""), ctx, sem)
+                for t in tasks])
+
+        failed = [r for r in results if not r["ok"]]
+        details = {"ui_version": 1, "ui": [
+            {"type": "list", "items": [
+                {"label": f"{r['agent']} · {r['task'][:40]}",
+                 "state": "error" if not r["ok"] else "done",
+                 "note": r.get("error", "")} for r in results]}]}
+        return ToolOutcome(
+            status=TOOL_ERROR if failed else "ok",
+            result=_render(results),
+            error="subagent_failed" if failed else None,
+            details=details)
+
+    return Tool("subagent", "把一个任务交给另一个角色(独立上下文);支持 single/parallel/chain",
+                _SCHEMA, run_subagent, prompt_snippet="委派任务给另一个角色")

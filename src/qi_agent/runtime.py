@@ -222,6 +222,7 @@ class QiRuntime:
         return ToolContext(agent_name=agent_name, workdir=self.workdir,
                            ask=self._ask,
                            shell_path=self.settings.shellPath,
+                           project_trusted=self.project_trusted,
                            ui=self.ui)
 
     # ── 受管子运行(扩展的 `runAgent` / E12)──
@@ -267,6 +268,7 @@ class QiRuntime:
         run_spec = RunSpec(name=name, prompt=prompt, tools=[str(t) for t in tools])
         ctx = ToolContext(agent_name=name, workdir=self.workdir, ask=self._ask,
                           shell_path=self.settings.shellPath, ui=self.ui,
+                          project_trusted=self.project_trusted,
                           abort=abort)
         runner = AgentRunner(run_spec, self.catalog, self._client_for(data.get("model")),
                             tool_ctx=ctx,

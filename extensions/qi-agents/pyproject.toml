@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "qi-agents"
+version = "0.1.0"
+description = "qi 的角色系统扩展:角色发现 + 角色选择 + subagent 工具(进程内受管子运行)"
+readme = "README.md"
+requires-python = ">=3.12"
+# 宿主提供(不得钉版本):qi-agent 由 qi 自己装着,扩展只声明“我需要宿主”。
+# 这也是 docs/extensions.md §5.5 / E11 的规则 —— 把 qi-agent 写进 dependencies
+# 会让 pip 在解析时把 qi 自己降级(宿主被自己的扩展踢掉)。
+dependencies = ["PyYAML>=6.0"]
+
+[project.entry-points."qi.extensions"]
+agents = "qi_agents:register"
+
+[tool.hatch.build.targets.wheel]
+packages = ["qi_agents"]

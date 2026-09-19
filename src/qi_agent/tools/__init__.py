@@ -44,6 +44,11 @@ class ToolContext:
     #: 扩展工具要问人时的入口。**总是存在**(没前端就按 default 回答),与 handler 侧的
     #: `ctx.ui` 同一套规则 —— 否则“扩展工具不能问人”会变成一个说不清的例外。
     ui: ExtensionUi = field(default_factory=ExtensionUi)
+    #: 本项目是否已被信任(`-a` / 交互确认 / `defaultProjectTrust`)。
+    #: 工具**看得见**这件事,才能自己对“项目里带来的东西”设门 —— 否则每个要设门的
+    #: 扩展都会退化成相信自己写对了(而它无从知道)。写 qi-agents 时发现并加上:
+    #: 项目级角色是仓库控制的提示词,`subagent` 工具得先问一句。
+    project_trusted: bool = True
 
     def guard(self, p: str | Path) -> Path:
         """路径必须落在 workdir 内(防越界,对齐 hikqin validate_path 思想)。"""

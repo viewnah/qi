@@ -2,7 +2,19 @@
   "venvPath": ".",
   "venv": ".venv",
   "pythonVersion": "3.12",
-  "include": ["src", "tests"],
-  "extraPaths": ["src"],
-  "exclude": ["**/__pycache__", ".venv", "web/node_modules", "web/dist"]
+  "include": [
+    "src",
+    "tests",
+    "extensions"
+  ],
+  "extraPaths": [
+    "src",
+    "extensions/qi-agents"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    ".venv",
+    "web/node_modules",
+    "web/dist"
+  ]
 }

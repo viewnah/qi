@@ -13,6 +13,8 @@ import time
 from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field, replace
 
+from pathlib import Path
+
 from .abort import AbortSignal
 from .extensions import Tool, ToolError
 from .extensions import ExtensionBus, ExtensionContext
@@ -45,6 +47,38 @@ def stop_after_turns(limit: int) -> Callable[[int], bool]:
     headless(`-p` / `--mode json`)用它做“防跑飞”;交互式不传,靠 `escape` 中断。
     """
     return lambda turns: turns >= limit
+
+
+@dataclass
+class RunSpec:
+    """一个**运行单元**:core 只认识这三样(+ 一个用于事件归属的名字)。
+
+    为什么不再是 `AgentUnit`:那是“角色”的概念(agent.md、keywords、私有技能、
+    `opening`……),而 v3 把角色整个交给了 qi-agents 扩展(E1.1 / E15)。core 要的是
+    “用哪段提示词、能用哪些工具、用哪个模型”——多一样都不需要。
+
+    `prompt` 是**已建好**的系统提示词(角色层、可用工具清单、技能、项目上下文都在里面):
+    runner 不再自己拼它 —— 否则扩展在 `before_agent_start` 里改过的 prompt 会被重建覆盖。
+    """
+
+    name: str            # 事件与落盘上的归属标签(`AgentEvent.agent` / session entry)
+    prompt: str          # 已建好的系统提示词
+    tools: list[str]     # 工具名(在 catalog 里解析)
+
+
+def spec_from_unit(unit: AgentUnit, catalog: ToolCatalog, *,
+                   base_prompt: str | None = None, cwd: Path | None = None) -> RunSpec:
+    """把装载后的 agent 变成一个运行单元。
+
+    **这是过渡件,P-E4c 会把它搬进 qi-agents** —— 那时 core 不再 import `AgentUnit`,
+    这个函数也就不存在了。现在留着只有一个理由:让 runtime 与现有测试**用同一套拼法**,
+    而不是各自拼一个 spec(两处拼法迟早不一样,而 prompt 的拼法不一样就等于两套行为)。
+    """
+    tools = catalog.resolve(unit.tools)
+    return RunSpec(
+        name=unit.name,
+        prompt=build_system_prompt(unit, base_prompt, tools=tools, cwd=cwd),
+        tools=[t.name for t in tools])
 
 
 def _accumulate_usage(total: dict, usage: dict | None) -> None:
@@ -128,22 +162,14 @@ def _apply_result_patch(outcome: ToolOutcome, patch: dict) -> None:
 
 
 class AgentRunner:
-    def __init__(self, unit: AgentUnit, catalog: ToolCatalog, llm: LLMClient,
+    def __init__(self, spec: RunSpec, catalog: ToolCatalog, llm: LLMClient,
                  settings: RunnerSettings | None = None, tool_ctx=None,
-                 base_prompt: str | None = None,
-                 tool_names: list[str] | None = None,
-                 system_prompt: str | None = None,
                  injected_messages: list[str] | None = None,
                  drain_injections: Callable[[str], list[str]] | None = None,
                  bus: ExtensionBus | None = None,
                  extension_ctx: Callable[[AbortSignal | None], ExtensionContext] | None = None,
                  report: Callable[[str], None] | None = None):
-        """`tool_names` 非空时**覆盖** `unit.tools`(扩展的 `setActiveTools` 走这里)。
-
-        为什么要这个参数而不是直接改 unit:`unit` 是装载期的快照,而工具集可以在
-        运行时被扩展改(`/plan` 那种只读档)—— 混淆两者会让“改了没生效”变成谜。
-
-        `system_prompt` 非空时直接用给定的(宿主经 `before_agent_start` 链后的结果)。
+        """`spec` 是**运行单元**(见 `RunSpec`):提示词已建好、工具是名单。
 
         三个扩展相关的参数:`bus`(事件总线)、`extension_ctx`(按回合的 ctx 工厂 ——
         `signal` 每回合不同所以不能缓存)、`report`(把 handler 异常报到宿主的 notes)。
@@ -152,14 +178,11 @@ class AgentRunner:
         """
         if bus is not None and extension_ctx is None:
             raise ValueError("给了 bus 就必须给 extension_ctx(否则 handler 拿不到 ctx)")
-        self.unit = unit
+        self.spec = spec
         self.catalog = catalog
         self.llm = llm
         self.settings = settings or RunnerSettings()
         self.tool_ctx = tool_ctx
-        self.base_prompt = base_prompt
-        self.tool_names = tool_names
-        self.system_prompt = system_prompt
         self.injected_messages = injected_messages
         #: `mode -> list[str]`:排空宿主那边的扩展消息队列(`sendMessage` 的送达时机)。
         #: 由 runtime 提供(它才知道会话),runner 只管“什么时候取”。
@@ -200,8 +223,7 @@ class AgentRunner:
             self.report(f"扩展 {source} 的 {event} 处理失败: {exc}")
 
     def _tools(self) -> list[Tool]:
-        names = self.unit.tools if self.tool_names is None else self.tool_names
-        return self.catalog.resolve(names)
+        return self.catalog.resolve(self.spec.tools)
 
     async def run(self, user_input: str, history: list[ChatMessage] | None = None,
                   abort: AbortSignal | None = None):
@@ -215,13 +237,9 @@ class AgentRunner:
         tools = self._tools()
         msgs: list[ChatMessage] = []
         if history is None or not any(m.role == "system" for m in history):
-            # 工具集与 cwd 都要在跑之前定下来:清单进 prompt,且决定技能能否被读取。
-            # `system_prompt` 非空表示**宿主已经建好了**(扩展的 `before_agent_start`
-            # 可能改过它)—— 那就不要在这里重建,否则扩展的改动会被静默覆盖。
-            prompt = self.system_prompt if self.system_prompt is not None else build_system_prompt(
-                self.unit, self.base_prompt, tools=tools,
-                cwd=self.tool_ctx.workdir if self.tool_ctx else None)
-            msgs.append(ChatMessage(role="system", content=prompt))
+            # 提示词**由宿主建好**(`RunSpec.prompt`):runner 不再自己拼 ——
+            # 否则扩展在 `before_agent_start` 里改过的那份会被重建覆盖。
+            msgs.append(ChatMessage(role="system", content=self.spec.prompt))
         if history:
             msgs.extend(history)
         msgs.append(ChatMessage(role="user", content=user_input))
@@ -231,8 +249,8 @@ class AgentRunner:
             # 只认 system/user/assistant/tool 四种,而这是“以用户身份进入对话的一段话”。
             msgs.append(ChatMessage(role="user", content=extra))
 
-        yield AgentEvent(kind="agent_start", agent=self.unit.name)
-        await self._emit("agent_start", {"agent": self.unit.name}, abort)
+        yield AgentEvent(kind="agent_start", agent=self.spec.name)
+        await self._emit("agent_start", {"agent": self.spec.name}, abort)
         last_text = ""
         usage_total: dict = {}
         #: 最后一次 LLM 调用看到的 prompt 大小 = **当前上下文占用**。
@@ -271,13 +289,13 @@ class AgentRunner:
                     if delta.reasoning:
                         # 思考内容:与回答分开流式(pi 的 thinking block)
                         acc_thinking += delta.reasoning
-                        yield AgentEvent(kind="thinking_delta", agent=self.unit.name,
+                        yield AgentEvent(kind="thinking_delta", agent=self.spec.name,
                                          text=delta.reasoning)
                     if delta.text:
                         acc_text += delta.text
                         # 逐字流式:Web 端靠它打字。CLI/TUI 只读回合末尾的 text 事件,
                         # 所以它们的输出不变——这是有意为之的向后兼容。
-                        yield AgentEvent(kind="text_delta", agent=self.unit.name,
+                        yield AgentEvent(kind="text_delta", agent=self.spec.name,
                                          text=delta.text)
                     if delta.finished:
                         tool_calls = delta.tool_calls
@@ -296,7 +314,7 @@ class AgentRunner:
                 last_text = acc_text
                 # 每轮 LLM 回复单独声明一次:让 runtime 能把"工具之间的叙述"落盘,
                 # 否则直播看得见、刷新后丢失(直播与回放不一致)。
-                yield AgentEvent(kind="assistant_message", agent=self.unit.name,
+                yield AgentEvent(kind="assistant_message", agent=self.spec.name,
                                  text=acc_text,
                                  data={"step": turns_used,
                                        "thinking": acc_thinking,
@@ -320,7 +338,7 @@ class AgentRunner:
                     # 那一份(前端与落盘都读它)。pi 是反的(tool_execution_start 在前),
                     # 但 qi 的事件流同时是持久化来源,args 对不上会变成“回放里看到的参数
                     # 不是跑过的”—— 那种不一致比事件顺序上的形式对齐更重要。
-                    yield AgentEvent(kind="tool_start", agent=self.unit.name,
+                    yield AgentEvent(kind="tool_start", agent=self.spec.name,
                                      tool=call.name, data={"args": call.args})
                     if abort is not None and abort.aborted:
                         # 剩下的调用一律不跑:补结果而不是默默消失,否则两边记录不一致
@@ -342,7 +360,7 @@ class AgentRunner:
                         _apply_result_patch(outcome, patched.payload)
                     # 结构化结果:前端工具卡片靠 status/duration_ms/exit_code 渲染,
                     # 不再解析 text 前缀;text 仍是模型可见的原文(与旧版一致)。
-                    yield AgentEvent(kind="tool_end", agent=self.unit.name, tool=call.name,
+                    yield AgentEvent(kind="tool_end", agent=self.spec.name, tool=call.name,
                                      text=outcome.result,
                                      data={"status": outcome.status,
                                            "duration_ms": outcome.duration_ms,
@@ -367,7 +385,7 @@ class AgentRunner:
                         break
                     if self.settings.stop_after is not None and self.settings.stop_after(turns_used):
                         # 有排队消息但已经到了调用方的轮次上限:上限优先(与有工具调用时同一条政策)
-                        yield AgentEvent(kind="error", agent=self.unit.name,
+                        yield AgentEvent(kind="error", agent=self.spec.name,
                                          text=f"达到轮次上限 {turns_used},已停止")
                         break
                     msgs.extend(ChatMessage(role="user", content=x) for x in follow)
@@ -376,21 +394,21 @@ class AgentRunner:
                 # 注意必须显式 break —— 旧实现靠 `for turn in range(limit)` 自然耗尽,
                 # 换成 `while True` 之后只发事件不退出会跑飞(有测试钉住这一条)。
                 if self.settings.stop_after is not None and self.settings.stop_after(turns_used):
-                    yield AgentEvent(kind="error", agent=self.unit.name,
+                    yield AgentEvent(kind="error", agent=self.spec.name,
                                      text=f"达到轮次上限 {turns_used},已停止")
                     break
         except asyncio.CancelledError:
             raise                                    # 硬取消照旧上抛(收尾由 runtime.stream 做)
         if last_text:
-            yield AgentEvent(kind="text", agent=self.unit.name, text=last_text)
-        await self._emit("agent_end", {"agent": self.unit.name, "text": last_text,
+            yield AgentEvent(kind="text", agent=self.spec.name, text=last_text)
+        await self._emit("agent_end", {"agent": self.spec.name, "text": last_text,
                                         "turns": turns_used, "aborted": aborted}, abort)
         end_data: dict = {"messages": [m.to_dict() for m in msgs[1:]],
                           "usage": {"turns": turns_used, "context_tokens": context_tokens,
                                     **usage_total}}
         if aborted:
             end_data["aborted"] = True
-        yield AgentEvent(kind="agent_end", agent=self.unit.name, text=last_text,
+        yield AgentEvent(kind="agent_end", agent=self.spec.name, text=last_text,
                          data=end_data)
 
     async def _execute(self, tools: list[Tool], call: ToolCallOut,

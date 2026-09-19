@@ -28,7 +28,8 @@ from qi_agent.llm import ChatMessage, ChatResponse, LLMDelta, ToolCallOut  # noq
 from qi_agent.loader import load_agent_dir  # noqa: E402
 from qi_agent.models import ToolOutcome  # noqa: E402
 from qi_agent.registry import ToolCatalog  # noqa: E402
-from qi_agent.runner import AgentRunner, RunnerSettings, stop_after_turns  # noqa: E402
+from qi_agent.runner import (AgentRunner, RunnerSettings, spec_from_unit,
+                              stop_after_turns)  # noqa: E402
 from qi_agent.runtime import QiRuntime, RuntimeConfig  # noqa: E402
 from qi_agent.session import SessionStore  # noqa: E402
 from qi_agent.tools import ToolContext, register_builtin_tools  # noqa: E402
@@ -87,7 +88,7 @@ def _runner(tmp_path: Path, llm, settings: RunnerSettings, tools=None) -> AgentR
     catalog = _catalog()
     unit = load_agent_dir(_write_agent(tmp_path, tools=tools), "user", catalog.names)
     ctx = ToolContext(agent_name=unit.name, workdir=tmp_path)
-    return AgentRunner(unit, catalog, llm, settings, tool_ctx=ctx)
+    return AgentRunner(spec_from_unit(unit, catalog), catalog, llm, settings, tool_ctx=ctx)
 
 
 def _tool_call(i: int, name: str = "read") -> ToolCallOut:

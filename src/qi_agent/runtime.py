@@ -50,7 +50,7 @@ from .loader import LoadError, load_all_agents, load_top_level_skills, resolve_b
 from .system_prompt import build_system_prompt, default_base_prompt
 from .models import AgentEvent, AgentUnit
 from .registry import AgentRegistry, CapabilityRegistry, ToolCatalog, discover_extensions
-from .runner import AgentRunner, RunnerSettings
+from .runner import AgentRunner, RunnerSettings, RunSpec
 from .session import Session, SessionStore
 from .titling import suggest_title
 from .settings import extension_dirs, load_settings, resolve_project_trust, session_dir
@@ -225,6 +225,63 @@ class QiRuntime:
                            ask=self._ask,
                            shell_path=self.settings.shellPath,
                            ui=self.ui)
+
+    # ── 受管子运行(扩展的 `runAgent` / E12)──
+    def _client_for(self, model_ref: str | None) -> Any:
+        """子运行用的客户端:给了 `"provider/model"` 就**另建一个**,不给就用当前的。
+
+        关键点:另建时**不碰** `self.llm_exec` —— 子运行换模型不应改变父会话的模型。
+        """
+        if not model_ref:
+            return self.llm_exec
+        provider, _, model = str(model_ref).partition("/")
+        if not model:
+            raise ValueError(f'模型要写成 "provider/model",收到 {model_ref!r}')
+        return LiteLLMClient(resolve_model(self.cfg, provider, model), self._auth,
+                            thinking_level=self.thinking_level, retry=self.settings.retry)
+
+    async def run_agent(self, spec: Any, task: str, *, abort: AbortSignal | None = None,
+                        on_event: Any = None) -> str:
+        """在宿主内起一个**受管的子运行**(E12):独立上下文、自己的工具集与模型。
+
+        **与 `stream()` 的区别**(为什么不直接嵌套 stream):子运行**不碰会话** ——
+        不落盘、不派发、不改 active_agent。它是“借一次工具循环”,不是“再来一轮对话”。
+        所以它不会污染父会话的上下文,也不会在历史上多出几条看不懂的消息。
+
+        **但扩展事件照常派发**(用同一个总线与 ctx):所以权限闸门(`tool_call`)
+        对子运行一样生效 —— 这是“进程内”相对“子进程”的一个真实好处(子进程里宿主看不见)。
+
+        `spec` 是 dict:`system_prompt`(必填)/ `tools`(缺省**继承父**的当前集合,
+        而不是 catalog 全部 —— 给子运行比父多出权限是提权)/ `model`(缺省继承父)/ `name`。
+        递归深度由**扩展自己**管(E12):宿主不猜你允许多深。
+        """
+        data = spec if isinstance(spec, dict) else {
+            "system_prompt": getattr(spec, "prompt", ""),
+            "tools": getattr(spec, "tools", None),
+            "name": getattr(spec, "name", None)}
+        prompt = str(data.get("system_prompt") or "").strip()
+        if not prompt:
+            raise ValueError("runAgent 需要 system_prompt(子运行要有自己的提示词)")
+        tools = data.get("tools")
+        if tools is None:
+            tools = self.tool_names()          # 继承父的当前集合(不是 catalog 全部)
+        name = str(data.get("name") or "subagent")
+        run_spec = RunSpec(name=name, prompt=prompt, tools=[str(t) for t in tools])
+        ctx = ToolContext(agent_name=name, workdir=self.workdir, ask=self._ask,
+                          shell_path=self.settings.shellPath, ui=self.ui,
+                          abort=abort)
+        runner = AgentRunner(run_spec, self.catalog, self._client_for(data.get("model")),
+                            tool_ctx=ctx,
+                            bus=self.bus,
+                            extension_ctx=lambda signal: self.extension_ctx(signal),
+                            report=self.notes.append)
+        final = ""
+        async for event in runner.run(task, abort=abort):
+            if event.kind == "agent_end":
+                final = event.text or final
+            if on_event is not None:
+                on_event(event)
+        return final
 
     async def _ask(self, question: str) -> str | None:
         """`clarify` 工具的交互入口。
@@ -609,21 +666,19 @@ class QiRuntime:
                                "usage": {"turns": 0, "context_tokens": 0}})
 
     async def _before_agent_start(self, unit: AgentUnit, text: str,
-                                  abort: AbortSignal | None
-                                  ) -> tuple[str | None, str | None]:
+                                  abort: AbortSignal | None) -> tuple[str, str | None]:
         """派发 `before_agent_start`:可换 `system_prompt`(链式)、可注入一条消息。
 
-        返回 `(system_prompt, 注入的消息)`;两个都是 None 表示没订阅 / 没改。
-        只在**有人订阅**时才构建 prompt —— 零扩展时不走这条分支,行为与开销都与从前一致。
+        返回 `(system_prompt, 注入的消息)` —— 提示词**总是**有值(没扩展时自己建)。
 
         注入的消息(pi 的 `{message: …}`)收字符串或 `{"content": …}`。按 pi 的语义它是
         **持久**的(落盘,下一轮仍在上下文里),所以落盘由调用方(`_stream_inner`)做,
         文本再交给 runner 插到本轮 user 消息之后。
         """
-        if not self.bus.has("before_agent_start"):
-            return None, None
         tools = self.catalog.resolve(self.tool_names(unit))
         built = build_system_prompt(unit, self.base_prompt, tools=tools, cwd=self.workdir)
+        if not self.bus.has("before_agent_start"):
+            return built, None
         result = await self.bus.emit(
             "before_agent_start",
             {"prompt": text, "system_prompt": built, "agent": unit.name},
@@ -747,23 +802,22 @@ class QiRuntime:
         # `before_agent_start` 在 user 落盘**之后**才 fire(pi 同款):扩展从
         # `ctx.session_manager` 里就看得到本轮那句话,而且注入的 message 天然排在它后面。
         system_prompt, injected = await self._before_agent_start(unit, text, abort)
-        if injected:
-            # 注入的消息**落盘**(下一轮仍在上下文里,pi 说的 persistent message),
+        if injected:            # 注入的消息**落盘**(下一轮仍在上下文里,pi 说的 persistent message),
             # 同时交给 runner 插到本轮 user 之后 —— 取 history 时它还不存在,所以不会重复。
             self.sessions.append(session, {"type": "message", "role": "user",
                                            "content": injected, "agent_id": unit.name,
                                            "injected_by": "before_agent_start"})
-        runner = AgentRunner(unit, self.catalog, self.llm_exec,
-                             RunnerSettings(stop_after=self.stop_after),
-                             tool_ctx=self._tool_ctx(unit.name, unit),
-                             base_prompt=self.base_prompt,
-                             tool_names=self.tool_names(unit),
-                             system_prompt=system_prompt,
-                             injected_messages=[injected] if injected else None,
-                             drain_injections=self._drain_messages,
-                             bus=self.bus,
-                             extension_ctx=lambda signal: self.extension_ctx(signal, session),
-                             report=self.notes.append)
+        runner = AgentRunner(
+            # 运行单元:core 只认识“提示词 + 工具名单 + 名字”(见 `RunSpec`)
+            RunSpec(name=unit.name, prompt=system_prompt, tools=self.tool_names(unit)),
+            self.catalog, self.llm_exec,
+            RunnerSettings(stop_after=self.stop_after),
+            tool_ctx=self._tool_ctx(unit.name, unit),
+            injected_messages=[injected] if injected else None,
+            drain_injections=self._drain_messages,
+            bus=self.bus,
+            extension_ctx=lambda signal: self.extension_ctx(signal, session),
+            report=self.notes.append)
         final_text = ""
         partial = ""
         # 正常结束才有(RUN_FINISHED 的 usage);硬取消那条路径拿不到。

@@ -17,7 +17,8 @@ from qi_agent.llm import ChatMessage, ChatResponse, ToolCallOut  # noqa: E402
 from qi_agent.loader import LoadError, load_agent_dir  # noqa: E402
 from qi_agent.models import AgentUnit  # noqa: E402
 from qi_agent.registry import AgentRegistry, ToolCatalog  # noqa: E402
-from qi_agent.runner import AgentRunner, RunnerSettings, stop_after_turns  # noqa: E402
+from qi_agent.runner import (AgentRunner, RunnerSettings, spec_from_unit,
+                              stop_after_turns)  # noqa: E402
 from qi_agent.session import SessionStore  # noqa: E402
 from qi_agent.tools import ToolContext, register_builtin_tools  # noqa: E402
 
@@ -153,7 +154,7 @@ async def test_runner_tool_loop(tmp_path):
                                                       args={"pattern": "hello", "path": "a.txt"})]),
         ChatResponse(text="找到了 hello world"),
     ])
-    runner = AgentRunner(unit, catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)), tool_ctx=ctx)
+    runner = AgentRunner(spec_from_unit(unit, catalog), catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)), tool_ctx=ctx)
     events = [e async for e in runner.run("找 hello")]
     kinds = [e.kind for e in events]
     assert "tool_start" in kinds and "tool_end" in kinds
@@ -173,7 +174,7 @@ async def test_runner_bash_is_not_command_filtered(tmp_path):
                                                       args={"command": "mkdir -p made && echo ok > made/f.txt"})]),
         ChatResponse(text="done"),
     ])
-    runner = AgentRunner(unit, catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)), tool_ctx=ctx)
+    runner = AgentRunner(spec_from_unit(unit, catalog), catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)), tool_ctx=ctx)
     events = [e async for e in runner.run("建个目录")]
     tool_msgs = [e.text for e in events if e.kind == "tool_end"]
     assert tool_msgs and "安全策略拒绝" not in tool_msgs[0]

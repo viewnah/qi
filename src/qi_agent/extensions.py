@@ -803,6 +803,23 @@ class ExtensionApi:
         return [{"name": c.invocable, "description": c.description, "source": c.source}
                 for c in self._commands.all()]
 
+    async def runAgent(self, spec: Any, task: str, *, abort: AbortSignal | None = None,
+                       on_event: Any = None) -> str:      # noqa: N802
+        """在宿主内起一个**受管的子运行**:独立上下文、自己的工具集与模型。
+
+        这是 qi-agents(以及任何“把一个任务交给另一个角色”的需求)的基石。
+        `spec` 是 dict:`system_prompt`(必填)/ `tools`(缺省**继承父**的当前集合)/
+        `model`(缺省继承父)/ `name`。
+
+        与 `sendMessage` 的区别:那个是“往当前对话里插一句话”,这个是“另起一个**不碰
+        会话**的运行” —— 子运行不落盘、不分派,但扩展事件照常派发(所以闸门对它也生效)。
+
+        `on_event` 给进度用(子运行的工具调用能实时上报给父界面)。
+        """
+        if self._host is None or not callable(getattr(self._host, "run_agent", None)):
+            raise RuntimeError("宿主没有提供子运行接口:runAgent 不可用")
+        return await self._host.run_agent(spec, task, abort=abort, on_event=on_event)
+
     # ── CLI 旗标 ──
     def registerFlag(self, name: str, *, type: str = "boolean", default: Any = False,
                      description: str = "") -> None:        # noqa: N802

@@ -31,7 +31,8 @@ from qi_agent.llm import (
 )
 from qi_agent.loader import load_agent_dir
 from qi_agent.registry import ToolCatalog
-from qi_agent.runner import AgentRunner, RunnerSettings, stop_after_turns
+from qi_agent.runner import (AgentRunner, RunnerSettings, spec_from_unit,
+                              stop_after_turns)
 from qi_agent.tools import ToolContext, register_builtin_tools
 
 
@@ -251,7 +252,7 @@ async def test_runner_emits_text_deltas_in_true_order(tmp_path):
         # 第 2 轮:给结论
         [_text_delta("找到"), _text_delta("了"), _finished(usage={"prompt_tokens": 20})],
     ])
-    runner = AgentRunner(unit, catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)),
+    runner = AgentRunner(spec_from_unit(unit, catalog), catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)),
                          tool_ctx=ToolContext(agent_name=unit.name, workdir=tmp_path))
     events = [e async for e in runner.run("找 hello")]
 
@@ -281,7 +282,7 @@ async def test_runner_keeps_working_with_chat_only_llm(tmp_path):
     catalog = _catalog()
     unit = _agent_unit(tmp_path, catalog)
     llm = ChatOnlyLLM(ChatResponse(text="就这些"))
-    runner = AgentRunner(unit, catalog, llm, RunnerSettings(stop_after=stop_after_turns(3)),
+    runner = AgentRunner(spec_from_unit(unit, catalog), catalog, llm, RunnerSettings(stop_after=stop_after_turns(3)),
                          tool_ctx=ToolContext(agent_name=unit.name, workdir=tmp_path))
     events = [e async for e in runner.run("hi")]
     assert [e.text for e in events if e.kind == "text_delta"] == ["就这些"]
@@ -410,7 +411,7 @@ async def test_hung_stream_is_not_killed_by_a_loop_timeout(tmp_path):
         await asyncio.sleep(0.1)
         abort.abort()
 
-    runner = AgentRunner(unit, catalog, HangingLLM(), RunnerSettings(),
+    runner = AgentRunner(spec_from_unit(unit, catalog), catalog, HangingLLM(), RunnerSettings(),
                          tool_ctx=ToolContext(agent_name=unit.name, workdir=tmp_path))
 
     async def consume() -> list:
@@ -439,7 +440,7 @@ async def test_runner_declares_each_assistant_message(tmp_path):
                                     args={"pattern": "hello", "path": "a.txt"})])],
         [_text_delta("找到了"), _finished()],
     ])
-    runner = AgentRunner(unit, catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)),
+    runner = AgentRunner(spec_from_unit(unit, catalog), catalog, llm, RunnerSettings(stop_after=stop_after_turns(5)),
                          tool_ctx=ToolContext(agent_name=unit.name, workdir=tmp_path))
     events = [e async for e in runner.run("找 hello")]
 

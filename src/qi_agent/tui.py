@@ -2334,10 +2334,12 @@ class QiTui(App):
             if not arg:
                 self._note("用法: /name <名字>", "warning")
             else:
-                session.title = arg
-                if session.entries and session.entries[0].get("type") == "session":
-                    session.entries[0]["title"] = arg
-                    store.save(session)
+                # 交给 runtime:标题落盘(内存 + header + 文件)+ `session_info_changed`
+                # 事件都只此一处 —— TUI 不再自己走那三步。
+                if rt is not None and hasattr(rt, "set_session_title"):
+                    rt.set_session_title(session, arg, source="user")
+                else:
+                    session.title = arg
                 self._refresh_footer()
                 self._note(f"会话名已设为 {arg}")
         elif cmd == "/export":
@@ -2585,7 +2587,8 @@ class QiTui(App):
         """shift+tab:循环思考级别(off→minimal→low→…→max→off)。"""
         index = (THINKING_LEVELS.index(self._thinking_level)
                  if self._thinking_level in THINKING_LEVELS else 0)
-        self._set_thinking_level(THINKING_LEVELS[(index + 1) % len(THINKING_LEVELS)])
+        self._set_thinking_level(THINKING_LEVELS[(index + 1) % len(THINKING_LEVELS)],
+                                 source="cycle")
 
     def action_toggle_thinking(self) -> None:
         """ctrl+t:显示/隐藏思考块(对齐 pi 的 app.thinking.toggle)。"""
@@ -2604,13 +2607,13 @@ class QiTui(App):
             self._reasoning_warned = True
             self._flash("该 provider 不接受 reasoning_effort,已按不思考运行", 4.0)
 
-    def _set_thinking_level(self, level: str) -> None:
-        """设置级别:下一回合生效(写到 runtime 的 llm_exec 上,与切模型同一处)。"""
-        self._thinking_level = normalize_thinking_level(level)
-        client = getattr(self._rt, "llm_exec", None) if self._rt is not None else None
-        # 可选能力:测试替身/第三方实现可能连 llm_exec 都没有
-        if isinstance(client, ThinkingLLMClient):
-            client.thinking_level = self._thinking_level
+    def _set_thinking_level(self, level: str, source: str = "set") -> None:
+        """设置级别:交给 runtime(它才是唯一入口,`thinking_level_select` 从那里发)。"""
+        rt = self._rt
+        if rt is not None and hasattr(rt, "set_thinking_level"):
+            self._thinking_level = rt.set_thinking_level(level, source=source)
+        else:
+            self._thinking_level = normalize_thinking_level(level)
         self._refresh_footer()
         notice = ""
         if self._model is not None and not self._model.reasoning:
@@ -2718,20 +2721,14 @@ class QiTui(App):
                 out.append((provider, entry.id, is_current))
         return out
 
-    def _switch_model(self, provider: str, model: str) -> None:
-        """运行期换模型:换掉 runtime 的 llm_exec,下一回合生效。"""
+    def _switch_model(self, provider: str, model: str, source: str = "set") -> None:
+        """运行期换模型:**交给 runtime**(它才是唯一入口,`model_select` 从那里发),
+        这里只做界面反馈。"""
         rt = self._rt
         if rt is None:
             return
         try:
-            resolved = resolve_model(rt.cfg, provider, model)
-            # 重建客户端要带上来自 settings/UI 状态的参数,否则切模型会默默丢掉它们:
-            # `thinking_level`(否则 footer 显示 high、请求里却没有)与
-            # `retry`(provider 层的 timeout / num_retries)
-            settings = getattr(rt, "settings", None)
-            rt.llm_exec = LiteLLMClient(resolved, AuthStore(),
-                                        thinking_level=self._thinking_level,
-                                        retry=settings.retry if settings is not None else None)
+            resolved = rt.set_model(provider, model, source=source)
         except Exception as exc:  # 配置/凭证异常不该把 TUI 弄崩
             self._note(f"切换模型失败: {exc}", "error")
             self._scroll_end()
@@ -2815,7 +2812,7 @@ class QiTui(App):
         current = (self._model.provider, self._model.model) if self._model else None
         index = flat.index(current) if current in flat else -1
         provider, model = flat[(index + step) % len(flat)]
-        self._switch_model(provider, model)
+        self._switch_model(provider, model, source="cycle")
 
     # -- 会话树(pi 的 /tree /fork /clone)--------------------
     def _session_store(self) -> SessionStore:

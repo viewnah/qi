@@ -27,7 +27,8 @@ from .compaction import (
     summary_context_message,
 )
 from .abort import AbortSignal
-from .config import ResolvedModel, load_config, resolve_default_model, resolve_router_model
+from .config import (ResolvedModel, load_config, resolve_default_model, resolve_model,
+                     resolve_router_model)
 from .dispatcher import Decision, Dispatcher
 from .extensions import (
     CommandRegistry,
@@ -41,6 +42,7 @@ from .llm import (
     ChatMessage,
     LiteLLMClient,
     LLMClient,
+    ThinkingLLMClient,
     chat_message_from_dict,
     normalize_thinking_level,
 )
@@ -199,6 +201,8 @@ class QiRuntime:
         self.registry.register_all(units)
 
         auth = AuthStore()
+        #: 换模型时要重建客户端,所以凭证存储要留在身上(`set_model` 用)
+        self._auth = auth
         default: ResolvedModel = resolve_default_model(self.cfg, self.cwd)
         # 思考级别:显式传参(CLI --thinking)> settings.defaultThinkingLevel > off
         level = thinking_level if thinking_level is not None else self.settings.defaultThinkingLevel
@@ -356,6 +360,82 @@ class QiRuntime:
     def set_tool_names(self, names: Iterable[str]) -> None:
         """覆盖工具集(扩展走的入口是 `api.setActiveTools`),对**后续回合**生效。"""
         self._tool_override = set(names)
+
+    # ── 模型与思考级别(扩展的 `setModel` / `setThinkingLevel` 走这里)──
+    def set_model(self, provider: str, model: str, *, source: str = "set") -> ResolvedModel:
+        """运行期换模型(**下一回合**生效)。返回解析后的模型(前端要拿它刷新显示)。
+
+        **唯一的换模型入口** —— UI(TUI 的 `/model`、Ctrl+P)与扩展(`api.setModel`)共用,
+        所以 `model_select` 只从这一处发:两个入口各自发事件,迟早一个漏发或多发。
+
+        重建客户端时**必须带上当前 `thinking_level` 与 `retry`**:否则切模型会默默丢掉它们
+        (footer 显示 high、请求里却没有 —— 这类表现最难查)。
+        """
+        resolved = resolve_model(self.cfg, provider, model)
+        previous = getattr(getattr(self, "llm_exec", None), "spec", None)
+        self.llm_exec = LiteLLMClient(resolved, self._auth,
+                                     thinking_level=self.thinking_level,
+                                     retry=self.settings.retry)
+        self._emit_notice("model_select", {
+            "model": f"{resolved.provider}/{resolved.model}",
+            "previous": (f"{previous.provider}/{previous.model}" if previous else None),
+            "source": source})
+        return resolved
+
+    def set_thinking_level(self, level: str, *, source: str = "set") -> str:
+        """改思考级别(下一回合生效)。返回归一后的级别。
+
+        `source` 只进事件 payload("set" = 显式设、"cycle" = shift+tab 轮转)。
+        """
+        previous = self.thinking_level
+        self.thinking_level = normalize_thinking_level(level)
+        client = getattr(self, "llm_exec", None)
+        # 可选能力:测试替身 / 第三方实现可能连 `thinking_level` 都没有
+        if client is not None and isinstance(client, ThinkingLLMClient):
+            client.thinking_level = self.thinking_level
+        self._emit_notice("thinking_level_select", {
+            "level": self.thinking_level, "previous_level": previous, "source": source})
+        return self.thinking_level
+
+    def set_session_title(self, session: Session, title: str, *, source: str = "auto") -> None:
+        """改会话显示名(落盘 + 发 `session_info_changed`)。
+
+        标题有两条来源:自动命名(`source="auto"`)与用户 `/name`(`source="user"`)。
+        集中到这一处是为了**事件只发一次**,而且“空标题不覆盖”那条规则只写一遍。
+        """
+        cleaned = (title or "").strip()
+        if not cleaned:
+            return
+        try:
+            self.sessions.set_title(session, cleaned)
+        except OSError:
+            # 落盘失败不该把这一轮搞垮(与本仓其它“不因此中断主流程”的 except 同形)
+            return
+        self._emit_notice("session_info_changed", {"name": cleaned, "source": source})
+
+    def _emit_notice(self, event: str, payload: dict) -> None:
+        """发一个**通知型**扩展事件(同步入口,不阻塞调用方)。
+
+        `bus.emit` 是 async,而 `set_model` 这类调用点在 UI 的同步路径上 —— 用一个
+        后台任务跑完全够(通知型事件的返回值本来就被忽略),避免把 UI 路径改成 async。
+        没订阅时**不建任务**(零扩展零开销)。
+        """
+        if not self.bus.has(event):
+            return
+        payload = dict(payload)
+        payload["session"] = self._active_session.id if self._active_session else None
+
+        async def _run() -> None:
+            result = await self.bus.emit(event, payload,
+                                         ctx=self.extension_ctx(session=self._active_session))
+            for src, exc in result.errors:
+                self.notes.append(f"扩展 {src} 的 {event} 处理失败: {exc}")
+
+        try:
+            asyncio.get_running_loop().create_task(_run())
+        except RuntimeError:
+            # 没在事件循环里(如脚本直接构造 runtime):通知型事件丢掉不影响主流程
+            return
 
     # ── 主流程 ──
     def _active_agent(self, session: Session) -> str | None:
@@ -772,15 +852,13 @@ class QiRuntime:
 
         两条都必须有:模型回垃圾时保持「未命名」好过写个垃圾进文件;而用户在流式期间
         手动改了名,自动命名不能把它覆盖回去。
+
+        实际落盘走 `set_session_title` —— 那里同时发 `session_info_changed`,
+        所以自动命名与用户改名两条路都不会漏事件(也不会重发)。
         """
         if not title or session.title.strip():
             return
-        try:
-            self.sessions.set_title(session, title)
-        except OSError:
-            # 故意吞掉(与本仓库其它"不要因此中断主流程"的 except 同形):
-            # 标题没落上不影响本轮回答,也没必要把它变成错误行。
-            return
+        self.set_session_title(session, title, source="auto")
 
     def _persist_thinking(self, session: Session, agent: str, text: str) -> None:
         """落盘一步思考(entry `type=custom`, `custom_type=assistant_thinking`)。

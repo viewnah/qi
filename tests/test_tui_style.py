@@ -12,6 +12,7 @@ import dataclasses
 import json
 import sys
 import time
+from typing import Any, cast
 from pathlib import Path
 
 import pytest
@@ -169,7 +170,7 @@ class FakeRuntime:
         from qi_agent.session import SessionStore
 
         self.sessions = SessionStore()
-        self.cfg = None
+        self.cfg: Any = None      # 测试里会被换成假 cfg(所以类型真的就是“任意”)
         self.cwd = Path.cwd()
         self.registry = _FakeRegistry()
         self.settings = QiSettings()
@@ -181,6 +182,31 @@ class FakeRuntime:
         from qi_agent.extensions import CommandRegistry
 
         self.commands = CommandRegistry()
+        self.model_switches: list[tuple[str, str, str]] = []   # `set_model` 的记账
+
+    # ── 模型 / 思考级别 / 会话名:替身**建模**契约 ──────────
+    #
+    # 试过“委托给真实现”(cast 成 QiRuntime 调未绑定方法),但真方法会一路调到它的**私有**
+    # 助手(`_emit_notice`),替身得把那些也补上 —— 那不是建模,是把 runtime 搬一遍。
+    # 所以回到本仓一贯的做法:替身只建契约(能跑、能记账),**真行为由 runtime 级测试覆盖**
+    # (`tests/test_extension_model.py`:换 llm_exec、发 model_select / thinking_level_select…)。
+
+    def set_model(self, provider: str, model: str, *, source: str = "set"):
+        """用真解析器拿 `ResolvedModel`(纯函数),并记账。"""
+        from qi_agent.config import resolve_model
+
+        self.model_switches.append((provider, model, source))
+        return resolve_model(self.cfg, provider, model)
+
+    def set_thinking_level(self, level: str, *, source: str = "set") -> str:
+        from qi_agent.llm import normalize_thinking_level
+
+        self.thinking_level = normalize_thinking_level(level)
+        self.llm_exec.thinking_level = self.thinking_level   # 按契约写回 client
+        return self.thinking_level
+
+    def set_session_title(self, session, title: str, *, source: str = "auto") -> None:
+        self.sessions.set_title(session, title)
 
     async def start_session(self, session, reason: str = "startup") -> None:
         """真实 QiRuntime 的会话级事件;假运行时不用它(不派发任何事件)。"""
@@ -556,12 +582,18 @@ async def test_model_keys_and_command(tmp_path, monkeypatch):
         app._command("/model alpha/m2")
         assert app._model is not None
         assert (app._model.provider, app._model.model) == ("alpha", "m2")
-        assert isinstance(app._rt.llm_exec, LiteLLMClient)
-        assert app._rt.llm_exec.spec.model == "m2"        # 真的换到运行期模型上
+        # TUI 的职责是“用对的参数、对的来源去调 runtime”(source="set":显式切的)。
+        # “换掉 llm_exec / 发 `model_select`” 是 **runtime 的行为**,由
+        # `tests/test_extension_model.py` 用真 runtime 覆盖 —— 在 TUI 测试里断言它,
+        # 就是在断言替身而不是断言 qi。
+        # `cast(Any, …)`:测试里 `QiRuntime` 已被换成带记账字段的替身(静态类型看不到)。
+        rt = cast(Any, app._rt)
+        assert rt.model_switches[-1] == ("alpha", "m2", "set")
         assert "alpha/m2" in app.footer_text.plain
 
         app.action_cycle_model()                          # ctrl+p
         assert (app._model.provider, app._model.model) == ("beta", "m3")
+        assert rt.model_switches[-1][2] == "cycle"         # 轮转的来源不同
         app.action_cycle_model()
         assert (app._model.provider, app._model.model) == ("alpha", "m1")   # 环绕
         app.action_cycle_model_back()                     # ctrl+shift+p

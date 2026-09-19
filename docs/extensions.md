@@ -79,9 +79,10 @@ qi 要拆的三样(MCP / 多 agent / web)**正好落在这份清单上**。
 | `tool_call` | 工具执行前 | payload `{tool_name, tool_call_id, input}`;可改 `input`(改动真生效、**不重校**);`{block, reason?}` 拦住;handler 抛异常时 **fail-safe 拦住** | ✅ P-E2c-2 |
 | `tool_result` | 工具执行后 | payload `{tool_name, tool_call_id, input, result, details, status, exit_code}`;patch 语义:返回 `{result?, details?, status?}` | ✅ P-E2c-2 |
 | `user_bash` | 用户 `!` 命令 | `{operations}` / `{result}` | P-E3 |
-| `model_select` / `thinking_level_select` | 模型 / 思考级别变化 | 通知 | P-E3 |
-| `session_before_switch` / `session_before_fork` | `/new` / `/resume` / `/fork` | `{cancel}` | P-E3 |
-| `session_before_compact` / `session_compact` / `session_compact_failed` | 压缩 | `{cancel}` / `{compaction}` | P-E3 |
+| `model_select` / `thinking_level_select` | 模型 / 思考级别变化 | 通知。payload:`{model, previous, source}` / `{level, previous_level, source}`;`source` ∈ `set`(显式)/ `cycle`(轮转)/ `auto`。**只从 runtime 发**(TUI 与扩展共用那一个入口) | ✅ P-E3d-1 |
+| `session_info_changed` | 会话改名 | 通知。payload:`{name, source}`;`source` ∈ `user`(`/name`)/ `auto`(自动命名) | ✅ P-E3d-1 |
+| `session_before_switch` / `session_before_fork` / `session_before_tree` | `/new` `/resume` `/fork` `/tree` | `{cancel}` —— **推迟**,理由见 §11.10:这些操作目前住在 TUI 里,要发事件得先把它们改成 runtime 拥有 | ⏸ |
+| `session_before_compact` / `session_compact` / `session_compact_failed` | 压缩 | `{cancel}` / `{summary}` | ⏳ P-E3d-2 |
 | `session_before_tree` / `session_tree` | `/tree` 跳转 | `{cancel}` / `{summary}` | P-E3 |
 | `session_info_changed` | 会话改名 | 通知 | P-E3 |
 
@@ -115,9 +116,9 @@ qi 曾需要的"每轮可换角色"hook **不加** —— 见 §7(多 agent 走 
 | `sendUserMessage(content, opts)` | 同上,只是落盘时标成“用户说的”(`injected_by`)。**qi 不自动开一轮**(pi 会在空闲时 `triggerTurn`)—— 那条差别记在 §11.9 | ✅ P-E3c-2 |
 | `sendUserMessage(content, opts)` | 注入用户消息(始终触发一轮) | P-E3 |
 | `appendEntry(customType, data)` | 落盘扩展自定义 entry(**不进 LLM 上下文**)。写口**只此一个**,章由宿主盖(`source` / `agent` / `data`) | ✅ P-E3c-1 |
-| `registerMessageRenderer` / `registerEntryRenderer` / `registerMarkdownTransformer` | TUI 渲染 | P-E3 |
+| `registerMessageRenderer` / `registerEntryRenderer` / `registerMarkdownTransformer` | TUI 渲染 —— **推迟**,理由见 §11.10(它们把扩展直接绑到 textual 的 widget 类型上,API 形状需要专门决策) | ⏸ |
 | `sessionManager` / `getSessionName()` / `setSessionName()` / `setLabel()` | 会话读写 | P-E3 |
-| `setModel(model)` / `getThinkingLevel()` / `setThinkingLevel(lv)` | 模型与思考级别 | P-E3 |
+| `setModel(model)` / `getThinkingLevel()` / `setThinkingLevel(level)` | 模型与思考级别。**唯一的切换入口是 runtime**:UI 与扩展共用那一处,所以事件只发一次;换模型时 `thinking_level` 与 `retry` 会带过去 | ✅ P-E3d-1 |
 | `events.on/emit` | **扩展间**总线(不是宿主事件) | P-E4 |
 | `registerProvider(name, cfg)` | 动态注册 provider(代理 / 自定义端点 / 团队模型配置) | P-E4 |
 | `add_route` / `add_static` | qi 增量:HTTP 挂载 | P-E5 |
@@ -154,7 +155,7 @@ qi 曾需要的"每轮可换角色"hook **不加** —— 见 §7(多 agent 走 
 | **失败隔离** | 单个 handler 抛异常 → **记进 `EmitResult.errors` 并继续链,不中断会话** | `except Exception` + `continue` | `test_one_handler_crashing_does_not_stop_the_chain`、`test_async_handler_crash_is_also_isolated` |
 | **fail-safe(拦截器专用)** | 安全类事件用 `on_error_result` 兜底:**闸门自己崩了就拦住**。放行等于“装了闸门反而更不安全” | `on_error_result` 命中即裁决停链 | `test_fail_safe_result_on_error_stops_with_the_safe_verdict` |
 | **异常要看得见** | `errors` 不能只存在对象里:`QiRuntime.start_session` 把它转成 `notes`(界面上的一行字)— 否则扩展坏掉的表现是“啥都没发生” | `notes` 通道 | `test_broken_handler_becomes_a_note_not_a_crash` |
-| **通知型事件** | `turn_start` / `model_select` 等的返回值被忽略 —— 写进文档,避免“我返回了为什么不生效” | 用 `emit()`(不给 `stop_*`) | 待 P-E2 |
+| **通知型事件** | `turn_start` / `model_select` 等的返回值被忽略 —— 写进文档,避免“我返回了为什么不生效” | 用 `emit()`(不给 `stop_*`);runtime 侧走 `_emit_notice`(后台任务,同步入口也能发) | ✅ |
 
 ## 5. 前置件(不做这些,hook 系统是空壳)
 
@@ -377,13 +378,17 @@ core 技能发现:同理(私有技能自动绑定)
 | **P-E3b 命令与快捷键 + 旗标** ✅ | `registerCommand`(handler 收 `(args, ctx)`,重名加序号不覆盖)+ `registerShortcut`(textual 动态 `bind`)+ `getCommands` + **`registerFlag` / `getFlag`**(值走 core 静态 `--ext name=value`,未知名字退 2);TUI 侧:扩展命令**先于内置**认领(保留 `/quit` `/help` `/hotkeys`)、`/help` 列出扩展命令 | `tests/test_extension_commands.py` 13 项 + `test_extension_flags.py` 15 项:重名变 `:1`/`:2` 且一个不丢 · 没登记处就**报错** · 真 textual 下 `/cmd` 真跑到 handler · **扩展不能顶掉 `/quit`** · `--ext` 的布尔/字符串/打错三种形态 · 打错**不退 0** |
 | **P-E3c-1 会话读写** ✅ | `appendEntry`(唯一写口 + 宿主盖章;**回合外报错**)+ `ctx.session_manager`(只读视图)+ `before_agent_start` 的 `message` 注入(持久:落盘 + 本轮进上下文)+ 回合内把会话绑在 runtime 上(wrapper + `finally`) | `tests/test_extension_session.py` 7 项:**跨回合读回来**(第一轮写、第二轮读入 prompt);custom entry **不进**上下文;user 先落盘再 fire hook;注入只发生一次 |
 | **P-E3c-2 主动发消息** ✅ | `sendMessage` / `sendUserMessage` + 三档 `deliver_as`(`steer` 在每次 LLM 调用前排空、`follow_up` 在本该收工时排空且**不停**、`next_turn` 留到下一次输入)+ 排空与落盘**同一时刻**(不会出现“历史里有但还没送达”) | `tests/test_extension_messages.py` 7 项:三档各自的送达时机(含“第几次 LLM 调用才看得到”);排空**只送一次**;`follow_up` 真的多跑一轮;**轮次上限优先**(带 `turn_end` 持续入队的跑飞场景);非法 `deliver_as` 进 notes |
-| **P-E3d 模型、思考级别与会话事件** | `setModel` / `get-setThinkingLevel` + `model_select` / `thinking_level_select` / `session_before_*` / `session_compact*` / `session_tree` / `session_info_changed` + renderer 三件套 | 各事件的派发点接上真实代码路径 |
+| **P-E3d-1 模型 / 思考级别 / 改名** ✅ | `setModel` / `get-setThinkingLevel` / `set_session_title` 收进 **runtime**(唯一入口)+ `model_select` / `thinking_level_select` / `session_info_changed` 三个通知型事件 + `_emit_notice`(后台任务,同步调用点也能发) | `tests/test_extension_model.py` 8 项(真 runtime):换客户端时 `thinking_level` / `retry` **真的带过去**;**两个来源都发且只发一次**(`set` / `cycle` / `user` / `auto`);空标题不发事件;标题内存+header 两处都改;`models.json` 未登记的 id 仍可用(刻意宽容) |
+| **P-E3d-2 压缩事件** | `session_before_compact`(可 cancel / 可自带摘要)+ `session_compact` / `session_compact_failed`。压缩已经住在 runtime(`compact_session`),所以这是一处就能接完的 | 扩展能取消一次压缩、或用自己写的摘要代替 |
+| **P-E3d-3 推迟项** | renderer 三件套 + `session_before_switch` / `session_before_fork` / `session_before_tree` | 理由见 §11.10:两条都**不在三件套扩展的关键路径上**,且各自需要一次专门决策(渲染 API 形状 / 会话操作改成 runtime 拥有) |
 | **P-E4 core 收窄** | runner 入参从 `AgentUnit` 改 `{system_prompt, tools, model}`;**新增 `ctx.runAgent(spec, task)`(E12)**;`AgentRegistry`/`load_all_agents`/dispatcher 从 core 移出;**仓库自己的 4 个项目 agent 先搬进 `examples/`(E15)**;`events` 总线;`registerProvider` | `qi` 裸启动单 agent 跑通;core 不再 import `dispatcher`/`loader.load_all_agents`;core `dependencies` 去掉 `mcp`;`ctx.runAgent` 能在测试里跑完一个子任务 |
 | **P-E5 三件套迁移** | qi-mcp → qi-agents → qi-web(按依赖从少到多);**qi-agents 落地后把仓库 agents 搬回 `.qi/agents/`(E15)**;`ctx.ui` 的 web 侧 + `add_route`/`add_static` | 三个包各自可装可卸;不装时启动提示与 `qi doctor` 正确;`qi web` 由扩展提供;`qi --agent <name>` 由 qi-agents 提供 |
 | **P-E6 收尾** | 参考扩展样例(至少一个 `examples/extensions/` 下的完整例子)+ 目录通道的 PEP 723 声明解析 + 冲突报告 + 文档重写(agent-config.md / web.md / dispatcher.md 归档)+ 迁移提示打磨 | 新用户按 extensions.md 能写出并装上第一个扩展;声明与实装不一致时 `qi doctor` 报得出来 |
 
-**依赖关系**:P-E1 ✅ → **P-E2 ✅** → **P-E3a ✅** → **P-E3b ✅** → **P-E3c-1 ✅** → **P-E3c-2 ✅** → P-E3d → P-E4 顺序做;P-E4 可与 P-E3 并行;P-E5 依赖 P-E2 + P-E3 + P-E4;P-E6 最后。
+**依赖关系**:P-E1 ✅ → **P-E2 ✅** → **P-E3a ✅** → **P-E3b ✅** → **P-E3c ✅** → **P-E3d-1 ✅** → P-E3d-2 / P-E4 顺序做;P-E4 可与 P-E3 并行;P-E5 依赖 P-E2 + P-E3 + P-E4;P-E6 最后。
 
+> **P-E3 剩下的两块与三件套无关**:P-E3d-2(压缩事件)与 P-E3d-3(renderer + 会话操作事件)。
+> 三件套扩展真正依赖的扩展面已全部就位 —— 除了 `ctx.runAgent`,那是 **P-E4** 的事。
 > **P-E2 整段完成**:工具面(注册 / 元数据 / 来源 / 运行时集合 / `exec`)+ 输入面(`input`、`before_agent_start`)+ 轮次与工具事件(`turn_*`、`context`、`tool_call`、`tool_result`)+ 依赖契约。
 > 剩下的 P-E6 尾巴:PEP 723 目录通道声明解析、冲突报告深度、`qi doctor` 汇总。
 
@@ -424,6 +429,17 @@ core 技能发现:同理(私有技能自动绑定)
 7. **`agent.md` 的 `tools` 省略语义在 agent-as-tool 下有提权风险**(E17 决定先不动):父会话被 `-t` 收窄时,子 agent 按"省略 = catalog 全部"会拿到**全工具**。qi-agents 落地时二选一:① 在扩展里显式解析(用父的 active tools 作基,推荐,不动 `agent.md` 语义);② 改 `agent.md` 的省略语义为"继承父"
 8. ~~`registerFlag` 怎么做~~ → **已决(E19)**,已实现:宽容长旗标 + `--ext` 两条并存。仍待定的两条尾巴:① **与 core 选项同名的扩展旗标收不到**(click 先吃掉,如 `--agent`;现在无诊断,只写在文档里);② 短旗标是否要开放给扩展(现照 pi 一律拒绝)。
 9. **`sendUserMessage` 不自开一轮**(P-E3c-2 已实现,但有意缺这一步):pi 在 agent 空闲时 `triggerTurn`,那需要“在处理器里嵌套跑一轮”的能力(嵌套流式、与当前回合共享会话写入)。qi 现在只**排队**,由前端决定要不要因此开一轮。要补就与 `ctx.runAgent`(E12)一起做 —— 同一套“宿主内起一个受管子运行”的机制。
+10. **P-E3d-3 推迟的两块**(理由相同:**不在三件套扩展的关键路径上** + 各自需要一次专门决策):
+
+    - **renderer 三件套**(`registerMessageRenderer` / `registerEntryRenderer` /
+      `registerMarkdownTransformer`):pi 的形状是扩展**直接返回宿主的 UI 组件**。qi 的 TUI 是
+      textual —— 照搬就把扩展绑在 textual 的组件 API 上,而那正是 web.md §16 已经明确**拒绝过**
+      的路线(扩展点放数据层,不放组件层 —— 那是 `details["ui"]` 词汇表的由来)。
+      所以要么定一个与前端无关的渲染契约(与 `details["ui"]` 合流),要么明说“只对 TUI 有效”
+      并承担耦合。**先决策,再实现**。
+    - **`session_before_switch` / `session_before_fork` / `session_before_tree`**:对应的操作
+      (`/new` `/resume` `/fork` `/tree`)现在住在 **TUI** 里(直接调 `SessionStore`)。
+      要发“可取消”的事件,得先把这些会话操作收进 runtime —— 那是一次比服务扩展更大的重构。
 
 ## 12. agent 配置对齐(Claude Code / pi / qi 三方对照)
 

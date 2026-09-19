@@ -248,6 +248,20 @@ class FakeRuntime:
         self.commands = CommandRegistry()
         self.flag_errors: list[str] = []      # cli 会读它(打错的 --ext)
 
+    def set_thinking_level(self, level: str, *, source: str = "set") -> str:
+        """替身**建模**契约(能跑、能写回 client);真行为由
+        `tests/test_extension_model.py` 覆盖(归一 + 发 `thinking_level_select`)。
+
+        试过把真方法借来用(`QiRuntime.set_thinking_level(cast(Any, self), ...)`),
+        但它会一路调到 runtime 的**私有**助手(`_emit_notice`)—— 替身得把那些也补上,
+        那就不是建模而是把 runtime 搬一遍。
+        """
+        from qi_agent.llm import normalize_thinking_level
+
+        self.thinking_level = normalize_thinking_level(level)
+        self.llm_exec.thinking_level = self.thinking_level   # 按契约写回 client
+        return self.thinking_level
+
     async def start_session(self, session, reason: str = "startup") -> None:
         """真实 QiRuntime 的会话级事件;假运行时不用它(不派发任何事件)。"""
 

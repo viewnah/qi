@@ -25,7 +25,9 @@ qi 要拆的三样(MCP / 多 agent / web)**正好落在这份清单上**。
 
 拆完之后 core 的运行单元是 **`{system_prompt, tools, model}`**,不是 `AgentUnit`:
 
-- `AgentRunner(unit, ...)` → `AgentRunner(prompt_spec, ...)`(`runner.py:110`)
+- `AgentRunner(unit, ...)` → `AgentRunner(spec, ...)`,其中 `RunSpec = {name, prompt, tools}`
+  —— **P-E4a 已落地**。`prompt` 是已建好的提示词,tools 是名单;runner 不再自己拼 prompt
+  (否则 `before_agent_start` 改过的那份会被重建覆盖)
 - `AgentRegistry` / `load_all_agents` / `.qi/agents/` 目录语义 → 搬进 **qi-agents**
 - `loader.py` 拆两半:**通用 markdown + frontmatter 解析留 core**(技能要用),`agents/` 目录语义跟扩展走
 - 会话 JSONL 里的 `agent_id` / `dispatch` / `opening_shown` entry → 变成**扩展自定义 entry**(`appendEntry` 覆盖,见 §3.2)
@@ -122,6 +124,8 @@ qi 曾需要的"每轮可换角色"hook **不加** —— 见 §7(多 agent 走 
 | `events.on/emit` | **扩展间**总线(不是宿主事件) | P-E4 |
 | `registerProvider(name, cfg)` | 动态注册 provider(代理 / 自定义端点 / 团队模型配置) | P-E4 |
 | `add_route` / `add_static` | qi 增量:HTTP 挂载 | P-E5 |
+
+| `runAgent(spec, task, opts)` | 在宿主内起一个**受管的子运行**(E12):独立上下文、自己的工具集与模型,**不碰会话**(不落盘 / 不分派 / 不改 active_agent)。`spec = {system_prompt(必填), tools?(缺省**继承父**), model?, name?}`;`on_event` 上报进度。扩展事件**照常派发**(闸门对子运行也生效) | ✅ P-E4a |
 
 ### 3.3 上下文(`ctx`)
 
@@ -319,7 +323,7 @@ def notify(message, *, level="info") -> None
 
 ### 7.3 必须从 core 拿到的通用能力(全不是"多 agent 专属")
 
-`ctx.runAgent(spec, task)`(**E12 新增的挂点**;内部 = `QiRuntime.stream()` + 内存会话)· `ctx.model` / `ctx.thinkingLevel` / `ctx.cwd` / `ctx.hasUI` / `ctx.isProjectTrusted()` / `ctx.ui.confirm` · 工具的 `onUpdate` 流式进度 · `details` 结构化通道 · `renderCall`/`renderResult` · `ctx.signal`(中断传播)· `appendEntry`(落盘子 agent 调用记录)· `registerFlag`(提供角色选择旗标,语法见 E19)。
+`ctx.runAgent(spec, task)`(**已落地,P-E4a**;内部 = 一次受管的子运行,不碰会话)· `ctx.model` / `ctx.thinkingLevel` / `ctx.cwd` / `ctx.hasUI` / `ctx.isProjectTrusted()` / `ctx.ui.confirm` · 工具的 `onUpdate` 流式进度 · `details` 结构化通道 · `renderCall`/`renderResult` · `ctx.signal`(中断传播)· `appendEntry`(落盘子 agent 调用记录)· `registerFlag`(提供角色选择旗标,语法见 E19)。
 
 **这意味着 P-E1..P-E4 全是通用能力,qi-agents 只是消费者** —— 顺序上先做通用的,三件套最后迁。
 
@@ -381,11 +385,13 @@ core 技能发现:同理(私有技能自动绑定)
 | **P-E3d-1 模型 / 思考级别 / 改名** ✅ | `setModel` / `get-setThinkingLevel` / `set_session_title` 收进 **runtime**(唯一入口)+ `model_select` / `thinking_level_select` / `session_info_changed` 三个通知型事件 + `_emit_notice`(后台任务,同步调用点也能发) | `tests/test_extension_model.py` 8 项(真 runtime):换客户端时 `thinking_level` / `retry` **真的带过去**;**两个来源都发且只发一次**(`set` / `cycle` / `user` / `auto`);空标题不发事件;标题内存+header 两处都改;`models.json` 未登记的 id 仍可用(刻意宽容) |
 | **P-E3d-2 压缩事件** | `session_before_compact`(可 cancel / 可自带摘要)+ `session_compact` / `session_compact_failed`。压缩已经住在 runtime(`compact_session`),所以这是一处就能接完的 | 扩展能取消一次压缩、或用自己写的摘要代替 |
 | **P-E3d-3 推迟项** | renderer 三件套 + `session_before_switch` / `session_before_fork` / `session_before_tree` | 理由见 §11.10:两条都**不在三件套扩展的关键路径上**,且各自需要一次专门决策(渲染 API 形状 / 会话操作改成 runtime 拥有) |
-| **P-E4 core 收窄** | runner 入参从 `AgentUnit` 改 `{system_prompt, tools, model}`;**新增 `ctx.runAgent(spec, task)`(E12)**;`AgentRegistry`/`load_all_agents`/dispatcher 从 core 移出;**仓库自己的 4 个项目 agent 先搬进 `examples/`(E15)**;`events` 总线;`registerProvider` | `qi` 裸启动单 agent 跑通;core 不再 import `dispatcher`/`loader.load_all_agents`;core `dependencies` 去掉 `mcp`;`ctx.runAgent` 能在测试里跑完一个子任务 |
+| **P-E4a 运行单元 + 子运行** ✅ | runner 入参 `AgentUnit` → **`RunSpec = {name, prompt, tools}`**(core 里不再有任何地方能问出“这是哪个角色”)+ `spec_from_unit()` 过渡件 + `ctx.runAgent`(见 §3.2) | `tests/test_extension_run_agent.py` 6 项:子运行**不污染父会话**;提示词/工具真的隔离;`tools` 缺省**继承父**(不放大权限);**闸门在子运行里也生效**;`model` 另建客户端不碰父;空提示词报错 |
+| **P-E4b 扩展间总线 + provider** | `events.on/emit`(扩展之间的通信,不是宿主事件)+ `registerProvider(name, cfg)` | 两个扩展能互相发消息,而不借助全局变量 |
+| **P-E4c 移除(破坏性)** | `AgentRegistry` / `load_all_agents` / dispatcher 从 core 移出;仓库自己 4 个项目 agent 搬 `examples/`(E15);core `dependencies` 去掉 `mcp`;`spec_from_unit` 搬进 qi-agents | `qi` 裸启动**单 agent**跑通;core 不再 import `dispatcher`/`loader.load_all_agents`;`pip install qi-agent` 不再拖 `mcp` |
 | **P-E5 三件套迁移** | qi-mcp → qi-agents → qi-web(按依赖从少到多);**qi-agents 落地后把仓库 agents 搬回 `.qi/agents/`(E15)**;`ctx.ui` 的 web 侧 + `add_route`/`add_static` | 三个包各自可装可卸;不装时启动提示与 `qi doctor` 正确;`qi web` 由扩展提供;`qi --agent <name>` 由 qi-agents 提供 |
 | **P-E6 收尾** | 参考扩展样例(至少一个 `examples/extensions/` 下的完整例子)+ 目录通道的 PEP 723 声明解析 + 冲突报告 + 文档重写(agent-config.md / web.md / dispatcher.md 归档)+ 迁移提示打磨 | 新用户按 extensions.md 能写出并装上第一个扩展;声明与实装不一致时 `qi doctor` 报得出来 |
 
-**依赖关系**:P-E1 ✅ → **P-E2 ✅** → **P-E3a ✅** → **P-E3b ✅** → **P-E3c ✅** → **P-E3d-1 ✅** → P-E3d-2 / P-E4 顺序做;P-E4 可与 P-E3 并行;P-E5 依赖 P-E2 + P-E3 + P-E4;P-E6 最后。
+**依赖关系**:P-E1 ✅ → **P-E2 ✅** → **P-E3 ✅**(a/b/c/d-1) → **P-E4a ✅** → P-E4b/c → P-E5 → P-E6。
 
 > **P-E3 剩下的两块与三件套无关**:P-E3d-2(压缩事件)与 P-E3d-3(renderer + 会话操作事件)。
 > 三件套扩展真正依赖的扩展面已全部就位 —— 除了 `ctx.runAgent`,那是 **P-E4** 的事。

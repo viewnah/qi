@@ -599,16 +599,99 @@ class EmitResult:
         return not self.errors
 
 
+class ExtensionEvents:
+    """`api.events` —— **扩展之间**的消息频道(不是宿主事件)。
+
+    与 `api.on`(宿主事件)的分工:宿主事件是“qi 在通知你”,有链式返回值与裁决语义;
+    这里只是“扩展之间说一声”。分开的意义在于两者**语义完全不同** —— 混成一件事的话,
+    迟早有人给宿主事件 emit 一条自定义消息(然后奇怪为什么没人理),或者拿 peer 消息
+    去拦工具调用(拦不住 —— 拦截必须走 `tool_call`)。
+
+    `emit` **不等待**:pi 的 `pi.events.emit` 也是同步的。要拿结果就用宿主事件 +
+    `sendMessage`,而不是把这里改成 async(那会让所有调用点都跟着改)。
+    """
+
+    def __init__(self, bus: "ExtensionBus", source: str = "") -> None:
+        self._bus = bus
+        self._source = source
+
+    def on(self, name: str, handler: Callable[[Any], Any]) -> None:
+        self._bus.on_message(name, handler, source=self._source)
+
+    def emit(self, name: str, data: Any = None) -> None:
+        self._bus.send_message(name, data, source=self._source)
+
+    @property
+    def names(self) -> list[str]:
+        """已被订阅的 peer 消息名(诊断用)。"""
+        return self._bus.message_names
+
+
 class ExtensionBus:
-    """扩展事件总线:按装载顺序链式派发(§4)。"""
-    def __init__(self) -> None:
+    """扩展事件总线:按装载顺序链式派发(§4)。
+
+    同一个对象上还挂着**扩展之间**的消息频道(`api.events`)。共用对象是刻意的:
+    总线本来就是“所有扩展共享的那一个东西”(而且它是必填参数),另起一个对象
+    迟早会出现“两个扩展各拿一个总线、消息静默发不到”.
+    """
+
+    def __init__(self, notes: list[str] | None = None) -> None:
         # event -> [(来源, handler)]。来源 = 扩展名(诊断时能指到具体哪个扩展)
         self._handlers: dict[str, list[tuple[str, ExtensionHandler]]] = {}
+        #: peer 消息频道:`name -> [(来源, handler)]`。与上面的 `_handlers`(宿主事件)
+        #: 是**两张分开的表** —— 所以同名的宿主事件与 peer 消息互不干扰。
+        self._messages: dict[str, list[tuple[str, Callable[[Any], Any]]]] = {}
+        #: handler 抛异常的去处(宿主传自己的 notes;没传就自己攒着,可从 `problems` 读)
+        self._notes = notes if notes is not None else []
 
     # ── 注册 ──
     def on(self, event: str, handler: ExtensionHandler, *, source: str = "") -> None:
         """订阅事件。`source` 缺省用 handler 的模块名(库内调用方应显式给扩展名)。"""
         self._handlers.setdefault(event, []).append((source or _handler_name(handler), handler))
+
+    # ── 扩展之间(peer messaging)──
+    def on_message(self, name: str, handler: Callable[[Any], Any], *,
+                   source: str = "") -> None:
+        """订阅一条 peer 消息。handler 只收 `data`(没有 ctx —— peer 消息不该需要宿主上下文)。"""
+        self._messages.setdefault(name, []).append(
+            (source or _handler_name(handler), handler))
+
+    def send_message(self, name: str, data: Any = None, *, source: str = "") -> None:
+        """发一条 peer 消息:同步 handler 立即调,async handler 排成后台任务。
+
+        **不等待**、**没有返回值**。单个 handler 抛异常 → 记进宿主的 notes 并继续
+        (与宿主事件同一条规则:一个扩展坏掉不拖垮别的),
+        """
+        for listener, handler in list(self._messages.get(name, ())):
+            try:
+                result = handler(data)
+            except Exception as exc:  # noqa: BLE001 第三方代码
+                self._notes.append(f"扩展 {listener} 的 events.on({name!r}) 处理失败: {exc}")
+                continue
+            if inspect.isawaitable(result):
+                self._schedule(result, listener, name)
+
+    def _schedule(self, awaitable: Any, listener: str, name: str) -> None:
+        """把 async handler 排成后台任务。没在事件循环里就丢掉(与 `_emit_notice` 同一条取舍)。"""
+        async def _run() -> None:
+            try:
+                await awaitable
+            except Exception as exc:  # noqa: BLE001 第三方代码
+                self._notes.append(f"扩展 {listener} 的 events.on({name!r}) 处理失败: {exc}")
+
+        try:
+            asyncio.get_running_loop().create_task(_run())
+        except RuntimeError:
+            return
+
+    @property
+    def message_names(self) -> list[str]:
+        return sorted(self._messages)
+
+    @property
+    def problems(self) -> list[str]:
+        """handler 异常的记录(宿主没传 notes 时用这个读)。"""
+        return list(self._notes)
 
     @property
     def events(self) -> list[str]:
@@ -840,6 +923,26 @@ class ExtensionApi:
             return None
         return self._flags.value(name)
 
+    # ── 扩展之间 ──
+    @property
+    def events(self) -> ExtensionEvents:
+        """`api.events` —— 扩展之间的消息频道(见 `ExtensionEvents`)。"""
+        return ExtensionEvents(self.bus, source=self._name)
+
+    # ── provider ──
+    def registerProvider(self, name: str, config: dict | None = None) -> None:   # noqa: N802
+        """动态注册/覆盖一个 provider(代理、自定义端点、团队模型配置)。
+
+        **只改内存,不写 `models.json`** —— 注册的 provider 活在这个进程里。
+        pi 允许扩展持久化目录元数据(带 generation 校验),那是另一套机制,qi 没做。
+
+        覆盖同名 provider 是允许的(代理正是这个用途),但会记一条 note:
+        “我明明配了 models.json,却被别人改了” 很难查。
+        """
+        if self._host is None or not callable(getattr(self._host, "register_provider", None)):
+            raise RuntimeError("宿主没有提供 provider 注册接口:registerProvider 不可用")
+        self._host.register_provider(name, dict(config or {}), self._name)
+
     # ── 会话 ──
     def appendEntry(self, custom_type: str, data: dict | None = None) -> None:   # noqa: N802
         """落一条扩展自定义 entry(进会话文件,**不进 LLM 上下文**)。
@@ -915,6 +1018,7 @@ __all__ = [
     "ExtensionBus",
     "ExtensionCommand",
     "ExtensionContext",
+    "ExtensionEvents",
     "ExtensionHandler",
     "ExtensionShortcut",
     "ExtensionUi",

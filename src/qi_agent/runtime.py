@@ -27,8 +27,8 @@ from .compaction import (
     summary_context_message,
 )
 from .abort import AbortSignal
-from .config import (ResolvedModel, load_config, resolve_default_model, resolve_model,
-                     resolve_router_model)
+from .config import (ProviderConfig, ResolvedModel, load_config, resolve_default_model,
+                     resolve_model, resolve_router_model)
 from .dispatcher import Decision, Dispatcher
 from .extensions import (
     CommandRegistry,
@@ -126,9 +126,13 @@ class QiRuntime:
         self.catalog = ToolCatalog()
         register_builtin_tools(self.catalog)
         self.capabilities = CapabilityRegistry()
+        #: 启动提示 + handler 异常的汇总通道(runtime 不做 IO,前端自己决定怎么展示)。
+        #: 必须在 `ExtensionBus` **之前**建:总线拿它当 handler 异常的去处。
+        self.notes: list[str] = []
         # 事件总线:扩展在 `register(api)` 里 `api.on(...)` 订阅的东西都落在这里。
         # 零扩展时 `is_empty` = True,宿主可以据此跳过整条派发路径。
-        self.bus = ExtensionBus()
+        # 同一个对象也挂着**扩展之间**的消息频道(`api.events`)。
+        self.bus = ExtensionBus(notes=self.notes)
         #: 扩展的工具集覆盖(`api.setActiveTools`)。None = 按 agent 的 `tools` 解析
         self._tool_override: set[str] | None = None
         # 信任门控(P-E1 / E16):未信任 → **不扫**项目级扩展(扩展是仓库控制的任意代码)。
@@ -143,7 +147,6 @@ class QiRuntime:
             "steer": [], "follow_up": [], "next_turn": []}
         self.project_trusted, self.trust_reason = resolve_project_trust(
             self.settings, approve=approve_project, has_ui=has_ui)
-        self.notes: list[str] = []
         if not self.project_trusted and paths.project_extensions_dir(self.cwd).is_dir():
             self.notes.append(
                 f"未信任项目({self.trust_reason}):`.qi/extensions/` 未加载;用 `qi -a` 信任")
@@ -323,6 +326,21 @@ class QiRuntime:
             session_manager=SessionView(session if session is not None
                                         else self._active_session),
         )
+
+    # ── provider(扩展的 `registerProvider`)──
+    def register_provider(self, name: str, config: dict, source: str) -> None:
+        """动态注册/覆盖一个 provider。**只改内存里的 cfg,不写 `models.json`。**
+
+        写盘会让“跑一次带代理的扩展”永久改变用户的模型配置 —— 而那是个静默的副作用。
+        所以扩展注册的 provider 只活在这个进程里(pi 允许扩展持久化目录元数据、
+        带 generation 校验 —— 那是另一套机制,qi 没做)。
+        """
+        if name in self.cfg.providers:
+            self.notes.append(f"扩展 {source} 覆盖了已有的 provider {name}")
+        try:
+            self.cfg.providers[name] = ProviderConfig.model_validate(config)
+        except Exception as exc:  # noqa: BLE001 pydantic 校验错
+            raise ValueError(f"provider {name} 配置不合法: {exc}") from exc
 
     def append_extension_entry(self, custom_type: str, data: dict, source: str) -> None:
         """扩展自定义 entry 的**唯一写口**(`api.appendEntry` 走这里)。

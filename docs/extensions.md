@@ -121,8 +121,8 @@ qi 曾需要的"每轮可换角色"hook **不加** —— 见 §7(多 agent 走 
 | `registerMessageRenderer` / `registerEntryRenderer` / `registerMarkdownTransformer` | TUI 渲染 —— **推迟**,理由见 §11.10(它们把扩展直接绑到 textual 的 widget 类型上,API 形状需要专门决策) | ⏸ |
 | `sessionManager` / `getSessionName()` / `setSessionName()` / `setLabel()` | 会话读写 | P-E3 |
 | `setModel(model)` / `getThinkingLevel()` / `setThinkingLevel(level)` | 模型与思考级别。**唯一的切换入口是 runtime**:UI 与扩展共用那一处,所以事件只发一次;换模型时 `thinking_level` 与 `retry` 会带过去 | ✅ P-E3d-1 |
-| `events.on/emit` | **扩展间**总线(不是宿主事件) | P-E4 |
-| `registerProvider(name, cfg)` | 动态注册 provider(代理 / 自定义端点 / 团队模型配置) | P-E4 |
+| `events.on/emit` | **扩展之间**的消息频道(`api.events`)。`emit` **同步、不等**;async handler 排后台任务;单个 handler 抛错→记 notes 并继续。与宿主事件是**两套 API、同一对象**(见 §11.11) | ✅ P-E4b |
+| `registerProvider(name, cfg)` | 动态注册/覆盖 provider(代理 / 自定义端点 / 团队模型配置)。**只改内存,不写 `models.json`**;覆盖同名会记一条 note | ✅ P-E4b |
 | `add_route` / `add_static` | qi 增量:HTTP 挂载 | P-E5 |
 
 | `runAgent(spec, task, opts)` | 在宿主内起一个**受管的子运行**(E12):独立上下文、自己的工具集与模型,**不碰会话**(不落盘 / 不分派 / 不改 active_agent)。`spec = {system_prompt(必填), tools?(缺省**继承父**), model?, name?}`;`on_event` 上报进度。扩展事件**照常派发**(闸门对子运行也生效) | ✅ P-E4a |
@@ -386,12 +386,12 @@ core 技能发现:同理(私有技能自动绑定)
 | **P-E3d-2 压缩事件** | `session_before_compact`(可 cancel / 可自带摘要)+ `session_compact` / `session_compact_failed`。压缩已经住在 runtime(`compact_session`),所以这是一处就能接完的 | 扩展能取消一次压缩、或用自己写的摘要代替 |
 | **P-E3d-3 推迟项** | renderer 三件套 + `session_before_switch` / `session_before_fork` / `session_before_tree` | 理由见 §11.10:两条都**不在三件套扩展的关键路径上**,且各自需要一次专门决策(渲染 API 形状 / 会话操作改成 runtime 拥有) |
 | **P-E4a 运行单元 + 子运行** ✅ | runner 入参 `AgentUnit` → **`RunSpec = {name, prompt, tools}`**(core 里不再有任何地方能问出“这是哪个角色”)+ `spec_from_unit()` 过渡件 + `ctx.runAgent`(见 §3.2) | `tests/test_extension_run_agent.py` 6 项:子运行**不污染父会话**;提示词/工具真的隔离;`tools` 缺省**继承父**(不放大权限);**闸门在子运行里也生效**;`model` 另建客户端不碰父;空提示词报错 |
-| **P-E4b 扩展间总线 + provider** | `events.on/emit`(扩展之间的通信,不是宿主事件)+ `registerProvider(name, cfg)` | 两个扩展能互相发消息,而不借助全局变量 |
+| **P-E4b 扩展间消息 + provider** ✅ | `api.events`(peer 消息:两套 API、同一总线对象)+ `registerProvider`(进内存 cfg,不写盘) | `tests/test_extension_interop.py` 9 项:两个扩展真能互相发消息;无人订阅是 no-op;坏 handler 不拖垮其他(且进 notes);async handler 排后台任务;**同名的宿主事件与 peer 消息互不干扰**(两张表);注册的 provider 立即可用、**不写盘**、覆盖同名会提示 |
 | **P-E4c 移除(破坏性)** | `AgentRegistry` / `load_all_agents` / dispatcher 从 core 移出;仓库自己 4 个项目 agent 搬 `examples/`(E15);core `dependencies` 去掉 `mcp`;`spec_from_unit` 搬进 qi-agents | `qi` 裸启动**单 agent**跑通;core 不再 import `dispatcher`/`loader.load_all_agents`;`pip install qi-agent` 不再拖 `mcp` |
 | **P-E5 三件套迁移** | qi-mcp → qi-agents → qi-web(按依赖从少到多);**qi-agents 落地后把仓库 agents 搬回 `.qi/agents/`(E15)**;`ctx.ui` 的 web 侧 + `add_route`/`add_static` | 三个包各自可装可卸;不装时启动提示与 `qi doctor` 正确;`qi web` 由扩展提供;`qi --agent <name>` 由 qi-agents 提供 |
 | **P-E6 收尾** | 参考扩展样例(至少一个 `examples/extensions/` 下的完整例子)+ 目录通道的 PEP 723 声明解析 + 冲突报告 + 文档重写(agent-config.md / web.md / dispatcher.md 归档)+ 迁移提示打磨 | 新用户按 extensions.md 能写出并装上第一个扩展;声明与实装不一致时 `qi doctor` 报得出来 |
 
-**依赖关系**:P-E1 ✅ → **P-E2 ✅** → **P-E3 ✅**(a/b/c/d-1) → **P-E4a ✅** → P-E4b/c → P-E5 → P-E6。
+**依赖关系**:P-E1 ✅ → **P-E2 ✅** → **P-E3 ✅**(a/b/c/d-1) → **P-E4a ✅** → **P-E4b ✅** → P-E4c → P-E5 → P-E6。
 
 > **P-E3 剩下的两块与三件套无关**:P-E3d-2(压缩事件)与 P-E3d-3(renderer + 会话操作事件)。
 > 三件套扩展真正依赖的扩展面已全部就位 —— 除了 `ctx.runAgent`,那是 **P-E4** 的事。

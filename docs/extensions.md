@@ -93,8 +93,8 @@ qi 曾需要的"每轮可换角色"hook **不加** —— 见 §7(多 agent 走 
 | `registerTool(def)` | 注册工具(含**动态注册**:load 之后、事件里、命令里都能调,立即生效;动态那半在 P-E2b) | ✅ P-E2a |
 | `add_tool(tool)` | v1 旧名,`registerTool` 的别名(走同一条盖章路径) | ✅ P-E2a |
 | `provides_config(kind, types)` | 消费型配置声明 | 已有 |
-| `setActiveTools(names)` / `getActiveTools()` / `getAllTools()` | 运行时改工具集 / 读工具元数据(含 `sourceInfo`) | P-E2 |
-| `exec(cmd, args, opts)` | 起子进程(带 `signal` / `timeout`) | P-E2 |
+| `setActiveTools(names)` / `getActiveTools()` / `getAllTools()` | 运行时改工具集 / 读启用集 / 读全部工具元数据(含 `source_info`)。**未知名字被过滤但会记进 `notes`**;覆盖**跳角色生效**且对后续回合有效 | ✅ P-E2b |
+| `exec(cmd, args, opts)` | 起子进程(**不经 shell**,`args` 原样进 argv;带 `signal` / `timeout`,任一命中即 kill) | ✅ P-E2b |
 | `registerCommand(name, opts)` | 斜杠命令(含 `getArgumentCompletions`);重名按装载顺序加 `:1` `:2` 后缀 | P-E3 |
 | `registerShortcut(key, opts)` / `registerFlag(name, opts)` | 快捷键 / CLI 开关 | P-E3 |
 | `sendMessage(msg, opts)` | 注入自定义消息(**进 LLM 上下文**),`deliverAs: steer\|followUp\|nextTurn` | P-E3 |
@@ -327,7 +327,7 @@ core 技能发现:同理(私有技能自动绑定)
 | **P-E1a/b/c 宿主骨架** ✅ | 改名对齐(plugin→extension:`qi.plugins`→`qi.extensions`、`.qi/plugins`→`.qi/extensions`、`plugin.py`→`extension.py`、`PluginApi`→`ExtensionApi`、`discover_plugins`→`discover_extensions`)+ 激活 `settings.extensions`(父目录或单个扩展目录都行)+ **信任门控**(`-a`/`-na` + `defaultProjectTrust` + headless fail-safe)+ legacy 目录迁移(连入口名一起改) | `tests/test_extensions.py` 19 项:未信任项目的 `.qi/extensions/` 不加载;用户级/项目级 settings 的分层正确;迁移后**能装载**(不只目录到位);entry point 组确为 `qi.extensions` |
 | **P-E1d 事件面骨架** ✅ | 总线 `ExtensionBus`(`emit` / `emit_until` / 快照遍历 / patch 链 / 失败隔离 / fail-safe)+ `api.on()` + `ctx` 最小集(cwd/model/thinkingLevel/signal/hasUI/isProjectTrusted/notes)+ 首个真实事件 `session_start`(幂等 + `reason`) | `tests/test_extension_bus.py` 19 项:链语义逐条钉住;真实 `QiRuntime` 端到端收到 `session_start`;未信任项目的扩展**连 register 都不执行**;handler 崩了变成 `notes` 而不是崩会话 |
 | **P-E2a 工具注册面** ✅ | `Tool` 搬到公开面(带 `prompt_snippet` / `prompt_guidelines` / `source_info`)+ `registerTool`(正式名)/ `add_tool`(别名)+ `register_tool` 统一盖章 + **内置工具改走 `registerTool`**(dogfood,来源记 `builtin`) | `tests/test_extensions.py` 5 项 + `test_system_prompt.py` 2 项:来源四个键逐条钉住;两条 import 路径是**同一个类**;snippet 回落规则;snippet 不进 tool schema;工具自带指南只随**实际启用**的工具出现 |
-| **P-E2b 工具面剩余** | 动态注册(load 之后、事件里、命令里都能注册且立即生效)+ `setActiveTools` / `getActiveTools` / `getAllTools`(按 `source_info` 过滤)+ `exec` | 运行时新增的工具**同一会话内立即**可调;`getAllTools` 能区分 builtin / 扩展 |
+| **P-E2b 运行时工具集 + `exec`** ✅ | 动态注册(装载后、事件里都能注册且**下一轮就能调**)+ `getAllTools`(元数据 + `source_info`)/ `getActiveTools` / `setActiveTools`(覆盖优先于 agent 的 `tools`,跳角色生效)+ `exec`(不经 shell) | `tests/test_extension_tools.py` 13 项:端到端证明覆盖**穿过 runner**(下一轮 tool schema 里真的只剩 `read`);无宿主时 `getActiveTools` 降级而 `setActiveTools` **报错**;`exec` 的超时/中断都真 kill、带空格参数不被拆 |
 | **P-E2c 输入与工具事件** | `input` / `before_agent_start` / `context` / `tool_call` / `tool_result` / `turn_start` 六个派发点接上真实代码路径 | `tool_call` block 能拦住 bash(fail-safe 路径也有测试) |
 | **P-E2d 依赖契约** | 装载时读 `importlib.metadata.requires()`:禁把 `qi-agent` 写进 `dependencies` + 已装版本不符就报告 | 钉了宿主版本的扩展被判出而不静默 |
 | **P-E3 命令与 UI + 会话面** | `registerCommand` / `registerShortcut` / `registerFlag` + **`ctx.ui` 通道(TUI)** + renderer 三件套 + `appendEntry` + `sendMessage`/`sendUserMessage` + `sessionManager` + `setModel`/thinking + 会话类事件 | 扩展能注册 `/cmd`、弹 confirm、落盘自定义 entry 并在 TUI 回放 |
@@ -335,7 +335,9 @@ core 技能发现:同理(私有技能自动绑定)
 | **P-E5 三件套迁移** | qi-mcp → qi-agents → qi-web(按依赖从少到多);**qi-agents 落地后把仓库 agents 搬回 `.qi/agents/`(E15)**;`ctx.ui` 的 web 侧 + `add_route`/`add_static` | 三个包各自可装可卸;不装时启动提示与 `qi doctor` 正确;`qi web` 由扩展提供;`qi --agent <name>` 由 qi-agents 提供 |
 | **P-E6 收尾** | 参考扩展样例(至少一个 `examples/extensions/` 下的完整例子)+ 目录通道的 PEP 723 声明解析 + 冲突报告 + 文档重写(agent-config.md / web.md / dispatcher.md 归档)+ 迁移提示打磨 | 新用户按 extensions.md 能写出并装上第一个扩展;声明与实装不一致时 `qi doctor` 报得出来 |
 
-**依赖关系**:P-E1a/b/c ✅ → **P-E1d ✅** → **P-E2a ✅** → P-E2b/c/d → P-E3 顺序做;P-E4 可与 P-E3 并行(都在 core);**P-E5 依赖 P-E2(工具)+ P-E3(UI/会话/flag)+ P-E4(`ctx.runAgent`)**;P-E6 最后。
+**依赖关系**:P-E1a/b/c ✅ → **P-E1d ✅** → **P-E2a ✅** → **P-E2b ✅** → P-E2c/d → P-E3 顺序做;P-E4 可与 P-E3 并行;P-E5 依赖 P-E2 + P-E3 + P-E4;P-E6 最后。
+
+**命名规则**(避免以后再纠结):**方法名照 pi 保留 camelCase**(`registerTool` / `getAllTools` / `setActiveTools` …) —— 那是扩展作者要背的那部分;qi **自己的数据结构用 snake_case**(`prompt_snippet` / `source_info` 的键)。v1 的旧名(`add_tool`)作为别名留着。
 
 ## 10. 决策记录
 

@@ -11,6 +11,7 @@ import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from . import paths
 from .extensions import (
@@ -21,7 +22,6 @@ from .extensions import (
     ToolExecutor,
 )
 from .models import AgentUnit
-
 __all__ = [
     "AgentRegistry",
     "CapabilityRegistry",
@@ -55,6 +55,10 @@ class ToolCatalog:
     @property
     def names(self) -> set[str]:
         return set(self._tools)
+
+    def all(self) -> list[Tool]:
+        """所有已注册工具(按名排序)。`getAllTools()` 与诊断面用它。"""
+        return [self._tools[n] for n in sorted(self._tools)]
 
     def resolve(self, names: list[str]) -> list[Tool]:
         return [self._tools[n] for n in names]
@@ -116,12 +120,17 @@ class CapabilityRegistry:
 def discover_extensions(catalog: ToolCatalog, capabilities: CapabilityRegistry,
                         cwd: Path | None = None, *,
                         bus: ExtensionBus,
+                        host: Any = None,
                         extra_dirs: Iterable[Path | tuple[Path, str]] | None = None,
                         project_trusted: bool = True) -> list[str]:
     """发现并装载扩展:目录通道 + entry points(`qi.extensions`)。返回扩展名列表。
 
     `bus` **必填**:扩展能力的一半是订阅事件,没总线的装载等于装了个哑巴
     (工具能注册、`on()` 却无处可去)—— 宁可在调用点报 TypeError,不要静默丢掉 handler。
+
+    `host` 是工具集读写面(`setActiveTools` / `getActiveTools` 的后端)。**选填**:
+    没给时 `getActiveTools` 退回“catalog 里的全部”,而 `setActiveTools` 会**报错**
+    (不是静默无效)—— 失败看得见,所以不必像 bus 那样强制。
 
     优先级(先到先得,同名跳过):项目 `.qi/extensions/` → 全局 `<agent>/extensions/`
     → `extra_dirs`(settings.json 的 `extensions[]`)→ entry points。
@@ -138,7 +147,7 @@ def discover_extensions(catalog: ToolCatalog, capabilities: CapabilityRegistry,
         try:
             api = ExtensionApi(catalog=catalog, bus=bus, _name=name,
                                _path=origin["path"], _scope=origin["scope"],
-                               _origin=origin["origin"])
+                               _origin=origin["origin"], _host=host)
             module = load()
             register = getattr(module, "register", None)
             if not callable(register):

@@ -27,8 +27,12 @@ P-E2a 把 `Tool` 从 `registry.py` 搬了过来(那里只留 `ToolCatalog`):扩�
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import inspect
-from collections.abc import Awaitable, Callable
+import os
+import time
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -103,6 +107,105 @@ def register_tool(catalog: Any, tool: Tool, *, source: str = "", path: str = "",
         tool.source_info = {"source": source or "unknown", "path": path,
                            "scope": scope or "temporary", "origin": origin or "top-level"}
     catalog.register(tool)
+
+
+def tool_info(tool: Tool) -> dict:
+    """工具的公开元数据(`getAllTools()` 的元素)。
+
+    字段用 snake_case(qi 自己的 Python 数据);方法的**名字**照 pi 保留 camelCase,
+    因为那是扩展作者要背的那部分。
+    """
+    return {"name": tool.name, "description": tool.description,
+            "prompt_snippet": tool.prompt_snippet,
+            "prompt_guidelines": list(tool.prompt_guidelines),
+            "parameters": tool.parameters,
+            "source_info": dict(tool.source_info or {})}
+
+
+def _note(host: Any, text: str) -> None:
+    """往宿主的 notes 通道丢一条可读提示(宿主可能没有这个属性)。"""
+    notes = getattr(host, "notes", None)
+    if isinstance(notes, list):
+        notes.append(text)
+
+
+#: 单个子进程 stdout/stderr 的捕获上限(与工具输出同档)
+MAX_EXEC_OUTPUT = 50_000
+
+
+@dataclass
+class ExecResult:
+    """`api.exec()` 的结果(pi 的 `pi.exec` 同形)。"""
+
+    command: str
+    args: list[str]
+    code: int | None            # None = 被信号杀掉(含超时/中断)
+    stdout: str
+    stderr: str
+    killed: bool = False
+    duration_ms: int = 0
+
+    @property
+    def ok(self) -> bool:
+        return self.code == 0
+
+
+async def exec_command(command: str, args: Sequence[str] | None = None, *,
+                       cwd: str | Path | None = None, timeout: float | None = None,
+                       signal: AbortSignal | None = None,
+                       env: dict[str, str] | None = None) -> ExecResult:
+    """起一个**不经 shell** 的子进程(对齐 pi 的 `pi.exec`)。
+
+    不经 shell 是刻意的:`args` 原样进 argv,扩展不必自己拼引号 —— 也就不会因为少转义
+    一个空格而执行了别的命令。要 shell 语义就显式 `bash -c`。
+
+    `timeout` 与 `signal` 任一命中都**杀进程**并把 `killed` 置真(`code` 为 None):
+    协作式取消在这里体现为`kill()`,因为子进程不会自己检查 Python 的 flag。
+    """
+    argv = [command, *[str(a) for a in (args or ())]]
+    started = time.perf_counter_ns()
+
+    def elapsed() -> int:
+        return (time.perf_counter_ns() - started) // 1_000_000
+
+    proc = await asyncio.create_subprocess_exec(
+        *argv, cwd=str(cwd) if cwd else None,
+        env={**os.environ, **env} if env else None,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+
+    comm = asyncio.ensure_future(proc.communicate())
+    watcher = asyncio.ensure_future(signal.wait()) if signal is not None else None
+    killed = False
+    try:
+        waiters: set[asyncio.Future] = {comm}
+        if watcher is not None:
+            waiters.add(watcher)
+        done, _pending = await asyncio.wait(waiters, timeout=timeout,
+                                            return_when=asyncio.FIRST_COMPLETED)
+        if comm not in done:
+            # 超时或中断 —— 子进程不会看 Python 的中断标志,所以只能杀
+            killed = True
+            proc.kill()
+        out, err = await comm
+    finally:
+        if watcher is not None:
+            watcher.cancel()
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await watcher
+
+    return ExecResult(
+        command=command, args=argv[1:],
+        code=None if killed else proc.returncode,
+        stdout=_decode(out), stderr=_decode(err),
+        killed=killed, duration_ms=elapsed())
+
+
+def _decode(raw: bytes) -> str:
+    text = raw.decode("utf-8", errors="replace")
+    if len(text) > MAX_EXEC_OUTPUT:
+        return text[:MAX_EXEC_OUTPUT] + "\n…(输出已截断)"
+    return text
 
 
 def _handler_name(handler: Any) -> str:
@@ -270,16 +373,65 @@ class ExtensionApi:
     _path: str = ""
     _scope: str = "temporary"      # user | project | temporary
     _origin: str = "top-level"     # top-level | package
+    #: 宿主(runtime)提供的工具集读写面 —— 鸭子类型,只要有两个方法:
+    #:   `tool_names() -> list[str]`(本回合实际启用的工具名)
+    #:   `set_tool_names(names) -> None`(覆盖,对后续回合生效)
+    #: 用鸭子类型而不是 Protocol:`extensions` 不能 import runtime(成环),而协议
+    #: 在这里只起文档作用 —— 类型检查器验不到实现方,不如把契约写在这里。
+    #: 没给 host 时 `getActiveTools` 退回“catalog 里的全部”,`setActiveTools` 报错。
+    _host: Any = None
 
     # ── 工具 ──
     def registerTool(self, tool: Tool) -> None:      # noqa: N802 pi 的方法名,保持同形
-        """注册工具(进 ToolCatalog),并盖上本扩展的来源。"""
+        """注册工具(进 ToolCatalog),并盖上本扩展的来源。
+
+        **装载后也能调**(事件里、命令里):catalog 是活的对象,而 `tools: ["*"]` 的
+        agent 每回合**当场重算**工具集,所以新工具下一轮就能调,不需要 `/reload`。
+        """
         register_tool(self.catalog, tool, source=self._name, path=self._path,
                       scope=self._scope, origin=self._origin)
 
     def add_tool(self, tool: Tool) -> None:
         """v1 旧名;`registerTool` 是正式名(对齐 pi)。"""
         self.registerTool(tool)
+
+    def getAllTools(self) -> list[dict]:             # noqa: N802
+        """所有**已注册**工具的元数据(含 `source_info`)。
+
+        纯 catalog 查询,不需要宿主 —— 所以装载阶段就能用(例如扩展想知道
+        自己是不是唯一的 `grep` 提供者)。
+        """
+        return [tool_info(t) for t in self.catalog.all()]
+
+    def getActiveTools(self) -> list[str]:           # noqa: N802
+        """本回合实际启用的工具名。宿主没给工具面时退回“catalog 里的全部”。"""
+        if self._host is None:
+            return sorted(self.catalog.names)
+        return list(self._host.tool_names())
+
+    def setActiveTools(self, names: Sequence[str]) -> None:   # noqa: N802
+        """改运行时的工具集(plan-mode / 只读角色那种需求)。
+
+        **未知名字被过滤**而不是报错:pi 允许先把名字放进集合、工具随后才动态注册。
+        但静默丢弃也不行(打错一个字等于悄悄改了权限),所以过虑掉的会写进宿主的
+        `notes` —— 看得见。
+        """
+        if self._host is None:
+            raise RuntimeError("宿主没有提供工具集接口:setActiveTools 不可用")
+        wanted = [str(n) for n in names]
+        unknown = sorted({n for n in wanted if n not in self.catalog.names})
+        if unknown:
+            _note(self._host, f"setActiveTools 收到未注册的工具名(已忽略): {unknown}")
+        self._host.set_tool_names(wanted)
+
+    async def exec(self, command: str, args: Sequence[str] | None = None, *,
+                   cwd: str | Path | None = None, timeout: float | None = None,
+                   signal: AbortSignal | None = None) -> ExecResult:
+        """起一个不经 shell 的子进程(pi 的 `pi.exec`)。
+
+        异步场景**必须**把 `ctx.signal` 传进来,否则用户按 Esc 取消不掉它。
+        """
+        return await exec_command(command, args, cwd=cwd, timeout=timeout, signal=signal)
 
     # ── 事件 ──
     def on(self, event: str, handler: ExtensionHandler) -> None:
@@ -300,6 +452,7 @@ class ExtensionApi:
 
 __all__ = [
     "EmitResult",
+    "ExecResult",
     "ExtensionApi",
     "ExtensionBus",
     "ExtensionContext",
@@ -308,5 +461,7 @@ __all__ = [
     "ToolError",
     "ToolExecutor",
     "ToolOutcome",
+    "exec_command",
     "register_tool",
+    "tool_info",
 ]

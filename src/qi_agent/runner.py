@@ -105,16 +105,24 @@ def _interrupted_outcome() -> ToolOutcome:
 class AgentRunner:
     def __init__(self, unit: AgentUnit, catalog: ToolCatalog, llm: LLMClient,
                  settings: RunnerSettings | None = None, tool_ctx=None,
-                 base_prompt: str | None = None):
+                 base_prompt: str | None = None,
+                 tool_names: list[str] | None = None):
+        """`tool_names` 非空时**覆盖** `unit.tools`(扩展的 `setActiveTools` 走这里)。
+
+        为什么要这个参数而不是直接改 unit:`unit` 是装载期的快照,而工具集可以在
+        运行时被扩展改(`/plan` 那种只读档)—— 混淆两者会让“改了没生效”变成谜。
+        """
         self.unit = unit
         self.catalog = catalog
         self.llm = llm
         self.settings = settings or RunnerSettings()
         self.tool_ctx = tool_ctx
         self.base_prompt = base_prompt
+        self.tool_names = tool_names
 
     def _tools(self) -> list[Tool]:
-        return self.catalog.resolve(self.unit.tools)
+        names = self.unit.tools if self.tool_names is None else self.tool_names
+        return self.catalog.resolve(names)
 
     async def run(self, user_input: str, history: list[ChatMessage] | None = None,
                   abort: AbortSignal | None = None):

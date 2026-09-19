@@ -39,7 +39,7 @@ from .llm import (
 )
 from .loader import LoadError, load_all_agents, load_top_level_skills, resolve_base_prompt
 from .system_prompt import default_base_prompt
-from .models import AgentEvent
+from .models import AgentEvent, AgentUnit
 from .registry import AgentRegistry, CapabilityRegistry, ToolCatalog, discover_extensions
 from .runner import AgentRunner, RunnerSettings
 from .session import Session, SessionStore
@@ -114,6 +114,8 @@ class QiRuntime:
         # 事件总线:扩展在 `register(api)` 里 `api.on(...)` 订阅的东西都落在这里。
         # 零扩展时 `is_empty` = True,宿主可以据此跳过整条派发路径。
         self.bus = ExtensionBus()
+        #: 扩展的工具集覆盖(`api.setActiveTools`)。None = 按 agent 的 `tools` 解析
+        self._tool_override: set[str] | None = None
         # 信任门控(P-E1 / E16):未信任 → **不扫**项目级扩展(扩展是仓库控制的任意代码)。
         # 提示不在这里打印(runtime 不做 IO):攒进 `self.notes`,由前端决定怎么展示。
         self.project_trusted, self.trust_reason = resolve_project_trust(
@@ -128,7 +130,7 @@ class QiRuntime:
                 f"检测到旧目录 `{legacy_ext.relative_to(self.cwd)}` —— 已改名为 "
                 f"`extensions/`,请手动改名(不会自动改仓库内容)")
         self.extensions = discover_extensions(
-            self.catalog, self.capabilities, self.cwd, bus=self.bus,
+            self.catalog, self.capabilities, self.cwd, bus=self.bus, host=self,
             extra_dirs=extension_dirs(self.cwd, trusted=self.project_trusted,
                                       extra=list(extra_extension_paths or ())),
             project_trusted=self.project_trusted)
@@ -215,6 +217,27 @@ class QiRuntime:
             ctx=self.extension_ctx())
         for source, exc in event.errors:
             self.notes.append(f"扩展 {source} 的 session_start 处理失败: {exc}")
+
+    # ── 工具集(扩展 `setActiveTools` / `getActiveTools` 的后端)──
+    def tool_names(self, unit: AgentUnit | None = None) -> list[str]:
+        """本回合实际启用的工具名。
+
+        覆盖(`setActiveTools`)优先于 agent 的 `tools` —— plan-mode 那种“从此只读”
+        需要它**跳角色生效**。没有覆盖时按 agent 解析;对 `tools: ["*"]` 的 agent
+        是**当场重算**,所以运行时新注册的工具下一轮就能调(pi 的 "no reload needed")。
+
+        覆盖里已经不在 catalog 的名字会被滤掉(`setActiveTools` 允许先写名字、
+        工具随后才注册)。
+        """
+        if self._tool_override is not None:
+            return [n for n in sorted(self._tool_override) if n in self.catalog.names]
+        if unit is None:
+            return sorted(self.catalog.names)
+        return unit.config.resolves_tools(self.catalog.names)
+
+    def set_tool_names(self, names: Iterable[str]) -> None:
+        """覆盖工具集(扩展走的入口是 `api.setActiveTools`),对**后续回合**生效。"""
+        self._tool_override = set(names)
 
     # ── 主流程 ──
     def _active_agent(self, session: Session) -> str | None:
@@ -414,7 +437,8 @@ class QiRuntime:
         runner = AgentRunner(unit, self.catalog, self.llm_exec,
                              RunnerSettings(stop_after=self.stop_after),
                              tool_ctx=self._tool_ctx(unit.name, unit),
-                             base_prompt=self.base_prompt)
+                             base_prompt=self.base_prompt,
+                             tool_names=self.tool_names(unit))
         # 顺序要紧:先取上下文(不含本轮),再把 user 消息立即落盘。
         # 旧实现把 user 写在回合**结束后**,于是运行中刷新/断线就看不到自己说了什么;
         # 而若先落盘再取 history,本轮输入会进上下文两次(prompt 里出现两条同样的 user)。

@@ -1,5 +1,8 @@
-# 插件机制
+# 插件机制(v1 —— 已被取代)
 
+> ⚠️ **本文描述的「插件」已被 [extensions.md](extensions.md) 取代(v3)**。保留它的原因是:本文的**双通道发现**、**消费型配置门控**两项机制会被 extensions.md 原样继承(只改名),且它们是**已实现**代码的说明。
+> 差异:v1 只有 `add_tool` + `provides_config`;v3 扩到 pi 的整套 hook 面(事件 / 命令 / UI / 会话),并改名 **extension**。
+>
 > 状态:设计讨论中。相关文档:[agent-config.md](agent-config.md)(agent 如何引用)、[tools.md](tools.md)(ToolCatalog)、[model-config.md](model-config.md)。
 
 ## 1. 定位
@@ -11,7 +14,7 @@
 两条**独立**的发现通道,互不转换:
 
 | 通道 | 怎么装 | 装到哪 | 发现机制 | 场景 |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | **pip 包** | `pip install qi-db-tools`(PyPI / git / 本地) | venv 的 site-packages(环境级) | **entry point 扫描**(`importlib.metadata`,启动时自动发现) | 分发、团队共享、锁依赖 |
 | **本地目录** | 手动放置/复制源码目录 | `~/.qi/plugins/<name>/`(全局)或 `<项目>/.qi/plugins/<name>/`(项目,需信任) | **目录扫描** | 未发布/私有/本地开发,拷贝即用 |
 
@@ -38,7 +41,7 @@ def register(registry):            # 框架启动时发现并调用
 
 装载 agent 时,对每个候选配置文件:
 
-```
+```text
 有插件声明消费它 → 装载:用插件校验器校验 → 注入 ctx + system prompt
 无提供者         → 静默跳过(该配置种类"不存在"),agent 正常启动
 ```
@@ -65,7 +68,7 @@ db 插件提供 `db_schema` / `db_query` 工具 + type 解析/校验/连接;实�
 ## 7. 决策记录
 
 | 决策 | 结论 |
-|---|---|
+| --- | --- |
 | 包生态 | pip 包(entry point `qi.plugins`)+ 本地目录双通道;不仿 npm |
 | 能力声明 | `register(registry)`:add_tool / provides_config / provides_types |
 | 消费型配置 | 插件声明消费的 agent 配置种类;无提供者 → 配置不装载(静默) |

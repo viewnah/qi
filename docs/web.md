@@ -1,5 +1,7 @@
 # Web 能力设计(宿主 + UI 插件)
 
+> ⚠️ **v3 归属变更**:整个 web(HTTP 宿主 + AG-UI 桥 + UI 资源)要**拆成独立官方 pip 包 `qi-web`**,core 不内置、不默认装 —— 不装时 `qi web` 这条子命令不存在。本文的 **API 契约 / AG-UI 事件 / 安全规则仍然有效**,变的是「谁提供它」。见 [extensions.md §6](extensions.md)。
+>
 > 状态:设计定稿(v2 实现)。相关文档:[plugins.md](plugins.md)(插件机制)、[tools.md](tools.md)(ToolCatalog)。参照物:pi 的 RPC 模式、pi-web(独立 Web 应用)、hikqin(宿主形态)。
 >
 > **参照物事实核对(2026-09,对已装包实测,不是转述)**——这一节存在的原因是本文早先

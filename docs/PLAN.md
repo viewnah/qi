@@ -1,6 +1,7 @@
 # qi:开发计划与未决清单
 
 > 总设计见 [../README.md](../README.md)。本文只放**怎么干**(阶段/验收)与**开工前要拍板的事**。
+> **v3 扩展化重构(进行中)的完整设计在 [extensions.md](extensions.md)**,阶段表见本文 §3。
 
 ## 1. 项目目录结构(可打包 wheel)与打包设计
 
@@ -92,7 +93,27 @@ packages = ["src/qi_agent"]
 | P8 MCP + 数据源 | mcp.json 装载、db 插件(首个参考插件)+ data_sources 动态装载门控 | 装插件前/后行为符合 plugins.md |
 | P9 测试与样例 | 单测 + 路由回归集 + demo agents 齐全 | 覆盖率与回归集基线 |
 
-## 3. v2
+## 3. v3:扩展化重构(进行中)
+
+> 目标:core 收窄到 **pi 同款**(单 agent + 工具 + 会话 + TUI + 扩展宿主),MCP / 多 agent / web 拆成**独立官方 pip 扩展**(qi-mcp / qi-agents / qi-web)。
+> 完整设计(边界、hook 面、中间件链语义、前置件、三件套)见 **[extensions.md](extensions.md)**;本节只放阶段与验收。
+> 连带:定位从「多 Agent 编码框架」→「**单 agent 框架 + 可选多 agent 扩展**」,`auto` 分派取消(改 **agent-as-tool**)。
+
+| 阶段 | 内容 | 验收 |
+| --- | --- | --- |
+| P-E1a/b/c 宿主骨架 ✅ | plugin→extension 改名(entry point `qi.extensions` / `.qi/extensions/` / `extension.py`)、激活 `settings.extensions`、**信任门控**(`-a`/`-na` + `defaultProjectTrust` + headless fail-safe)、legacy 目录迁移 | 未信任项目的 `.qi/extensions/` 不加载;迁移后能装载(19 项新测试,见 `tests/test_extensions.py`) |
+| P-E1d 事件面骨架 ✅ | 总线 `ExtensionBus`(`emit`/`emit_until`/快照遍历/patch 链/失败隔离/fail-safe)+ `api.on()` + `ctx` 最小集 + 首个真实事件 `session_start` | 链语义逐条有测试;真实 QiRuntime 端到端收到 `session_start`(19 项新测试,`tests/test_extension_bus.py`) |
+| P-E2 工具面 + 输入面 | `registerTool` 完整化(动态注册 / `sourceInfo` / `promptSnippet` / `promptGuidelines`)、`setActiveTools`/`getAllTools`、`exec`、公开 import 白名单 + 禁钉宿主版本、`input`/`before_agent_start`/`tool_call`/`tool_result`/`context`/`turn_start` | 内置 8 工具改走 `registerTool`(dogfood);`tool_call` 能拦住 bash(有测试) |
+| P-E3 命令与 UI + 会话面 | `registerCommand`/`Shortcut`/`Flag`、**`ctx.ui` 通道(TUI)**、renderer 三件套、`appendEntry`、`sendMessage`/`sendUserMessage`、`sessionManager`、`setModel`/thinking、会话类事件 | 扩展能注册 `/cmd`、弹 confirm、落盘自定义 entry 并在 TUI 回放 |
+| P-E4 core 收窄 | runner 入参 `AgentUnit` → `{system_prompt, tools, model}`;**新增 `ctx.runAgent(spec, task)`(E12:子 agent 走进程内)**;`AgentRegistry`/`load_all_agents`/dispatcher 移出 core;`events` 总线;`registerProvider` | `qi` 裸启动单 agent 跑通;core 不再 import dispatcher;core 依赖去掉 `mcp`;`ctx.runAgent` 能在测试里跑完一个子任务 |
+| P-E5 三件套迁移 | qi-mcp → qi-agents → qi-web(依赖从少到多);`ctx.ui` 的 web 侧 + `add_route`/`add_static` | 三个包各自可装可卸;不装时启动提示与 `qi doctor` 正确;`qi web` 由扩展提供;`qi --agent <name>` 由 qi-agents 提供 |
+| P-E6 收尾 | 参考扩展样例 + 目录通道的 PEP 723 声明解析 + 依赖冲突报告 + 文档重写(agent-config / web / dispatcher 归档)+ 迁移提示打磨 | 新用户按 extensions.md 能写出并装上第一个扩展;声明与实装不一致时 `qi doctor` 报得出来 |
+
+**依赖关系**:P-E1a/b/c ✅ → **P-E1d ✅** → P-E2 → P-E3 顺序做;P-E4 可与 P-E3 并行;**P-E5 依赖 P-E2 + P-E3 + P-E4(`ctx.runAgent`)**;P-E6 最后。
+
+**被 v3 取代的既有条目**:P5(Dispatcher)与 P8 的「db 插件」形态、B7'(每轮重路由)、C4(db 插件工具名冲突)——多 agent 形态一变,这些全部重定。
+
+## 4. v2
 
 | 内容 | 详见 | 状态 |
 | --- | --- | --- |
@@ -102,7 +123,7 @@ packages = ["src/qi_agent"]
 | 导入 adapter(Claude agent 卡 / SKILL.md) | agent-config.md §10 | 未做 |
 | 打包导出 zip、registry/市场 | agent-config.md §10 | 未做 |
 
-## 4. 未决清单与决策状态
+## 5. 未决清单与决策状态
 
 ### 已收口(A/B 全按推荐 ✅)
 
@@ -136,20 +157,21 @@ packages = ["src/qi_agent"]
 - C1:SSE vs WebSocket(先 SSE)
 - C2:import adapter(Claude/SKILL.md)— v2
 - C3:headless RPC 协议细节 — v2
-- C4:db 插件工具名前缀/冲突策略 — v2 随首个插件定
+- C4:扩展工具名前缀/冲突策略 — **v3 并入 qi-mcp / qi-agents 的工具命名约定**(见 extensions.md §6/§7);v1 的「db 插件」形态取消
+- **litellm 的 ~6.8s import**(2026-09 实测,热缓存 3 次稳定)— 拖累每一次 `qi -p` 的首次响应,也是 v3 选「子 agent 进程内」的量化依据(子进程 = 6.8s × N);待查瘦身开关或 provider 直连。见 extensions.md §11.6
 - 会话 JSONL entry 类型表具体字段(P3 定稿)
 - qi 自身文档索引注入:pi 在 prompt 尾部给 README/docs/examples 绝对路径 + 按主题指路(qi 版见 system-prompt.md §6);障碍是 `docs/` 不进 wheel,装入后路径不存在 —— 要么改打包(把 docs 打进 wheel),要么只在源码仓库里存在时注入
 - 回合级重试(pi 的 `retry.enabled` / `maxRetries` / `baseDelayMs`:失败回合退避重试)未接;已接的是 provider 层的 `retry.provider.timeoutMs` / `maxRetries`(见 settings.md)。pi 的 `retry.provider.maxRetryDelayMs` 无对应 litellm 参数,也未映射
 - qi 自身文档索引注入:pi 在 prompt 尾部给 README/docs/examples 绝对路径 + 按主题指路(qi 版见 system-prompt.md §6);障碍是 `docs/` 不进 wheel,装入后路径不存在 —— 要么改打包(把 docs 打进 wheel),要么只在源码仓库里存在时注入
 - Router prompt 模板细节(dispatcher.md 草案之上微调)
 
-## 5. 收口节奏
+## 6. 收口节奏
 
 - 开工前先收口 **N7(bash 安全)** 与 **会话 JSONL 格式**(P3/P4 前置)
 - 每定一项,同步回写 README 决策表与本清单
 - P1 动工前确认 **N10(仓库目录)**
 
-## 6. v1 实现状态(代码完成 ✅,2026-09)
+## 7. v1 实现状态(代码完成 ✅,2026-09)
 
 P1-P9 代码已落地并推送(master),tests **180** 通过、wheel 构建通过。
 

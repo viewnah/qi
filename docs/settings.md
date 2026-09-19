@@ -64,7 +64,7 @@
 | `retry.provider` | `{timeoutMs, maxRetries}` | **已接**(请求级,对齐 pi 的 `getProviderRetrySettings`):→ litellm 的 `timeout`(秒)/ `num_retries`。pi 用毫秒、litellm 用秒,代码里换算。这是**唯一**该管请求超时的地方 —— agent 层不再套 `asyncio.timeout`(旧行为会把整轮打成“执行超时”) |
 | `retry.enabled` / `retry.maxRetries` / `retry.baseDelayMs` | 回合级重试 | 未接(pi 有:失败回合退避重试)。已接的只是上面的 `retry.provider.*`;pi 的 `retry.provider.maxRetryDelayMs` 无对应 litellm 参数,也未映射 |
 | `packages` | npm/git 资源包 | qi 走 pip entry point,无 npm 包概念 |
-| `extensions` / `prompts` / `themes` | 其它资源路径 | 仅 `skills` 已接 |
+| `extensions` / `prompts` / `themes` | 其它资源路径 | `extensions` **已接**(P-E1):每一条可以是扩展目录的**父目录**,也可以直接指向**单个扩展目录**(对齐 pi);项目级那份受信任门控。`prompts` / `themes` 仍未接 |
 
 > 上表是**诚实清单**:写在文档里的是"已收下但未生效",避免用户以为写了就有效。
 

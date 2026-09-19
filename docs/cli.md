@@ -34,7 +34,8 @@ qi auth login|logout|list       # 管理 ~/.qi/agent/auth.json(0600);qi init 交
 qi models list | qi doctor
 
 ── 安全 / 信任 ─────────────────────────
-qi -a | -na                      # 信任/不信任项目 .qi
+qi -a | -na                      # 信任 / 不信任项目 .qi;两个同给报错(退出码 2)
+                                 # 未表态时看 settings.defaultProjectTrust(ask 保守判不信任)
 
 ── 通用 ────────────────────────────────
 qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt

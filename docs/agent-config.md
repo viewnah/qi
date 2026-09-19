@@ -1,5 +1,7 @@
 # Agent 配置设计
 
+> ⚠️ **v3 归属变更**:`.qi/agents/` 的目录语义要**搬进 qi-agents 扩展**(core 不再认识 agent,只认 `{system_prompt, tools, model}`);本文的 **agent.md 字段定义与装载校验规则仍然有效** —— qi-agents 沿用同一套 frontmatter。见 [extensions.md §1.1 / §7](extensions.md)。
+>
 > 状态:设计讨论中,随讨论演进。文末附「决策记录」与「待定决策」。
 > 讨论结论:参考 hikqin_sdk 设计但独立实现;不基于它扩展。
 > 相关文档:模型配置见 [model-config.md](model-config.md);内置工具见 [tools.md](tools.md)。

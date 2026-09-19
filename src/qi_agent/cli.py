@@ -88,6 +88,11 @@ class QiGroup(TyperGroup):
     """
 
     def parse_args(self, ctx, args: list[str]) -> list[str]:
+        # `--` 之后一律当字面消息。但 click 会在解析时把那段内容当普通位置参数混进
+        # `ctx.args`,而且**把 `--` 标记本身丢掉** —— 那样就再也区分不出“转义后的
+        # `--plan`”与“扩展旗标 `--plan`”。所以在这里(唯一还看得到标记的地方)先记下分割点。
+        ctx.meta["qi_after_double_dash"] = (
+            list(args[args.index("--") + 1:]) if "--" in args else [])
         super().parse_args(ctx, args)
         # TyperGroup.parse_args 已把首个位置参数挪进 _protected_args(当子命令)。
         if not ctx._protected_args:
@@ -98,12 +103,44 @@ class QiGroup(TyperGroup):
         return ctx.args
 
 
+def _classify_cli_args(tokens: list[str]) -> tuple[list[str], list[str], list[str]]:
+    """把 click 留下的 token 分成「消息 / 扩展旗标 / 错误」(照抄 pi 的三条规则)。
+
+    * `--name=value` / `--name` → 扩展旗标候选(装完再对账,**未注册的报错**)
+    * `-x`(单横线)→ **直接报错**:短旗标不允许扩展占用(pi 同款:`-z` → Unknown option)
+    * 其余 → 消息
+
+    **一处刻意与 pi 不同**:pi 会把 `--flag` 后面的 token 当成它的值**吃掉**(布尔旗标
+    也一样 —— 于是 `pi --plan "帮我看这个"` 里的那句 prompt 就没了)。qi **不消费后面的
+    token**:字符串旗标写 `--name=value`(与 `--ext` 形式一致),`--name` 单独出现就按声明
+    类型解释。代价是不支持 `--agent reviewer` 这种空格写法;收益是**永远不会吃掉用户的一句话**。
+    """
+    messages: list[str] = []
+    flags: list[str] = []
+    errors: list[str] = []
+    for index, token in enumerate(tokens):
+        if token == "--":
+            # `--` 之后一律当字面消息(pi 同款)。真实路径里 click 已经把它剥掉了
+            # (见 `QiGroup.parse_args` 存的 `qi_after_double_dash`),但这里也要处理:
+            # 否则它会被当成“名字为空的旗标”混进 flags。
+            messages.extend(tokens[index + 1:])
+            break
+        if token.startswith("--"):
+            flags.append(token[2:])
+        elif token.startswith("-") and token != "-":
+            errors.append(f"未知选项: {token}")
+        else:
+            messages.append(token)
+    return messages, flags, errors
+
+
 app = typer.Typer(
     name="qi",
     cls=QiGroup,
     help="多 agent 编码框架:专职角色 + auto 分派(参数尽量对齐 pi)",
     no_args_is_help=False,  # 无参 → 进 TUI(见 callback);帮助用 qi -h
-    context_settings={"allow_extra_args": True, "help_option_names": ["-h", "--help"]},
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True,
+                      "help_option_names": ["-h", "--help"]},
 )
 
 
@@ -228,21 +265,39 @@ def root_callback(
     skill: list[str] = typer.Option(None, "--skill", help="额外技能文件/目录(可重复;叠加)"),
     no_skills: bool = typer.Option(False, "--no-skills", "-ns", help="关闭技能自动发现(--skill 仍生效)"),
     ext: list[str] = typer.Option(None, "--ext",
-                                  help="扩展旗标:name=value(可重复;由扩展 registerFlag 声明)"),
-    approve: bool = typer.Option(False, "--approve", "-a", help="信任项目 .qi(加载项目级扩展)"),
+                                  help="扩展旗标:name=value(可重复;由扩展 registerFlag 声明。"
+                                       "已声明的旗标也可直接写 --name 或 --name=value)"),    approve: bool = typer.Option(False, "--approve", "-a", help="信任项目 .qi(加载项目级扩展)"),
     no_approve: bool = typer.Option(False, "--no-approve", "-na", help="不信任项目 .qi(显式拒绝)"),
     thinking: str | None = typer.Option(None, "--thinking", help="思考级别: " + "/".join(THINKING_LEVELS)),
 ) -> None:
     if ctx.invoked_subcommand is not None:
+        # 开了 `ignore_unknown_options` 后,子命令自己仍然严格解析,但**顶层**的未知选项
+        # 会落到这里(实测:`qi --zzz agents list` 会让子命令不再被分派)。不能静默丢。
+        _leftover_messages, _leftover_flags, leftover_errors = _classify_cli_args(
+            list(ctx.args))
+        if leftover_errors:
+            for problem in leftover_errors:
+                err_console.print(f"[red]{escape(problem)}[/red]")
+            raise typer.Exit(code=2)
         return
     if export_file:
         _cmd_export(session_id or "", Path(export_file))
         raise typer.Exit()
-    messages = list(ctx.args)
+    # `--` 之后一律当字面消息(click 已把标记吃掉,所以从 QiGroup 记下的分割点取回)
+    after_dashdash = list(ctx.meta.get("qi_after_double_dash") or [])
+    tokens = list(ctx.args)
+    if after_dashdash and tokens[-len(after_dashdash):] == after_dashdash:
+        tokens = tokens[:-len(after_dashdash)]
+    messages, cli_flags, cli_errors = _classify_cli_args(tokens)
+    messages += after_dashdash
+    if cli_errors:
+        for problem in cli_errors:
+            err_console.print(f"[red]{escape(problem)}[/red]")
+        raise typer.Exit(code=2)
     prompt = " ".join(messages).strip()
-    # 扩展旗标预先归一(交互与无头两条路径共用) —— 解析要等扩展声明完,
-    # 所以这里只把 `--ext` 原样接住,真正生效在 QiRuntime 里。
-    extension_flags = list(ext or [])
+    # 扩展旗标两个通道都接住:`--ext name=value` 与直接写的 `--name[=value]`。
+    # 直接写的放后面 → 同名声时它胜(更具体的写法优先)。
+    extension_flags = list(ext or []) + cli_flags
     # docs/cli.md §1 / 对齐 pi:不带 -p 恒为交互(`-p` 才是无头),也不再需要 `qi tui`;
     # 给了消息就进 TUI 并把它作为首条消息发出(pi 的 `pi "问题"` 同款)。
     # `--mode json` 是脚本路径(输出事件流,不是 TUI),仍走无头。

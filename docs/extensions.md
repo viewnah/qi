@@ -110,7 +110,7 @@ qi 曾需要的"每轮可换角色"hook **不加** —— 见 §7(多 agent 走 
 | `registerCommand(name, handler, opts)` | 斜杠命令;handler 收 `(args, ctx)`。**重名不覆盖**:都留着并变成 `name:1` / `name:2`(一个都不丢)。`getArgumentCompletions` 未做 | ✅ P-E3b |
 | `registerShortcut(key, handler, opts)` | 快捷键(key 用 textual 写法)。坏键名只提示,不让启动失败 | ✅ P-E3b |
 | `getCommands()` | 当前可输入的命令清单(含 `source`);`/help` 用它把扩展命令列出来 | ✅ P-E3b |
-| `registerFlag(name, opts)` / `getFlag(name)` | CLI 旗标。**值走 core 的静态 `--ext name=value`(可重复)**,不是 `--plan` 这种短形式 —— 原因见 E19 / §11.8(实测 typer 的选项表真的加不上)。未知名字 → **退出码 2** | ✅ P-E3b-2 |
+| `registerFlag(name, opts)` / `getFlag(name)` | CLI 旗标。**两种写法**:直接 `--name` / `--name=value`,或 `--ext name=value`(可重复;两者同显时**直接写的胜**)。规则照 pi:长旗标宽容、**短旗标报错**、`--` 之后全字面;装载后对账:**未注册的名字**或**字符串旗标缺值** → 退出码 2。**一处刻意差异**:qi 不消费 `--flag` 后面的 token(pi 会吃掉,于是 `pi --plan "问题"` 里那句 prompt 就没了) | ✅ P-E3b-2 |
 | `sendMessage(msg, opts)` | 注入自定义消息(**进 LLM 上下文**),`deliverAs: steer\|followUp\|nextTurn` | P-E3 |
 | `sendUserMessage(content, opts)` | 注入用户消息(始终触发一轮) | P-E3 |
 | `appendEntry(customType, data)` | 落盘扩展自定义 entry(**不进 LLM 上下文**) | P-E3 |
@@ -409,7 +409,7 @@ core 技能发现:同理(私有技能自动绑定)
 | E16 | headless 信任默认 | `defaultProjectTrust=ask` + 无 UI → **默认不信任**:跳过项目级扩展/agents/技能 + stderr 提示 `-a`;CI 必须显式信任(§5.3) |
 | E17 | agent 配置对齐 | **先不对齐**:不补 `model`、不改 `tools` 省略语义、不降级 `keywords`。与 CC / pi 的三方对照与理由见 §12;per-agent 模型若需要,走**工具参数**而非 `agent.md` 字段。**已知代价见 §11.7** |
 | E18 | 私有配置归属 | qi-agents 定义 **agent 目录 = 一个 scope**;配置种类提供者(qi-mcp / db 插件)按 scope 自取 —— 目录遍历只一处(§7.4) |
-| E19 | 扩展旗标 | 走 **core 的静态 `--ext name=value`**(可重复),不动态改 typer 的选项表。**实测依据**:`typer.main.get_command()` 每次重建(对返回值 append 白做);往 `TyperGroup` 里塞裸 `click.Option` 会崩(`'Context' object has no attribute '_param_default_explicit'`);纯 click 能 append 但 `expose_value=False` 时值不回 `ctx.params`、`True` 时又把参数当 kwarg 传给回调而破签名。**代价换来了什么**:未知名字一律报错退 2,即“打错旗标”仍然报错(而不是静默当成 prompt)。**对 E14 的影响**:qi-agents 的角色选择语法定为 `qi --ext agent=reviewer` |
+| E19 | 扩展旗标 | **照抄 pi 的宽容解析 + 静态 `--ext` 两条并存**。启用 click 的 `ignore_unknown_options`,自己按 pi 的三条规则分类 click 剩下来的 token(长旗标宽容 / 短旗标报错 / `--` 之后全字面),装载后由 `FlagRegistry` 对账(未注册名、缺值都报错退 2)。**实测依据**(不动态改 typer 的选项表):`typer.main.get_command()` 每次重建(对返回值 append 白做);往 `TyperGroup` 里塞裸 `click.Option` 会崩(`'Context' object has no attribute '_param_default_explicit'`);纯 click 能 append 但 `expose_value=False` 时值不回 `ctx.params`、`True` 时又把参数当 kwarg 传给回调而破签名。**pi 为什么能这么做**:它的 CLI 是**手写 argv 循环**(`cli/args.ts`,447 行),未知长旗标直接收进 `unknownFlags` map,所以循环根本不存在。**对 E14 的影响**:qi-agents 的角色选择语法两种都行 —— `qi --agent=reviewer` 与 `qi --ext agent=reviewer` |
 
 ## 11. 未定清单
 
@@ -420,7 +420,7 @@ core 技能发现:同理(私有技能自动绑定)
 5. **冲突报告的深度**:只报告"同一包被要求两个版本",还是做完整的解析预演(读全部 `requires()` + 已装版本 + 约束求解)
 6. **litellm 的 ~6.8s import**(与本设计无关的独立性能问题):它拖累每一次 `qi -p` 的首次响应。查瘦身开关(`LITELLM_MODE=PRODUCTION` 一类)或换 provider 直连 —— 它会同时放大 §7.2 选了进程内的那个理由
 7. **`agent.md` 的 `tools` 省略语义在 agent-as-tool 下有提权风险**(E17 决定先不动):父会话被 `-t` 收窄时,子 agent 按"省略 = catalog 全部"会拿到**全工具**。qi-agents 落地时二选一:① 在扩展里显式解析(用父的 active tools 作基,推荐,不动 `agent.md` 语义);② 改 `agent.md` 的省略语义为"继承父"
-8. ~~`registerFlag` 怎么做~~ → **已决(E19)**:走 `--ext name=value`。待定的是它的**远端形式**:若以后真出现多个需要短旗标的场景,再回头做 (a)(放宽 `ignore_unknown_options` + 自行校验)。
+8. ~~`registerFlag` 怎么做~~ → **已决(E19)**,已实现:宽容长旗标 + `--ext` 两条并存。仍待定的两条尾巴:① **与 core 选项同名的扩展旗标收不到**(click 先吃掉,如 `--agent`;现在无诊断,只写在文档里);② 短旗标是否要开放给扩展(现照 pi 一律拒绝)。
 
 ## 12. agent 配置对齐(Claude Code / pi / qi 三方对照)
 

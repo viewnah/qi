@@ -96,12 +96,19 @@ def test_unknown_flag_name_when_nothing_is_declared_says_so():
     assert problem is not None and "没有任何扩展声明旗标" in problem
 
 
-def test_string_flags_take_the_raw_value():
+def test_string_flags_require_a_value():
+    """字符串旗标缺值要报错(pi 同款)——静默变成空串会表现为“传了但没生效”。"""
     flags = FlagRegistry()
     flags.add("agent", type="string", default="general")
+    assert flags.value("agent") == "general"
     assert flags.provide("agent=reviewer") is None
     assert flags.value("agent") == "reviewer"
-    assert flags.value("agent") != flags.value("--agent") or True   # 带横线也认同一个
+
+    bare = FlagRegistry()
+    bare.add("agent", type="string", default="general")
+    problem = bare.provide("agent")
+    assert problem is not None and "需要值" in problem
+    assert bare.value("agent") == "general"      # 没生效,也没被清空
 
 
 def test_duplicate_declaration_keeps_the_first_and_says_so():
@@ -188,13 +195,17 @@ def test_unknown_ext_flag_becomes_a_fatal_error_not_a_note(tmp_path, monkeypatch
 #: 本测试构造过的假 runtime(autouse fixture 里清空 —— 与 test_cli_run 同一写法)。
 #: 不用类属性存:那会让多个测试之间静默串状(这类泄漏会表现为“单独跑过、一起跑挂”)。
 CREATED: list[dict] = []
+#: 每次 `stream()` 收到的 prompt(用来验“宽容解析没把 prompt 吃掉”)。
+PROMPTS: list[str] = []
 
 
 @pytest.fixture(autouse=True)
 def _clear_created():
     CREATED.clear()
+    PROMPTS.clear()
     yield
     CREATED.clear()
+    PROMPTS.clear()
 
 
 class _RecordingRuntime:
@@ -218,6 +229,7 @@ class _RecordingRuntime:
     async def stream(self, prompt, session, agent_override=None):
         from qi_agent.models import AgentEvent
 
+        PROMPTS.append(prompt)
         yield AgentEvent(kind="text", agent="general", text="好")
 
 
@@ -267,3 +279,98 @@ def test_help_mentions_ext():
     result = CliRunner().invoke(app, ["-h"])
     assert "--ext" in result.output
     assert "name=value" in result.output
+
+
+# ── 照抄 pi 的宽容解析(2026-09:读 pi 源码后落地) ─────────
+
+def test_classify_splits_message_flag_and_error():
+    """三条规则(见 `_classify_cli_args`):长旗标宽容、短旗标报错、其余是消息。"""
+    from qi_agent.cli import _classify_cli_args
+
+    messages, flags, errors = _classify_cli_args(
+        ["你好", "--plan", "--plan=x", "-z", "-"])
+    assert messages == ["你好", "-"]                 # `-` 单独出现是消息(stdin 约定)
+    assert flags == ["plan", "plan=x"]
+    assert errors == ["未知选项: -z"]
+
+
+def test_classify_treats_everything_after_double_dash_as_literal():
+    from qi_agent.cli import _classify_cli_args
+
+    messages, flags, errors = _classify_cli_args(["你好", "--", "--plan", "-z"])
+    assert messages == ["你好", "--plan", "-z"]      # 全字面
+    assert flags == [] and errors == []
+
+
+def test_bare_long_flag_does_not_eat_the_following_prompt(tmp_path, monkeypatch):
+    """**刻意与 pi 不同**:pi 会把 `--plan` 后面的 token 当值吃掉(`pi --plan "问题"`
+    里的那句 prompt 就没了),qi 不消费 —— 所以 `--plan 你好` 里 `你好` 仍是 prompt。"""
+    _env(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    _cli(monkeypatch, tmp_path, _RecordingRuntime)
+
+    from qi_agent.cli import app
+
+    result = CliRunner().invoke(app, ["-p", "--plan", "你好"])
+    assert result.exit_code == 0, result.output
+    assert CREATED[-1]["extension_flags"] == ["plan"]
+    assert PROMPTS[-1] == "你好"                     # ← pi 在这里会丢掉这句话
+
+
+def test_long_flag_with_equals_carries_its_value(tmp_path, monkeypatch):
+    """`--name=value` 整条进旗标通道。
+
+    注意这里**不能**用 `--agent` 举例:它是 core 自己的选项(v1 的手动指定 agent),
+    click 会先吃掉它 —— 扩展旗标与 core 选项同名的那个先于扩展生效(已写进文档)。
+    """
+    _env(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    _cli(monkeypatch, tmp_path, _RecordingRuntime)
+
+    from qi_agent.cli import app
+
+    result = CliRunner().invoke(app, ["-p", "--plan=x", "你好"])
+    assert result.exit_code == 0, result.output
+    assert CREATED[-1]["extension_flags"] == ["plan=x"]
+    assert PROMPTS[-1] == "你好"
+
+
+def test_direct_flag_wins_over_ext_form(tmp_path, monkeypatch):
+    """同名声时直接写的更具体 → 放后面,`provide` 后者覆盖前者。"""
+    _env(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    _cli(monkeypatch, tmp_path, _RecordingRuntime)
+
+    from qi_agent.cli import app
+
+    result = CliRunner().invoke(app, ["-p", "--ext", "plan=false", "--plan", "你好"])
+    assert result.exit_code == 0, result.output
+    assert CREATED[-1]["extension_flags"] == ["plan=false", "plan"]
+
+
+def test_unknown_short_flag_is_rejected_before_anything_runs(tmp_path, monkeypatch):
+    """短旗标不允许扩展占用(pi 同款):`-z` 直接退 2,连 runtime 都不构造。"""
+    _env(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    _cli(monkeypatch, tmp_path, _RecordingRuntime)
+
+    from qi_agent.cli import app
+
+    result = CliRunner().invoke(app, ["-p", "-z", "你好"])
+    assert result.exit_code == 2
+    assert "未知选项: -z" in (result.output + (result.stderr or ""))
+    assert CREATED == []                             # 没白构造一个 runtime
+
+
+def test_double_dash_keeps_everything_literal(tmp_path, monkeypatch):
+    """`--` 之后一律当字面消息 —— 这是 prompt 以 `--` 开头时唯一的出路。"""
+    _env(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    _cli(monkeypatch, tmp_path, _RecordingRuntime)
+
+    from qi_agent.cli import app
+
+    result = CliRunner().invoke(app, ["-p", "--", "--plan", "这段是 prompt"])
+    assert result.exit_code == 0, result.output
+    assert CREATED[-1]["extension_flags"] == []      # `--plan` 没被当旗标
+    assert PROMPTS[-1] == "--plan 这段是 prompt"

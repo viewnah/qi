@@ -235,7 +235,11 @@ class FlagRegistry:
                     + (f";已注册的是: {', '.join(self.names)}" if self._specs else
                        ";当前没有任何扩展声明旗标"))
         if spec.type != "boolean":
-            self._values[key] = value if sep else ""
+            if not sep:
+                # pi 同款(它报 `Extension flag "--x" requires a value`):字符串旗标缺值
+                # 要报错 —— 静默变成空串会表现为“我传了角色名,但它没生效”。
+                return (f"旗标 {key} 需要值(写成 --{key}=值 或 --ext {key}=值)")
+            self._values[key] = value
             return None
         if not sep:                                  # `--ext plan` = 打开
             self._values[key] = True

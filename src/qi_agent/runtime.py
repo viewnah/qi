@@ -29,7 +29,7 @@ from .compaction import (
 from .abort import AbortSignal
 from .config import ResolvedModel, load_config, resolve_default_model, resolve_router_model
 from .dispatcher import Decision, Dispatcher
-from .extensions import ExtensionBus, ExtensionContext, ExtensionUi
+from .extensions import CommandRegistry, ExtensionBus, ExtensionContext, ExtensionUi
 from .llm import (
     ChatMessage,
     LiteLLMClient,
@@ -142,8 +142,11 @@ class QiRuntime:
         # 而且每次给假运行时加方法都会撞一遍。
         # (web 不行 —— 每个浏览器连接是一个不同的前端,那边要按回合解析,见 §5.1。)
         self.ui = ExtensionUi(frontend=ui_frontend, notes=self.notes)
+        # 扩展命令/快捷键的汇合点(TUI 按它分发 `/cmd` 与按键)
+        self.commands = CommandRegistry()
         self.extensions = discover_extensions(
             self.catalog, self.capabilities, self.cwd, bus=self.bus, host=self,
+            commands=self.commands,
             on_warning=self.notes.append,
             extra_dirs=extension_dirs(self.cwd, trusted=self.project_trusted,
                                       extra=list(extra_extension_paths or ())),

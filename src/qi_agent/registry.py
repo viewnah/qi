@@ -17,6 +17,7 @@ from typing import Any
 from . import paths
 from .extensions import (
     ExtensionApi,
+    CommandRegistry,
     ExtensionBus,
     Tool,
     ToolError,
@@ -26,6 +27,7 @@ from .models import AgentUnit
 __all__ = [
     "AgentRegistry",
     "CapabilityRegistry",
+    "CommandRegistry",
     "EXTENSION_ENTRY_FILE",
     "EXTENSION_ENTRY_POINT_GROUP",
     "Tool",
@@ -89,10 +91,14 @@ def _specifier_allows(reqs: list[str], version: str | None) -> bool | None:
     """这些依赖约束是否被当前版本满足;None = 判定不了(没 packaging/没版本)。"""
     if not _HAS_PACKAGING or version is None:
         return None
+    if _Requirement is None or _Version is None:
+        # 与上一行等价(`_HAS_PACKAGING` 已经表达了同一件事),这里只是**显式收窄**:
+        # 两个名字在导入失败时被赋成 None,不写这一行类型检查器就看不到“不能调用”。
+        return None
     try:
-        parsed = _Version(version)          # type: ignore[misc]
-        return all(parsed in _Requirement(r).specifier for r in reqs)  # type: ignore[misc]
-    except Exception:  # noqa: BLE001
+        parsed = _Version(version)
+        return all(parsed in _Requirement(r).specifier for r in reqs)
+    except Exception:  # noqa: BLE001 版本号非法等
         return None
 
 
@@ -206,6 +212,7 @@ def discover_extensions(catalog: ToolCatalog, capabilities: CapabilityRegistry,
                         cwd: Path | None = None, *,
                         bus: ExtensionBus,
                         host: Any = None,
+                        commands: CommandRegistry | None = None,
                         on_warning: Callable[[str], None] | None = None,
                         extra_dirs: Iterable[Path | tuple[Path, str]] | None = None,
                         project_trusted: bool = True) -> list[str]:
@@ -237,7 +244,8 @@ def discover_extensions(catalog: ToolCatalog, capabilities: CapabilityRegistry,
         try:
             api = ExtensionApi(catalog=catalog, bus=bus, _name=name,
                                _path=origin["path"], _scope=origin["scope"],
-                               _origin=origin["origin"], _host=host)
+                               _origin=origin["origin"], _host=host,
+                               _commands=commands)
             module = load()
             register = getattr(module, "register", None)
             if not callable(register):

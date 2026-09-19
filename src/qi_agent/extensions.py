@@ -129,6 +129,89 @@ def _note(host: Any, text: str) -> None:
         notes.append(text)
 
 
+# ── 命令与快捷键(扩展向 TUI/CLI 注册入口)──────────────────
+
+#: 命令 handler:`async def handler(args: str, ctx) -> None`
+CommandHandler = Callable[[str, "ExtensionContext"], Any | Awaitable[Any]]
+#: 快捷键 handler:`async def handler(ctx) -> None`
+ShortcutHandler = Callable[["ExtensionContext"], Any | Awaitable[Any]]
+
+
+@dataclass
+class ExtensionCommand:
+    """一条扩展斜杠命令。`invocable` 是**实际能输入的**名字(重名时带 `:1`/`:2`)。"""
+
+    name: str              # 原始名(扩展声明时的)
+    invocable: str         # 加上后缀后的可输入名
+    description: str
+    handler: CommandHandler
+    source: str            # 哪个扩展注册的(诊断/展示)
+
+
+@dataclass
+class ExtensionShortcut:
+    """一条扩展快捷键。`key` 用 textual 的写法(如 `ctrl+shift+p`)。"""
+
+    key: str
+    description: str
+    handler: ShortcutHandler
+    source: str
+
+
+class CommandRegistry:
+    """扩展命令与快捷键的登记处(与 `CapabilityRegistry` 并列的一个宿主侧汇合点)。
+
+    **重名不覆盖,而是都留着并加序号**(`/review:1`、`/review:2`,对齐 pi):
+    命令是用户显式输入的东西,静默丢掉一个会变成“我装了但打不出来”—— 而那种
+    问题在现场是无法区分“没装”与“被覆盖”的。
+    """
+
+    def __init__(self) -> None:
+        self._commands: dict[str, list[ExtensionCommand]] = {}
+        self._shortcuts: list[ExtensionShortcut] = []
+
+    # ── 注册 ──
+    def add_command(self, name: str, handler: CommandHandler, *,
+                    description: str = "", source: str = "") -> None:
+        self._commands.setdefault(name, []).append(ExtensionCommand(
+            name=name, invocable=name, description=description,
+            handler=handler, source=source))
+        self._renumber(name)
+
+    def add_shortcut(self, key: str, handler: ShortcutHandler, *,
+                     description: str = "", source: str = "") -> None:
+        self._shortcuts.append(ExtensionShortcut(
+            key=key, description=description, handler=handler, source=source))
+
+    def _renumber(self, name: str) -> None:
+        """同名命令一律带序号(`:1`、`:2`…)—— 只有一个时不加。"""
+        holders = self._commands.get(name, [])
+        for index, command in enumerate(holders, start=1):
+            command.invocable = name if len(holders) == 1 else f"{name}:{index}"
+
+    # ── 查询 ──
+    def all(self) -> list[ExtensionCommand]:
+        """全部命令(按可输入名排序)。"""
+        out = [c for holders in self._commands.values() for c in holders]
+        return sorted(out, key=lambda c: c.invocable)
+
+    def find(self, invocable: str) -> ExtensionCommand | None:
+        """按**可输入名**查(`review:2` 也认;`review` 在重名时查不到,要写全)。"""
+        key = invocable.strip().lstrip("/")
+        return next((c for c in self.all() if c.invocable == key), None)
+
+    @property
+    def names(self) -> list[str]:
+        return [c.invocable for c in self.all()]
+
+    def shortcuts(self) -> list[ExtensionShortcut]:
+        return list(self._shortcuts)
+
+    @property
+    def is_empty(self) -> bool:
+        return not self._commands and not self._shortcuts
+
+
 #: 单个子进程 stdout/stderr 的捕获上限(与工具输出同档)
 MAX_EXEC_OUTPUT = 50_000
 
@@ -477,6 +560,8 @@ class ExtensionApi:
     #: 在这里只起文档作用 —— 类型检查器验不到实现方,不如把契约写在这里。
     #: 没给 host 时 `getActiveTools` 退回“catalog 里的全部”,`setActiveTools` 报错。
     _host: Any = None
+    #: 命令与快捷键的登记处(由发现阶段注入);没给则 `registerCommand` 报错。
+    _commands: CommandRegistry | None = None
 
     # ── 工具 ──
     def registerTool(self, tool: Tool) -> None:      # noqa: N802 pi 的方法名,保持同形
@@ -530,6 +615,33 @@ class ExtensionApi:
         """
         return await exec_command(command, args, cwd=cwd, timeout=timeout, signal=signal)
 
+    # ── 命令与快捷键 ──
+    def registerCommand(self, name: str, handler: CommandHandler, *,
+                        description: str = "") -> None:      # noqa: N802
+        """注册一条斜杠命令(pi 的 `registerCommand`)。handler 收 `(args, ctx)`。
+
+        重名不覆盖:两条都留着并变成 `name:1` / `name:2`(见 `CommandRegistry`)。
+        """
+        if self._commands is None:
+            raise RuntimeError("宿主没有提供命令登记处:registerCommand 不可用")
+        self._commands.add_command(name.strip().lstrip("/"), handler,
+                                   description=description, source=self._name)
+
+    def registerShortcut(self, key: str, handler: ShortcutHandler, *,
+                         description: str = "") -> None:     # noqa: N802
+        """注册一个快捷键(pi 的 `registerShortcut`)。key 用 textual 的写法。"""
+        if self._commands is None:
+            raise RuntimeError("宿主没有提供命令登记处:registerShortcut 不可用")
+        self._commands.add_shortcut(key, handler, description=description,
+                                    source=self._name)
+
+    def getCommands(self) -> list[dict]:                     # noqa: N802
+        """当前可输入的命令清单(给自动补全 / 帮助用)。"""
+        if self._commands is None:
+            return []
+        return [{"name": c.invocable, "description": c.description, "source": c.source}
+                for c in self._commands.all()]
+
     # ── 事件 ──
     def on(self, event: str, handler: ExtensionHandler) -> None:
         """订阅事件;来源自动带上本扩展名(诊断时能指到是谁)。"""
@@ -548,12 +660,15 @@ class ExtensionApi:
 
 
 __all__ = [
+    "CommandRegistry",
     "EmitResult",
     "ExecResult",
     "ExtensionApi",
     "ExtensionBus",
+    "ExtensionCommand",
     "ExtensionContext",
     "ExtensionHandler",
+    "ExtensionShortcut",
     "ExtensionUi",
     "Tool",
     "ToolError",

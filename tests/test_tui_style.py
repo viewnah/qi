@@ -177,6 +177,10 @@ class FakeRuntime:
         self.thinking_level = "off"
         self.llm_exec = SimpleNamespace(thinking_level="off", reasoning_dropped=False)
         self.notes: list[str] = []      # 启动提示(TUI 会逐条展示)
+        # TUI 的 `_command` / `_help_text` 会读扩展命令登记处
+        from qi_agent.extensions import CommandRegistry
+
+        self.commands = CommandRegistry()
 
     async def start_session(self, session, reason: str = "startup") -> None:
         """真实 QiRuntime 的会话级事件;假运行时不用它(不派发任何事件)。"""

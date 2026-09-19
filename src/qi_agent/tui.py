@@ -120,6 +120,14 @@ PLANNED_COMMANDS = frozenset({
 })
 """pi 有、qi 暂未实现的命令 —— 单独提示“计划中”,不冒充“未知命令”。"""
 
+RESERVED_COMMANDS = frozenset({"/quit", "/help", "/hotkeys"})
+"""扩展命令**不能顶掉**的几条。
+
+它们都在 `_command` 的最前面就处理、而且不依赖 runtime(`/quit` 尤其重要):
+顶掉 `/quit` 等于把用户锁在界面里 —— 而那时他已经没法用这个界面改回来了。
+**其余内置命令可以被扩展覆盖**(pi 的顺序是“扩展命令先认领”),这条是刻意留的例外。
+"""
+
 TUI_COMMANDS: dict[str, str] = {
     "/help": "本帮助",
     "/hotkeys": "快捷键",
@@ -1727,6 +1735,7 @@ class QiTui(App):
                 # `ui_frontend` 在这里装上:`ctx.ui.confirm/select/input` 才真会问人
                 self._rt = QiRuntime(has_ui=True, approve_project=self._approve_project,
                                      ui_frontend=_TuiUi(self))
+            self._bind_extension_shortcuts()
             self._renderer = TuiRenderer(self._palette, self._rt.cwd)
             self._select_session()
             try:
@@ -2171,8 +2180,19 @@ class QiTui(App):
         rt = self._rt
         store = self._session_store()
 
+        # 扩展命令**优先于内置**(pi 的顺序:扩展先认领,认领了就跳过内置分发),但
+        # 保留 `RESERVED_COMMANDS` —— 顶掉 `/quit` 等于把用户锁在界面里,
+        # 那不是扩展该有的权力(而且出问题时用户已经没法用这个界面改回来了)。
+        if rt is not None and cmd not in RESERVED_COMMANDS:
+            ext = rt.commands.find(cmd)
+            if ext is not None:
+                self.run_worker(self._run_extension_command(ext, arg), exclusive=False,
+                                exit_on_error=False)
+                self._scroll_end()
+                return
+
         if cmd == "/help":
-            self._note(HELP_TEXT, "text")
+            self._note(self._help_text(), "text")
         elif cmd == "/hotkeys":
             self._note(HOTKEYS_TEXT, "text")
         elif cmd == "/quit":
@@ -2439,6 +2459,61 @@ class QiTui(App):
         self._refresh_footer()
         self._note(f"已导入并切换到 {sid}(消息 {session.message_count} 条)")
 
+    def _help_text(self) -> str:
+        """`/help`:内置帮助 + **扩展注册的命令**(否则装了扩展也没人知道能打什么)。"""
+        commands = self._rt.commands.all() if self._rt is not None else []
+        if not commands:
+            return HELP_TEXT
+        lines = [HELP_TEXT, "", "扩展命令"]
+        lines += [f"  /{c.invocable:<18}{c.description or '(无说明)'}  [{c.source}]"
+                  for c in commands]
+        return "\n".join(lines)
+
+    async def _run_extension_command(self, command, arg: str) -> None:
+        """跑一条扩展命令。异常只提示,不把 TUI 打崩(扩展是第三方代码)。"""
+        runtime = self._rt
+        if runtime is None:
+            return
+        try:
+            await command.handler(arg, runtime.extension_ctx())
+        except Exception as exc:  # noqa: BLE001 第三方代码
+            self._note(f"/{command.invocable} 执行失败: {type(exc).__name__}: {exc}",
+                       "error")
+
+    def _bind_extension_shortcuts(self) -> None:
+        """把扩展注册的快捷键接到 textual 的动态 `bind()` 上。
+
+        单个键绑失败(名字写法不对)只提示,不让其余快捷键陪绑 —— 而且**不让启动失败**:
+        一个手滑的扩展不该把整个界面拦住。
+        """
+        if self._rt is None:
+            return
+        for shortcut in self._rt.commands.shortcuts():
+            try:
+                self.bind(shortcut.key, f"ext_shortcut('{shortcut.key}')",
+                          description=shortcut.description or f"扩展快捷键 {shortcut.key}")
+            except Exception as exc:  # noqa: BLE001 坏键名/保留键
+                self._note(f"快捷键 {shortcut.key} 注册失败: {exc}", "warning")
+
+    def action_ext_shortcut(self, key: str) -> None:
+        """所有扩展快捷键共用的入口(textual 的 action 只能带参数,不能动态加方法)。"""
+        runtime = self._rt
+        if runtime is None:
+            return
+        shortcut = next((s for s in runtime.commands.shortcuts() if s.key == key), None)
+        if shortcut is None:
+            return
+
+        async def _run() -> None:
+            try:
+                # `runtime` 在闭包外已经收窄好(不用 assert:`-O` 会把 assert 剥掉,
+                # 那正好是“生产环境少一层保护”的写法)。
+                await shortcut.handler(runtime.extension_ctx())
+            except Exception as exc:  # noqa: BLE001 第三方代码
+                self._note(f"快捷键 {key} 执行失败: {type(exc).__name__}: {exc}", "error")
+
+        self.run_worker(_run(), exclusive=False, exit_on_error=False)
+
     def _reload_runtime(self) -> None:
         """重载 agents / extensions / 配置(会话不变)。"""
         try:
@@ -2449,6 +2524,7 @@ class QiTui(App):
             return
         self._rt = runtime
         self._renderer = TuiRenderer(self._palette, runtime.cwd)
+        self._bind_extension_shortcuts()
         for note in runtime.notes:
             self._note(note, "warning")
         if self._session is not None:

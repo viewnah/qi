@@ -289,6 +289,14 @@ class ExtensionBus:
     def handler_count(self, event: str) -> int:
         return len(self._handlers.get(event, ()))
 
+    def has(self, event: str) -> bool:
+        """有人订阅这个事件吗?—— 宿主用它做**逐事件的开销护栏**:
+
+        没有订阅就不构造 payload、不建 `EmitResult` 直接跳过。所以“零扩展时零开销”
+        不是承诺,而是写在各派发点上的一行判断。
+        """
+        return bool(self._handlers.get(event))
+
     @property
     def is_empty(self) -> bool:
         """一个 handler 都没有 —— 宿主可以据此跳过整条派发路径(零扩展时的常见情形)。"""

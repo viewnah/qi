@@ -106,11 +106,14 @@ class AgentRunner:
     def __init__(self, unit: AgentUnit, catalog: ToolCatalog, llm: LLMClient,
                  settings: RunnerSettings | None = None, tool_ctx=None,
                  base_prompt: str | None = None,
-                 tool_names: list[str] | None = None):
+                 tool_names: list[str] | None = None,
+                 system_prompt: str | None = None):
         """`tool_names` 非空时**覆盖** `unit.tools`(扩展的 `setActiveTools` 走这里)。
 
         为什么要这个参数而不是直接改 unit:`unit` 是装载期的快照,而工具集可以在
         运行时被扩展改(`/plan` 那种只读档)—— 混淆两者会让“改了没生效”变成谜。
+
+        `system_prompt` 非空时直接用给定的(宿主经 `before_agent_start` 链后的结果)。
         """
         self.unit = unit
         self.catalog = catalog
@@ -119,6 +122,7 @@ class AgentRunner:
         self.tool_ctx = tool_ctx
         self.base_prompt = base_prompt
         self.tool_names = tool_names
+        self.system_prompt = system_prompt
 
     def _tools(self) -> list[Tool]:
         names = self.unit.tools if self.tool_names is None else self.tool_names
@@ -136,10 +140,13 @@ class AgentRunner:
         tools = self._tools()
         msgs: list[ChatMessage] = []
         if history is None or not any(m.role == "system" for m in history):
-            # 工具集与 cwd 都要在跑之前定下来:清单进 prompt,且决定技能能否被读取
-            msgs.append(ChatMessage(role="system", content=build_system_prompt(
+            # 工具集与 cwd 都要在跑之前定下来:清单进 prompt,且决定技能能否被读取。
+            # `system_prompt` 非空表示**宿主已经建好了**(扩展的 `before_agent_start`
+            # 可能改过它)—— 那就不要在这里重建,否则扩展的改动会被静默覆盖。
+            prompt = self.system_prompt if self.system_prompt is not None else build_system_prompt(
                 self.unit, self.base_prompt, tools=tools,
-                cwd=self.tool_ctx.workdir if self.tool_ctx else None)))
+                cwd=self.tool_ctx.workdir if self.tool_ctx else None)
+            msgs.append(ChatMessage(role="system", content=prompt))
         if history:
             msgs.extend(history)
         msgs.append(ChatMessage(role="user", content=user_input))

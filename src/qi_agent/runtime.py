@@ -38,7 +38,7 @@ from .llm import (
     normalize_thinking_level,
 )
 from .loader import LoadError, load_all_agents, load_top_level_skills, resolve_base_prompt
-from .system_prompt import default_base_prompt
+from .system_prompt import build_system_prompt, default_base_prompt
 from .models import AgentEvent, AgentUnit
 from .registry import AgentRegistry, CapabilityRegistry, ToolCatalog, discover_extensions
 from .runner import AgentRunner, RunnerSettings
@@ -63,6 +63,10 @@ MAX_TOOL_ENTRY_CHARS = 8000
 MAX_TOOL_DETAILS_CHARS = 8000
 #: 自动命名最多等这么久(秒)。等不到就把落盘挂到回调上 —— 见 `_apply_title`。
 TITLE_WAIT_S = 2.0    # 与 result 同档:插件不该让会话文件无界增长
+
+#: 扩展用 `input` 的 `handled` 接管一轮、又没给 `text` 时的占位。
+#: 不给提示会让用户以为程序卡住了(`ctx.ui` 要到 P-E3 才有,现在没有别的展示通道)。
+INPUT_HANDLED_PLACEHOLDER = "(这一轮由扩展处理,没有文本输出)"
 
 
 def _salvaged(final_text: str, partial: str) -> str:
@@ -365,9 +369,79 @@ class QiRuntime:
         self.sessions.append(session, entry)
         return entry
 
+    async def _emit_input(self, text: str, session: Session, source: str,
+                          abort: AbortSignal | None) -> tuple[str, dict | None, str | None]:
+        """派发 `input`(pi 的 input 事件):可拦截 / 改写 / 吞掉。
+
+        返回 `(最终文本, handled 裁决, 裁决者)`;裁决非空表示扩展接管了这一轮。
+
+        **两个键,两种含义**(不能合):
+        * `text` —— **改写后的用户输入**(`transform` 用);
+        * `reply` —— **扩展给用户的答复**(`handled` 用)。
+
+        分开不是洁癖:裁决的字段会被 patch 进 payload,如果两者同名,扩展的答复就会被
+        当成用户输入落盘 —— 测试里真的出现过用户消息变成 "pong" 的那种结果。
+        pi 不需要区分是因为它的 `handled` 不带文本(靠 `ctx.ui` 自己展示);
+        qi 的 `ctx.ui` 要到 P-E3 才有,所以这里要一个 `reply`。
+        """
+        if not self.bus.has("input"):
+            return text, None, None
+        result = await self.bus.emit_until(
+            "input",
+            {"text": text, "source": source, "session": session.id},
+            ctx=self.extension_ctx(abort),
+            stop_values={"action": ("handled",)})
+        for src, exc in result.errors:
+            self.notes.append(f"扩展 {src} 的 input 处理失败: {exc}")
+        final = result.payload.get("text")
+        return (str(final) if final is not None else text), result.result, result.stopped_by
+
+    async def _handled_turn(self, session: Session, verdict: dict, source: str | None):
+        """扩展接管了这一轮(pi 的 `action: handled`):**不跑 agent**。
+
+        仍然**落盘助手侧**—— 否则回放里这一轮凭空消失,而“直播看得见、刷新就没了”
+        是本仓反复出现过的那类不一致。用户消息由 `stream()` 先落过了(那是“用户确实
+        说了这句话”的记录,与“谁处理了它”无关)。
+
+        没给 `reply` 时给一句占位:`ctx.ui` 要到 P-E3 才有,现在扩展没有别的展示
+        通道,静默吞掉会让用户以为程序卡了。
+        """
+        agent = self._active_agent(session) or "extension"
+        reply = str(verdict.get("reply") or "").strip()
+        self._persist_final(session, agent, reply or INPUT_HANDLED_PLACEHOLDER)
+        yield AgentEvent(kind="text", agent=agent, text=reply or INPUT_HANDLED_PLACEHOLDER)
+        yield AgentEvent(kind="agent_end", agent=agent, text=reply,
+                         data={"messages": [], "handled_by": source,
+                               "usage": {"turns": 0, "context_tokens": 0}})
+
+    async def _before_agent_start(self, unit: AgentUnit, text: str,
+                                  abort: AbortSignal | None) -> str | None:
+        """派发 `before_agent_start`:可换 `system_prompt`(链式)。
+
+        只在**有人订阅**时才构建 prompt —— 零扩展时不走这条分支,行为与开销都与从前一致。
+
+        注入消息(`message`)没在这里做:它跟 `sendMessage` / `appendEntry` 是同一套语义
+        (进不进 LLM 上下文、要不要落盘),拿到 P-E3 一起做,免得造两种注入方式。
+        """
+        if not self.bus.has("before_agent_start"):
+            return None
+        tools = self.catalog.resolve(self.tool_names(unit))
+        built = build_system_prompt(unit, self.base_prompt, tools=tools, cwd=self.workdir)
+        result = await self.bus.emit(
+            "before_agent_start",
+            {"prompt": text, "system_prompt": built, "agent": unit.name},
+            ctx=self.extension_ctx(abort))
+        for src, exc in result.errors:
+            self.notes.append(f"扩展 {src} 的 before_agent_start 处理失败: {exc}")
+        changed = result.payload.get("system_prompt")
+        return str(changed) if changed else built
+
     async def stream(self, text: str, session: Session, agent_override: str | None = None,
-                     abort: AbortSignal | None = None):
+                     abort: AbortSignal | None = None, source: str = "interactive"):
         """处理一轮用户输入,产出事件。agent_override=manual(--agent / /agent)。
+
+        `source` 进 `input` 事件的 payload(交互式 / 无头 / rpc)—— 扩展据此决定
+        “要不要弹问”。目前调用方都用默认值:精确标签等真正需要它的人来传。
 
         `abort` 透传给 runner(协作式中断,见 abort.py)。即使被**硬取消**
         (`CancelledError`:web 的客户端 abort、TUI 的强制终止),本方法也会先把已有文本
@@ -375,6 +449,16 @@ class QiRuntime:
         """
         # 旧会话首次被使用时回填 cwd(只写一次);新会话在 create(cwd=…) 时已带
         self.sessions.ensure_cwd(session, self.cwd)
+        # `input` 在**自动压缩之前**:它处理的是“用户说了什么”,与上下文体积无关;而且
+        # 改写后的文本要影响下游全部(标题、分派、历史)。
+        text, handled, handled_by = await self._emit_input(text, session, source, abort)
+        if handled is not None:
+            self.sessions.append(session, {"type": "message", "role": "user",
+                                           "content": text,
+                                           "agent_id": self._active_agent(session) or "extension"})
+            async for event in self._handled_turn(session, handled, handled_by):
+                yield event
+            return
         # 自动命名:**并行**跑(不拖首字延迟),回合末尾才套用(见 `_apply_title`)。
         # 触发条件是"这个会话还没有标题" —— 新建的与本功能上线前建的老会话都算。
         title_task: asyncio.Task[str | None] | None = None
@@ -438,7 +522,8 @@ class QiRuntime:
                              RunnerSettings(stop_after=self.stop_after),
                              tool_ctx=self._tool_ctx(unit.name, unit),
                              base_prompt=self.base_prompt,
-                             tool_names=self.tool_names(unit))
+                             tool_names=self.tool_names(unit),
+                             system_prompt=await self._before_agent_start(unit, text, abort))
         # 顺序要紧:先取上下文(不含本轮),再把 user 消息立即落盘。
         # 旧实现把 user 写在回合**结束后**,于是运行中刷新/断线就看不到自己说了什么;
         # 而若先落盘再取 history,本轮输入会进上下文两次(prompt 里出现两条同样的 user)。

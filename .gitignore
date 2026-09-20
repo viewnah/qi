@@ -29,5 +29,7 @@ extensions/qi-web/ui/dist/
 # 编辑器配置
 .vscode/
 
-# vitest 缓存
+# vitest 输出(node 侧测试报告;含绝对路径与时间戳,不入库)。
+# 旧 core web 与 qi-web 扩展两条路径都要盖。
 web/.vitest/
+extensions/qi-web/ui/.vitest/

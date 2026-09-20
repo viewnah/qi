@@ -402,6 +402,27 @@ declared = read_json(scope.dir / "mcp.json")   # 它自己的文件名,不是 qi
 qi-agents 就必须知道文件名、格式、以及“agent 私有”这一层的存在 —— 把 MCP 知识**漏回**了
 上游。同理,全局/项目两层**与角色无关**(不是 agent 层),qi-mcp 自己处理,不需要作用域。
 
+**谁把作用域递给 qi-mcp?—— 它自己不去找。** 调用链只有一步:
+
+```text
+qi-agents(唯一知道角色目录的人)
+  └ api.resolveTools("mcp_servers", scope=Scope{name, dir, trust})
+      └ core CapabilityRegistry.resolve_tools 把这个 scope **原样**转给每个 resolver
+          └ qi-mcp 的 resolver(scope=…) 读 scope.dir/"mcp.json"
+```
+
+- `scope=None` 的含义就是“**没有 agent 层**”(主会话 / 非角色运行)→ qi-mcp 只管全局+项目两层;
+- 所以 qi-mcp **没有“agents 目录在哪”这个配置项** —— 它连这个名字都不知道,也永远不会去搜;
+- 可测性(这是交接的现成收益):qi-mcp 用一个**假 scope**(任意临时目录 + 一份 mcp.json)就能
+  完整测;qi-agents 在没装 qi-mcp 时 `resolveTools` 得 `[]` 也能照跑。
+
+**没有 pi 先例可抄(E23)**:pi **明确不内置 MCP** —— 官方文档 `docs/usage.md`:
+“It intentionally does not include built-in MCP, sub-agents, permission popups, plan mode,
+ to-dos, or background bash. You can build or install those workflows as extensions or
+ packages.”。205 个 TS 源文件里 “MCP” 只出现一次,还是注释里那句 “MCP bridges”。
+所以这一块**不能拿“对齐 pi”当依据**:上面这套 scope 交接是 qi 自己的决定,理由只有一条 ——
+让两个扩展互不知道对方的存在。
+
 ## 8. 兼容与迁移(**一刀切**)
 
 已定:不保留"官方扩展自动装载"。`qi web`、`.qi/agents/`、`mcp.json` 都要求**显式装扩展**。
@@ -483,6 +504,7 @@ qi-agents 就必须知道文件名、格式、以及“agent 私有”这一层�
 | E20 | qi-agents ↔ qi-mcp 的耦合 | **能力交接,互不 import**。qi-mcp 声明 `provides_config("mcp_servers")` + 注册 resolver;qi-agents 只调 `api.resolveTools("mcp_servers", scope=…)`。core 补“消费方”那半(§7.5)。**收益**:可分别安装、MCP 实现可换、qi-web 不用做中介;**代价**:core 多两个 API |
 | E21 | MCP 传输范围 | **stdio + Streamable HTTP**;旧 SSE 不做(已过时) |
 | E22 | MCP 工具命名 | **`mcp__<server>__<tool>`**(Claude Code 约定),角色白名单支持 `mcp__<server>__*` 通配。理由:不撞名、可前缀过滤,且“角色只拿某 server 的工具”只能靠通配写 |
+| E23 | MCP 这一块有没有 pi 可抄 | **没有**。pi 官方文档明确不内置 MCP(`docs/usage.md`:“intentionally does not include built-in MCP…”),205 个 TS 源文件里 “MCP” 仅出现一次(注释里的 “MCP bridges”)。所以 qi-mcp 的接口(qi 级两层 / scope 交接 / 命名)全属 qi 自己的决定,**不得以“对齐 pi”为理由** |
 
 ## 11. 未定清单
 

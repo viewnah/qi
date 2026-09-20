@@ -1,14 +1,14 @@
 """qi-mcp:qi 的 MCP 支持(形状照搬 `pi-mcp-adapter`,见 docs/extensions.md E25)。
 
-分四个切片做,当前进度:
+分五个切片做,全部落地:
 
 | 切片 | 内容 | 状态 |
 | --- | --- | --- |
 | 1 | 两层声明表 + `/mcp` 面板 | ✅ |
 | 2 | `mcp` 代理工具(search / describe / call)+ lazy 连接 | ✅ |
 | 2b/2c | 真客户端:stdio + Streamable HTTP(端到端跑真 server) | ✅ |
-| 3 | `directTools` 直连 + `includeTools`/`excludeTools` + `toolPrefix` | ✅ 本切片 |
-| 4 | 给 qi-agents 的**按值注入** API(它读角色目录的 mcp.json 交给这里) | ⏳ |
+| 3 | `directTools` 直连 + `includeTools`/`excludeTools` + `toolPrefix` | ✅ |
+| 4 | 给 qi-agents 的**按值注入** API(它读角色目录的 mcp.json 交给这里) | ✅ |
 
 为什么默认是**一个代理工具**而不是每 server 注册 N 个工具:`pi-mcp-adapter` 的实测理由是
 **上下文** —— 一个 server 的工具定义轻松 10k+ token,连几个 server 就在对话开始前烧掉半个

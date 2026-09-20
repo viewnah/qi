@@ -573,24 +573,30 @@ P-E6 收尾时若仍无人用就删 —— 不留无人使用的公开面。
 7. **`agent.md` 的 `tools` 省略语义在 agent-as-tool 下有提权风险**(E17 决定先不动):父会话被 `-t` 收窄时,子 agent 按"省略 = catalog 全部"会拿到**全工具**。qi-agents 落地时二选一:① 在扩展里显式解析(用父的 active tools 作基,推荐,不动 `agent.md` 语义);② 改 `agent.md` 的省略语义为"继承父"
 8. ~~`registerFlag` 怎么做~~ → **已决(E19)**,已实现:宽容长旗标 + `--ext` 两条并存。仍待定的两条尾巴:① **与 core 选项同名的扩展旗标收不到**(click 先吃掉,如 `--agent`;现在无诊断,只写在文档里);② 短旗标是否要开放给扩展(现照 pi 一律拒绝)。
 
-9. **静态检查对本仓扩展包一律解析不到(环境问题,不是代码问题)** —— 从测试里 `import qi_mcp…` /
-   `import qi_agents…` 被报 `reportMissingImports`。**已定性**(做了判定性实验):
+9. **静态检查对 `extensions/` 下的文件解析不到(环境问题;已装 editable,等分析器重启)** ——
+   表现:从测试里 `import qi_mcp…` 报 `reportMissingImports`;**包内相对导入也报**
+   (`extensions/qi-mcp/qi_mcp/role.py` 的 `from .direct import …` 同样 unresolved)。
+
+   **最后这条证据把机制说清了**:相对导入要能解析,分析器只需知道"这个文件属于 `qi_mcp` 这个包"
+   —— 它连这都不知道,说明问题**不在"包装没装"**(装没装只影响绝对导入),而在**它没有把这些
+   文件归入任何包上下文**。所以此前那句"这条意见('这个包没装')是对的"只对了一半:它报的
+   现象像"没装",根因是"没建立包上下文"。
+
+   已排除的(逐条实测):
 
    | 试过 | 结果 |
    | --- | --- |
-   | 同一文件相邻两行 `import qi_agents` / `import qi_mcp` | 前者不报、后者报 → 排除"按文件缓存" |
-   | 造**全新名字**的同构包 `qi_probe` + 进 extraPaths | **也报** → 排除"名字被缓存" |
-   | site-packages 里放指向活代码的**符号链接** | 仍报 → 排除"没装" |
-   | `extraPaths`(两个扩展都在)/ `executionEnvironments` 两种相对路径写法 | 无效 |
+   | 同一文件相邻两行 `import qi_agents` / `import qi_mcp` | 前者不报、后者报 → 不是按文件缓存 |
+   | 造**全新名字**的同构包 `qi_probe` + 进 extraPaths | 也报 → 不是名字被缓存 |
+   | site-packages 放符号链接 | 仍报 |
+   | `extraPaths` / `executionEnvironments`(两种相对路径写法) | 无效 |
+   | **`pip install -e extensions/qi-{agents,mcp,web}`(真正的 editable 安装)** | 结构上到位了(`_editable_impl_*.pth` + dist-info 齐全,任意目录 import 正常),**分析器仍报旧判定** |
 
-   → **这台环境里"本地包解析得到"这个信号既给假阳性也给假阴性,不可信**;`qi_agents` 那条
-   clean 是陈旧的成功判定。运行期完全正常(venv 有 `_qi_extensions.pth` + 两个符号链接,
-   测试里另有 `sys.path.insert`),全量 659 passed。
-   **可检验的预测**:若原因是分析器对 extraPaths 目录清单的缓存在会话内不刷新,则 LSP 重启 /
-   下一回合后应自行消失。
-   **处理原则:不动代码、不加 `# type: ignore`** —— 那条意见本身
-   ("这个包没装")是对的(扩展确实不是装上去的,是 pyproject 里的独立发行包),
-   绕开它只是掩盖;真要根治就补 venv 的 pip 后做 editable 安装。
+   → 剩下的唯一解释是**分析器在会话内缓存了环境/路径**,要它重启(或清缓存)才会看到新装的包。
+   仓库侧能做的都做了:**装法已在 `README` / 各扩展 README 里写明**(`pip install -e ./extensions/<名>`),
+   运行期正确(`qi doctor` 的扩展一节能列出它们,722 passed)。
+   **处理原则不变:不动代码、不加 `# type: ignore`** —— 下一次分析器重启后若仍报,再回来查;
+   在那之前不应为一个工具链缓存改产品代码。
 
 10. **`session_start` 谁发?(已查清,不是 bug)** —— 起疑的经过:参考扩展注册了 `session_start`
     处理器,但跑完 `runtime.stream()` 之后 `runtime.notes` 是空的。查下来:**它由前端"绑定会话"

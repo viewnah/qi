@@ -263,3 +263,65 @@ class FileContent(BaseModel):
     truncated: bool = False
     lang: str = ""
     text: str = ""
+
+
+# ── P-E5 ③ 切片 3c:角色与 MCP 走**扩展的真实数据**(用户选 A)─────
+
+class AgentInfo(BaseModel):
+    """一个角色 —— 数据来自 **qi-agents**(`discover()`)。
+
+    不再有 v1 的 `display_name` / `keywords` / 私有技能计数:那些属于被移出 core 的 agent
+    配置(P-E4c)。角色现在就是 `agent.md` 的一份 frontmatter + 正文。
+    """
+
+    name: str
+    description: str = ""
+    #: `user` | `project`(项目级同名覆盖用户级)
+    source: str = ""
+    #: 角色的 `tools:` 白名单;**空 = 继承父**(不是"全部")
+    tools: list[str] = Field(default_factory=list)
+    model: str = ""
+    path: str = ""
+    #: 角色目录里 `mcp.json` 声明了几个 server(角色私有那层)
+    mcp: int = 0
+
+
+class AgentList(BaseModel):
+    agents: list[AgentInfo] = Field(default_factory=list)
+    #: qi-agents 没装 → True(界面据此说"装 qi-agents 才有角色"),而不是 500
+    unavailable: bool = False
+
+
+class McpServerInfo(BaseModel):
+    """一个 MCP server 的**结构**,不含任何值(这条例矩从 v1 继承)。
+
+    口径:名字 / 传输类型 / 目标 URL / `env` 与 `headers` 的**键名**。
+    `env` 值、`headers` 值、以及 stdio 的 `command` / `args` **一律不出宿主** ——
+    后三个字段是最容易直接写进明文密钥的地方(`npx -y x --token=sk-…`)。
+    """
+
+    name: str
+    transport: str = ""            # stdio | http | socket | unknown
+    url: str = ""                  # http 的目标;stdio 的 command **不给**
+    env_keys: list[str] = Field(default_factory=list)
+    header_keys: list[str] = Field(default_factory=list)
+    disabled: bool = False
+    direct_tools: bool | list[str] = False
+    unknown_fields: list[str] = Field(default_factory=list)
+    source: str = ""               # global | project | role
+
+
+class McpSource(BaseModel):
+    """一处声明表。`exists=false` 也回 —— 前端据此区分"没这个文件"与"文件在但没写 server"。"""
+
+    scope: str                     # global | project | role
+    path: str
+    exists: bool = False
+    servers: list[McpServerInfo] = Field(default_factory=list)
+    #: `scope == "role"` 时是哪个角色
+    role: str = ""
+
+
+class McpList(BaseModel):
+    sources: list[McpSource] = Field(default_factory=list)
+    unavailable: bool = False      # qi-mcp 没装

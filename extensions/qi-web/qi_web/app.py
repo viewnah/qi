@@ -133,6 +133,51 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
             usage=schemas.UsageSummary(**usage_summary(entries)),
         )
 
+    # ── 角色与 MCP:走扩展的真实数据(P-E5 ③ 切片 3c,用户选 A)──
+    @app.get("/api/agents", response_model=schemas.AgentList, dependencies=[Depends(guard)])
+    async def list_agents() -> schemas.AgentList:
+        """角色列表 —— 数据来自 **qi-agents**(`discover()`)。
+
+        qi-agents 没装 → `unavailable=True`(界面说清楚),而不是 500:Web 界面不该因为
+        少装一个扩展就整页报错。
+        """
+        try:
+            from qi_agents.discovery import discover
+        except ImportError:
+            return schemas.AgentList(unavailable=True)
+        roles = discover(web.default_cwd, "both")
+        return schemas.AgentList(agents=[
+            schemas.AgentInfo(name=r.name, description=r.description, source=r.source,
+                              tools=list(r.tools or []), model=r.model or "",
+                              path=str(r.path or ""),
+                              mcp=_role_mcp_count(r.path))
+            for r in sorted(roles.values(), key=lambda r: r.name)])
+
+    @app.get("/api/mcp", response_model=schemas.McpList, dependencies=[Depends(guard)])
+    async def list_mcp() -> schemas.McpList:
+        """MCP 声明表:qi 两层 + 各角色私有(装了 qi-agents 才枚举得出角色那层)。
+
+        **值一律不出宿主**(只有键名;stdio 的 command/args 也不给)—— 由测试钉住。
+        """
+        try:
+            from qi_mcp.config import load_layers, read_file
+        except ImportError:
+            return schemas.McpList(unavailable=True)
+        sources: list[schemas.McpSource] = []
+        for scope, path, servers in load_layers(web.default_cwd):
+            sources.append(schemas.McpSource(
+                scope=scope, path=str(path), exists=path.is_file(),
+                servers=[_mcp_server_info(n, c, scope) for n, c in servers.items()]))
+        for role_path in _role_dirs(web.default_cwd):
+            declared = _role_mcp_file(role_path)
+            if declared is None:
+                continue
+            path, servers = declared
+            sources.append(schemas.McpSource(
+                scope="role", path=str(path), exists=True, role=role_path.name,
+                servers=[_mcp_server_info(n, c, "role") for n, c in servers.items()]))
+        return schemas.McpList(sources=sources)
+
     @app.get("/api/sessions", response_model=schemas.SessionList, dependencies=[Depends(guard)])
     async def list_sessions() -> schemas.SessionList:
         return schemas.SessionList(sessions=[summary(s) for s in web.sessions.list()])
@@ -594,3 +639,59 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
 
 def main() -> None:  # pragma: no cover - 入口由 CLI 调用
     raise SystemExit("请用 `qi web` 启动(见 qi_agent.cli)")
+
+
+# ── 3c 的辅助:角色目录与 MCP 结构(模块级,纯读)────────────────
+
+def _role_dirs(cwd) -> list:
+    """各角色的目录(装了 qi-agents 才有)。读不到就当没有 —— 界面那头会显示 unavailable。"""
+    try:
+        from qi_agents.discovery import discover
+    except ImportError:
+        return []
+    return [r.path.parent for r in discover(cwd, "both").values() if r.path]
+
+
+def _role_mcp_file(role_dir):
+    """角色目录里的 mcp.json → `(路径, {名: 声明})`;没有/读坏返回 None。"""
+    try:
+        from qi_mcp.config import MCP_FILE, read_file
+    except ImportError:
+        return None
+    path = role_dir / MCP_FILE
+    if not path.is_file():
+        return None
+    try:
+        return path, read_file(path)
+    except Exception:          # noqa: BLE001 一个角色写坏了不该让整页 500
+        return None
+
+
+def _role_mcp_count(agent_md) -> int:
+    found = _role_mcp_file(agent_md.parent) if agent_md else None
+    return len(found[1]) if found else 0
+
+
+def _mcp_server_info(name, config, scope):
+    """把一份 server 声明变成**只有结构**的视图(键名可以给,值一律不给)。"""
+    from .schemas import McpServerInfo
+
+    env = config.get("env") if isinstance(config.get("env"), dict) else {}
+    headers = config.get("headers") if isinstance(config.get("headers"), dict) else {}
+    try:
+        from qi_mcp.config import ServerSpec, unknown_fields
+        unknown = unknown_fields(ServerSpec(name=name, config=config))
+    except ImportError:
+        unknown = []
+    transport = ("stdio" if config.get("command") else
+                 "http" if config.get("url") else
+                 "socket" if config.get("socket") else "unknown")
+    direct = config.get("directTools", False)
+    return McpServerInfo(
+        name=name, transport=transport,
+        url=str(config.get("url", "")) if transport == "http" else "",
+        env_keys=sorted(str(k) for k in env),
+        header_keys=sorted(str(k) for k in headers),
+        disabled=config.get("disabled") is True,
+        direct_tools=direct if isinstance(direct, (bool, list)) else False,
+        unknown_fields=unknown, source=scope)

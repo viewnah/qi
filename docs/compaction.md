@@ -145,3 +145,16 @@ tokens > contextWindow - reserveTokens        →  压
 | 摘要格式 | 同一套 7 段结构 | 同(提示词直接移植) |
 | 摘要进上下文的方式 | `system \| summary \| kept 消息` | 同位置,但摘要用 **user** 角色(理由见 §4) |
 | `custom`(叙述/思考) | 无此类型 | **压缩时当它不可见** —— 因为 `_history()` 本来就不读它,保持一致,不额外发明规则 |
+
+## 9. 扩展能干预压缩吗
+
+能,三个事件(见 [extensions.md](extensions.md) §3.1)。压缩**只有一个入口**
+(`QiRuntime.compact_session`:TUI 的 `/compact` 与自动压缩都走它),所以三个事件都在那一处发:
+
+| 事件 | 时机 | 契约 |
+| --- | --- | --- |
+| `session_before_compact` | 已经算出怎么切、还没调模型 | `{cancel: true}` 拦下这次压缩;或 `{summary: "…"}` 自带摘要 —— **自带时不调模型**(扩展可能比模型更清楚该记住什么) |
+| `session_compact` | 成功落盘后 | `{entry, summary, provided}`(`provided=true` 表示摘要是扩展给的) |
+| `session_compact_failed` | 摘要调用/落盘失败 | `{error}` —— **先发事件,再把异常抛给调用方**(失败必须传出去,但扩展也该看得见) |
+
+handler 抛异常不影响压缩本身:记一条 note 后继续(与其它事件同一条规矩)。

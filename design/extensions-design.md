@@ -22,7 +22,7 @@
 | **P-E3c-1 会话读写** ✅ | `appendEntry`(唯一写口 + 宿主盖章;**回合外报错**)+ `ctx.session_manager`(只读视图)+ `before_agent_start` 的 `message` 注入(持久:落盘 + 本轮进上下文)+ 回合内把会话绑在 runtime 上(wrapper + `finally`) | `tests/test_extension_session.py` 7 项:**跨回合读回来**(第一轮写、第二轮读入 prompt);custom entry **不进**上下文;user 先落盘再 fire hook;注入只发生一次 |
 | **P-E3c-2 主动发消息** ✅ | `sendMessage` / `sendUserMessage` + 三档 `deliver_as`(`steer` 在每次 LLM 调用前排空、`follow_up` 在本该收工时排空且**不停**、`next_turn` 留到下一次输入)+ 排空与落盘**同一时刻**(不会出现“历史里有但还没送达”) | `tests/test_extension_messages.py` 7 项:三档各自的送达时机(含“第几次 LLM 调用才看得到”);排空**只送一次**;`follow_up` 真的多跑一轮;**轮次上限优先**(带 `turn_end` 持续入队的跑飞场景);非法 `deliver_as` 进 notes |
 | **P-E3d-1 模型 / 思考级别 / 改名** ✅ | `setModel` / `get-setThinkingLevel` / `set_session_title` 收进 **runtime**(唯一入口)+ `model_select` / `thinking_level_select` / `session_info_changed` 三个通知型事件 + `_emit_notice`(后台任务,同步调用点也能发) | `tests/test_extension_model.py` 8 项(真 runtime):换客户端时 `thinking_level` / `retry` **真的带过去**;**两个来源都发且只发一次**(`set` / `cycle` / `user` / `auto`);空标题不发事件;标题内存+header 两处都改;`models.json` 未登记的 id 仍可用(刻意宽容) |
-| **P-E3d-2 压缩事件** | `session_before_compact`(可 cancel / 可自带摘要)+ `session_compact` / `session_compact_failed`。压缩已经住在 runtime(`compact_session`),所以这是一处就能接完的 | 扩展能取消一次压缩、或用自己写的摘要代替 |
+| **P-E3d-2 压缩事件** ✅ | `session_before_compact`(可 cancel / 可自带摘要)+ `session_compact` / `session_compact_failed`。压缩已经住在 runtime(`compact_session`),所以这是一处就能接完的 | 扩展能取消一次压缩、或用自己写的摘要代替(`tests/test_compaction_events.py` 7 条:取消、自带摘要(不调模型)、成功、失败先报再抛、坏 handler 不阻掉压缩、零扩展零开销) |
 | **P-E3d-3 推迟项** | renderer 三件套 + `session_before_switch` / `session_before_fork` / `session_before_tree` | 理由见 本文 §11.10:两条都**不在三件套扩展的关键路径上**,且各自需要一次专门决策(渲染 API 形状 / 会话操作改成 runtime 拥有) |
 | **P-E4a 运行单元 + 子运行** ✅ | runner 入参 `AgentUnit` → **`RunSpec = {name, prompt, tools}`**(core 里不再有任何地方能问出“这是哪个角色”)+ `spec_from_unit()` 过渡件 + `ctx.runAgent`(见 docs/extensions.md §3.2) | `tests/test_extension_run_agent.py` 6 项:子运行**不污染父会话**;提示词/工具真的隔离;`tools` 缺省**继承父**(不放大权限);**闸门在子运行里也生效**;`model` 另建客户端不碰父;空提示词报错 |
 | **P-E4b 扩展间消息 + provider** ✅ | `api.events`(peer 消息:两套 API、同一总线对象)+ `registerProvider`(进内存 cfg,不写盘) | `tests/test_extension_interop.py` 9 项:两个扩展真能互相发消息;无人订阅是 no-op;坏 handler 不拖垮其他(且进 notes);async handler 排后台任务;**同名的宿主事件与 peer 消息互不干扰**(两张表);注册的 provider 立即可用、**不写盘**、覆盖同名会提示 |
@@ -32,7 +32,7 @@
 
 **依赖关系**:P-E1 ✅ → **P-E2 ✅** → **P-E3 ✅**(a/b/c/d-1) → **P-E4a ✅** → **P-E4b ✅** → P-E4c → P-E5 → P-E6。
 
-> **P-E3 剩下的两块与三件套无关**:P-E3d-2(压缩事件)与 P-E3d-3(renderer + 会话操作事件)。
+> **P-E3 剩下的两块与三件套无关**:P-E3d-2(压缩事件,**已落地**)与 P-E3d-3(renderer + 会话操作事件)。
 > 三件套扩展真正依赖的扩展面已全部就位 —— 除了 `ctx.runAgent`,那是 **P-E4** 的事。
 > **P-E2 整段完成**:工具面(注册 / 元数据 / 来源 / 运行时集合 / `exec`)+ 输入面(`input`、`before_agent_start`)+ 轮次与工具事件(`turn_*`、`context`、`tool_call`、`tool_result`)+ 依赖契约。
 > 剩下的 P-E6 尾巴:PEP 723 目录通道声明解析、冲突报告深度、`qi doctor` 汇总。

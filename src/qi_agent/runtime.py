@@ -727,13 +727,52 @@ class QiRuntime:
 
     async def compact_session(self, session: Session,
                               instructions: str | None = None) -> dict | None:
-        """执行一次压缩并落盘;没什么可压时返回 None(调用方据此提示用户)。"""
+        """执行一次压缩并落盘;没什么可压时返回 None(调用方据此提示用户)。
+
+        **这是压缩的唯一入口**(TUI 的 `/compact` 与自动压缩都走它),所以 P-E3d-2 的三个
+        事件都在这一处发:
+
+        - `session_before_compact`:可 `{cancel: true}` 拦下这次压缩,也可以 `{summary: "…"}`
+          自带摘要 —— 自带时**不调模型**(扩展可能比模型更清楚该记住什么);
+        - `session_compact`:成功落盘后(带 `entry`);
+        - `session_compact_failed`:失败时**先发事件再把异常抛出去** —— 失败必须传到调用方,
+          但扩展也该看得见。
+
+        payload 键名用 snake_case(与其它事件一致);`cancel` / `summary` 是文档里那两个契约键。
+        """
         _enabled, _reserve, keep = self._compaction_options()
         prep = prepare_compaction(session.branch(), keep_recent_tokens=keep)
         if prep is None:
             return None
-        entry = await compact(self.llm_exec, prep, instructions=instructions)
+        if self.bus.has("session_before_compact"):
+            result = await self.bus.emit_until(
+                "session_before_compact",
+                {"instructions": instructions, "tokens_before": prep.tokens_before},
+                ctx=self.extension_ctx(), stop_keys=("cancel",))
+            for source, exc in result.errors:
+                self.notes.append(f"扩展 {source} 的 session_before_compact 处理失败: {exc}")
+            if result.payload.get("cancel"):
+                return None
+            provided = result.payload.get("summary")
+            if isinstance(provided, str) and provided.strip():
+                # 与 `compaction.compact()` 造同一个形状(只是摘要来自扩展、usage 为空)
+                entry = {"type": "compaction", "summary": provided.strip(),
+                         "firstKeptEntryId": prep.first_kept_entry_id,
+                         "tokensBefore": prep.tokens_before, "usage": {}}
+                self.sessions.append(session, entry)
+                self._emit_notice("session_compact",
+                                  {"entry": entry, "summary": entry["summary"],
+                                   "provided": True})
+                return entry
+        try:
+            entry = await compact(self.llm_exec, prep, instructions=instructions)
+        except Exception as exc:      # noqa: BLE001 先让扩展看见,再原样抛给调用方
+            self._emit_notice("session_compact_failed", {"error": str(exc)})
+            raise
         self.sessions.append(session, entry)
+        self._emit_notice("session_compact",
+                          {"entry": entry, "summary": str(entry.get("summary") or ""),
+                           "provided": False})
         return entry
 
     async def summarize_branch_for_jump(self, session: Session, source_branch: list[dict],

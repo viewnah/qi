@@ -84,7 +84,7 @@ qi 要拆的三样(MCP / 多 agent / web)**正好落在这份清单上**。
 | `model_select` / `thinking_level_select` | 模型 / 思考级别变化 | 通知。payload:`{model, previous, source}` / `{level, previous_level, source}`;`source` ∈ `set`(显式)/ `cycle`(轮转)/ `auto`。**只从 runtime 发**(TUI 与扩展共用那一个入口) | ✅ P-E3d-1 |
 | `session_info_changed` | 会话改名 | 通知。payload:`{name, source}`;`source` ∈ `user`(`/name`)/ `auto`(自动命名) | ✅ P-E3d-1 |
 | `session_before_switch` / `session_before_fork` / `session_before_tree` | `/new` `/resume` `/fork` `/tree` | `{cancel}` —— **推迟**,理由见 §11.10:这些操作目前住在 TUI 里,要发事件得先把它们改成 runtime 拥有 | ⏸ |
-| `session_before_compact` / `session_compact` / `session_compact_failed` | 压缩 | `{cancel}` / `{summary}` | ⏳ P-E3d-2 |
+| `session_before_compact` / `session_compact` / `session_compact_failed` | 压缩 | `session_before_compact` 可 `{cancel}` 拦下、或 `{summary}` 自带摘要(自带时**不调模型**);`session_compact` 带 `{entry, summary, provided}`;失败时先发 `session_compact_failed`(`{error}`)再抛出去 | ✅ P-E3d-2 |
 | `session_before_tree` / `session_tree` | `/tree` 跳转 | `{cancel}` / `{summary}` | P-E3 |
 | `session_info_changed` | 会话改名 | 通知 | P-E3 |
 

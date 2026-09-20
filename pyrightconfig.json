@@ -16,7 +16,7 @@
   "exclude": [
     "**/__pycache__",
     ".venv",
-    "web/node_modules",
-    "web/dist"
+    "extensions/qi-web/ui/node_modules",
+    "extensions/qi-web/ui/dist"
   ]
 }

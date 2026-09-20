@@ -39,7 +39,7 @@ h1{{font-size:18px}}</style>
 <h1>qi-web 宿主已启动,但前端产物不存在</h1>
 <p>API 可直接使用(<code>/api/meta</code>、<code>/api/sessions</code>、SSE 事件流)。</p>
 <p>构建前端:<code>cd web &amp;&amp; npm install &amp;&amp; npm run build</code></p>
-<p>构建产物会被放进 <code>src/qi_agent/web/static/</code>,刷新本页即可。</p>"""
+<p>构建产物会被放进 <code>extensions/qi-web/qi_web/static/</code>,刷新本页即可。</p>"""
 
 
 def create_app(cwd: Path | str | None = None, password: str | None = None,

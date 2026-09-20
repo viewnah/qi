@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "qi-web 前端(React + Vite + TS)。构建产物进 src/qi_agent/web/static/。",
+  "description": "qi-web 前端(React + Vite + TS)。构建产物进 extensions/qi-web/qi_web/static/。",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

@@ -23,8 +23,8 @@ data/
 .pi/
 
 # qi-web 前端依赖与构建中间产物
-web/node_modules/
-web/dist/
+extensions/qi-web/ui/node_modules/
+extensions/qi-web/ui/dist/
 
 # 编辑器配置
 .vscode/

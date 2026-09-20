@@ -86,7 +86,7 @@ def register(registry):
 qi_web_ui = ["ui/**/*"]
 ```
 
-- 前端技术栈:**已推翻“零构建轻量”**——改为 React + Vite + TypeScript,构建产物作为静态资源分发(决策与理由见 §8)。原判断“避免构建链进 pip 包”仍成立:构建产物进 wheel,源码 `web/` 不进。
+- 前端技术栈:**已推翻“零构建轻量”**——改为 React + Vite + TypeScript,构建产物作为静态资源分发(决策与理由见 §8)。原判断“避免构建链进 pip 包”仍成立:构建产物进 wheel,源码 `extensions/qi-web/ui/` 不进。
 - 深度定制(如 DB 管理台代理):插件 `add_route` 扩展(见 plugins.md),需安全审计
 - 官方维护一个参考 UI 插件,与框架 `/api` 契约同步演进
 
@@ -389,7 +389,7 @@ Web 宿主应把它转成 error 帧(而不是断开连接);CLI 保持与旧版�
 
 ```bash
 uv pip install -e ".[web]"      # 只会多装 fastapi/uvicorn 等(web 是可选 extra)
-cd web && npm install && npm run build && cd ..   # 前端构建产物 → src/qi_agent/web/static/
+cd extensions/qi-web/ui && npm install && npm run build && cd ..   # 前端构建产物 → src/qi_agent/web/static/
 qi web                           # → http://127.0.0.1:30142
 ```
 
@@ -510,7 +510,7 @@ queue-steer 语义 / headless RPC / UI 插件拆包。
 ### 14.6 打包注意
 
 前端产物**不入版本控制**(`.gitignore` 已忽略 `src/qi_agent/web/static/`),
-但**进 wheel**。因此打包前必须先 `cd web && npm run build`;
+但**进 wheel**。因此打包前必须先 `cd extensions/qi-web/ui && npm run build`;
 若缺产物,`qi web` 会给一个说明页而不是坏页面(`static_ready: false`)。
 
 ### 14.7 验证怎么跑(三层各管一段)
@@ -772,7 +772,7 @@ async def run(args, ctx):
 两侧截图都是 **1253×879 CSS @2x = 2506×1758**(与 dsh.png 同尺寸同倍率):
 
 ```bash
-cd web && npm run build
+cd extensions/qi-web/ui && npm run build
 QI_AGENT_HOME=/tmp/qi-shot/agent .venv/bin/qi web --no-open -p 30199 --cwd <项目目录>
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless=new \
   --force-device-scale-factor=2 --window-size=1253,879 --screenshot=/tmp/shot.png <url>
@@ -827,7 +827,7 @@ dsh 的项目行是"工作区 chip + 模式 chip"两颗,qi 只有前者。
 ### 17.6 验证怎么跑
 
 ```bash
-cd web && npm test          # 46 项:含 projects.test.ts 的 15 项(分组/标签/相对时间分档)
+cd extensions/qi-web/ui && npm test          # 46 项:含 projects.test.ts 的 15 项(分组/标签/相对时间分档)
 npm run typecheck           # 含测试文件
 npm run check:design        # 色值纪律 + dsh 色值保真(这次新增的令牌都过了)
 npm run check:tokens        # 90 条 alias/specific 颜色 + **13 条字体阶梯**逐条对拍 dsh 源文件
@@ -1095,7 +1095,7 @@ qi 没有"归档"这个中间状态,所以删除就是删除:一次把工作区�
 .venv/bin/python -m pytest tests/test_web_api.py -q       # +5 项:分叉(含 409/400/404)、工作区四个端点
 
 # 前端(新增 5 项)
-cd web && npx vitest run src/state/projects.test.ts       # 20 项:含"两个人工决定"的合并规则
+cd extensions/qi-web/ui && npx vitest run src/state/projects.test.ts       # 20 项:含"两个人工决定"的合并规则
 ```
 
 端到端那一次是用真实 Chrome(CDP)跑完的:会话行 hover 换「…」→ 菜单三项 → 重命名 200 →
@@ -1674,7 +1674,7 @@ Esc#2     = panel:false,activeElement=.rail__footrow,aria-expanded=false   ← �
 #### (6) 验证怎么跑
 
 ```bash
-cd web && npm run typecheck && npm test     # 56 项
+cd extensions/qi-web/ui && npm run typecheck && npm test     # 56 项
 npm run check:design                        # 色值纪律 + dsh 色值保真
 npm run check:tokens                        # 90 条颜色 + 13 条字体阶梯逐条对拍
 npm run build
@@ -1771,7 +1771,7 @@ options 横向溢出 = false,纵向滚动 = true;页面错误 = 0
 ```bash
 .venv/bin/python -m pytest -q tests/test_mcp_plugin.py tests/test_web_api.py   # 11 + 38
 .venv/bin/python -m pytest -q                                                 # 427
-cd web && npm run typecheck && npm test && npm run check:design && npm run build
+cd extensions/qi-web/ui && npm run typecheck && npm test && npm run check:design && npm run build
 ```
 
 ### 18.19 输入卡下方那行会话统计 + token 用量(2026-09,使用反馈)
@@ -1911,7 +1911,7 @@ qi 这边 `usage` 只挂在 `RUN_FINISHED.metadata["qi.usage"]` 上 —— **刷
 
 ```bash
 .venv/bin/python -m pytest -q                       # 433(新增 usage_summary 4 项 + web 2 项)
-cd web && npm run typecheck && npm test             # 66(新增 stats.test.ts 7 项 + turn.test.ts 的 lastUsage 3 项)
+cd extensions/qi-web/ui && npm run typecheck && npm test             # 66(新增 stats.test.ts 7 项 + turn.test.ts 的 lastUsage 3 项)
 npm run check:design && npm run build
 ```
 
@@ -1987,7 +1987,7 @@ dsh .crumbCurrent = font-weight: 500; color: label-primary     ← 当前会话�
 #### 验证怎么跑
 
 ```bash
-cd web && npm run typecheck && npm test && npm run check:design && npm run build
+cd extensions/qi-web/ui && npm run typecheck && npm test && npm run check:design && npm run build
 ```
 
 ### 18.21 转录重排:气泡 / 去称谓 / 去竖线 / 分派归位 / 思考分隔线 / 消息动作(2026-09,使用反馈)
@@ -2063,7 +2063,7 @@ cd web && npm run typecheck && npm test && npm run check:design && npm run build
 
 ```bash
 .venv/bin/python -m pytest -q                       # 434(新增思考落盘 1 项)
-cd web && npm run typecheck && npm test             # 68(新增行顺序 / entry id 2 项)
+cd extensions/qi-web/ui && npm run typecheck && npm test             # 68(新增行顺序 / entry id 2 项)
 npm run check:design && npm run build
 ```
 
@@ -2145,7 +2145,7 @@ dsh 那条线在它那里看着对,是因为它**默认收起**:收起时「头�
 
 ```bash
 .venv/bin/python -m pytest -q                       # 434
-cd web && npm run typecheck && npm test             # 76(新增 groupProcess 4 项 + processLabel 4 项)
+cd extensions/qi-web/ui && npm run typecheck && npm test             # 76(新增 groupProcess 4 项 + processLabel 4 项)
 npm run check:design && npm run build
 ```
 
@@ -2229,7 +2229,7 @@ h2 = 「结论」· 700 19px / 28px            ← dsh 的 markdown h2 档
 #### 验证怎么跑
 
 ```bash
-cd web && npm run typecheck && npm test        # 88(新增 markdown 12 项:结构 / 安全 / 中文强调)
+cd extensions/qi-web/ui && npm run typecheck && npm test        # 88(新增 markdown 12 项:结构 / 安全 / 中文强调)
 npm run check:design && npm run check:tokens && npm run build
 ```
 
@@ -2310,7 +2310,7 @@ chip(空态) = "auto"(带 agent 图标,位于模型名左边:x 1092.3 / 模型 1
 #### 验证怎么跑
 
 ```bash
-cd web && npm run typecheck && npm test && npm run check:design && npm run build
+cd extensions/qi-web/ui && npm run typecheck && npm test && npm run check:design && npm run build
 ```
 
 ### 18.25 隐藏遥测选项 / tab 标题 / 会话自动命名(2026-09,使用反馈)
@@ -2380,7 +2380,7 @@ document.title = "Qi Web"
 
 ```bash
 .venv/bin/python -m pytest -q                       # 442(新增 titling 8 项:清洗 / 不抛 / 落盘)
-cd web && npm run typecheck && npm test && npm run check:design && npm run build
+cd extensions/qi-web/ui && npm run typecheck && npm test && npm run check:design && npm run build
 ```
 
 ### 18.26 刷新回到当前会话(URL 里的会话状态)

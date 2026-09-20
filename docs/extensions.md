@@ -423,6 +423,24 @@ qi-agents(唯一知道角色目录的人)
 所以这一块**不能拿“对齐 pi”当依据**:上面这套 scope 交接是 qi 自己的决定,理由只有一条 ——
 让两个扩展互不知道对方的存在。
 
+**补正(E23 的半个更正)**:生态里**确实有** MCP 扩展可对照 —— `pi-mcp-adapter`(pi 的 MCP 扩展,
+非核心;pi 核心不含 MCP 这点不变)。它的做法:
+
+- **配置层是固定文件清单**(后到者胜):`~/.config/mcp/mcp.json` → `~/.agents/mcp.json` →
+  `~/.agents/mcp/mcp.json` → `<Pi agent dir>/mcp.json` → `.mcp.json` → `.pi/mcp.json`,
+  外加三种**包来源**(Agent Plugins 目录 / Claude 插件目录 / Pi 包清单 `pi.mcp`,后者按
+  `<包名>__<server>` 加前缀);
+- **没有 per-agent / per-subagent 层** —— pi 核心没有子 agent,它的 MCP 配置是宿主/会话级的,
+  所以根本不存在“角色目录”这件事;
+- 别的扩展要给它服务器,走**共享事件总线按值推**:
+  `pi.events.emit("pi-mcp-adapter:runtime-register:v1", {version:1, name, definition:{url}})`,
+  适配器**同步**写回 `request.result`;会话级、永不落盘、重名 fail closed、只走 proxy 工具。
+  **注意它是按值传 definition,不是“给你一个目录”** —— 适配器永远不会去走对方的目录。
+
+**对 qi 的意义**:② 的形状(pull + scope)与 pi 的(push + by-value)不同,但**边界完全一致**
+(pi 的适配器同样不碰对方目录)。qi 选 pull 多一条 pi 做不到的理由:角色的 MCP 工具只能进
+**那一次子运行**的工具清单(`RunSpec.tools`),不能污染主会话(runtime-register 是会话级的)。
+
 ## 8. 兼容与迁移(**一刀切**)
 
 已定:不保留"官方扩展自动装载"。`qi web`、`.qi/agents/`、`mcp.json` 都要求**显式装扩展**。
@@ -505,7 +523,7 @@ qi-agents(唯一知道角色目录的人)
 | E21 | MCP 传输范围 | **stdio + Streamable HTTP**;旧 SSE 不做(已过时) |
 | E22 | MCP 工具命名 | **`mcp__<server>__<tool>`**(Claude Code 约定),角色白名单支持 `mcp__<server>__*` 通配。理由:不撞名、可前缀过滤,且“角色只拿某 server 的工具”只能靠通配写 |
 | E23 | MCP 这一块有没有 pi 可抄 | **没有**。pi 官方文档明确不内置 MCP(`docs/usage.md`:“intentionally does not include built-in MCP…”),205 个 TS 源文件里 “MCP” 仅出现一次(注释里的 “MCP bridges”)。所以 qi-mcp 的接口(qi 级两层 / scope 交接 / 命名)全属 qi 自己的决定,**不得以“对齐 pi”为理由** |
-
+| E24 | MCP 工具的暴露方式(**待定**) | `pi-mcp-adapter` 默认**不给每个 server 注册 N 个工具**,而是注册**一个 ~200 token 的 `mcp` 代理工具**(`mcp({search})` 发现 → `mcp({tool,args})` 调用),server 默认 lazy;直连注册要 `directTools` 显式开启(理由:一个 server 的工具定义轻松 10k+ token)。**E22 的“每工具一个名字 + 白名单通配”只在直连模式下成立** —— 默认走代理还是直连待定 |
 ## 11. 未定清单
 
 1. 装载顺序是否承诺稳定(现在是"确定但非 API";pi 也不承诺)

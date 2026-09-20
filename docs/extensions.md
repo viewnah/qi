@@ -382,6 +382,26 @@ tools = await api.resolveTools("mcp_servers", scope=role_dir)   # 新增;没人�
 **作用域三层**(沿用 v1,勿改):全局 `~/.qi/agent/mcp.json` → 项目 `<git 根>/.qi/mcp.json`
 (同名覆盖全局)→ **agent 私有** `<agent 目录>/mcp.json`(自动绑定,只本角色可见)。
 
+**边界澄清(易混,写下来免得绕回去)** —— 分工不是“谁读那个文件”,而是**“谁知道 `mcp.json`
+这个名字”**:
+
+| | qi-agents | qi-mcp |
+| --- | --- | --- |
+| **知道** | 角色目录怎么找(`.qi/agents/<名>/`)、作用域是什么、项目信任状态 | `mcp.json` 的格式、三层布局与优先级、怎么起 server 与注册工具 |
+| **不知道** | `mcp.json` 存在 —— 它一行都不碰 | 角色目录怎么找 —— **它从不去遍历 `.qi/agents/`** |
+
+交接值是**一个作用域对象**(qi-agents 定义,消费方鸭子类型读它,不必 import):
+
+```python
+Scope{name: str, dir: Path, trust: bool}      # qi-agents 造
+# qi-mcp 只做一件“层内”的事:
+declared = read_json(scope.dir / "mcp.json")   # 它自己的文件名,不是 qi-agents 要关心的
+```
+
+**反过来的做法更差**:若让 qi-agents 读 `<agent 目录>/mcp.json` 再把内容交给 qi-mcp,
+qi-agents 就必须知道文件名、格式、以及“agent 私有”这一层的存在 —— 把 MCP 知识**漏回**了
+上游。同理,全局/项目两层**与角色无关**(不是 agent 层),qi-mcp 自己处理,不需要作用域。
+
 ## 8. 兼容与迁移(**一刀切**)
 
 已定:不保留"官方扩展自动装载"。`qi web`、`.qi/agents/`、`mcp.json` 都要求**显式装扩展**。

@@ -149,15 +149,17 @@ async def test_broken_command_becomes_a_note_not_a_crash(server_script: Path):
 
 
 @pytest.mark.asyncio
-async def test_http_transport_is_a_readable_not_implemented(server_script: Path):
-    """E21 说 stdio + Streamable HTTP,但 HTTP 还没做 —— **说清"没做",不假装**。"""
-    http = ServerSpec(name="remote", config={"url": "https://mcp.example.com/mcp"},
-                      scope="global")
-    manager = ServerManager({"remote": http}, connect)
+async def test_unimplemented_transport_is_a_readable_error():
+    """E21 定了 stdio + Streamable HTTP;**socket(`rmcp-mux`)不做** —— 要说清“没做”,不假装。
+
+    (HTTP 曾经也在这条里,切片 2c 实现后移到 `test_qi_mcp_http.py` 真连真服务器。)
+    """
+    sock = ServerSpec(name="sock", config={"socket": "/tmp/mcp.sock"}, scope="global")
+    manager = ServerManager({"sock": sock}, connect)
     tool = build_tool(manager)
     try:
         text = _text(await tool.execute({"search": "任何"}, None))
-        assert "尚未实现" in text and "stdio" in text
-        assert "remote" in manager.failed
+        assert "尚未实现" in text and "socket" in text
+        assert "sock" in manager.failed
     finally:
         await manager.aclose()

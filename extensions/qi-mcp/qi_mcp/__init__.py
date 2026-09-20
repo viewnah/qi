@@ -34,11 +34,12 @@ from .config import (  # noqa: F401  (对外导出)
 )
 from .direct import direct_selection, prefix_mode, select_tools, tool_name
 from .proxy import build_proxy_tool
+from .role import register_role_mcp, role_specs
 from .servers import ManagerError, ServerManager, ToolInfo
 
-__all__ = ["register", "register_direct_tools", "resolve", "active", "load_layers",
-           "scope_files", "ServerSpec", "ConfigError", "MCP_FILE", "McpScope",
-           "tool_name", "select_tools", "direct_selection"]
+__all__ = ["register", "register_direct_tools", "register_role_mcp", "role_specs",
+           "resolve", "active", "load_layers", "scope_files", "ServerSpec", "ConfigError",
+           "MCP_FILE", "McpScope", "tool_name", "select_tools", "direct_selection"]
 
 
 def _direct_tool(info: ToolInfo, name: str, manager: ServerManager) -> Any:

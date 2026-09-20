@@ -11,7 +11,9 @@ requires-python = ">=3.12"
 # 宿主提供(不得钉版本):qi-agent 由 qi 自己装着,扩展只声明“我需要宿主”。
 # 这也是 docs/extensions.md §5.5 / E11 的规则 —— 把 qi-agent 写进 dependencies
 # 会让 pip 在解析时把 qi 自己降级(宿主被自己的扩展踢掉)。
-dependencies = ["PyYAML>=6.0"]
+# `qi-mcp` 是 **E25 定的硬依赖**:角色自带的 MCP 由本扩展读 `<角色目录>/mcp.json`、
+# 按值交给 qi-mcp 去连与注册。代价已记档:装 qi-agents 会一并拖上 MCP 栈。
+dependencies = ["PyYAML>=6.0", "qi-mcp"]
 
 [project.entry-points."qi.extensions"]
 agents = "qi_agents:register"

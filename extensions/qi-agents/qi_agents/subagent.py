@@ -24,6 +24,15 @@ from qi_agent.extensions import Tool
 
 from .discovery import AgentScope, Role, discover, format_roles
 
+# E25:角色自带的 MCP 走 qi-mcp —— 本扩展读角色目录的 mcp.json,按值交给它。
+# 模块级 import(不是函数内延迟)有两层原因:①便于在测试里替换掉它来验接线;
+# ②装了 qi-mcp 才有 MCP,开发/裁剪环境里没有时**降级**成“角色照跑、只是没有 MCP 工具”,
+# 而不是整套角色系统 import 不进来。
+try:
+    from qi_mcp import register_role_mcp
+except ImportError:          # pragma: no cover - 取决于环境里有没有装 qi-mcp
+    register_role_mcp = None
+
 MAX_PARALLEL_TASKS = 8
 MAX_CONCURRENCY = 4
 PER_TASK_CAP = 50_000          # 单个子结果进文本前截断(与工具输出同档)
@@ -78,14 +87,37 @@ def _require(roles: dict[str, Role], name: object) -> Role:
     return role
 
 
+async def _role_mcp_names(api: Any, role: Role, ctx: Any,
+                          role_tools: list[str] | None) -> list[str]:
+    """把该角色的 MCP 工具拿到手(名字),交给 qi-mcp 去注册。
+
+    - 角色 `tools:` 里没有 MCP 条目 → **一行 MCP 工作都不做**(qi-mcp 自己也这么判);
+    - qi-mcp 不在 → `[]`(降级);
+    - 坏掉的 mcp.json / 连不上的 server → 记 note(走 ctx.ui,它无前端时本来就写 notes),
+      不让整个子运行失败。
+    """
+    if register_role_mcp is None or not role_tools:
+        return []
+    ui = getattr(ctx, "ui", None)
+    return await register_role_mcp(
+        api,
+        role_dir=role.path.parent if role.path else None,
+        cwd=getattr(ctx, "workdir", None),
+        role_tools=list(role_tools),
+        on_note=(ui.notify if ui is not None else None))
+
+
 async def _run_one(api: Any, role: Role, task: str, ctx: Any,
                    sem: asyncio.Semaphore | None = None) -> dict:
     """跑一个角色。返回结构化结果(带 usage/错误),失败**不抛**给上层 ——
     一个子任务失败不该把另外几个已经跑完的结果一起扔掉。"""
-    tools = role.tools
+    tools = None if role.tools is None else [t for t in role.tools if t != "subagent"]
+    # E25:角色 `tools:` 里的 MCP 条目**换掉**成真实工具名 —— `mcp__gh__*` 是模式、不是工具名,
+    # 直接留给 runner 会被报成“未知工具”;`mcp` 会由返回的名字重新带回。
+    mcp_names = await _role_mcp_names(api, role, ctx, role.tools)
     if tools is not None:
-        # 子运行里不再给 `subagent`:递归防护做成结构性的,而不是靠计数
-        tools = [t for t in tools if t != "subagent"]
+        rest = [t for t in tools if t != "mcp" and not t.startswith("mcp__")]
+        tools = [*rest, *mcp_names]
     spec = {"system_prompt": role.prompt or f"你是 {role.name}。",
             "name": role.name, "tools": tools, "model": role.model}
     try:

@@ -456,6 +456,16 @@ def doctor() -> None:
     else:
         console.print(f"[dim]无 {SETTINGS_FILE_NAME}(可选;默认模型可写在里面)[/dim]")
 
+    ext_lines, ext_warnings = _extension_report()
+    if ext_lines:
+        console.print("[green]扩展:[/green]")
+        for line in ext_lines:
+            console.print(f"  {line}")
+    else:
+        console.print("[dim]扩展:无(pip install qi-agents / qi-mcp / qi-web)[/dim]")
+    for warning in ext_warnings:
+        console.print(f"  [yellow]⚠ {escape(warning)}[/yellow]")
+
     store = AuthStore()
     if cfg.providers:
         table = Table(title="providers")
@@ -1225,6 +1235,60 @@ def _dispatch_extension_command(argv: list[str]) -> bool:
     if command is None:
         return False
     raise SystemExit(command.handler(argv[1:]) or 0)
+
+
+
+def _extension_report(cwd: Path | None = None) -> tuple[list[str], list[str]]:
+    """`qi doctor` 的扩展一节:`(每个扩展一行, 依赖警告)`。
+
+    信息来自**注册面的反查**,不是扩展自报 —— 这样"扩展说它注册了 X"与"宿主真收到了 X"
+    不会各说各话(doctor 的价值正在此)。所以这里宁可做一次轻量装载,也不读扩展自己的日志。
+    """
+    from .extensions import CliCommandRegistry, CommandRegistry, ExtensionBus, FlagRegistry
+    from .registry import CapabilityRegistry, ToolCatalog, discover_extensions
+
+    catalog, caps = ToolCatalog(), CapabilityRegistry()
+    commands, flags, cli_commands = CommandRegistry(), FlagRegistry(), CliCommandRegistry()
+    warnings: list[str] = []
+    loaded = discover_extensions(catalog, caps, cwd or Path.cwd(), bus=ExtensionBus(),
+                                 commands=commands, flags=flags, cli_commands=cli_commands,
+                                 on_warning=warnings.append, project_trusted=False)
+
+    tools: dict[str, int] = {}
+    origins: dict[str, str] = {}
+    for tool in catalog.all():
+        info = tool.source_info or {}
+        name = str(info.get("source") or "?")
+        tools[name] = tools.get(name, 0) + 1
+        if name not in origins:
+            origin = str(info.get("origin") or "")
+            scope = str(info.get("scope") or "")
+            origins[name] = f"{origin or '?'}" + (f" · {scope}" if scope else "")
+
+    owned: dict[str, list[str]] = {name: [] for name in loaded}
+    for name in commands.names:
+        command = commands.find(name)
+        if command is not None:
+            owned.setdefault(command.source, []).append(f"/{name}")
+    for name in cli_commands.names:
+        command = cli_commands.find(name)
+        if command is not None:
+            owned.setdefault(command.source, []).append(f"qi {name}")
+    for name in loaded:                       # 配置种类的归属(反查)
+        kinds = sorted(k for k in caps.kinds if name in caps.providers(k))
+        if kinds:
+            owned[name].append("配置种类 " + ", ".join(kinds))
+        if tools.get(name):
+            owned[name].append(f"工具 {tools[name]}")
+
+    lines: list[str] = []
+    for name in loaded:
+        what = owned.get(name) or ["(装载了但没有注册任何东西)"]
+        lines.append(f"{name}  [dim]{origins.get(name, '?')}[/dim]  " + " · ".join(what))
+    if flags.names:
+        # 旗标登记处没有归属面,所以单独列(不硬凑成"某扩展的旗标")
+        lines.append("旗标: " + ", ".join(flags.names))
+    return lines, warnings
 
 
 def main() -> None:

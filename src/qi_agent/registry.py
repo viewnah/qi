@@ -205,6 +205,10 @@ class CapabilityRegistry:
             tools.extend(got if isinstance(got, (list, tuple)) else [got])
         return tools
 
+    def providers(self, kind: str) -> set[str]:
+        """哪些扩展在管这个种类(`qi doctor` 用:反查"宿主真收到了什么")。"""
+        return set(self._providers.get(kind, ()))
+
     def has_provider(self, kind: str) -> bool:
         return kind in self._providers and bool(self._providers[kind])
 

@@ -327,14 +327,20 @@ def extension_dirs(cwd: Path | None = None, *, trusted: bool,
 
     项目级那份**只在信任时**返回 —— 它随仓库走,未信任时它不是用户的意图。
     `extra` 是调用方自己的追加路径(如 CLI 的 `-e`),记 temporary。
+
+    **排除项**(`!pat` / `-path`)在这里就减掉 —— `-e` 显式给的 `extra` 不减
+    (显式意图胜过配置),与 `registry._iter_extension_loaders` 同一口径。
     """
     scopes = load_settings_by_scope(cwd)
     out: list[tuple[Path, str]] = [(Path(p), "temporary") for p in (extra or ())]
-    out += [(p, "user")
-            for p in settings_include_paths(scopes.get("user"), "user", "extensions", cwd)]
-    if trusted:
-        out += [(p, "project") for p in
-                settings_include_paths(scopes.get("project"), "project", "extensions", cwd)]
+    for scope in ("user", "project"):
+        if scope == "project" and not trusted:
+            continue
+        settings = scopes.get(scope)
+        excluded = {p for p in settings_exclude_paths(settings, scope, "extensions", cwd)}
+        out += [(p, scope)
+                for p in settings_include_paths(settings, scope, "extensions", cwd)
+                if p not in excluded]
     return out
 
 

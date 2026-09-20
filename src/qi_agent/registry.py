@@ -329,6 +329,36 @@ def _normalize_extra(extra_dirs: Iterable[Path | tuple[Path, str]] | None
     return out
 
 
+def _resolve(path: Path) -> Path:
+    """比较用的绝对路径(失败就退原样 —— 不因为解析不了就把排除项当成没写)。"""
+    try:
+        return path.resolve()
+    except OSError:
+        return path
+
+
+def _excluded_extension_paths(cwd: Path | None, project_trusted: bool) -> set[Path]:
+    """两个作用域 `settings.extensions` 里的排除项(`!pat` / `-path`),解析成绝对路径。
+
+    项目那份只在信任时算 —— 与纳入侧同一条门控(它随仓库走)。
+    """
+    from .settings import SettingsError, load_settings_by_scope, settings_exclude_paths
+
+    try:
+        scopes = load_settings_by_scope(cwd)
+    except SettingsError:
+        # settings 坏了会在别处报出来(runtime 装载 / clinician 的 doctor 节)。
+        # 这里只是拿排除项 —— 不能因为读不到它就把扩展发现整个搞挂。
+        return set()
+    out: set[Path] = set()
+    for scope in ("user", "project"):
+        if scope == "project" and not project_trusted:
+            continue
+        for path in settings_exclude_paths(scopes.get(scope), scope, "extensions", cwd):
+            out.add(_resolve(path))
+    return out
+
+
 def _iter_extension_loaders(cwd: Path | None,
                             extra_dirs: Iterable[Path | tuple[Path, str]] | None = None,
                             project_trusted: bool = True, *,
@@ -343,16 +373,22 @@ def _iter_extension_loaders(cwd: Path | None,
     import importlib.metadata as metadata
 
     seen: set[str] = set()
-    # (目录, 是否允许该目录本身就是扩展, scope)。内建目录:项目那一档受信任门控 ——
-    # **未信任就不进循环**(而不是扫了再丢)
-    roots: list[tuple[Path, bool, str]] = []
+    # 排除项(`settings.extensions` 里的 `!pat` / `-path`)作用于**整个发现集** ——
+    # 与技能同一口径:内建目录里扫出来的扩展也能被单独关掉。
+    # (`settings_exclude_paths` 的 docstring 早就这么写了,但扩展这边一直没接上 ——
+    #  于是 `"extensions": ["-~/.qi/agent/extensions/foo"]` 是个**静默空操作**。)
+    excluded = _excluded_extension_paths(cwd, project_trusted) if discovered else set()
+    # (目录, 是否允许该目录本身就是扩展, scope, 是否**显式**给出)。内建目录:项目那一档受信任门控
+    roots: list[tuple[Path, bool, str, bool]] = []
     if discovered:
         if project_trusted:
-            roots.append((paths.project_home(cwd) / paths.EXTENSIONS_DIR_NAME, False, "project"))
-        roots.append((paths.global_home() / paths.EXTENSIONS_DIR_NAME, False, "user"))
-    # 附加路径两种都行(见下):可以是父目录,也可以直接是一个扩展目录
-    roots += [(path, True, scope) for path, scope in _normalize_extra(extra_dirs)]
-    for root, allow_self, scope in roots:
+            roots.append((paths.project_home(cwd) / paths.EXTENSIONS_DIR_NAME, False,
+                          "project", False))
+        roots.append((paths.global_home() / paths.EXTENSIONS_DIR_NAME, False, "user", False))
+    # 附加路径两种都行(见下):可以是父目录,也可以直接是一个扩展目录。
+    # 它们是**显式**给的(`-e` / CLI),所以排除项**不管**它们 —— 显式意图胜过配置。
+    roots += [(path, True, scope, True) for path, scope in _normalize_extra(extra_dirs)]
+    for root, allow_self, scope, explicit in roots:
         if not root.is_dir():
             continue
         # `settings.extensions` 的一条可以直接指向**单个扩展目录**(对齐 pi:
@@ -366,6 +402,8 @@ def _iter_extension_loaders(cwd: Path | None,
         for child in children:
             entry = child / EXTENSION_ENTRY_FILE
             if not (child.is_dir() and entry.is_file()):
+                continue
+            if not explicit and (_resolve(child) in excluded or _resolve(entry) in excluded):
                 continue
             name = child.name
             if name in seen:

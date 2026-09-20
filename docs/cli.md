@@ -42,6 +42,14 @@ qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt
 # 工具收窄四件套等价的长写法:--tools / --exclude-tools / --no-builtin-tools / --no-tools
 # ⚠️ 选项写在**消息之前**(`qi -nt "问题"`,不是 `qi "问题" -nt`):顶层选项在遇到
 #    消息后不再解析 —— 写反了会报错并提示怎么改
+
+── 模型 / 会话 / 资源(按次覆盖)─────────────
+qi --provider beta --model beta/m3:high      # 换模型与思考级别(仅本次)
+qi --api-key sk-xxx                          # 换密钥(**不落盘**)
+qi --list-models [搜索词]                     # 列模型后退出
+qi -r | --session <path\|id> | --session-id <id> | --session-dir <dir>
+qi --system-prompt "<文本\|文件>" | --append-system-prompt "<文本\|文件>"
+qi -ne | -nc                                  # 关扩展发现 / 关 AGENTS.md 注入
 ```
 
 ## 1. 启动与运行
@@ -58,17 +66,25 @@ qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt
 | `--no-builtin-tools`(=`-nbt`) | 禁用内置工具,**保留扩展装的工具** | ✅ `pi -nbt` |
 | `--no-tools`(=`-nt`) | 禁用**全部**工具 | ✅ `pi -nt` |
 | `-e, --extension <path>` | 本次运行临时加载一个扩展目录(可重复;仅本进程,`scope=temporary`)。**TUI 与无头都生效**。与 `--ext` 区分开:`--ext` 是给扩展声明过的**旗标**传值 | ✅ pi `-e` |
-| `--append-system-prompt <文本>` | 追加到**每回合** system prompt 的末尾(可重复,空行连接)。区别:`.qi/SYSTEM.md` 是**整体替换**,这个是**追加**且不落盘 → 见 [system-prompt.md](system-prompt.md) §6.2 | ✅ pi 同名 |
+| `--append-system-prompt <文本\|文件>` | 追加到**每回合** system prompt 的末尾(可重复,空行连接)。值是**可读文件**时读文件内容。区别:`.qi/SYSTEM.md` 是**整体替换**,这个是**追加**且不落盘 → 见 [system-prompt.md](system-prompt.md) §6.2 | ✅ pi 同名 |
+| `--system-prompt <文本\|文件>` | **整体替换**基座(与 `.qi/SYSTEM.md` 同一语义,只是从命令行给) | ✅ pi 同名 |
+| `--provider <名>` / `--model <模式>` | 按次覆盖模型。`--model` 写 `provider/模型`,可带 `:<思考级别>` 后缀(**只认已知级别**,所以 `openrouter/x:free` 不会被误切);只给 `--provider` 时用它 models.json 里的第一个模型 | ✅ pi 同名 |
+| `--api-key <键>` | 按次覆盖密钥,**不落盘**(优先于 auth store / 环境变量 / `models.json` 的引用) | ✅ pi `--api-key` |
+| `--models <清单>` | 本次运行 Ctrl+P 的轮换清单(逗号分隔)。**不回写** settings —— 要持久化用 TUI 的 `/scoped-models` | ✅ pi `--models` |
+| `--list-models [搜索词]` | 列出 `models.json` 里的模型后退出。搜索词写成**位置参数**:`qi --list-models sonnet`(pi 的可选值形态 click 表达不了) | ✅ 形态同 pi |
+| `--no-extensions`(=`-ne`) | 关掉扩展**发现**(entry point / `~/.qi/agent/extensions/` / `settings.extensions[]`);`-e` 显式给的仍生效 | ✅ pi `-ne` |
+| `--no-context-files`(=`-nc`) | 不注入 `AGENTS.md` / `CLAUDE.md` | ✅ pi `-nc` |
 
 ## 2. 会话
 
 | 命令 | 说明 | pi 对齐 |
 | --- | --- | --- |
 | `-c, --continue` | 续上次会话 | ✅ |
-| `-r, --resume` | 选择会话恢复 | ✅ |
-| `--session <path\|id>` / `--session-id <id>` | 指定会话 | ✅ |
+| `-r, --resume` | 浏览并选择一个历史会话(**需要 TTY**;无头下用 `--session <id>`)。与 TUI 的 `/resume` 是同一条路 | ✅ |
+| `--session <path\|id>` | 指定会话:先当**文件路径**(`.jsonl`),再当 id / 文件名前缀 | ✅ |
+| `--session-id <id>` | 用**精确的项目会话 id**,不存在则建 | ✅ |
 | `--fork <path\|id>` | 从已有会话分叉出新会话(复制它的当前分支;`/fork` `/clone` 的另一入口) | ✅ `pi --fork` |
-| `--session-dir <dir>` | 会话目录 | ✅ |
+| `--session-dir <dir>` | 会话目录(优先于 `settings.sessionDir`) | ✅ |
 | `--no-session` / `-n, --name` | 临时会话 / 显示名 | ✅ |
 | `qi sessions list \| show <id> \| rm <id>` | 列表 / 查看 / 删除。列表带会话 cwd(有分支时标 `分支点×N`);`show` 只回放**当前分支**、回放时用**记录时的展示名**(`display_name`,回落到 name)、用户消息不标说话人,并回放 `tool` entry(状态/耗时/退出码/参数) | qi 扩展 |
 | `--export <file>` | 拷出会话 JSONL(**整个文件**,含其它分支) | 🟡 pi 默认导 HTML |
@@ -198,14 +214,29 @@ uv tool install qi-agent --with qi-mcp
 
 ## 9. 二期
 
-- `qi web`:HTTP 宿主([web.md](../design/web.md))
-- `--mode rpc`:headless JSONL-RPC,给外部客户端(IDE)
+- `--mode rpc`:headless JSONL-RPC,给外部客户端(IDE)—— 现在传它会**明确报未实现**(§10)
+- TUI 全屏模式(`--tui-mode fullscreen`):当前是 inline 渲染(不占全屏、不进备用屏)
 
-## 10. 明确不保留(理由落档)
+## 10. 与 pi 的差异(逐条落档)
 
-| pi 命令/参数 | 不保留原因 |
+**第一类:接受旗标,但功能还没实现** —— 传了会退出码 2 说清缺什么(不假装生效):
+
+| pi 旗标 | 缺什么 |
 | --- | --- |
-| `pi config` 的 TUI 资源启停面板 | `qi config` 只做「查看 + 写键」(见 §5);资源启停随 packages 落地再补 |
-| theme / prompt-template / skill 加载开关 | 概念不存在;内容跟 agent 走 |
-| `--provider / --api-key / --models` | 模型在 `models.json` 配置(`qi init` 引导) |
-| (`--thinking` 已实现,见 §1) | — |
+| `--prompt-template` / `--no-prompt-templates` | qi 没有 prompt 模板的发现 / 注入机制。要固定前缀就写进 `.qi/SYSTEM.md`,或做成技能 |
+| `--theme` / `--use-theme` / `--no-themes` | 不支持自定义主题文件(内置只有 `dark` / `light` / `auto`)。选主题用 `QI_THEME=light` 或 `qi config --set theme=` |
+| `--tui-mode regular\|fullscreen` | qi 的 TUI 是 inline 渲染,没有 fullscreen 这一态 |
+| `--mode rpc` | 输出模式只有 `text` / `json`;stdio JSON-RPC 见 §9 |
+
+**第二类:明确不保留**(理由落档):
+
+| pi 的 | 为什么 qi 不做 |
+| --- | --- |
+| `pi install` / `remove` / `uninstall` / `update` | 装扩展就是调 pip,而目标环境有「qi 自己的 venv / uv tool 托管 / 只读的系统解释器」三种 —— 封装一层只会把差异藏起来(见 §4) |
+| `pi config` 的资源启停 TUI | `qi config` 目前只做「查看 + 写键」(见 §5) |
+| `-e/--extension <source>` 的 **npm / git** 来源 | Python 侧的分发走 pip(`settings.packages`);没有 npm / git 那种"从任意源拉"的通道 |
+| `--append-system-prompt` 传**文件路径** | **已实现**(值是可读文件就读文件内容) |
+
+> 曾经把 `--provider` / `--api-key` / `--models` 列在这里(理由写"模型在 `models.json` 配置")——
+> 那三条现在都实现了(见 §1),而且那条理由记错了对象:`--models` 是 Ctrl+P 的轮换清单,
+> 不是"模型配在哪"。skill 加载开关(`--skill` / `--no-skills`)也早已对齐。

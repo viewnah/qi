@@ -157,12 +157,14 @@ AGENTS.override.md > AGENTS.md > AGENTS.MD > CLAUDE.md > CLAUDE.MD
 ### 6.2 追加自己的段落(`--append-system-prompt`)
 
 `qi --append-system-prompt "<文本>"`(可重复)把文本追加到**每回合** system prompt 的**末尾**,
-多段之间空行连接(空白段忽略)。与另外两个入口的区别:
+多段之间空行连接(空白段忽略)。值是**可读文件路径**时读的是文件内容(pi 的
+"text or file contents" 口径)。与另外三个入口的区别:
 
 | 入口 | 语义 | 落盘 |
 | --- | --- | --- |
 | `.qi/SYSTEM.md` | **整体替换**基座 | 是(仓库文件) |
-| `--append-system-prompt` | **追加**到末尾 | 否(只在本次运行) |
+| `--system-prompt "<文本\|文件>"` | **整体替换**基座(同上,只是从命令行给) | 否(只在本次运行) |
+| `--append-system-prompt "<文本\|文件>"` | **追加**到末尾 | 否 |
 | 扩展的 `before_agent_start` | 改 `system_prompt`(链式,看到的是已拼好的全文) | 否 |
 
 ## 7. 用法

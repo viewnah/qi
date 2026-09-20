@@ -109,7 +109,8 @@ models.json:  $QI_AGENT_CONFIG(env 指定文件,最高)
 | 执行 agent(tool-loop) | `defaultProvider/defaultModel`(必须) |
 | Dispatcher Router(分类) | `routerProvider/routerModel`,缺省回退 default |
 | 密钥/连通检查 | `qi doctor` |
-| 查看已配 | `qi models list` |
+| 查看已配 | `qi models list`(或 `qi --list-models [搜索词]`,给搜索词时按子串过滤) |
+| **按次覆盖**(不进配置文件) | `--provider` / `--model` / `--api-key`(见 [cli.md](cli.md) §1)。`--model` 写 `provider/模型`,可带 `:<思考级别>` 后缀;`--api-key` **不落盘** |
 | 引导配置 | `qi init`(复刻 QwenPaw:Provider Configuration → Add Models → Activate LLM Model;上下键选择 + 可见输入;凭证写 auth.json;已有凭证回车保留) |
 
 ## 7. qi init 用法
@@ -195,6 +196,7 @@ qi init -y -l ...   # 写项目 .qi/
 
 | 选项 | 说明 |
 | --- | --- |
+| `-y, --yes` | 非交互:必须配 `--provider` / `--model`(见上) |
 | `--provider <name>` | provider 名(已有或新建) |
 | `--model <id>` | 模型 id |
 | `--base-url <url>` | provider 的 API endpoint |

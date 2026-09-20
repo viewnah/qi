@@ -19,16 +19,19 @@
 | --- | --- |
 | 新开一条(默认行为) | `qi` 或 `qi "第一个问题"` |
 | 接着最近一条继续 | `qi -c` / `qi --continue` |
-| 指定某条会话 | `qi --session <id 或前缀>` |
-| 从某条会话分叉出新会话 | `qi --fork <id 或前缀>` |
+| 指定某条会话 | `qi --session <路径 / id 或前缀>` |
+| 用精确 id(不存在则建) | `qi --session-id <id>` |
+| 浏览并选一条恢复 | `qi -r` / `qi --resume`(**需要 TTY**;与 TUI 的 `/resume` 同一条路) |
+| 从某条会话分叉出新会话 | `qi --fork <路径 / id 或前缀>` |
+| 换会话目录 | `qi --session-dir <目录>`(优先于 `settings.sessionDir`) |
 | 给会话起名 | `qi -n "名字"`(或 `--name`) |
 | 不落盘(临时试一把) | `qi --no-session` |
 | 导出成 JSONL 文件 | `qi --export out.jsonl`(可配 `--session`;省略则导出最近一条) |
 | 列出 / 查看 / 删除 | `qi sessions list` · `qi sessions show <id>` · `qi sessions rm <id>` |
 
 **`<id 或前缀>` 两种前缀都认**:header 的 `id` 前缀,以及文件名 stem 前缀(即含
-`<时间戳>_` 的那一截)。`qi -c` 取的是**按文件修改时间**最新的一条,不是按 header 的
-`created_at`。
+`<时间戳>_` 的那一截)。**也接受文件路径** —— `qi --session ./some.jsonl` 会直接读那个文件。
+`qi -c` 取的是**按文件修改时间**最新的一条,不是按 header 的 `created_at`。
 
 ## 3. 一条会话的边界
 

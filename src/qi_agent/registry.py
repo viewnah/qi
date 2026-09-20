@@ -17,6 +17,7 @@ from typing import Any
 
 from . import paths
 from .extensions import (
+    CliCommandRegistry,
     CommandRegistry,
     ExtensionApi,
     ExtensionBus,
@@ -221,6 +222,7 @@ def discover_extensions(catalog: ToolCatalog, capabilities: CapabilityRegistry,
                         host: Any = None,
                         commands: CommandRegistry | None = None,
                         flags: FlagRegistry | None = None,
+                        cli_commands: CliCommandRegistry | None = None,
                         on_warning: Callable[[str], None] | None = None,
                         extra_dirs: Iterable[Path | tuple[Path, str]] | None = None,
                         project_trusted: bool = True) -> list[str]:
@@ -260,7 +262,8 @@ def discover_extensions(catalog: ToolCatalog, capabilities: CapabilityRegistry,
                                _path=origin["path"], _scope=origin["scope"],
                                _origin=origin["origin"], _host=host,
                                _capabilities=capabilities,
-                               _commands=commands, _flags=flags)
+                               _commands=commands, _flags=flags,
+                               _cli_commands=cli_commands)
             module = load()
             register = getattr(module, "register", None)
             if not callable(register):

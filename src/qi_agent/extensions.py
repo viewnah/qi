@@ -140,6 +140,51 @@ ShortcutHandler = Callable[["ExtensionContext"], Any | Awaitable[Any]]
 #: 一个 agent 目录(§7.4)。故意用 `...` 而不是固定签名:作用域这个参数到底长什么样,
 #: 是提供方与消费方之间的事,core 不应当插进来定它。
 ResolverFn = Callable[..., Any | Awaitable[Any]]
+#: CLI 子命令处理器:收**命令名之后的原始 argv**(如 `["--port", "30142"]`),回退出码或 None。
+#: 故意不接 typer/click 的解析结果:选项表是静态的,让扩展自己解析自己的参数是唯一稳的
+#: 形状(E19 实测:动态改 typer 的选项表会把用户打错的选项变成别的东西)。
+CliHandler = Callable[[list[str]], int | None]
+
+
+@dataclass
+class CliCommand:
+    """一个扩展注册的 CLI 子命令(`qi <name> …`)。"""
+
+    name: str
+    handler: CliHandler
+    description: str = ""
+    source: str = ""
+
+
+class CliCommandRegistry:
+    """扩展 CLI 子命令的登记处(与 `CommandRegistry` 并列的宿主侧汇合点)。
+
+    **重名不编号、也不静默丢** —— 与斜杠命令的处理不同,因为 CLI 名字是用户敲进终端的
+    第一个词,`qi web:1` 这种东西没法用。所以撞名是**错误**而不是排队:两个扩展都想叫
+    `web` 是用户必须知道并解决的事。
+    """
+
+    def __init__(self) -> None:
+        self._commands: dict[str, CliCommand] = {}
+
+    def add_command(self, name: str, handler: CliHandler, *,
+                    description: str = "", source: str = "") -> bool:
+        """返回 `False` = 这个名字已被占(调用方据此报错,而不是默默丢掉一个)。"""
+        if name in self._commands:
+            return False
+        self._commands[name] = CliCommand(name=name, handler=handler,
+                                          description=description, source=source)
+        return True
+
+    def find(self, name: str) -> CliCommand | None:
+        return self._commands.get(name)
+
+    @property
+    def names(self) -> list[str]:
+        return sorted(self._commands)
+
+    def all(self) -> list[CliCommand]:
+        return [self._commands[n] for n in self.names]
 
 
 @dataclass
@@ -811,6 +856,8 @@ class ExtensionApi:
     _commands: CommandRegistry | None = None
     #: CLI 旗标的登记处(同上);没给则 `registerFlag` 报错。
     _flags: FlagRegistry | None = None
+    #: CLI 子命令的登记处(同上);没给则 `registerCliCommand` 报错。
+    _cli_commands: CliCommandRegistry | None = None
     #: 能力交接的汇合点(宿主侧,发现阶段注入 —— 类型写 `Any` 是因为 `CapabilityRegistry`
     #: 住在 registry.py,而它反过来 import 本模块,写成具体类型会成环)。
     #: 与 `_host` / `catalog` 一样是鸭子类型:只需要 `add_resolver` / `resolve_tools`。
@@ -931,6 +978,25 @@ class ExtensionApi:
         if self._flags is None:
             return None
         return self._flags.value(name)
+
+    # ── CLI 子命令 ──
+    def registerCliCommand(self, name: str, handler: CliHandler, *,    # noqa: N802
+                           description: str = "") -> None:
+        """注册一个 CLI 子命令:`qi <name> [参数…]`。
+
+        `handler(argv)` 收到**命令名之后的原始 argv**(如 `["--port", "30142"]`),返回
+        退出码或 None。**故意不接 typer/click 的解析结果**:选项表是静态的,动态改它会把
+        用户打错的选项变成别的东西(E19 实测),所以各扩展自己解析自己的参数。
+
+        宿主会在 typer 之前认出这个名字(`cli._dispatch_extension_command`)—— 扩展不必知道
+        typer 的存在。**与 core 子命令同名时 core 优先**;两个扩展撞名则是错误(CLI 名字是用户
+        敲的第一个词,`qi web:1` 这种没法用,所以不编号)。
+        """
+        if self._cli_commands is None:
+            raise RuntimeError("宿主没有提供 CLI 命令登记处:registerCliCommand 不可用")
+        if not self._cli_commands.add_command(name, handler, description=description,
+                                              source=self._name):
+            raise RuntimeError(f"CLI 子命令 `{name}` 已被占用(改个名字,或确认没有装两个))")
 
     # ── 扩展之间 ──
     @property

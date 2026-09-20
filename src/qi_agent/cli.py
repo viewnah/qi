@@ -42,7 +42,7 @@ from .config import (
     save_models_file,
 )
 from .llm import THINKING_LEVELS, ThinkingLLMClient
-from .extensions import ExtensionBus
+from .extensions import ExtensionBus, CliCommandRegistry
 from .loader import (
     LoadError,
     load_top_level_skills,
@@ -1266,6 +1266,49 @@ def web_cmd(
     uvicorn.run(app_obj, host=hostname, port=port, log_level="warning")
 
 
+
+def _core_subcommand_names() -> set[str]:
+    """core 自己的子命令名(从 typer 的登记表拿;拿不到就退回空集,只是少了这层保护)。"""
+    names: set[str] = set()
+    for holder in ("registered_commands", "registered_groups"):
+        for item in getattr(app, holder, []) or []:
+            name = getattr(item, "name", None)
+            if name:
+                names.add(str(name))
+    return names
+
+
+def _discover_cli_commands(cwd: Path | None = None) -> CliCommandRegistry:
+    """只装载扩展、只要它们的 CLI 子命令表(轻量发现:没有 runtime / 会话 / 模型)。
+
+    **未信任的项目目录不扫**(§5.3):CLI 子命令会在 typer 之前执行扩展的代码,而项目目录是
+    仓库控制的。要项目级的命令,先把项目标成信任(主命令路径会走完整判定)。
+    """
+    registry = CliCommandRegistry()
+    try:
+        discover_extensions(ToolCatalog(), CapabilityRegistry(), cwd,
+                            bus=ExtensionBus(), cli_commands=registry,
+                            project_trusted=False)
+    except Exception as exc:      # noqa: BLE001 一个扩展装坏不该让整个 CLI 不可用
+        err_console.print(f"[yellow]扩展发现失败(忽略): {escape(str(exc))}[/yellow]")
+    return registry
+
+
+def _dispatch_extension_command(argv: list[str]) -> bool:
+    """`qi <扩展子命令> …` → 交给扩展。返回 True 表示已处理。
+
+    **必须在 `app()` 之前**:typer 的子命令表是静态的,动态加会踩坑(E19),而"第一个词是不是
+    扩展命令"只需要一次轻量发现。**core 自己的名字优先** —— 扩展撞了 core 的子命令名要被看见,
+    而不是悄悄接管。
+    """
+    if not argv or argv[0].startswith("-") or argv[0] in _core_subcommand_names():
+        return False
+    command = _discover_cli_commands().find(argv[0])
+    if command is None:
+        return False
+    raise SystemExit(command.handler(argv[1:]) or 0)
+
+
 def main() -> None:
     """CLI 入口:先确保目录布局(旧扁平布局 → `~/.qi/agent/`),再交给 typer。"""
     try:
@@ -1277,4 +1320,7 @@ def main() -> None:
         console.print("[green]已迁移到 agent 目录(对齐 pi):[/green]")
         for src, dst in moved:
             console.print(f"  {src} → {dst}")
+    # 扩展子命令要在 typer 之前认出来(它的子命令表是静态的)
+    if _dispatch_extension_command(list(sys.argv[1:])):
+        return
     app()

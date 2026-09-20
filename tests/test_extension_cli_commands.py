@@ -70,10 +70,17 @@ def test_duplicate_name_is_an_error_not_a_silent_drop():
         _api(registry, "second").registerCliCommand("web", lambda argv: 0)
 
 
-def test_without_a_host_registry_it_raises():
-    """与 `registerCommand` / `registerFlag` / `registerResolver` 同一套规则。"""
-    with pytest.raises(RuntimeError, match="CLI 命令登记处"):
-        _api(None).registerCliCommand("web", lambda argv: 0)
+def test_without_a_host_registry_it_is_a_no_op():
+    """没登记处 → **no-op,不抛**。
+
+    与 `registerCommand` / `registerFlag` / `registerResolver` **刻意不同**:那几个的宿主面
+    "总是存在"(任何前端都有命令表、旗标表),而 **CLI 派发只存在于"由 CLI 入口装载"的那个宿主**
+    —— runtime、`qi doctor` 的轻量发现、第三方宿主都不一定有它。
+
+    若这里报错,就等于"凡注册 CLI 子命令的扩展,在任何不关心 CLI 的宿主里都装不上",而 **qi-web
+    正是这种扩展**:改之前有 23 条测试因此挂(它们的轻量发现没传登记处)。重名仍然报错(真冲突)。
+    """
+    _api(None).registerCliCommand("web", lambda argv: 0)     # 不抛;那台宿主用不到而已
 
 
 # ── 分派 ────────────────────────────────────────────────

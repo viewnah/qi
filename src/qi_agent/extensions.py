@@ -993,7 +993,11 @@ class ExtensionApi:
         敲的第一个词,`qi web:1` 这种没法用,所以不编号)。
         """
         if self._cli_commands is None:
-            raise RuntimeError("宿主没有提供 CLI 命令登记处:registerCliCommand 不可用")
+            # **没登记处就是 no-op**:CLI 子命令只在"由 CLI 入口装载"的那个宿主里能被派发,
+            # 而宿主有很多种(runtime / doctor / 测试里的轻量发现 / 第三方)。让这里报错等于
+            # "凡是注册 CLI 子命令的扩展,在任何不关心 CLI 的宿主里都装不上" —— 而 qi-web 就是
+            # 这种扩展。**重名仍然报错**(那是真冲突),只是"这儿的宿主不收"不算错。
+            return
         if not self._cli_commands.add_command(name, handler, description=description,
                                               source=self._name):
             raise RuntimeError(f"CLI 子命令 `{name}` 已被占用(改个名字,或确认没有装两个))")

@@ -30,5 +30,8 @@ qi = "qi_agent.cli:main"
 packages = ["src/qi_agent"]
 
 [tool.pytest.ini_options]
+markers = [
+    "real_extensions: 本测试要装载**本机真装的扩展**(退出默认的 entry-point stub)",
+]
 asyncio_mode = "auto"
 testpaths = ["tests"]

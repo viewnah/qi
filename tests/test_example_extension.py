@@ -128,11 +128,12 @@ async def test_example_session_start_hook_fires_in_a_real_runtime(tmp_path, monk
     assert runtime.extensions == ["hello"]
     assert runtime.flag_errors == []              # 含 registerCliCommand 在内全部注册成功
 
-    # **未决(见 docs/extensions.md §11 第 10 条)**:走 `stream()` 这条无界面路径时
-    # `session_start` 似乎没有派发 —— 上面那次运行里 `runtime.notes` 是空的。若成立,影响不小:
-    # qi-mcp 的直连注册就挂在 `session_start` 上。这里**不把问题按掉**,只断言能确定的部分,
-    # 并把观察写下来供下一次专门查(要查的是"谁调 `start_session`")。
     session = runtime.sessions.create("t", cwd=runtime.cwd)
+    # **`session_start` 是前端绑会话时的动作**(`cli.py:314` / `tui.py:3030`),`stream()` 自己
+    # 不发它 —— 所以测试要像前端那样先绑定,否则测的是一条真实使用里不存在的路径。
+    # (这条一度把我引向"headless 下 session_start 不派发"的怀疑;查清后是测试走错了路。)
+    await runtime.start_session(session, reason="startup")
     async for _event in runtime.stream("你好", session):
         pass
-    assert runtime.notes == [] or any("hello 扩展已装载" in n for n in runtime.notes)
+
+    assert any("hello 扩展已装载" in note for note in runtime.notes), runtime.notes

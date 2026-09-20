@@ -135,6 +135,11 @@ def _note(host: Any, text: str) -> None:
 CommandHandler = Callable[[str, "ExtensionContext"], Any | Awaitable[Any]]
 #: 快捷键 handler:`async def handler(ctx) -> None`
 ShortcutHandler = Callable[["ExtensionContext"], Any | Awaitable[Any]]
+#: 能力解析器(§7.5 / E20):拿到一个**作用域**(`scope`),交回该作用域下这个种类的工具。
+#: 返回 `list[Tool]` 或 awaitable。`scope` 的形态由提供方与消费方约定 —— qi 里通常是
+#: 一个 agent 目录(§7.4)。故意用 `...` 而不是固定签名:作用域这个参数到底长什么样,
+#: 是提供方与消费方之间的事,core 不应当插进来定它。
+ResolverFn = Callable[..., Any | Awaitable[Any]]
 
 
 @dataclass
@@ -806,6 +811,10 @@ class ExtensionApi:
     _commands: CommandRegistry | None = None
     #: CLI 旗标的登记处(同上);没给则 `registerFlag` 报错。
     _flags: FlagRegistry | None = None
+    #: 能力交接的汇合点(宿主侧,发现阶段注入 —— 类型写 `Any` 是因为 `CapabilityRegistry`
+    #: 住在 registry.py,而它反过来 import 本模块,写成具体类型会成环)。
+    #: 与 `_host` / `catalog` 一样是鸭子类型:只需要 `add_resolver` / `resolve_tools`。
+    _capabilities: Any = None
 
     # ── 工具 ──
     def registerTool(self, tool: Tool) -> None:      # noqa: N802 pi 的方法名,保持同形
@@ -1008,6 +1017,32 @@ class ExtensionApi:
     @property
     def config_kinds(self) -> set[str]:
         return self._config_kinds
+
+    # ── 能力交接(提供方声明 + 消费方取用,P-E5 ② / E20)──
+    def registerResolver(self, kind: str, resolver: ResolverFn) -> None:      # noqa: N802
+        """登记“这个种类的配置怎么变成能用的东西”。
+
+        `resolver(scope=…)` 返回 `list[Tool]`(或 awaitable);`scope` 是**作用域**(§7.4:
+        qi 里最常见的作用域 = 一个 agent 目录)。同时隐含 `provides_config(kind)` ——
+        能解析就等于在管这个种类,不必再声明一次。
+
+        这是 qi-mcp 那一侧:它声明 `mcp_servers` 怎么从三层 mcp.json 变成真的工具;
+        消费方(qi-agents / qi-web)只调 `resolveTools`,**不知道 MCP 存在**。
+        """
+        if self._capabilities is None:
+            raise RuntimeError("宿主没有提供能力汇合点:registerResolver 不可用")
+        self._capabilities.add_resolver(kind, self._name, resolver)
+        self._config_kinds.add(kind)
+
+    async def resolveTools(self, kind: str, *, scope: Any = None) -> list[Any]:   # noqa: N802
+        """问所有提供者要 `kind` 的工具,合并返回。
+
+        **没人提供 → 返回 `[]`(优雅降级)** —— 这是 E20 选“能力交接”而不是直接 import 的
+        全部理由:只装 qi-agents 时角色照跑,只是拿不到 MCP 工具,而不是装不上。
+        """
+        if self._capabilities is None:
+            return []
+        return await self._capabilities.resolve_tools(kind, scope=scope)
 
 
 __all__ = [

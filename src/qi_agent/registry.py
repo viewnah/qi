@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import re
 import sys
 from collections.abc import Callable, Iterable
@@ -155,17 +156,53 @@ class ToolCatalog:
         source = [self._tools[n] for n in names] if names is not None else list(self._tools.values())
         return [t.to_llm_schema() for t in source]
 class CapabilityRegistry:
-    """汇总所有已发现扩展的消费型配置能力(动态装载门控)。"""
+    """汇总所有已发现扩展的消费型配置能力(动态装载门控)。
+
+    同时也是**能力交接**的汇合点(E20):提供方 `add_resolver`,消费方 `resolve_tools`。
+    两半住在一起是因为它们回答的是同一个问题 —— “这个种类的配置,谁管、怎么变成能用的东西”。
+    """
 
     def __init__(self) -> None:
         self._providers: dict[str, set[str]] = {}    # kind -> {extension_name}
         self._types: dict[str, set[str]] = {}        # kind -> {type…}
+        self._resolvers: dict[str, list[tuple[str, Any]]] = {}   # kind -> [(扩展名, fn)]
 
     def merge(self, api: ExtensionApi) -> None:
         for kind in api.config_kinds:
             self._providers.setdefault(kind, set()).add(api._name)
             if kind in api._types:
                 self._types.setdefault(kind, set()).update(api._types[kind])
+
+    # ── 能力交接:提供方声明怎么解析 ──
+    def add_resolver(self, kind: str, source: str, resolver: Any) -> None:
+        """登记一个解析器。`source` 是扩展名(诊断时要指得到人)。
+
+        **直接写进汇合点,不靠 `merge`** —— 与 `CommandRegistry` / `FlagRegistry` 同一模式:
+        否则 A 扩展在自己 `register()` 里 `resolveTools` 就看不到 B 刚登记的东西(顺序耦合)。
+        """
+        self._resolvers.setdefault(kind, []).append((source, resolver))
+
+    def has_resolver(self, kind: str) -> bool:
+        return bool(self._resolvers.get(kind))
+
+    async def resolve_tools(self, kind: str, *, scope: Any = None) -> list[Any]:
+        """问所有 `kind` 的提供者要工具,按登记顺序合并。
+
+        - **没提供者 → `[]`**:这就是 E20 选“能力交接”而不是直接 `import` 的全部好处 ——
+          装 qi-agents 不装 qi-mcp 时角色照跑,只是没 MCP 工具;
+        - 单薄返回也宽容(返回一个 Tool 而不是列表也能用 —— 写扩展的人常这么干);
+        - **提供者自己的失败不在这里捕**:一个 MCP server 起不来是 qi-mcp 的事(它该报 note
+          并跳过那个 server),不是每个消费方都要重新决定一遍。
+        """
+        tools: list[Any] = []
+        for _source, resolver in self._resolvers.get(kind, ()):
+            got = resolver(scope=scope)
+            if inspect.isawaitable(got):
+                got = await got
+            if got is None:
+                continue
+            tools.extend(got if isinstance(got, (list, tuple)) else [got])
+        return tools
 
     def has_provider(self, kind: str) -> bool:
         return kind in self._providers and bool(self._providers[kind])
@@ -203,6 +240,8 @@ def discover_extensions(catalog: ToolCatalog, capabilities: CapabilityRegistry,
     `commands` / `flags` 是扩展向宿主登记的入口(命令与快捷键 / CLI 旗标),与
     `capabilities` 并列。**没给对应的汇合点时会报错**(不是静默无效):
     `registerCommand` / `registerFlag` 注册了却没人收,扩展会以为它生效了。
+    `capabilities` 同时是**能力交接**的汇合点(`registerResolver` / `resolveTools`,E20):
+    它是必填参数,所以提供方与消费方总能互相看见。
 
     优先级(先到先得,同名跳过):项目 `.qi/extensions/` → 全局 `<agent>/extensions/`
     → `extra_dirs`(settings.json 的 `extensions[]`)→ entry points。
@@ -220,6 +259,7 @@ def discover_extensions(catalog: ToolCatalog, capabilities: CapabilityRegistry,
             api = ExtensionApi(catalog=catalog, bus=bus, _name=name,
                                _path=origin["path"], _scope=origin["scope"],
                                _origin=origin["origin"], _host=host,
+                               _capabilities=capabilities,
                                _commands=commands, _flags=flags)
             module = load()
             register = getattr(module, "register", None)

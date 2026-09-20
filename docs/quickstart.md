@@ -19,7 +19,7 @@ uv sync                 # 或用你自己习惯的方式装进某个 venv:
 装完 `qi` 命令可用(`[project.scripts]` 里的入口):
 
 ```bash
-uv run qi version       # 或激活 venv 后直接 `qi version`
+uv run qi --version     # 或激活 venv 后直接 `qi --version`
 ```
 
 首次运行会创建 `~/.qi/agent/`(用户级状态都挂在这里:配置、会话、技能、扩展)。

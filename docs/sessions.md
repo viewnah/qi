@@ -27,7 +27,7 @@
 | 给会话起名 | `qi -n "名字"`(或 `--name`) |
 | 不落盘(临时试一把) | `qi --no-session` |
 | 导出成 JSONL 文件 | `qi --export out.jsonl`(可配 `--session`;省略则导出最近一条) |
-| 列出 / 查看 / 删除 | `qi sessions list` · `qi sessions show <id>` · `qi sessions rm <id>` |
+| 列出 / 查看 / 重命名 / 删除 | TUI 的 `/resume` 选择器(`qi -r` 直接进)—— 与 pi 同一种分工,它也没有 `pi sessions` |
 
 **`<id 或前缀>` 两种前缀都认**:header 的 `id` 前缀,以及文件名 stem 前缀(即含
 `<时间戳>_` 的那一截)。**也接受文件路径** —— `qi --session ./some.jsonl` 会直接读那个文件。
@@ -50,7 +50,7 @@
 
 ## 5. 用量统计
 
-`qi sessions show` 与网页端显示的用量都来自 `session.py` 的 `usage_summary()`,它**读当前分支**
+TUI 里回放会话、以及网页端显示的用量,都来自 `session.py` 的 `usage_summary()`,它**读当前分支**
 计算。口径如下:
 
 | 字段 | 含义 |

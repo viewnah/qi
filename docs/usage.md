@@ -33,9 +33,7 @@
 管理(在仓库里有子命令,不必记路径):
 
 ```bash
-qi sessions list        # 最新在前
-qi sessions show <id>   # 看某条会话的内容(分派与说话人用记录时的展示名)
-qi sessions rm <id>     # 删除(不可恢复)
+qi -r                   # 浏览并选择恢复(重命名 / 删除也在那个选择器里,对齐 pi)
 ```
 
 会话文件在哪、格式是什么、用量怎么算(以及为什么 `context_tokens` 不是各轮相加)见
@@ -50,7 +48,7 @@ qi sessions rm <id>     # 删除(不可恢复)
 | --- | --- |
 | 现在压一次 | TUI 里 `/compact`(也可带一段"重点压什么"的说明) |
 | 换思考级别 | `--thinking off\|minimal\|low\|medium\|high\|xhigh\|max`;或在 TUI 里 `shift+tab` 轮转 |
-| 看这轮用了多少 | TUI 状态行 / `qi sessions show`;口径见 [sessions.md](sessions.md) §5 |
+| 看这轮用了多少 | TUI 状态行 / TUI 里回放会话;口径见 [sessions.md](sessions.md) §5 |
 | 关掉自动压缩 | `settings.json` 写 `"compaction": {"enabled": false}`(手动 `/compact` 仍可用) |
 
 **非法思考级别会以退出码 2 报错**(不会静默退回默认),因为打错了字却"看起来生效了"最难查。
@@ -92,8 +90,7 @@ qi sessions rm <id>     # 删除(不可恢复)
 ```bash
 qi doctor                       # 配置 / 凭证 / 扩展 / 包声明,一次全报
 qi doctor | grep -A3 包声明      # 只看扩展声明与已装是否一致
-qi sessions show <id>           # 这条会话里到底发生了什么
-qi models list                  # provider / 模型 / 凭证状态
+qi --list-models                # provider / 模型 / 凭证状态
 qi config --json                # 合并后的设置(含来自哪几个文件)
 qi --verbose -p "问题"           # 无头模式下也看进度(走 stderr,不污染 stdout)
 ```

@@ -263,7 +263,11 @@ def notify(message, *, level="info") -> None
 - **接受的代价**:所有扩展 + 宿主共用一棵解析树 → **版本冲突无处躲**。三层缓解:① 装载时读 `requires()` 比对已装版本,**不一致就报告**(不静默);② 冲突就拆成 MCP server(独立进程 + 自己的环境);③ 重依赖优先走 MCP。这条也是 §7.2 "进程内" 选择的同一个代价面。
 - **uv tool / pipx 的坑**:uv 文档原话 —— tool 环境 "may be upgraded via `uv tool upgrade`, or **re-created entirely** via subsequent `uv tool install`",所以 pip 装进去的扩展**会被重建抹掉**。规矩:声明永远在 `settings.packages`,用 `qi doctor` / `qi list` 在每次重建后**发现**它丢了(并给出装法);或者这类用户直接用 `uv tool install qi-agent --with qi-mcp`(写进 uv 的托管依赖,升级不丢 —— 这条更省事,推荐)。
 - **宿主环境只读时**(系统 Python / Homebrew 管理的解释器):pip 会自己报错;出路是 `uv tool install qi-agent --with <ext>`,或换一个可写的安装方式。qi 不检测这件事 —— 它不调 pip,所以也不该假装知道装不装得进。
-- **为什么没有 `qi install`**:装扩展就是调 pip,而目标环境有「qi 自己的 venv / uv tool 托管 / 只读的系统解释器」三种,封装一层只会把差异藏起来;更糟的是 uv tool 重建后 `--sync` 也补不回(环境已被整个替换)。所以 qi 只做**声明层 + 比对**:`settings.packages` 是声明,`qi list` / `qi doctor` 报告「声明了没装」「装了没声明」,装法原样交给用户复制。这也是 `settings.packages` 目前**唯一**被消费的地方(见 [settings.md](settings.md))。
+- **`qi install`（已加上）**:对齐 pi 的 `pi install <source> [-l]` —— 调 pip + 写进
+  `settings.packages`(带 `-l` 写项目)。它**不替代**“想清楚装到哪个环境”这件事,所以每次都先把
+  要跑的命令打出来;`uv tool` 重建环境会抹掉 pip 装的东西——声明还在,`qi doctor` 会报出来。
+  `remove` / `uninstall` 只从声明里移除(**不卸包**,与 pi 同义)。详见
+  [packages.md](packages.md) 与 [cli.md](cli.md) §4。
 
 ## 6. 官方扩展三件套
 

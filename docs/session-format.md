@@ -127,7 +127,7 @@ qi 目前**写入** 6 类,另有 1 类**只读**。
 `version: 1` 的线性文件(entry 无 `id`/`parentId`)在**读入时**于内存里补链:按文件顺序串成一条
 链、补 `id`、把 header 的 `version` 改成 2(`SessionStore.migrate()`)。
 
-- **读路径不写文件**:`qi sessions list` 之类的只读操作不会改动老会话。
+- **读路径不写文件**:TUI 里的会话列表之类的只读操作不会改动老会话。
 - 首次写入(`append` / `save`)时才会整文件落盘 —— 与 pi「加载时迁移」等价。
 - `migrated` 标志就是为此存在:它让 `append()` 知道"必须重写"(见 §1)。
 

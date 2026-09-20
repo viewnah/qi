@@ -14,7 +14,7 @@ qi -p --ext agent=<name> "<问题>"  # 以某个角色运行(需装 qi-agents)
 
 ── 会话 ────────────────────────────────
 qi -c | -r | --session <id> | --fork <id> | -n <名> | --no-session
-qi sessions list | show <id> | rm <id>
+qi -r                           # 浏览/恢复历史会话(重命名与删除也在那个选择器里)
 qi --export <file>
 
 ── Agent ────────────────────────────────
@@ -31,7 +31,7 @@ qi init                         # 引导默认模型(复刻 QwenPaw):Provider Co
 qi auth login|logout|list       # 管理 ~/.qi/agent/auth.json(0600);qi init 交互默认保留已存凭证
 
 ── 模型 / 诊断 ─────────────────────────
-qi models list | qi doctor
+qi --list-models | qi doctor
 
 ── 安全 / 信任 ─────────────────────────
 qi -a | -na                      # 信任 / 不信任项目 .qi;两个同给报错(退出码 2)
@@ -86,10 +86,10 @@ qi -ne | -nc                                  # 关扩展发现 / 关 AGENTS.md 
 | `--fork <path\|id>` | 从已有会话分叉出新会话(复制它的当前分支;`/fork` `/clone` 的另一入口) | ✅ `pi --fork` |
 | `--session-dir <dir>` | 会话目录(优先于 `settings.sessionDir`) | ✅ |
 | `--no-session` / `-n, --name` | 临时会话 / 显示名 | ✅ |
-| `qi sessions list \| show <id> \| rm <id>` | 列表 / 查看 / 删除。列表带会话 cwd(有分支时标 `分支点×N`);`show` 只回放**当前分支**、回放时用**记录时的展示名**(`display_name`,回落到 name)、用户消息不标说话人,并回放 `tool` entry(状态/耗时/退出码/参数) | qi 扩展 |
+| 历史浏览 / 恢复 / 重命名 / 删除 | 都在 **TUI 的 `/resume` 选择器**里(`qi -r` 直接进那里)。列表带会话 cwd(有分支时标 `分支点×N`),回放用**记录时的展示名**(`display_name`,回落到 name) | 无 CLI 子命令(pi 也是在选择器里 Ctrl+D 删) |
 | `--export <file>` | 拷出会话 JSONL(**整个文件**,含其它分支) | 🟡 pi 默认导 HTML |
 
-`-c/-r/--session` 管"接着跑哪段",`qi sessions` 管"历史浏览/删除",互补。
+`-c/-r/--session` 管"接着跑哪段";**历史浏览 / 重命名 / 删除在 TUI 的选择器里**(`qi -r` 直接进)—— 与 pi 同一种分工(它也没有 `pi sessions`)。
 
 ## 3. Agent 与分派
 
@@ -102,27 +102,30 @@ qi -ne | -nc                                  # 关扩展发现 / 关 AGENTS.md 
 
 ## 4. 扩展的安装与声明
 
-**qi 没有 `install` / `remove` / `update` 子命令**(pi 有 `pi install`;qi 不对齐这一项)。
-不做的理由:装扩展就是调 pip,而 pip 的目标环境分为「qi 自己的 venv」「uv tool 托管」
-「只读的系统解释器」三种,封装一层只会把环境差异藏起来。qi 只负责**告诉你不一致**,
-并把两条命令原样给你复制。
-
 | 命令 | 说明 |
 | --- | --- |
-| `qi list` | 列出已装扩展(entry point + 目录通道),并与 `settings.packages` 的声明**双向**比对 |
+| `qi install <来源> [-l]` | 装一个扩展:**调 pip**(本地目录只登记,不调)+ 写进 `settings.packages`。`-l` 写项目 `.qi/settings.json` |
+| `qi remove <来源> [-l]` / `qi uninstall` | 只从 `settings.packages` 里**移除声明**(**不卸包** —— 与 pi 同义);同时把 `pip uninstall` 命令打出来 |
+| `qi update [来源\|self] [--self\|--extensions\|--all\|--extension X\|--force]` | 更新 qi 自己或已声明的扩展。**无目标时只更自己**(pi 同默认);`--models` 在 qi 无意义(见下) |
+| `qi list` | 列出已装扩展(entry point + 目录通道),并与声明**双向**比对 |
 | `qi doctor` | 同上,并输出「声明了没装」项的**可复制**装法 |
 
-声明的**全部**写法(含归一、裸 URL 为什么不猜名字)、两条装法的失效面对比、以及输出的逐项读法,
-见 [packages.md](packages.md);这里只给命令。
+声明的**全部**写法(含归一、裸 URL 为什么不猜名字)、输出的逐项读法,见 [packages.md](packages.md)。
 
-装法自己跑(两条路,失效面不同):
-
-```bash
-# 直接装进 qi 自己的 venv:最直接,但 uv tool 重建环境时会丢
-/path/to/qi/venv/bin/python -m pip install qi-mcp
-# 写进 uv 的托管依赖:升级 / 重建都不丢
-uv tool install qi-agent --with qi-mcp
-```
+> **为什么 `qi install` 只是“帮你跱一步”而不是封装 pip**:目标环境有「qi 自己的 venv /
+> `uv tool` 托管 / 只读的系统解释器」三种,而它们的行为真的不同:
+>
+> - `uv tool` **会整个重建环境**(uv 文档原话:"or re-created entirely via subsequent
+>   `uv tool install`")—— 所以 pip 装进去的扩展会在下次重建时**被抹掉**,声明还在,
+>   由 `qi doctor` 把它报出来并给出装法;
+> - 只读解释器(Homebrew / 系统 Python)下 pip 自己会报错 —— qi 不拦,把 pip 的输出
+>   原样给你,并补上 `uv tool install qi-agent --with <包>` 那条出路。
+>
+> 所以 `qi install` **每次都把要跑的 pip 命令打出来**后再跑:你能看出装到了哪个环境,
+> 也能直接照拄。想永久不丢就用 `uv tool install qi-agent --with <包>`。
+>
+> **`qi update --models` 是个例外**:pi 会去拉远端模型目录,qi **没有那个概念** ——
+> 模型全在 `models.json` 里自己维护,所以它只说明这一点然后退出(不假装做了)。
 
 装完把它写进 `settings.json` 的 `packages`,否则 `qi doctor` 下次重建环境后无从知道它丢过:
 
@@ -168,7 +171,7 @@ uv tool install qi-agent --with qi-mcp
 
 | 命令 | 说明 | pi 对齐 |
 | --- | --- | --- |
-| `qi models list` | 列 `models.json` 的 provider/模型(标记默认) | 🟡 pi `--list-models` |
+| `qi --list-models [搜索词]` | 列 `models.json` 的 provider/模型(标记默认) | ✅ pi `--list-models` |
 | `qi doctor` | 诊断:配置/provider/凭证(按 pi 凭证顺序验) | 🟡 替代 pi auth |
 
 ## 7. 安全与信任
@@ -232,11 +235,14 @@ uv tool install qi-agent --with qi-mcp
 
 | pi 的 | 为什么 qi 不做 |
 | --- | --- |
-| `pi install` / `remove` / `uninstall` / `update` | 装扩展就是调 pip,而目标环境有「qi 自己的 venv / uv tool 托管 / 只读的系统解释器」三种 —— 封装一层只会把差异藏起来(见 §4) |
 | `pi config` 的资源启停 TUI | `qi config` 目前只做「查看 + 写键」(见 §5) |
 | `-e/--extension <source>` 的 **npm / git** 来源 | Python 侧的分发走 pip(`settings.packages`);没有 npm / git 那种"从任意源拉"的通道 |
 | `--append-system-prompt` 传**文件路径** | **已实现**(值是可读文件就读文件内容) |
 
+> `pi install` / `remove` / `uninstall` / `update` **已对齐**(见 §4)—— 它们曾在这一节里,
+> 理由写的是"封装 pip 会藏起环境差异";现在的做法把那条顾虑直接讲给了用户
+> (先打命令再跑、失败补 uv 出路),所以不再需要靠"不做"来避开它。
+>
 > 曾经把 `--provider` / `--api-key` / `--models` 列在这里(理由写"模型在 `models.json` 配置")——
 > 那三条现在都实现了(见 §1),而且那条理由记错了对象:`--models` 是 Ctrl+P 的轮换清单,
 > 不是"模型配在哪"。skill 加载开关(`--skill` / `--no-skills`)也早已对齐。

@@ -61,10 +61,13 @@ db 插件提供 `db_schema` / `db_query` 工具 + type 解析/校验/连接;实�
 
 ## 6. 预留 / 待定
 
-- ~~`qi install/remove/list` 命令封装(pip 包/目录双通道、写配置)~~ → **已否决**:
-  封装 pip 会把「qi 自己的 venv / uv tool 托管 / 只读的系统解释器」三种环境的差异藏起来,
-  且 uv tool 重建后 `--sync` 也补不回(环境已被整个替换)。改为**声明层 + 比对**:
-  `settings.packages` + `qi list` / `qi doctor`(**已落地**,见 [extensions.md §5.5](../docs/extensions.md))。
+- ~~`qi install/remove/list` 命令封装(pip 包/目录双通道、写配置)~~ → **已撑销(2026-09)**。
+  当时的理由:封装 pip 会把「qi 自己的 venv / uv tool 托管 / 只读的系统解释器」三种环境的差异藏起来,
+  且 uv tool 重建后 `--sync` 也补不回。**现在按 pi 补上了** `install` / `remove` / `uninstall` / `update`
+  ——那条顾虑没有消失,而是换了个位置落地:每次都把要跑的 pip 命令**先打出来**、失败时补
+  `uv tool install --with` 那条出路、`remove` 不卸包只改声明。声明层与双向比对(`qi list` /
+  `qi doctor`)**保留不变**,所以即使走了 `qi install`,"声明了没装"仍然会被报出来。
+  见 [docs/cli.md §4](../docs/cli.md) 与 [docs/packages.md](../docs/packages.md) §1。
 - 运行时热装载(hot reload:运行中装插件立即生效,而非下次装载)
 - 插件内嵌内容分发(agent 样板/技能随插件带出,与"内容跟 agent 走"的边界)
 

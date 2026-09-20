@@ -123,8 +123,8 @@ qi 与 pi 的差异(已落档):
 - 标签存储不同:qi 直接写在 entry 上(`label` / `labelTimestamp` 字段),pi 另写一条
   `type=label` 的 entry;两边都是「标签属于某条 entry」的语义;
 - `/tree` 跳转时 pi 会**先问**要不要摘要被放弃的分支,qi 直接做并提示;
-- `qi sessions show` 与 web `/messages` 只展示**当前分支**(web 契约仍把 header 放在 `entries[0]`);
-- `--export` / `qi sessions show` 之外的导出仍拷**整个文件**(含其它分支)。
+- TUI 里回放会话(以及 web `/messages`)只展示**当前分支**(web 契约仍把 header 放在 `entries[0]`);
+- 除了 `--export` 与 TUI 回放,其它导出仍拷**整个文件**(含其它分支)。
 
 树选择器键位(模态,`/tree`;对齐 pi 的 `app.tree.*`):
 

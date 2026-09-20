@@ -18,7 +18,7 @@ qi 通过 litellm 调各家模型。**provider 的声明**(baseUrl / api / 模�
 
 **免密钥的 provider**:`ollama`(本地)—— 它 `ok=True`,显示为"无需密钥(本地 provider)"。
 
-排查时会看到的几种状态(`ResolvedKey.describe()`,出现在 `qi models list` 与 `qi doctor`):
+排查时会看到的几种状态(`ResolvedKey.describe()`,出现在 `qi --list-models` 与 `qi doctor`):
 
 | 显示 | 含义 |
 | --- | --- |
@@ -98,7 +98,7 @@ shell 注入面。代价是**不能直接写 `!cat a | jq -r .key`**(管道会�
 | `qi auth print-bearer-token <provider>` | 同上 —— qi 没有 OAuth,所以"bearer token"就是 API key |
 | `qi auth check <provider>` | 检查该 provider 能否解析出凭证 |
 | `qi auth rm <provider>` | 同 `logout` |
-| `qi models list` | 列出 provider / 模型,并显示每个 provider 的凭证状态 |
+| `qi --list-models` | 列出 provider / 模型,并显示每个 provider 的凭证状态 |
 | `qi doctor` | 逐个 provider 打印凭证状态(`OK` / `缺密钥`)+ 来源 |
 
 `qi auth print-bearer-token` 接受 `--no-refresh` 参数(为了与 pi 的命令面一致),但 qi 没有 OAuth,

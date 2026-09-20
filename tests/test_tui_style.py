@@ -313,18 +313,14 @@ async def test_tui_command_surface(tmp_path, monkeypatch):
         app._rt.cfg = _fake_cfg()          # /model 需要有可选模型
         notes = await _command_notes(app, monkeypatch)
 
-        app._command("/help")
-        assert "计划中" in notes[-1][0] and "/hotkeys" in notes[-1][0]
-        assert "/sessions" in notes[-1][0] and "/export" in notes[-1][0]
+        app._command("/help")               # pi 没有 /help:命令靠 `/` 补全被发现
+        assert "未知命令" in notes[-1][0]
 
         app._command("/hotkeys")
         assert "ctrl+o" in notes[-1][0] and "尚未对齐" in notes[-1][0]
 
         app._command("/session")
         assert "会话: " in notes[-1][0] and "deepseek/deepseek-v4.1-flash" in notes[-1][0]
-
-        app._command("/sessions")            # help 里承诺过,必须真的有实现
-        assert "会话(最新在前)" in notes[-1][0]
 
         assert app._rt is not None
         app._rt.cwd = Path("/tmp/short")          # tmp_path 太长会被 footer 截断(pi 同款)
@@ -784,8 +780,8 @@ async def test_completion_candidates_commands_and_files(tmp_path, monkeypatch):
 
         await _editor_with(app, pilot, "/se")            # 命令补全
         values = [c.value for c in app._completion_candidates()[0]]
-        assert "/session" in values and "/sessions" in values
-        assert "/help" not in values
+        assert "/session" in values
+        assert "/help" not in values          # pi 没有这个命令
         assert app._completions_open is True
 
         await _editor_with(app, pilot, "讲一下 @al")     # 文件补全
@@ -884,7 +880,7 @@ async def test_tab_applies_completion(tmp_path, monkeypatch):
         await pilot.press("down")                        # 面板里下移
         await pilot.press("tab")                         # tab = 接受补全
         await pilot.pause(0.05)
-        assert editor.text == "/sessions "               # 第二个候选 + 尾随空格
+        assert editor.text == "/session "                # 候选只剩它一个;tab 后带尾随空格
         assert app._completions_open is False
 
         editor = await _editor_with(app, pilot, "@al")
@@ -1608,9 +1604,9 @@ async def test_slash_command_runs_immediately_during_turn(tmp_path, monkeypatch)
         await pilot.pause(0.1)
         assert app._working is True
 
-        await _type_and_submit(app, pilot, "/help")
+        await _type_and_submit(app, pilot, "/hotkeys")
         await pilot.pause(0.05)
-        assert any("计划中" in text for text in notes)      # HELP_TEXT 真的渲染了
+        assert any("ctrl+o" in text for text in notes)      # 命令真的渲染了
         assert app._pending_steer == []                     # 没有被当成对话排队
 
         await _type_and_submit(app, pilot, "/thinking high")

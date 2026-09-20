@@ -14,7 +14,7 @@
 
  qi v0.1.0                                                    ← bold accent + dim
  escape interrupt · ctrl+c clear/exit · ctrl+o tools · / commands · @ files · ! bash   ← 快捷提示
- qi 是编码 agent 框架(单 agent core;MCP / 多 agent / web 走扩展);/help 看全部命令。   ← dim 引导
+ qi 是编码 agent 框架(单 agent core;MCP / 多 agent / web 走扩展);输入 / 看全部命令。  ← dim 引导
 
 [Agents]
   code-analyst, general                  ← 只在装了 qi-agents 且发现角色时显示
@@ -73,12 +73,10 @@ qi · auto                                 ← footer 3:状态行
 
 | 命令 | 说明 |
 | --- | --- |
-| `/help` | 命令帮助(含实现/计划分区) |
 | `/hotkeys` | 快捷键(明写哪些 pi 键位还没做) |
 | `/quit` | 退出 |
 | `/new` | 新会话 |
 | `/resume [id]` | 不给 id = 打开**会话选择器**(模态);给 id = 直接恢复 |
-| `/sessions` | 列出历史会话 |
 | `/name <name>` | 会话显示名(进 footer) |
 | `/session` | 会话信息(ID/文件/cwd/消息数·仅当前分支/节点数与分支点/模型/用量) |
 | `/tree` | 会话树:跳到本会话任意节点继续(同文件内分支,见下节) |
@@ -159,25 +157,24 @@ qi 与 pi 的差异(已落档):
 - qi 与 pi 的差异:pi 在 `/tree` 跳转前**先问**要不要摘要,qi 直接做并提示;pi 还有
   `branch_summary` 的树内过滤/标签渲染,qi 只显示块。
 
-### 命令(内置;`/help` 列出全部)
+### 命令(内置;**输入 `/` 补全全部** —— 扩展注册的命令也在里面)
 
 | 命令 | 说明 |
 | --- | --- |
-| `/help` · `/hotkeys` · `/quit` | 帮助 / 键位 / 退出 —— **这三条扩展不能顶掉**(顶掉 `/quit` 等于把用户锁在界面里) |
-| `/new` · `/resume` · `/sessions` · `/session` | 新会话 / 选或恢复 / 列出 / 会话信息 |
+| `/hotkeys` · `/quit` | 键位 / 退出 —— **这两条扩展不能顶掉**(顶掉 `/quit` 等于把用户锁在界面里) |
+| `/new` · `/resume` · `/session` | 新会话 / 选或恢复(选择器里可改名、删除)/ 会话信息 |
 | `/name` | 设置会话显示名 |
 | `/tree` · `/fork` · `/clone` | 跳到本会话任意节点 / 从某条消息 fork / 复制当前分支 |
 | `/compact` | 压缩上下文(摘要旧消息);可跟 `<提示>` 追加 focus |
 | `/model` · `/scoped-models` · `/thinking` | 当前或切换模型 / 挑 Ctrl+P 轮换的模型 / 思考级别 |
-| `/tools` | 工具清单(简版) |
 | `/export` · `/import` | 导出 / 导入会话 JSONL |
 | `/copy` | 复制最后一条回答 |
 | `/reload` | 重载扩展 / 技能 / 配置 |
 | `/login` · `/logout` | 登录指引(密钥不进会话)/ 删除已存凭证 |
-| `/changelog` · `/clear` | 显示 `CHANGELOG.md` / 清屏 |
+| `/changelog` | 显示 `CHANGELOG.md` |
 
 扩展可以注册**自己的** `/命令`(`api.registerCommand`):重名时都留着并变成 `name:1` / `name:2`,
-一个都不丢;`/help` 会把它们一并列出(见 [extensions.md](extensions.md) §3.2)。
+一个都不丢;它们会出现在 **`/` 补全**里(带描述与来源,见 [extensions.md](extensions.md) §3.2)。
 
 ### 计划中(pi 有,qi 缺后端能力)
 

@@ -72,52 +72,13 @@ from rich.markdown import Heading as _RichHeading
 
 _RichHeading.LEVEL_ALIGN = {f"h{i}": "left" for i in range(1, 7)}
 
-HELP_TEXT = """\
-qi TUI 命令(实现状态以本表为准)
-
- 对话与会话
-  /new               新会话
-  /resume [id]       选/恢复历史会话(不给 id = 列出来)
-  /sessions          列出历史会话
-  /tree              会话树:跳到任意节点继续(同文件内分支)
-  /fork [序号|id]     从某条用户消息 fork 出新会话(消息放回编辑器)
-  /clone [名字]       复制当前分支为新会话
-  /name <名字>       设置会话显示名(进 footer)
-  /session           会话信息(文件/ID/消息数/模型/用量)
-  /thinking [级别]   思考级别(off|minimal|low|medium|high|xhigh|max;等同 shift+tab)
-  /model [p/m]       当前模型 / 切换模型(等同 ctrl+l)
-  /scoped-models     挑 Ctrl+P 轮换哪些模型(空 = 全部)
-  /export [文件]     导出会话 JSONL(默认 ./qi-<id>.jsonl)
-  /compact [提示]    压缩上下文:把旧消息压成摘要(可给一句关注点)
-  /import <文件>     从 JSONL 导入并切换会话
-  /reload            重载 agents / extensions / 配置
-
- 回答与凭证
-  /copy              复制最后一条回答到剪贴板
-  /login <provider>  显示登录指引(密钥不进会话记录,请用终端)
-  /logout [provider] 删除已存凭证(不给 provider = 列出来)
-  /changelog         显示 CHANGELOG.md(本仓库暂无)
-
- qi 独有
-  /tools             当前/全部 agent 工具清单
-  /clear             清屏
-  @name 开头         直接点名 agent
-
- 界面
-  /help              本帮助
-  /hotkeys           快捷键
-  /quit              退出
-
- 计划中(对齐 pi,需先给后端加能力)
-  /settings /share /trust
-"""
 
 PLANNED_COMMANDS = frozenset({
     "/settings", "/share", "/trust",
 })
 """pi 有、qi 暂未实现的命令 —— 单独提示“计划中”,不冒充“未知命令”。"""
 
-RESERVED_COMMANDS = frozenset({"/quit", "/help", "/hotkeys"})
+RESERVED_COMMANDS = frozenset({"/quit", "/hotkeys"})
 """扩展命令**不能顶掉**的几条。
 
 它们都在 `_command` 的最前面就处理、而且不依赖 runtime(`/quit` 尤其重要):
@@ -126,13 +87,10 @@ RESERVED_COMMANDS = frozenset({"/quit", "/help", "/hotkeys"})
 """
 
 TUI_COMMANDS: dict[str, str] = {
-    "/help": "本帮助",
     "/hotkeys": "快捷键",
     "/quit": "退出",
-    "/clear": "清屏",
     "/new": "新会话",
     "/resume": "选/恢复历史会话",
-    "/sessions": "列出历史会话",
     "/name": "设置会话显示名",
     "/session": "会话信息",
     "/tree": "跳到本会话的任意节点",
@@ -149,7 +107,6 @@ TUI_COMMANDS: dict[str, str] = {
     "/logout": "删除已存凭证",
     "/changelog": "显示 CHANGELOG.md",
     "/compact": "压缩上下文(摘要旧消息)",
-    "/tools": "工具清单",
 }
 """`/` 补全的候选(命令 → 说明);与 `_command` 的已实现分支一一对应。"""
 
@@ -520,7 +477,7 @@ class TuiRenderer:
             text.append(hint, style=Style(color=p.hex("text")))
         text.append("\n")
         text.append("qi 是编码 agent 框架(单 agent core;MCP / 多 agent / web 走扩展);"
-                    "/help 看全部命令。", style=dim)
+                    "输入 / 看全部命令。", style=dim)
         text.append("\n\n")
         if agents:
             text.append("[Agents]\n", style=dim)
@@ -2211,7 +2168,7 @@ class QiTui(App):
         cmd = parts[0].lower()
         arg = parts[1].strip() if len(parts) > 1 else ""
         # /quit 与 /hotkeys /help 不依赖 runtime;其余需要一个可用的运行期
-        if self._rt is None and cmd not in ("/quit", "/help", "/hotkeys"):
+        if self._rt is None and cmd not in ("/quit", "/hotkeys"):
             self._note("运行时不可用。", "error")
             self._scroll_end()
             return
@@ -2229,38 +2186,26 @@ class QiTui(App):
                 self._scroll_end()
                 return
 
-        if cmd == "/help":
-            self._note(self._help_text(), "text")
-        elif cmd == "/hotkeys":
+        if cmd == "/hotkeys":
             self._note(HOTKEYS_TEXT, "text")
         elif cmd == "/quit":
             self.exit()
-        elif cmd == "/clear":
-            self.action_clear_log()
-
         # ── 会话 ──────────────────────────────────────────────
         elif cmd == "/new":
             if rt is None:
                 return
             self._switch_session(store.create("tui", cwd=rt.cwd), note="已开新会话(auto)")
-        elif cmd in ("/resume", "/sessions"):
-            sessions = store.list()
-            if cmd == "/resume" and arg:
+        elif cmd == "/resume":
+            if arg:
                 s = store.get(arg)
                 if s is None:
                     self._note(f"会话不存在 {arg}", "error")
                 else:
                     self._switch_session(s, note=f"已恢复 {s.id}(分支 {s.message_count} 条消息)")
-            elif cmd == "/resume":
+            else:
                 self._show_session_selector()          # 模态选择器(对齐 pi)
                 self._scroll_end()
                 return
-            else:
-                rows = ["会话(最新在前):"]
-                rows += [(f"  {s.id}  {s.title or '(未命名)'}  {s.created_at}"
-                          + (f"  分支点×{s.branch_points}" if s.branch_points else ""))
-                         for s in sessions]
-                self._note("\n".join(rows) if sessions else "(无会话)")
         elif cmd == "/tree":
             self.action_show_tree()
             self._scroll_end()
@@ -2419,13 +2364,11 @@ class QiTui(App):
         elif cmd == "/changelog":
             self._note(self._changelog())
 
-        # ── qi 独有 ──────────────────────────────────────────
-        elif cmd == "/tools":
-            self._note("内置工具: read ls find grep write edit bash clarify")
         elif cmd in PLANNED_COMMANDS:
-            self._note(f"{cmd} 计划中(需先给后端加能力;见 /help 末尾)", "warning")
+            self._note(f"{cmd} 计划中(需先给后端加能力)", "warning")
         else:
-            self._note(f"未知命令 {cmd};/help 查看", "warning")
+            # pi 没有 `/help`:命令靠 `/` 补全自己被发现(补全项带描述)
+            self._note(f"未知命令 {cmd};输入 / 看全部命令", "warning")
         self._scroll_end()
 
     # -- 命令用到的具体动作 ────────────────────────────────
@@ -2469,16 +2412,6 @@ class QiTui(App):
         self._session = session
         self._refresh_footer()
         self._note(f"已导入并切换到 {sid}(消息 {session.message_count} 条)")
-
-    def _help_text(self) -> str:
-        """`/help`:内置帮助 + **扩展注册的命令**(否则装了扩展也没人知道能打什么)。"""
-        commands = self._rt.commands.all() if self._rt is not None else []
-        if not commands:
-            return HELP_TEXT
-        lines = [HELP_TEXT, "", "扩展命令"]
-        lines += [f"  /{c.invocable:<18}{c.description or '(无说明)'}  [{c.source}]"
-                  for c in commands]
-        return "\n".join(lines)
 
     async def _run_extension_command(self, command, arg: str) -> None:
         """跑一条扩展命令。异常只提示,不把 TUI 打崩(扩展是第三方代码)。"""
@@ -2568,13 +2501,6 @@ class QiTui(App):
         return "未找到 CHANGELOG.md(qi 仓库暂无)"
 
     # -- 动作(键位对齐 pi `core/keybindings.js`)-------------------------
-    def action_clear_log(self) -> None:
-        log = self.query_one("#log", VerticalScroll)
-        for child in list(log.children):
-            child.remove()
-        self._tool_blocks.clear()
-        self._live = None
-
     def action_toggle_expand(self) -> None:
         """ctrl+o:展开/折叠工具输出(对齐 pi 的 app.tools.expand)。"""
         self._expanded = not self._expanded
@@ -3248,8 +3174,13 @@ class QiTui(App):
 
         # 1) 命令补全:行首 /xxx,且还没输入空格或第二个 /
         if before.startswith("/") and " " not in before and "/" not in before[1:]:
+            # **扩展注册的命令也算**(pi 的模型:extensions can register custom commands,
+            # 而它们靠 `/` 补全被发现)。以前这里只遍历内置表 —— 配上 `/help` 被删掉,
+            # 扩展命令就彻底不可见了(只能去读那个扩展的 README)。
+            extra = [(f"/{c.invocable}", c.description or "")
+                     for c in (self._rt.commands.all() if self._rt is not None else [])]
             items = [Candidate(name, name, detail)
-                     for name, detail in sorted(TUI_COMMANDS.items())
+                     for name, detail in sorted([*TUI_COMMANDS.items(), *extra])
                      if name.startswith(before)]
             if len(items) == 1 and items[0].value == before:
                 items = []          # 已完整匹配,不必再提示

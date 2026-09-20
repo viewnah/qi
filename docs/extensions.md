@@ -112,7 +112,7 @@ qi 曾需要的"每轮可换角色"hook **不加** —— 见 §7(多 agent 走 
 | `exec(cmd, args, opts)` | 起子进程(**不经 shell**,`args` 原样进 argv;带 `signal` / `timeout`,任一命中即 kill) | ✅ P-E2b |
 | `registerCommand(name, handler, opts)` | 斜杠命令;handler 收 `(args, ctx)`。**重名不覆盖**:都留着并变成 `name:1` / `name:2`(一个都不丢)。`getArgumentCompletions` 未做 | ✅ P-E3b |
 | `registerShortcut(key, handler, opts)` | 快捷键(key 用 textual 写法)。坏键名只提示,不让启动失败 | ✅ P-E3b |
-| `getCommands()` | 当前可输入的命令清单(含 `source`);`/help` 用它把扩展命令列出来 | ✅ P-E3b |
+| `getCommands()` | 当前可输入的命令清单(含 `source`);**`/` 补全**用它把扩展命令列出来 | ✅ P-E3b |
 | `registerFlag(name, opts)` / `getFlag(name)` | CLI 旗标。**两种写法**:直接 `--name` / `--name=value`,或 `--ext name=value`(可重复;两者同显时**直接写的胜**)。规则照 pi:长旗标宽容、**短旗标报错**、`--` 之后全字面;装载后对账:**未注册的名字**或**字符串旗标缺值** → 退出码 2。**一处刻意差异**:qi 不消费 `--flag` 后面的 token(pi 会吃掉,于是 `pi --plan "问题"` 里那句 prompt 就没了) | ✅ P-E3b-2 |
 | `sendMessage(msg, opts)` | 注入消息(**进 LLM 上下文**;与 `appendEntry` 相反),收字符串或 `{content}`。`deliver_as` 三档(**已实现**):`steer` = 本轮下一次 LLM 调用前;`follow_up` = 本该收工时(有排队就不收工,再跑一轮);`next_turn` = 下一次用户输入 | ✅ P-E3c-2 |
 | `sendUserMessage(content, opts)` | 同上,只是落盘时标成“用户说的”(`injected_by`)。**qi 不自动开一轮**(pi 会在空闲时 `triggerTurn`)—— 那条差别记在 §11.9 | ✅ P-E3c-2 |

@@ -327,7 +327,7 @@ async def test_tui_refuses_to_let_extensions_shadow_reserved_commands(tmp_path, 
 async def test_help_lists_extension_commands(tmp_path, monkeypatch):
     """装了扩展却没人知道能打什么 —— `/help` 要把它们列出来。"""
     from qi_agent.theme import load_palette
-    from qi_agent.tui import QiTui
+    from qi_agent.tui import Editor, QiTui
 
     _env(tmp_path, monkeypatch)
     registry = CommandRegistry()
@@ -338,10 +338,16 @@ async def test_help_lists_extension_commands(tmp_path, monkeypatch):
     app = QiTui(palette=load_palette("dark"))
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause(0.1)
-        text = app._help_text()
-        await pilot.pause(0.05)
+        # pi 没有 `/help`:命令靠 `/` 补全自己被发现 —— 所以扩展命令也得进补全。
+        # 与 test_tui_style 的 `_editor_with` 同款:`load_text` 之后要 `move_cursor`,
+        # 补全是由光标/输入事件驱动的。
+        editor = app.query_one("#editor", Editor)
+        editor.load_text("/pro")
+        editor.move_cursor(app._offset_to_location("/pro", len("/pro")))
+        await pilot.pause(0.1)
+        values = [c.value for c in app._completion_candidates()[0]]
 
-    assert "/probe" in text and "探针命令" in text and "probe-ext" in text
+    assert "/probe" in values
 
 
 def test_discovery_merges_commands_into_the_registry(tmp_path, monkeypatch):

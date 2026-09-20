@@ -587,11 +587,23 @@ P-E6 收尾时若仍无人用就删 —— 不留无人使用的公开面。
    clean 是陈旧的成功判定。运行期完全正常(venv 有 `_qi_extensions.pth` + 两个符号链接,
    测试里另有 `sys.path.insert`),全量 659 passed。
    **可检验的预测**:若原因是分析器对 extraPaths 目录清单的缓存在会话内不刷新,则 LSP 重启 /
-   下一回合后应自行消失。**处理原则:不动代码、不加 `# type: ignore`** —— 那条意见本身
+   下一回合后应自行消失。
+   **处理原则:不动代码、不加 `# type: ignore`** —— 那条意见本身
    ("这个包没装")是对的(扩展确实不是装上去的,是 pyproject 里的独立发行包),
    绕开它只是掩盖;真要根治就补 venv 的 pip 后做 editable 安装。
-10. **`sendUserMessage` 不自开一轮**(P-E3c-2 已实现,但有意缺这一步):pi 在 agent 空闲时 `triggerTurn`,那需要“在处理器里嵌套跑一轮”的能力(嵌套流式、与当前回合共享会话写入)。qi 现在只**排队**,由前端决定要不要因此开一轮。要补就与 `ctx.runAgent`(E12)一起做 —— 同一套“宿主内起一个受管子运行”的机制。
-11. **P-E3d-3 推迟的两块**(理由相同:**不在三件套扩展的关键路径上** + 各自需要一次专门决策):
+
+10. **`session_start` 在无界面路径(`stream()`)上似乎没有派发(待查)** —— 证据:参考扩展示例
+    (`examples/extensions/hello/`)在 `QiRuntime` 里**装载成功**(`runtime.extensions == ["hello"]`、
+   `flag_errors == []`),但跑完 `stream()` 之后 `runtime.notes` 是空的 —— 而它注册的
+   `session_start` 处理器会往 notes 写一行。宿主侧接线本身是对的(`runtime.py:170`
+   把 `ExtensionUi(notes=self.notes)` 接上了)。**要查的是:谁调 `start_session`** ——
+   如果只有 TUI/Web 前端调,那么 headless(`qi -p "…"`)下所有依赖 `session_start` 的扩展都
+   静默不生效,**qi-mcp 的直连工具注册正是挂在这个事件上**(然后 `qi-mcp` 的 `_default_connect`
+   在测试里是假连接器,真跑时才看得出)。**处理原则:不动代码、不加 `# type: ignore`** —— 那条意见本身
+   ("这个包没装")是对的(扩展确实不是装上去的,是 pyproject 里的独立发行包),
+   绕开它只是掩盖;真要根治就补 venv 的 pip 后做 editable 安装。
+11. **`sendUserMessage` 不自开一轮**(P-E3c-2 已实现,但有意缺这一步):pi 在 agent 空闲时 `triggerTurn`,那需要“在处理器里嵌套跑一轮”的能力(嵌套流式、与当前回合共享会话写入)。qi 现在只**排队**,由前端决定要不要因此开一轮。要补就与 `ctx.runAgent`(E12)一起做 —— 同一套“宿主内起一个受管子运行”的机制。
+12. **P-E3d-3 推迟的两块**(理由相同:**不在三件套扩展的关键路径上** + 各自需要一次专门决策):
 
     - **renderer 三件套**(`registerMessageRenderer` / `registerEntryRenderer` /
       `registerMarkdownTransformer`):pi 的形状是扩展**直接返回宿主的 UI 组件**。qi 的 TUI 是

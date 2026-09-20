@@ -36,6 +36,7 @@ from .extensions import (
     ExtensionUi,
     FlagRegistry,
     SessionView,
+    CliCommandRegistry,
 )
 from .llm import (
     ChatMessage,
@@ -180,6 +181,7 @@ class QiRuntime:
             extra=list(extra_extension_paths or ()))
         self.extensions = discover_extensions(
             self.catalog, self.capabilities, self.cwd,
+            cli_commands=CliCommandRegistry(),
             bus=self.bus,
             host=self,
             commands=self.commands,

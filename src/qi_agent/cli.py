@@ -154,19 +154,8 @@ app = typer.Typer(
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True,
                       "help_option_names": ["-h", "--help"]},
 )
-def _replay_names(entries: list[dict]) -> dict[str, str]:
-    """会话回放用映射:agent 名 → 记录时的展示名。
 
-    展示名在写入 dispatch entry 时一并落盘(而非回放时查 registry),因为:
-      - 历史会话应反映**当时**的展示名,不受之后改名/删 agent 影响;
-      - 回放不必装载 agent/插件(无副作用)。
-    旧会话没记录 display_name 时回落为 name。
-    """
-    names: dict[str, str] = {}
-    for e in entries:
-        if e.get("type") == "dispatch" and e.get("agent"):
-            names[str(e["agent"])] = str(e.get("display_name") or e["agent"])
-    return names
+
 def _tool_snippet(text: str, limit: int = 400) -> str:
     """工具结果摘要:保留换行结构(便于看 ls/grep 这类多行输出),超长时附提示。
 
@@ -708,16 +697,6 @@ def list_extensions() -> None:
     _print_package_report(report)
 
 
-models_app = typer.Typer(help="查看命名模型")
-app.add_typer(models_app, name="models")
-
-
-@models_app.command("list")
-def models_list() -> None:
-    """列出 models.json 中的 provider/模型与默认模型。"""
-    _cmd_list_models()
-
-
 def _cmd_list_models(search: str | None = None) -> None:
     """`--list-models [搜索词]` 与 `qi models list` 共用:列 models.json 里的模型与默认模型。
 
@@ -753,74 +732,202 @@ def _cmd_list_models(search: str | None = None) -> None:
     console.print(table)
 
 
-# ── sessions ────────────────────────────────────────────
-
-sessions_app = typer.Typer(help="会话管理")
-app.add_typer(sessions_app, name="sessions")
+# ── 装 / 卸 / 更新(对齐 pi;判决 C 已撑销)──────────────────
 
 
-@sessions_app.command("list")
-def sessions_list() -> None:
-    """列出会话(最新在前)。"""
-    store = SessionStore()
-    for s in store.list():
-        console.print(f"{s.id}  {s.title or '(无标题)'}  消息{s.message_count}  "
-                      f"{_short_cwd(s.cwd)}  {s.created_at}")
+def _run_pip(args: list[str]) -> int:
+    """跑一次 pip,把命令**先打出来**。
+
+    为什么先打:目标是哪个解释器只有用户知道 —— 打出来他才能看出"装错环境了",
+    也能直接照拄。失败时补上 `uv tool install --with` 那条出路(只读解释器 / uv tool
+    环境里 pip 会自己报错,而那时用户需要知道另一条路)。
+    """
+    import shlex
+    import subprocess
+
+    cmd = [sys.executable, "-m", "pip", *args]
+    console.print("[dim]$ " + " ".join(shlex.quote(c) for c in cmd) + "[/dim]")
+    try:
+        code = subprocess.call(cmd)
+    except OSError as exc:
+        err_console.print(f"[red]起不了 pip:{escape(str(exc))}[/red]")
+        return 1
+    if code != 0:
+        err_console.print(f"[red]pip 退出码 {code}[/red]")
+        err_console.print("[dim]如果目标是只读解释器或 uv tool 环境,改用:"
+                          "`uv tool install qi-agent --with <包>`[/dim]")
+    return code
 
 
-@sessions_app.command("show")
-def sessions_show(session_id: str = typer.Argument(...)) -> None:
-    """查看会话内容(分派与说话人用记录时的展示名,与 agents list 一致)。"""
-    store = SessionStore()
-    s = store.get(session_id)
-    if s is None:
-        console.print(f"[red]会话不存在: {session_id}[/red]")
-        raise typer.Exit(code=1)
-    console.print(f"[bold]{s.id}[/bold] {s.title}")
-    console.print(f"[dim]cwd: {escape(_short_cwd(s.cwd, limit=64))}  文件: {escape(str(s.path))}"
-                  + (f"  分支点: {s.branch_points}" if s.branch_points else "") + "[/dim]")
-    names = _replay_names(s.branch())        # 只回放**当前分支**(树里的其它分支不混进来看
-    for e in s.branch():
-        if e.get("type") == "message":
-            role = e.get("role")
-            body = escape(str(e.get('content', '')))[:200]
-            if role == "user":
-                # 用户消息不拄说话人名(agent_id 只是"将处理它的 agent",不是发言者)
-                console.print(f"[dim]{role}[/dim] {body}")
-            else:
-                who = names.get(str(e.get("agent_id", "")), e.get("agent_id", ""))
-                console.print(f"[dim]{role}[/dim] {who}: {body}")
-        elif e.get("type") == "dispatch":
-            who = e.get("display_name") or e.get("agent")
-            console.print(f"[cyan]dispatch[/cyan] → {who} ({e.get('source')}, {e.get('confidence')}) {e.get('reasoning','')}")
-        elif e.get("type") == "tool":
-            mark = "✓" if e.get("status") == "ok" else "✗"
-            ms = e.get("duration_ms")
-            cost = f" {ms}ms" if isinstance(ms, int) else ""
-            code = e.get("exit_code")
-            tail = f" exit={code}" if isinstance(code, int) and code else ""
-            args = json.dumps(e.get("args") or {}, ensure_ascii=False)
-            console.print(f"[dim]tool[/dim] {mark} {e.get('tool')}{cost}{tail} "
-                          f"[dim]{escape(args[:120])}[/dim]")
-        elif e.get("type") == "custom" and e.get("custom_type") == "assistant_narration":
-            # 工具调用**之前**的叙述:直播时走 text_delta,回放时必须同位置重现,
-            # 否则 CLI 回放与实时看到的内容不一致(见 design/web.md §13 的顺序不变量)
-            who = names.get(str(e.get("agent", "")), e.get("agent", ""))
-            console.print(f"[dim]叙述[/dim] {who}: {escape(str(e.get('content', ''))[:200])}")
+def _as_declaration(source: str) -> str:
+    """把用户给的来源规整成一条**声明**:存在的目录 → `local:<绝对路径>`,其余原样。
+
+    目录通道的存在意义就是"不装也能用" —— 所以本地目录**不调 pip**。
+    """
+    text = source.strip()
+    if text.startswith(("pip:", "local:")):
+        if text.startswith("local:"):
+            return "local:" + str(Path(text[6:]).expanduser().resolve())
+        return text
+    maybe = Path(text).expanduser()
+    if maybe.is_dir():
+        return "local:" + str(maybe.resolve())
+    return text
 
 
-@sessions_app.command("rm")
-def sessions_rm(session_id: str = typer.Argument(...)) -> None:
-    """删除会话。"""
-    store = SessionStore()
-    if store.delete(session_id):
-        console.print(f"[green]已删除 {session_id}[/green]")
+def _pip_requirement(spec: str) -> str:
+    """声明 → pip 的 requirement(`pip:` 前缀去掉;裸 `名字` 也算 pip)。"""
+    return spec[4:].strip() if spec.startswith("pip:") else spec.strip()
+
+
+def _local_path(spec: str) -> Path:
+    """声明 → 目录路径(`local:` 前缀去掉)。
+
+    别拿 `_pip_requirement` 当通用去前缀用:它只认 `pip:`,于是 `local:/abs/x` 会被
+    当成一个叫 `local:` 的目录(这个坑真踩过,测试抓出来的)。
+    """
+    return Path(spec[6:].strip() if spec.startswith("local:") else spec).expanduser()
+
+
+def _declaration_name(spec: str) -> str:
+    """声明的**归一名字**(用于去重 / 比对)。交给 `packages.parse_declaration` 判 ——
+    它是唯一同时认识 `pip:` / `local:` / `名字 @ URL` / 裸路径的那处逻辑。"""
+    from .packages import normalize_name, parse_declaration
+
+    declaration = parse_declaration(spec, "cli")
+    return declaration.name if declaration is not None else normalize_name(spec)
+
+
+def _write_declared(scope: str, specs: list[str]) -> None:
+    """把声明写回 `settings.packages`(整表替换;空列表也写 —— 那表示“都卸了”)。"""
+    set_value(scope, "packages", specs)
+
+
+def _declared_for(scope: str) -> list[str]:
+    from .settings import load_settings_by_scope
+
+    found = load_settings_by_scope(None).get(scope)
+    return [str(item) for item in (getattr(found, "packages", None) or [])]
+
+
+@app.command("install")
+def install(source: str = typer.Argument(..., help="包名 / requirement / 本地目录"),
+            local: bool = typer.Option(False, "--local", "-l",
+                                       help="写进项目 `.qi/settings.json`(默认写全局)")) -> None:
+    """装一个扩展:调 pip(本地目录只登记)+ 写进 `settings.packages`。
+
+    与 `pi install` 同形。**先装后记**:pip 失败就不改声明 —— 否则 `qi doctor` 会
+    报告一条“声明了但没装”,而那是我们刚刚制造的。
+    """
+    from .packages import parse_declaration
+
+    scope = "project" if local else "user"
+    declaration = parse_declaration(_as_declaration(source), "cli:install")
+    if declaration is None:
+        err_console.print(f"[red]认不出这个来源:{escape(source)}[/red]")
+        err_console.print("[dim]裸 URL 要写成 `名字 @ URL`"
+                          "(如 qi-mcp @ git+https://host/repo)[/dim]")
+        raise typer.Exit(code=2)
+
+    if declaration.channel == "pip":
+        code = _run_pip(["install", _pip_requirement(declaration.spec)])
+        if code != 0:
+            raise typer.Exit(code=code)
     else:
-        console.print(f"[yellow]会话不存在: {session_id}[/yellow]")
+        target = _local_path(declaration.spec)
+        if not (target / "extension.py").is_file():
+            err_console.print(f"[red]目录里没有 extension.py:{escape(str(target))}[/red]")
+            err_console.print("[dim]一个目录扩展的入口固定叫 extension.py(E9)[/dim]")
+            raise typer.Exit(code=2)
+        console.print(f"[green]目录通道,不用装[/green] {escape(str(target))}")
+
+    specs = _declared_for(scope)
+    name = declaration.name
+    specs = [s for s in specs if _declaration_name(s) != name]
+    specs.append(declaration.spec)
+    _write_declared(scope, specs)
+    where = "项目" if local else "全局"
+    console.print(f"[green]已写入{where} settings.packages:[/green] {escape(declaration.spec)}")
+    console.print("[dim]`qi doctor` 会确认它真的能被宿主加载[/dim]")
+
+
+@app.command("remove")
+def remove(source: str = typer.Argument(..., help="包名 / 本地目录(与 install 同一个来源)"),
+           local: bool = typer.Option(False, "--local", "-l", help="只从项目设置里移除")) -> None:
+    """从 `settings.packages` 里移除一条声明(**不卸包** —— 与 pi 同义)。
+
+    pi 的 `remove` 只动设置;真要卸包它不替你决定。qi 同口径:移除时把
+    `pip uninstall` 命令打出来,跑不跑由你。
+    """
+    from .packages import normalize_name, parse_declaration
+
+    scope = "project" if local else "user"
+    declaration = parse_declaration(_as_declaration(source), "cli:remove")
+    target = declaration.name if declaration is not None else normalize_name(Path(source).name)
+    specs = _declared_for(scope)
+    kept = [s for s in specs if _declaration_name(s) != target]
+    if len(kept) == len(specs):
+        err_console.print(f"[yellow]{scope} 的 settings.packages 里没有 {escape(source)}[/yellow]")
         raise typer.Exit(code=1)
+    _write_declared(scope, kept)
+    console.print(f"[green]已从{scope}声明里移除 {escape(source)}[/green]")
+    if declaration is not None and declaration.channel == "pip":
+        console.print("[dim]包本体还在环境里。真卸掉:"
+                      f"{sys.executable} -m pip uninstall {escape(_pip_requirement(declaration.spec))}[/dim]")
 
 
-# ── auth / init / version ───────────────────────────────
+@app.command("uninstall")
+def uninstall(source: str = typer.Argument(..., help="同 remove"),
+              local: bool = typer.Option(False, "--local", "-l")) -> None:
+    """`remove` 的别名(pi 三个名字都有)。"""
+    remove(source, local)
+
+
+@app.command("update")
+def update(target: str = typer.Argument(None, help="更新谁:self | pi | 包名/来源"),
+           self_only: bool = typer.Option(False, "--self", help="只更新 qi 自己"),
+           extensions: bool = typer.Option(False, "--extensions", help="只更新已声明的扩展"),
+           models_only: bool = typer.Option(False, "--models", help="[无对应] 刷新模型目录"),
+           everything: bool = typer.Option(False, "--all", help="qi 自己 + 扩展"),
+           extension: str | None = typer.Option(None, "--extension", help="只更一个"),
+           force: bool = typer.Option(False, "--force", help="即使已是最新也重装")) -> None:
+    """更新 qi 自己 / 已声明的扩展。**没有目标时只更 qi 自己**(与 pi 同默认)。"""
+    if models_only:
+        # qi 没有"远端模型目录"这个概念:模型全在 models.json 里,你自己维护
+        console.print("[yellow]qi 没有模型目录可以刷新[/yellow]:模型写在 `models.json`,"
+                      "由你自己维护(pi 是从远端拉目录,qi 不是)。")
+        return
+    want_self = self_only or everything or (not extensions and not extension
+                                            and target in (None, "self", "pi"))
+    want_ext = extensions or everything or bool(extension) or (
+        target is not None and target not in ("self", "pi"))
+    if not want_self and not want_ext:
+        console.print("[yellow]没说要更新什么[/yellow](用 `--self` / `--extensions` / `--all`)")
+        raise typer.Exit(code=2)
+
+    failed = 0
+    if want_self:
+        failed += _run_pip(["install", "--upgrade", *(
+            ["--force-reinstall"] if force else []), "qi-agent"]) != 0
+    if want_ext:
+        pick = extension or (target if target not in (None, "self", "pi") else None)
+        specs = _declared_for("user") + _declared_for("project")
+        if pick:
+            wanted = _declaration_name(_as_declaration(pick))
+            specs = [s for s in specs if _declaration_name(s) == wanted]
+            if not specs:
+                err_console.print(f"[red]没有声明过 {escape(pick)}[/red]")
+                raise typer.Exit(code=1)
+        pip_specs = [s for s in specs if not s.startswith("local:")]
+        if not pip_specs:
+            console.print("[yellow]已声明的都是目录通道,没有要更新的包[/yellow]")
+        for spec in pip_specs:
+            failed += _run_pip(["install", "--upgrade", *(
+                ["--force-reinstall"] if force else []), _pip_requirement(spec)]) != 0
+    raise typer.Exit(code=1 if failed else 0)
+
+
+# ── auth / init ──────────────────────────────────────
 
 auth_app = typer.Typer(help="管理 ~/.qi/agent/auth.json 凭证")
 app.add_typer(auth_app, name="auth")
@@ -1348,12 +1455,6 @@ def init(
                              context_window=context_window, max_tokens=max_tokens, local=local)
     else:
         _init_interactive(local)
-
-
-@app.command("version")
-def version() -> None:
-    """显示版本。"""
-    console.print(f"qi {__version__}")
 
 
 def _session_reason(*, no_session: bool, fork_id: str | None,

@@ -149,9 +149,9 @@ def test_tui_is_not_a_subcommand(fake_runtime):
 
 
 def test_real_subcommands_still_dispatch(fake_runtime):
-    res = runner.invoke(app, ["version"])
+    """`qi version` 已删(对齐 pi:`--version`)—— 换成还在的真子命令验证分发。"""
+    res = runner.invoke(app, ["auth", "list"])
     assert res.exit_code == 0, res.output
-    assert res.output.startswith("qi ")
     assert CREATED == []  # 子命令不触发 headless 运行
 
 
@@ -246,55 +246,3 @@ def _session_with(entries: list[dict], monkeypatch, tmp_path) -> str:
     for e in entries:
         store.append(s, e)
     return s.id
-
-
-def test_sessions_show_replays_display_name(tmp_path, monkeypatch):
-    """回放应显示记录时的展示名(qi),不是内部名(general)。"""
-    sid = _session_with([
-        {"type": "dispatch", "agent": "general", "display_name": "qi",
-         "source": "router", "confidence": 0.9, "reasoning": "测试"},
-        {"type": "message", "role": "user", "content": "你好", "agent_id": "general"},
-        {"type": "message", "role": "assistant", "content": "在的", "agent_id": "general"},
-    ], monkeypatch, tmp_path)
-    res = runner.invoke(app, ["sessions", "show", sid])
-    assert res.exit_code == 0, res.output
-    assert "→ qi (router, 0.9)" in res.output        # 分派行用展示名
-    assert "qi: 在的" in res.output                  # 说话人标签用展示名
-    assert "general" not in res.output               # 不泄露内部名
-
-
-def test_sessions_show_falls_back_to_name_for_old_sessions(tmp_path, monkeypatch):
-    """改动前写入的会话没有 display_name → 回落为 name,不应崩或空白。"""
-    sid = _session_with([
-        {"type": "dispatch", "agent": "writer", "source": "rules", "confidence": 1.0},
-        {"type": "message", "role": "assistant", "content": "写好了", "agent_id": "writer"},
-    ], monkeypatch, tmp_path)
-    res = runner.invoke(app, ["sessions", "show", sid])
-    assert res.exit_code == 0, res.output
-    assert "→ writer (rules, 1.0)" in res.output
-    assert "writer: 写好了" in res.output
-
-
-def test_sessions_show_handles_unknown_author(tmp_path, monkeypatch):
-    """消息的 agent_id 没有对应 dispatch 记录时,直接用原名。"""
-    sid = _session_with([
-        {"type": "message", "role": "assistant", "content": "hi", "agent_id": "ghost"},
-    ], monkeypatch, tmp_path)
-    res = runner.invoke(app, ["sessions", "show", sid])
-    assert res.exit_code == 0, res.output
-    assert "ghost: hi" in res.output
-
-
-def test_sessions_show_user_line_has_no_speaker(tmp_path, monkeypatch):
-    """用户消息不标说话人:agent_id 只是"将处理它的 agent",不是发言者。"""
-    sid = _session_with([
-        {"type": "dispatch", "agent": "general", "display_name": "qi",
-         "source": "router", "confidence": 0.9},
-        {"type": "message", "role": "user", "content": "你好", "agent_id": "general"},
-        {"type": "message", "role": "assistant", "content": "在的", "agent_id": "general"},
-    ], monkeypatch, tmp_path)
-    res = runner.invoke(app, ["sessions", "show", sid])
-    assert res.exit_code == 0, res.output
-    assert "user 你好" in res.output          # 不出现 "user qi:"
-    assert "user qi" not in res.output
-    assert "assistant qi: 在的" in res.output

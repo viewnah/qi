@@ -116,9 +116,13 @@ def test_core_subcommand_names_win(monkeypatch):
 
 
 def test_core_subcommand_names_are_actually_known():
-    """`_core_subcommand_names()` 得真的拿到东西,否则"core 优先"是空话。"""
+    """`_core_subcommand_names()` 得真的拿到东西,否则"core 优先"是空话。
+
+    `models` / `sessions` / `version` 已删(对齐 pi:分别是 `--list-models`、`-r`、`--version`)。
+    """
     names = cli._core_subcommand_names()
-    assert {"doctor", "models", "sessions"} <= names, f"core 子命令名没取全: {names}"
+    assert {"doctor", "config", "list", "auth", "init"} <= names, f"core 子命令名没取全: {names}"
+    assert not ({"models", "sessions", "version"} & names), f"已删的子命令又回来了: {names}"
 
 
 # ── 发现(轻量 + 信任门控)────────────────────────────

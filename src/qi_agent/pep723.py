@@ -24,7 +24,7 @@ ENTRY_FILE = "extension.py"
 
 
 def parse_inline_metadata(text: str) -> dict[str, dict]:
-    """解析所有 `# /// <type>` 块 → `{type: TOML}`。
+    r"""解析所有 `# /// <type>` 块 → `{type: TOML}`。
 
     **逐行扫描,而不是用规范里给的那个正则**:那个正则是"一个块"的形状,而它的内容组
     (`(^#(| .*)$\s)+`)在**相邻两个块**之间是贪婪的 —— 第二块的行也都以 `#` 开头,于是

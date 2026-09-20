@@ -329,6 +329,29 @@ def _normalize_extra(extra_dirs: Iterable[Path | tuple[Path, str]] | None
     return out
 
 
+def _normalize_dist(name: str) -> str:
+    """包名归一(与 `packages.normalize_name` / 依赖检查同一规则)。"""
+    import re
+
+    return re.sub(r"[-_.]+", "-", name or "").strip().lower()
+
+
+def _dist_without_extensions(cwd: Path | None) -> set[str]:
+    """声明里写了 `extensions: []` 的**包名**(归一)—— 它们的 entry point 不加载。
+
+    这是 pi 的 packages 对象形态(`docs/settings.md` 的 packages 一节)在 qi 的落点:
+    目录扩展用列表里的否定项关,而 **pip 装进来的包没有路径可否定**,所以按包名关。
+    `discover_declared` 已经做过项目覆盖用户那层合并,所以这里就是最终结果。
+    """
+    from .packages import discover_declared
+
+    try:
+        declared, _unparsed = discover_declared(cwd)
+    except Exception:      # noqa: BLE001 读设置失败在别处会报;这里只是过滤
+        return set()
+    return {d.name for d in declared if d.channel == "pip" and not d.contributes_extensions}
+
+
 def _resolve(path: Path) -> Path:
     """比较用的绝对路径(失败就退原样 —— 不因为解析不了就把排除项当成没写)。"""
     try:
@@ -378,6 +401,8 @@ def _iter_extension_loaders(cwd: Path | None,
     # (`settings_exclude_paths` 的 docstring 早就这么写了,但扩展这边一直没接上 ——
     #  于是 `"extensions": ["-~/.qi/agent/extensions/foo"]` 是个**静默空操作**。)
     excluded = _excluded_extension_paths(cwd, project_trusted) if discovered else set()
+    # pip 包没有路径可否定 —— 它们的"关掉"是对象形态里的 `extensions: []`(pi 的做法)
+    disabled_dists = _dist_without_extensions(cwd) if discovered else set()
     # (目录, 是否允许该目录本身就是扩展, scope, 是否**显式**给出)。内建目录:项目那一档受信任门控
     roots: list[tuple[Path, bool, str, bool]] = []
     if discovered:
@@ -415,9 +440,13 @@ def _iter_extension_loaders(cwd: Path | None,
         name = ep.name
         if name in seen:
             continue
-        seen.add(name)
         # 包通道的来源靠 distribution 定位;拿不到就留空(dist_info 缺失等)
         dist = getattr(ep, "dist", None)
+        dist_name = getattr(dist, "name", None) if dist is not None else None
+        if dist_name and _normalize_dist(dist_name) in disabled_dists:
+            # 声明里写了 `extensions: []` —— 这个包不贡献扩展(它可能还在贡献别的)
+            continue
+        seen.add(name)
         path = str(getattr(dist, "_path", "") or "") if dist is not None else ""
         yield name, ep.load, {"path": path, "scope": "user", "origin": "package",
                               "dist": dist}

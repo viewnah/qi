@@ -53,6 +53,15 @@ class DeclaredPackage:
     channel: str                  # pip | local
     source: str                   # settings:user / settings:project …
     requirement: str | None = None  # pip 通道的原始 requirement(含版本约束),local 为 None
+    #: 对象形态里的 `extensions` 键(pi 的 "object form filters which resources to load",
+    #: 照 `docs/settings.md` 的 packages 一节)。`[]` = 这个包**不贡献扩展**;
+    #: 键缺失(`None`)= 不过滤(全部加载)。`qi config` 的"关掉"就是写 `[]`。
+    extensions: list[str] | None = None
+
+    @property
+    def contributes_extensions(self) -> bool:
+        """这个包该不该贡献扩展。对象形态里显式写了空数组 = 不贡献。"""
+        return self.extensions is None or bool(self.extensions)
 
 
 @dataclass(frozen=True)
@@ -81,6 +90,22 @@ class PackageReport:
         return not self.missing and not self.undeclared and not self.unparsed
 
 
+def _extension_filter(value: Any) -> list[str] | None:
+    """对象形态里的 `extensions` 键 → `list[str] | None`。
+
+    `None`(键缺失)= **不过滤**,全部加载 —— pi 的语义("object form filters which
+    resources to load",没提的种类不过滤);`[]` = 这个包不贡献扩展。
+    值写歪了(不是列表/字符串)也按“不过滤”处理 —— 不因为一个键写错就把包判死。
+    """
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value]
+    return None
+
+
 def parse_declaration(entry: Any, source: str) -> DeclaredPackage | None:
     """一条声明 → `DeclaredPackage`。**认不出就返回 None**(由调用方原样上报,不静默丢)。
 
@@ -91,6 +116,10 @@ def parse_declaration(entry: Any, source: str) -> DeclaredPackage | None:
         raw = entry.get("source") or entry.get("spec") or entry.get("name")
     else:
         raw = entry
+    # 对象形态的其它键(pi:只挑要加载的资源种类)。目前只认 `extensions` —— qi 的
+    # pip 包也只贡献这一类资源;将来包带技能/主题时在这里扩键即可。
+    options = entry if isinstance(entry, dict) else None
+    declared_extensions = options.get("extensions") if options else None
     spec = str(raw or "").strip()
     if not spec:
         return None
@@ -100,7 +129,8 @@ def parse_declaration(entry: Any, source: str) -> DeclaredPackage | None:
         target = spec[len(_LOCAL_PREFIX):].strip()
         name = Path(target).name or target
         return DeclaredPackage(spec=spec, name=normalize_name(name),
-                               channel="local", source=source)
+                               channel="local", source=source,
+                               extensions=_extension_filter(declared_extensions))
     if spec.startswith(_PIP_PREFIX):
         spec = spec[len(_PIP_PREFIX):].strip()
     # 裸路径也算目录通道:`/abs/path`、`./rel`、`~/x`
@@ -123,7 +153,8 @@ def parse_declaration(entry: Any, source: str) -> DeclaredPackage | None:
     if not match:
         return None
     return DeclaredPackage(spec=original, name=normalize_name(match.group(1)),
-                           channel="pip", source=source, requirement=spec)
+                           channel="pip", source=source, requirement=spec,
+                           extensions=_extension_filter(declared_extensions))
 
 
 def discover_declared(cwd: Path | None = None) -> tuple[list[DeclaredPackage], list[str]]:

@@ -230,12 +230,47 @@ def root_callback(
     offline: bool = typer.Option(False, "--offline",
                                  help="对齐 pi 的旗标;qi 启动期没有任何网络操作,所以它无实际作用"),
     version: bool = typer.Option(False, "--version", "-v", is_eager=True, help="显示版本并退出"),
+    # ── 模型(pi 同名)──
+    provider: str | None = typer.Option(None, "--provider", help="provider 名(本次运行覆盖 models.json 的默认)"),
+    model: str | None = typer.Option(None, "--model",
+                                     help='模型:"provider/模型",可带 ":<思考级别>" 后缀'),
+    api_key: str | None = typer.Option(None, "--api-key",
+                                       help="本次运行的密钥(优先于 auth store / env / models.json;**不落盘**)"),
+    models_cycle: str | None = typer.Option(None, "--models",
+                                            help="Ctrl+P 轮换的模型清单(逗号分隔;仅本次运行,不回写 settings)"),
+    list_models: bool = typer.Option(False, "--list-models",
+                                     help="列出可用模型后退出(搜索词写成位置参数:`qi --list-models sonnet`)"),
+    # ── 会话(pi 同名)──
+    resume: bool = typer.Option(False, "--resume", "-r", help="浏览并选择一个历史会话(需要 TTY)"),
+    exact_session_id: str | None = typer.Option(None, "--session-id",
+                                                help="用精确的项目会话 id(不存在则创建)"),
+    session_dir: str | None = typer.Option(None, "--session-dir",
+                                           help="会话存储目录(覆盖 settings.sessionDir)"),
+    # ── 系统提示词与资源开关(pi 同名)──
+    system_prompt: str | None = typer.Option(None, "--system-prompt",
+                                             help="整体替换基座(与 `.qi/SYSTEM.md` 同一语义)"),
+    no_extensions: bool = typer.Option(False, "--no-extensions", "-ne",
+                                       help="关掉扩展发现(`-e` 显式给的仍然生效)"),
+    no_context_files: bool = typer.Option(False, "--no-context-files", "-nc",
+                                          help="不注入 AGENTS.md / CLAUDE.md"),
+    # ── 对齐 pi 但**功能未实现**的旗标:接受,然后明确报出来(不假装,也不掉进扩展旗标的报错)──
+    prompt_template: list[str] = typer.Option(None, "--prompt-template", help="[未实现] prompt 模板"),
+    no_prompt_templates: bool = typer.Option(False, "--no-prompt-templates", "-np",
+                                             help="[未实现] 关掉 prompt 模板发现"),
+    theme_file: list[str] = typer.Option(None, "--theme", help="[未实现] 自定义主题文件"),
+    use_theme: str | None = typer.Option(None, "--use-theme", help="[未实现] 指定初始主题"),
+    no_themes: bool = typer.Option(False, "--no-themes", help="[未实现] 关掉主题发现"),
+    tui_mode: str | None = typer.Option(None, "--tui-mode", help="[未实现] TUI 模式(pi 有 regular|fullscreen)"),
     append_prompt: list[str] = typer.Option(None, "--append-system-prompt",
-                                            help="追加到 system prompt 末尾(可重复;对齐 pi 同名旗标)"),
+                                            help="追加到 system prompt 末尾(可重复;值是文件路径时读文件内容)"),
 ) -> None:
     if version:
         console.print(f"qi {__version__}")
         raise typer.Exit()
+    _reject_unimplemented_flags(
+        prompt_template=prompt_template, no_prompt_templates=no_prompt_templates,
+        theme_file=theme_file, use_theme=use_theme, no_themes=no_themes,
+        tui_mode=tui_mode, mode=mode)
     # `--tools`(严格白名单)与另外两个整集选择互相矛盾 —— 报出来,不替用户选一个赢。
     if tools and (no_tools or no_builtin_tools):
         err_console.print("[red]--tools 与 --no-tools/--no-builtin-tools 冲突:"
@@ -260,6 +295,11 @@ def root_callback(
     if after_dashdash and tokens[-len(after_dashdash):] == after_dashdash:
         tokens = tokens[:-len(after_dashdash)]
     messages, cli_flags, cli_errors = _classify_cli_args(tokens)
+    # `--list-models [搜索词]`:pi 的可选值 click 表达不了(实测 `--list-models` 单独出现会报
+    # "requires an argument"),所以搜索词走**位置参数** —— `qi --list-models sonnet` 与 pi 同形。
+    if list_models:
+        _cmd_list_models(" ".join(messages).strip() or None)
+        raise typer.Exit()
     # 把 core 自己的选项写到消息后面 = 解析不到:报得具体一点(否则用户会去查那个
     # 根本没写的 `--ext`)。`--tools=read` 这种带值的也按名字判。
     core_options = _core_option_names(ctx)
@@ -280,10 +320,30 @@ def root_callback(
     # 扩展旗标两个通道都接住:`--ext name=value` 与直接写的 `--name[=value]`。
     # 直接写的放后面 → 同名声时它胜(更具体的写法优先)。
     extension_flags = list(ext or []) + cli_flags
+    # `--provider` / `--model` 合成一个 `provider/模型`;拼不出来就在**这里**报,
+    # 不退化成"默默用默认模型"(那样用户以为旗标生效了)
+    try:
+        model_spec = _model_spec(provider, model)
+    except ValueError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(code=2) from exc
+    # `--models`:本次运行的 Ctrl+P 轮换清单(**不回写 settings**)
+    from .runtime import split_tool_list
+
+    scoped = split_tool_list(models_cycle) if models_cycle else None
+    # `--system-prompt` / `--append-system-prompt`:与 SYSTEM.md 同义(替换 / 追加)。
+    # 值是**可读文件**时读文件内容 —— pi 的 `--append-system-prompt` 就是这个口径
+    # (help 里写的是 "Append text or file contents")。
+    append_prompt = [_text_or_file(item) for item in (append_prompt or [])]
+    system_prompt = _text_or_file(system_prompt) if system_prompt else None
     # docs/cli.md §1 / 对齐 pi:不带 -p 恒为交互(`-p` 才是无头),也不再需要 `qi tui`;
     # 给了消息就进 TUI 并把它作为首条消息发出(pi 的 `pi "问题"` 同款)。
     # `--mode json` 是脚本路径(输出事件流,不是 TUI),仍走无头。
     interactive = not print_mode and mode == "text"
+    if resume and not interactive:
+        err_console.print("[red]`-r/--resume` 要选会话,只能在 TUI 里用"
+                          "(无头下请用 `--session <id>`)[/red]")
+        raise typer.Exit(code=2)
     if interactive:
         if not (sys.stdin.isatty() and sys.stdout.isatty()):
             # 非 TTY(管道/CI):退化为提示,而不是抛 traceback / 卡住。
@@ -296,7 +356,12 @@ def root_callback(
                     extra_extension_paths=[Path(p) for p in (extension or [])],
                     tools=tools, exclude_tools=exclude_tools,
                     no_tools=no_tools, no_builtin_tools=no_builtin_tools,
-                    append_system_prompt=append_prompt)
+                    append_system_prompt=append_prompt,
+                    resume=resume, exact_session_id=exact_session_id,
+                    base_prompt_override=system_prompt,
+                    no_extensions=no_extensions, no_context_files=no_context_files,
+                    session_dir_path=session_dir, model_override=model_spec,
+                    api_key=api_key, scoped_models=scoped)
         return
     if not prompt:
         usage = (
@@ -323,7 +388,14 @@ def root_callback(
                             extra_extension_paths=[Path(p) for p in (extension or [])],
                             tools=tools, exclude_tools=exclude_tools,
                             no_tools=no_tools, no_builtin_tools=no_builtin_tools,
-                            append_system_prompt=append_prompt)
+                            append_system_prompt=append_prompt,
+                            base_prompt_override=system_prompt,
+                            no_extensions=no_extensions,
+                            no_context_files=no_context_files,
+                            session_dir_path=session_dir,
+                            model_override=model_spec,
+                            api_key=api_key,
+                            scoped_models=scoped)
     except _LoadErr as exc:
         console.print(f"[red]装载失败:[/red] {escape(str(exc))}")
         raise typer.Exit(code=1) from exc
@@ -346,15 +418,19 @@ def root_callback(
         session = store.create(name or "ephemeral", cwd=runtime.cwd)
     elif fork_id:
         # 对齐 pi `--fork <path|id>`:把源会话的当前分支复制成一个新会话再跑
-        source = store.get(fork_id)
+        source = _open_session(store, fork_id)
         if source is None:
             console.print(f"[red]会话不存在: {fork_id}[/red]")
             raise typer.Exit(code=1)
         session = store.fork_at(source, source.current,
                                 title=name or (f"{source.title} @fork" if source.title else "fork"))
         err_console.print(f"[dim]已从 {source.id} 分叉出新会话 {session.id}[/dim]")
+    elif exact_session_id:
+        # `--session-id <id>`:精确 id,**不存在则创建**(pi 同名旗标)
+        session = store.get(exact_session_id) or store.create(
+            name or "", cwd=runtime.cwd, session_id=exact_session_id)
     elif session_id:
-        session = store.get(session_id)
+        session = _open_session(store, session_id)
         if session is None:
             console.print(f"[red]会话不存在: {session_id}[/red]")
             raise typer.Exit(code=1)
@@ -639,6 +715,14 @@ app.add_typer(models_app, name="models")
 @models_app.command("list")
 def models_list() -> None:
     """列出 models.json 中的 provider/模型与默认模型。"""
+    _cmd_list_models()
+
+
+def _cmd_list_models(search: str | None = None) -> None:
+    """`--list-models [搜索词]` 与 `qi models list` 共用:列 models.json 里的模型与默认模型。
+
+    搜索词按**子串**过滤 `provider/模型`(pi 是模糊匹配;qi 先做最直白的那种)。
+    """
     try:
         cfg, _files = load_config()
     except ConfigError as exc:
@@ -655,10 +739,14 @@ def models_list() -> None:
         rk = resolve_key(name_, prov.apiKey, store)
         for m in prov.models:
             label = f"{name_}/{m.id}"
+            if search and search.strip().lower() not in label.lower():
+                continue
             shown.add(label)
             table.add_row("*" if label == default_label else "", name_, m.id,
                           m.api or prov.api or DEFAULT_API, str(m.contextWindow), rk.describe())
-    if default_label and default_label not in shown and provider and model:
+    if (default_label and default_label not in shown and provider and model
+            # 搜索词对**每一行**都生效 —— 默认模型那行也不例外(它是循环外补的)
+            and (not search or search.strip().lower() in default_label.lower())):
         spec = resolve_model(cfg, provider, model)
         rk = resolve_key(spec.provider, spec.api_key_ref, store)
         table.add_row("*", spec.provider, spec.model, spec.api, str(spec.context_window), rk.describe())
@@ -1306,7 +1394,13 @@ def _launch_tui(initial_prompt: str | None = None, *, session_id: str | None = N
                 extra_extension_paths: list[Path] | None = None,
                 tools: str | None = None, exclude_tools: str | None = None,
                 no_tools: bool = False, no_builtin_tools: bool = False,
-                append_system_prompt: list[str] | None = None) -> None:
+                append_system_prompt: list[str] | None = None,
+                resume: bool = False, exact_session_id: str | None = None,
+                base_prompt_override: str | None = None,
+                no_extensions: bool = False, no_context_files: bool = False,
+                session_dir_path: str | None = None,
+                model_override: str | None = None, api_key: str | None = None,
+                scoped_models: list[str] | None = None) -> None:
     """启动 TUI(顶层 `qi` 的默认去向)。
 
     刻意不做成子命令:`pi` 也没有 `pi tui` —— 裸 `qi` 就是交互界面。
@@ -1324,7 +1418,12 @@ def _launch_tui(initial_prompt: str | None = None, *, session_id: str | None = N
             extra_extension_paths=extra_extension_paths,
             tools=tools, exclude_tools=exclude_tools,
             no_tools=no_tools, no_builtin_tools=no_builtin_tools,
-            append_system_prompt=append_system_prompt)
+            append_system_prompt=append_system_prompt,
+            resume=resume, exact_session_id=exact_session_id,
+            base_prompt_override=base_prompt_override,
+            no_extensions=no_extensions, no_context_files=no_context_files,
+            session_dir_path=session_dir_path, model_override=model_override,
+            api_key=api_key, scoped_models=scoped_models)
 
 
 
@@ -1370,6 +1469,89 @@ def _discover_cli_commands(cwd: Path | None = None) -> CliCommandRegistry:
 #: 与 `docs/extensions.md` §8.1 那张表同源:core 不内置它们,所以这份名单必须写在 core 里 ——
 #: 否则"没装那个扩展的人"永远只能看到 `No such command`,而不知道要装什么。
 _OFFICIAL_EXTENSION_COMMANDS = {"web": "qi-web"}
+
+
+def _reject_unimplemented_flags(*, prompt_template, no_prompt_templates, theme_file,
+                                use_theme, no_themes, tui_mode, mode) -> None:
+    """接受 pi 有、qi **还没有对应功能**的旗标,但明确报出来(退出码 2)。
+
+    为什么接受:pi 的命令行迁过来时,"未知选项"看不出问题在哪 —— 用户会以为是拼写错。
+    为什么报错而不是静默忽略:这几条都**改行为**,忽略了就等于"我说的没生效"而没任何提示。
+    每一行写清缺的是**什么功能**、以及现在能用什么替代。
+    """
+    missing: list[str] = []
+    if prompt_template or no_prompt_templates:
+        missing.append("prompt 模板 -- qi 没有模板发现 / 注入这套机制; "
+                       "要固定前缀就写进 `.qi/SYSTEM.md` 或做成技能")
+    if theme_file or use_theme or no_themes:
+        missing.append("自定义主题文件 -- qi 只有内置 dark / light / auto; "
+                       "选主题用 `QI_THEME=light` 或 `qi config --set theme=`")
+    if tui_mode:
+        missing.append("`--tui-mode` -- qi 的 TUI 是 inline 渲染(不占全屏、不进备用屏), "
+                       "没有 fullscreen 这一态")
+    if str(mode or "").strip().lower() == "rpc":
+        missing.append("`--mode rpc` -- qi 的输出模式只有 text | json; "
+                       "stdio JSON-RPC 还没实现(见 docs/cli.md §9)")
+    if not missing:
+        return
+    for item in missing:
+        err_console.print(f"[red]还没实现:{escape(item)}[/red]")
+    err_console.print("[dim]qi 接受这条旗标是为了让 pi 的命令行能迁过来,但不会假装它生效。[/dim]")
+    raise typer.Exit(code=2)
+
+
+def _model_spec(provider: str | None, model: str | None) -> str | None:
+    """`--provider` / `--model` 合成一个 `provider/模型`(pi 允许两者分开写)。
+
+    只给 `--provider` 时用它 models.json 里的**第一个**模型(pi 用该 provider 的默认模型)。
+    拼不出来的情况**报错**,不猜。
+    """
+    if not provider and not model:
+        return None
+    if model and "/" in model:
+        return model
+    if not provider:
+        raise ValueError('只给 `--model` 时要写成 "provider/模型"')
+    if model:
+        return f"{provider}/{model}"
+    from .config import load_config
+
+    cfg, _files = load_config()
+    entry = cfg.providers.get(provider)
+    if entry is None or not entry.models:
+        raise ValueError(f"models.json 里没有 provider {provider!r}(或它没声明模型)")
+    return f"{provider}/{entry.models[0].id}"
+
+
+def _text_or_file(value: str) -> str:
+    """旗标值:是**可读文件**就取文件内容,否则就当文本(pi 的 "text or file contents")。
+
+    为什么这样判:pi 就这么做,而这两种输入在命令行上没法区分 —— 用户写
+    `--append-system-prompt ./house-rules.md` 时期待的是文件内容。读不到就当字面文本。
+    """
+    if not value:
+        return value
+    maybe = Path(value).expanduser()
+    try:
+        if maybe.is_file():
+            return maybe.read_text(encoding="utf-8")
+    except OSError:
+        return value
+    return value
+
+
+def _open_session(store: Any, ref: str) -> Any:
+    """`--session <path|id>` / `--fork <path|id>`:先当**文件路径**,再当 id / 前缀。
+
+    以前只走 `store.get()`,而它按 header id / 文件名 stem 前缀匹配 —— 传路径永远不命中,
+    与帮助文字里写的 `path|id` 不符。
+    """
+    maybe = Path(ref).expanduser()
+    if maybe.is_file():
+        opened = store.open_file(maybe)
+        if opened is not None:
+            return opened
+    return store.get(ref)
 
 
 def _hint_missing_extension_command(argv: list[str]) -> None:
@@ -1463,7 +1645,9 @@ def _extension_report(cwd: Path | None = None) -> tuple[list[str], list[str]]:
 #: 多字符短选项因此必须在 typer 看到 argv **之前**展开。pi 的 CLI 是手写 argv 循环
 #: (`cli/args.ts`),没有这个问题;qi 的这套展开就是那个循环的最小替代(见 E19)。
 _SHORT_FLAG_ALIASES = {"-nt": "--no-tools", "-nbt": "--no-builtin-tools",
-                       "-t": "--tools", "-xt": "--exclude-tools"}
+                       "-t": "--tools", "-xt": "--exclude-tools",
+                       "-ne": "--no-extensions", "-nc": "--no-context-files",
+                       "-np": "--no-prompt-templates"}
 #: 会**吃掉下一个 token** 的选项:预处理时不能把它们的值当旗标改写
 #:(`-n -nt` 里的 `-nt` 是会话名,不是旗标)。
 _VALUE_FLAGS = {"--session", "--fork", "--name", "-n", "--export", "--mode", "--skill",

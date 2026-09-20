@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from . import paths
-from .auth import AuthStore
+from .auth import AuthOverride, AuthStore
 from .compaction import (
     DEFAULT_KEEP_RECENT_TOKENS,
     DEFAULT_RESERVE_TOKENS,
@@ -95,6 +95,23 @@ def split_tool_list(text: str) -> list[str]:
     return [part for part in text.replace(",", " ").replace("、", " ").split() if part]
 
 
+def parse_model_flag(spec: str) -> tuple[str, str | None]:
+    """`--model` 的写法对齐 pi:`provider/模型`,可以带 `:<思考级别>` 后缀。
+
+    → `("provider/模型", 思考级别或 None)`。**只有后缀是已知的思考级别才算** ——
+    否则模型 id 自带的冒号会被误切(如 `openrouter/x:free` 里的 `:free` 不是级别)。
+    """
+    from .llm import THINKING_LEVELS
+
+    text = spec.strip()
+    head, sep, tail = text.rpartition(":")
+    if sep and "/" in head and tail.strip().lower() in THINKING_LEVELS:
+        return head, tail.strip().lower()
+    if "/" not in text:
+        raise ValueError(f'`--model` 要写成 "provider/模型"(可带 ":<思考级别>"):收到 {spec!r}')
+    return text, None
+
+
 def tool_source(catalog: Any, name: str) -> str:
     """工具名 → 来源(`builtin` / 扩展名 …)。`source_info` 只由 `register_tool` 盖章。"""
     tool = catalog.get(name)
@@ -122,7 +139,14 @@ class QiRuntime:
                  exclude_tools: str | None = None,
                  no_tools: bool = False,
                  no_builtin_tools: bool = False,
-                 append_system_prompt: Iterable[str] | None = None):
+                 append_system_prompt: Iterable[str] | None = None,
+                 base_prompt_override: str | None = None,
+                 no_extensions: bool = False,
+                 no_context_files: bool = False,
+                 session_dir_path: Path | str | None = None,
+                 model_override: str | None = None,
+                 api_key: str | None = None,
+                 scoped_models: Iterable[str] | None = None):
         self.cwd = Path(cwd) if cwd else Path.cwd()
         # 旧版扁平布局 → ~/.qi/agent/(幂等;显式设了 QI_AGENT_HOME 时不动)
         paths.ensure_layout()
@@ -139,12 +163,25 @@ class QiRuntime:
         # 基座:项目 .qi/SYSTEM.md > ~/.qi/agent/SYSTEM.md;都没有则空串
         # (空串 = 用 system_prompt.py 里的代码内默认基座,见 docs/system-prompt.md)
         self.base_prompt, self.base_prompt_source = resolve_base_prompt(self.cwd)
+        # `--system-prompt`:命令行直接给基座 —— 与 `.qi/SYSTEM.md` **同一语义**(整体替换)
+        if base_prompt_override and base_prompt_override.strip():
+            self.base_prompt, self.base_prompt_source = base_prompt_override.strip(), "cli"
+        # `--no-context-files/-nc`:关掉 AGENTS.md / CLAUDE.md 的注入
+        self._no_context_files = no_context_files
+        # `--models <patterns>`:本次运行 Ctrl+P 的轮换清单。**不回写 settings** ——
+        # 命令行给的东西不该静默落盘(要持久化走 TUI 的 `/scoped-models`)。
+        self.scoped_models: list[str] | None = (
+            [str(item).strip() for item in scoped_models if str(item).strip()]
+            if scoped_models is not None else None)
         # `--append-system-prompt <text>`(可重复):追加到**每回合** system prompt 的末尾。
         # 多段用空行连接;全空则 None(不占位)。
         self.append_system_prompt = "\n\n".join(
             part.strip() for part in (append_system_prompt or ())
             if part and part.strip()) or None
-        if session_store is not None:
+        if session_dir_path is not None:
+            # `--session-dir`:命令行优先于 settings.sessionDir(pi 同名旗标)
+            self.sessions = SessionStore(root=Path(session_dir_path).expanduser())
+        elif session_store is not None:
             self.sessions = session_store
         else:
             # sessionDir(settings.json)覆盖默认会话目录;对齐 pi 的优先级链
@@ -199,9 +236,14 @@ class QiRuntime:
         #: 这个是致命的(用户打错了命令行),CLI 据此退出码 2;notes 只是告知。
         self.flag_errors: list[str] = []
         # 附加扩展目录先算好:嵌在 kwargs 里会让这次调用看不出“传了哪几样”
-        extra_extensions = extension_dirs(
-            self.cwd, trusted=self.project_trusted,
-            extra=list(extra_extension_paths or ()))
+        if no_extensions:
+            # `--no-extensions`(pi):关掉**发现**(entry point / 内建目录 / settings),
+            # 但 `-e` 显式给的那些仍然加载
+            extra_extensions: list[Any] = list(extra_extension_paths or ())
+        else:
+            extra_extensions = extension_dirs(
+                self.cwd, trusted=self.project_trusted,
+                extra=list(extra_extension_paths or ()))
         self.extensions = discover_extensions(
             self.catalog, self.capabilities, self.cwd,
             cli_commands=CliCommandRegistry(),
@@ -211,7 +253,8 @@ class QiRuntime:
             flags=self.flags,
             on_warning=self.notes.append,
             extra_dirs=extra_extensions,
-            project_trusted=self.project_trusted)
+            project_trusted=self.project_trusted,
+            no_discovery=no_extensions)
         # `--ext` 的值要在**扩展声明之后**才能解析(名字与类型都在那边),所以放在这里
         for pair in extension_flags or ():
             problem = self.flags.provide(str(pair))
@@ -229,12 +272,21 @@ class QiRuntime:
             enabled=skills_enabled and self.settings.skillsEnabled,
         )
 
-        auth = AuthStore()
+        auth: AuthStore = AuthOverride(api_key) if api_key else AuthStore()
         #: 换模型时要重建客户端,所以凭证存储要留在身上(`set_model` 用)
         self._auth = auth
-        default: ResolvedModel = resolve_default_model(self.cfg, self.cwd)
-        # 思考级别:显式传参(CLI --thinking)> settings.defaultThinkingLevel > off
-        level = thinking_level if thinking_level is not None else self.settings.defaultThinkingLevel
+        if model_override:
+            # `--model`:`provider/模型[:思考级别]`(对齐 pi)
+            ref, _flag_thinking = parse_model_flag(model_override)
+            provider, _, model_name = ref.partition("/")
+            default: ResolvedModel = resolve_model(self.cfg, provider.strip(), model_name.strip())
+        else:
+            _flag_thinking = None
+            default = resolve_default_model(self.cfg, self.cwd)
+        # 思考级别:显式传参(CLI --thinking)> `--model` 的后缀 > settings.defaultThinkingLevel > off
+        level = (thinking_level if thinking_level is not None
+                 else _flag_thinking if _flag_thinking is not None
+                 else self.settings.defaultThinkingLevel)
         self.thinking_level = normalize_thinking_level(level)
         self.llm_exec = llm or LiteLLMClient(default, auth, thinking_level=self.thinking_level,
                                             retry=self.settings.retry)
@@ -767,7 +819,9 @@ class QiRuntime:
                                     cwd=self.workdir,
                                     tools=self.catalog.resolve(tools),
                                     skills=self.top_skills,
-                                    append=self.append_system_prompt)
+                                    append=self.append_system_prompt,
+                                    # `--no-context-files` → 显式空列表(不是 None:None 会去读)
+                                    context_files=[] if self._no_context_files else None)
         if not self.bus.has("before_agent_start"):
             return built, None
         result = await self.bus.emit(

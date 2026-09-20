@@ -162,6 +162,21 @@ class AuthStore:
         )
 
 
+class AuthOverride(AuthStore):
+    """CLI `--api-key` 的运行期覆盖:本次运行用的密钥优先于 auth store / env / models.json。
+
+    只覆盖 `get()`,不写盘 —— 命令行给的凭证不该静默落进 `auth.json`
+    (要存就显式 `qi auth login`)。`providers()` 也不报它:它不是一个"已登录的 provider"。
+    """
+
+    def __init__(self, key: str, base: AuthStore | None = None):
+        super().__init__(base.path if base is not None else None)
+        self._key = key
+
+    def get(self, provider: str) -> str | None:      # noqa: ARG002 对所有 provider 生效
+        return self._key
+
+
 def resolve_key(provider: str, api_key_ref: str | None = None,
                 store: AuthStore | None = None) -> ResolvedKey:
     """按 pi 顺序解析某 provider 的密钥。

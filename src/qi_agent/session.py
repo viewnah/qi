@@ -227,13 +227,16 @@ class SessionStore:
                 continue
         return entries
 
-    def create(self, title: str = "", cwd: Path | str | None = None) -> Session:
+    def create(self, title: str = "", cwd: Path | str | None = None,
+               session_id: str | None = None) -> Session:
         """新建会话文件(v2 树格式)。
 
         `cwd` 写进 header:按项目分组与恢复时选对工作目录都靠它。
         省略时为 None,后续由 `ensure_cwd()` 回填。
+
+        `session_id` 给了就用它(CLI 的 `--session-id <id>`:精确 id,不存在则建),否则随机。
         """
-        sid = _new_id()
+        sid = session_id or _new_id()
         path = self.root / f"{time.strftime('%Y%m%dT%H%M%S')}_{sid}.jsonl"
         now = _now()
         header: dict = {"type": "session", "version": 2, "id": sid,
@@ -312,6 +315,20 @@ class SessionStore:
             if hid.startswith(session_id) or p.stem.startswith(session_id):
                 return self._from_entries(p, entries)
         return None
+
+    def open_file(self, path: Path | str) -> Session | None:
+        """按**文件路径**打开一个会话(pi 的 `--session <path|id>` 里那个 path 形态)。
+
+        `get()` 只按 header id / 文件名 stem 前缀匹配 —— 一个绝对路径永远不命中,
+        而帮助文字里写的是 `path|id`。读不到 / 空文件返回 None(调用方自己报)。
+        """
+        p = Path(path).expanduser()
+        if not p.is_file():
+            return None
+        entries = self._read(p)
+        if not entries:
+            return None
+        return self._from_entries(p, entries)
 
     def latest(self) -> Session | None:
         files = self._files()

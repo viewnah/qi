@@ -1657,7 +1657,13 @@ class QiTui(App):
                  extra_extension_paths: list[Path] | None = None,
                  tools: str | None = None, exclude_tools: str | None = None,
                  no_tools: bool = False, no_builtin_tools: bool = False,
-                 append_system_prompt: list[str] | None = None):
+                 append_system_prompt: list[str] | None = None,
+                 resume: bool = False, exact_session_id: str | None = None,
+                 base_prompt_override: str | None = None,
+                 no_extensions: bool = False, no_context_files: bool = False,
+                 session_dir_path: str | None = None,
+                 model_override: str | None = None, api_key: str | None = None,
+                 scoped_models: list[str] | None = None):
         super().__init__()
         self._rt = runtime
         # 项目信任的三态(None = 看 settings.defaultProjectTrust);`qi -a` / `-na` 透传到这里
@@ -1670,6 +1676,22 @@ class QiTui(App):
         # `qi --append-system-prompt`:与 `-e` / 工具旗标同理 —— 两个构造点都要带上,
         # 否则 `/reload` 之后追加的那段会静谧消失。
         self._append_system_prompt = list(append_system_prompt or [])
+        # `-r/--resume` 与 `--session-id`:会话选择参数(与 headless 路径同义)
+        self._resume = resume
+        self._exact_session_id = exact_session_id
+        # 只在**构造 QiRuntime** 时用到的参数 —— 打成一包,两个构造点都带下去。
+        # 为什么必须两个点都带:否则 `/reload` 之后这些"本次运行的覆盖"会静静失效
+        # (工具集、基座、模型、密钥、会话目录全变回默认,而用户以为还是他给的那套)。
+        self._runtime_extra: dict[str, Any] = {
+            "tools": tools, "exclude_tools": exclude_tools,
+            "no_tools": no_tools, "no_builtin_tools": no_builtin_tools,
+            "append_system_prompt": self._append_system_prompt,
+            "base_prompt_override": base_prompt_override,
+            "no_extensions": no_extensions, "no_context_files": no_context_files,
+            "session_dir_path": session_dir_path,
+            "model_override": model_override, "api_key": api_key,
+            "scoped_models": scoped_models,
+        }
         # `qi -t/-xt/-nt/-nbt`:工具收窄的四个旗标。与 `-e` 同理 —— 两个构造点都要带上,
         # 否则 `/reload` 之后工具集又变回完整的(而用户以为收窄还生效)。
         self._tools = tools
@@ -1749,13 +1771,14 @@ class QiTui(App):
                                      ui_frontend=_TuiUi(self),
                                      extension_flags=self._extension_flags,
                                      extra_extension_paths=self._extra_extension_paths,
-                                     tools=self._tools, exclude_tools=self._exclude_tools,
-                                     no_tools=self._no_tools,
-                                     no_builtin_tools=self._no_builtin_tools,
-                                     append_system_prompt=self._append_system_prompt)
+                                     **self._runtime_extra)
             self._bind_extension_shortcuts()
             self._renderer = TuiRenderer(self._palette, self._rt.cwd)
             self._select_session()
+            if self._resume:
+                # `-r/--resume`:起来就开选择器(与 `/resume` 同一条路)。放到 on_mount
+                # 之后一拍再弹 —— 挂载中途 push_screen 会让内联布局还没量完尺寸。
+                self.call_after_refresh(self._show_session_selector)
             try:
                 self._model = resolve_default_model(self._rt.cfg, self._rt.cwd)
             except ConfigError:
@@ -2509,10 +2532,7 @@ class QiTui(App):
                                 ui_frontend=_TuiUi(self),
                                 extension_flags=self._extension_flags,
                                 extra_extension_paths=self._extra_extension_paths,
-                                tools=self._tools, exclude_tools=self._exclude_tools,
-                                no_tools=self._no_tools,
-                                no_builtin_tools=self._no_builtin_tools,
-                                append_system_prompt=self._append_system_prompt)
+                                **self._runtime_extra)
         except (LoadError, ConfigError) as exc:
             self._note(f"重载失败: {exc}", "error")
             return
@@ -2742,7 +2762,14 @@ class QiTui(App):
         self._cycle_model(-1)
 
     def _enabled_models(self) -> list[str]:
-        """`settings.enabledModels`(空 = 不限,即轮换 models.json 里全部)。"""
+        """Ctrl+P 轮换的清单:`settings.enabledModels`(空 = 不限,即全部)。
+
+        CLI 的 `--models` 给过就用它 —— 那是**本次运行**的清单,不该被 settings 盖掉
+        (也不写回 settings:命令行给的东西不静默落盘)。
+        """
+        override = getattr(self._rt, "scoped_models", None)
+        if override is not None:
+            return [str(value) for value in override]
         raw = getattr(getattr(self._rt, "settings", None), "enabledModels", None) or []
         return [str(value) for value in raw]
 
@@ -3067,7 +3094,7 @@ class QiTui(App):
             self._session = store.create(name or "ephemeral", cwd=cwd)
             return
         if self._want_fork_id:
-            source = store.get(self._want_fork_id)
+            source = _open_session_ref(store, self._want_fork_id)
             if source is None:
                 self._session = store.create(name or "tui", cwd=cwd)
                 self._startup_note = f"会话不存在: {self._want_fork_id}(已新建)"
@@ -3077,7 +3104,7 @@ class QiTui(App):
             self._startup_note = f"已从 {source.id} 分叉出新会话 {self._session.id}"
             return
         if self._want_session_id:
-            found = store.get(self._want_session_id)
+            found = _open_session_ref(store, self._want_session_id)
             if found is None:
                 self._session = store.create(name or "tui", cwd=cwd)
                 self._startup_note = f"会话不存在: {self._want_session_id}(已新建)"
@@ -3086,6 +3113,11 @@ class QiTui(App):
                 if name:
                     self._session.title = name
             return
+        if self._exact_session_id:
+            # `--session-id <id>`:精确 id,**不存在则建**(pi 同名旗标)
+            found = store.get(self._exact_session_id)
+            self._session = found or store.create(name or "tui", cwd=cwd,
+                                                 session_id=self._exact_session_id)
         if self._want_cont:
             self._session = store.latest() or store.create(name or "tui", cwd=cwd)
             return
@@ -3526,6 +3558,20 @@ def _harden_inline_input() -> None:
     driver_module._qi_lenient_decoder = True  # type: ignore[attr-defined]
 
 
+def _open_session_ref(store: Any, ref: str) -> Any:
+    """`--session` / `--fork` 的 `path|id` 形态:先当**文件路径**,再当 id / 前缀。
+
+    与 CLI 侧 `_open_session` 同义 —— `get()` 只按 header id / 文件名 stem 前缀匹配,
+    路径永远不命中,而帮助文字里写的是 `path|id`。
+    """
+    maybe = Path(ref).expanduser()
+    if maybe.is_file():
+        opened = store.open_file(maybe)
+        if opened is not None:
+            return opened
+    return store.get(ref)
+
+
 def run_tui(initial_prompt: str | None = None, *, session_id: str | None = None,
             cont: bool = False, fork_id: str | None = None,
             no_session: bool = False, name: str | None = None,
@@ -3534,7 +3580,13 @@ def run_tui(initial_prompt: str | None = None, *, session_id: str | None = None,
             extra_extension_paths: list[Path] | None = None,
             tools: str | None = None, exclude_tools: str | None = None,
             no_tools: bool = False, no_builtin_tools: bool = False,
-            append_system_prompt: list[str] | None = None) -> None:
+            append_system_prompt: list[str] | None = None,
+            resume: bool = False, exact_session_id: str | None = None,
+            base_prompt_override: str | None = None,
+            no_extensions: bool = False, no_context_files: bool = False,
+            session_dir_path: str | None = None,
+            model_override: str | None = None, api_key: str | None = None,
+            scoped_models: list[str] | None = None) -> None:
     """启动 TUI;`initial_prompt` 非空时进界面即提交(来自 `qi "问题"`)。
 
     会话选择参数与 headless 路径同义:`qi -c` / `--session` / `--fork` / `-n` / `--no-session`。
@@ -3559,5 +3611,10 @@ def run_tui(initial_prompt: str | None = None, *, session_id: str | None = None,
           extra_extension_paths=extra_extension_paths,
           tools=tools, exclude_tools=exclude_tools,
           no_tools=no_tools, no_builtin_tools=no_builtin_tools,
-          append_system_prompt=append_system_prompt).run(
+          append_system_prompt=append_system_prompt,
+          resume=resume, exact_session_id=exact_session_id,
+          base_prompt_override=base_prompt_override,
+          no_extensions=no_extensions, no_context_files=no_context_files,
+          session_dir_path=session_dir_path, model_override=model_override,
+          api_key=api_key, scoped_models=scoped_models).run(
               inline=True, inline_no_clear=True, mouse=False)

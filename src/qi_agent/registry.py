@@ -243,7 +243,8 @@ def discover_extensions(catalog: ToolCatalog, capabilities: CapabilityRegistry,
                         cli_commands: CliCommandRegistry | None = None,
                         on_warning: Callable[[str], None] | None = None,
                         extra_dirs: Iterable[Path | tuple[Path, str]] | None = None,
-                        project_trusted: bool = True) -> list[str]:
+                        project_trusted: bool = True,
+                        no_discovery: bool = False) -> list[str]:
     """发现并装载扩展:目录通道 + entry points(`qi.extensions`)。返回扩展名列表。
 
     `bus` **必填**:扩展能力的一半是订阅事件,没总线的装载等于装了个哑巴
@@ -272,9 +273,14 @@ def discover_extensions(catalog: ToolCatalog, capabilities: CapabilityRegistry,
     `project_trusted=False` 时**不扫项目目录** —— 扩展是仓库控制的任意代码,
     未信任就不能执行(docs/extensions.md §5.3)。`extra_dirs` 由调用方负责:
     从**项目级** settings 解析出来的路径要自己在未信任时不传。
+
+    `no_discovery=True`(CLI 的 `--no-extensions`)关掉**发现**:entry point、内建目录、
+    `settings.extensions[]` 都不看,只加载 `extra_dirs` 里显式给的 —— 对齐 pi 的
+    “`--no-extensions` 关发现,但 `-e` 给的仍然生效”。
     """
     loaded: list[str] = []
-    for name, load, origin in _iter_extension_loaders(cwd, extra_dirs, project_trusted):
+    for name, load, origin in _iter_extension_loaders(cwd, extra_dirs, project_trusted,
+                                                     discovered=not no_discovery):
         try:
             api = ExtensionApi(catalog=catalog, bus=bus, _name=name,
                                _path=origin["path"], _scope=origin["scope"],
@@ -325,11 +331,14 @@ def _normalize_extra(extra_dirs: Iterable[Path | tuple[Path, str]] | None
 
 def _iter_extension_loaders(cwd: Path | None,
                             extra_dirs: Iterable[Path | tuple[Path, str]] | None = None,
-                            project_trusted: bool = True):
+                            project_trusted: bool = True, *,
+                            discovered: bool = True):
     """`(name, loader, origin)` 生成器:项目目录 + 全局目录 + 附加目录 + entry point。
 
     `origin` = `{path, scope, origin}`,直接进工具的 `source_info` —— 所以
     “这个工具是谁装的、从哪来的”在注册那一刻就固定了,不靠事后回查。
+
+    `discovered=False` 只走 `extra_dirs`(见 `discover_extensions` 的 `no_discovery`)。
     """
     import importlib.metadata as metadata
 
@@ -337,9 +346,10 @@ def _iter_extension_loaders(cwd: Path | None,
     # (目录, 是否允许该目录本身就是扩展, scope)。内建目录:项目那一档受信任门控 ——
     # **未信任就不进循环**(而不是扫了再丢)
     roots: list[tuple[Path, bool, str]] = []
-    if project_trusted:
-        roots.append((paths.project_home(cwd) / paths.EXTENSIONS_DIR_NAME, False, "project"))
-    roots.append((paths.global_home() / paths.EXTENSIONS_DIR_NAME, False, "user"))
+    if discovered:
+        if project_trusted:
+            roots.append((paths.project_home(cwd) / paths.EXTENSIONS_DIR_NAME, False, "project"))
+        roots.append((paths.global_home() / paths.EXTENSIONS_DIR_NAME, False, "user"))
     # 附加路径两种都行(见下):可以是父目录,也可以直接是一个扩展目录
     roots += [(path, True, scope) for path, scope in _normalize_extra(extra_dirs)]
     for root, allow_self, scope in roots:
@@ -363,7 +373,7 @@ def _iter_extension_loaders(cwd: Path | None,
             seen.add(name)
             yield name, _make_file_loader(name, entry), {
                 "path": str(entry), "scope": scope, "origin": "top-level"}    # entry point 通道(pip 包)
-    for ep in metadata.entry_points(group=EXTENSION_ENTRY_POINT_GROUP):
+    for ep in (metadata.entry_points(group=EXTENSION_ENTRY_POINT_GROUP) if discovered else ()):
         name = ep.name
         if name in seen:
             continue

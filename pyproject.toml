@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "qi-agent"
 version = "0.1.0"
-description = "多 agent 编码框架:专职角色 agent + auto 分派(Dispatcher)"
+description = "编码 agent 框架:单 agent core + 扩展(MCP / 多 agent / web)"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
@@ -28,6 +28,11 @@ qi = "qi_agent.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/qi_agent"]
+
+[tool.hatch.build.targets.wheel.force-include]
+# 手册跟包一起走:提示词里要报出**实际**路径(`paths.docs_dir()`),模型才能自己读。
+# 只打 `docs/`;`design/` 是写给改动者的,不进 wheel、不注入提示词。
+"docs" = "qi_agent/docs"
 
 [tool.pytest.ini_options]
 markers = [

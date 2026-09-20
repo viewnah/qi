@@ -9,7 +9,8 @@
   · 编辑器 = 上下 `─` 动态边框;工作中上边框内嵌 `⠋ Working` 指示器(80ms 换帧)
   · footer = cwd(+git 分支+会话名) / token 统计 + 模型 / 状态行
 
-qi 特有的 auto 分派保留,但按 pi 的行样式渲染(`● → agent (source, 0.90)`)。
+v1 的分派行保留**只为回放旧会话**(v3 的 core 不再发 `dispatch`),按 pi 的行样式渲染
+(`● → agent (source, 0.90)`)。
 交互命令(/help /new /resume /agents /mode /agent /tools)沿用 qi 语义。
 """
 
@@ -490,7 +491,7 @@ class TuiRenderer:
 
     # -- 其它行 ---------------------------------------------------------
     def dispatch_line(self, agent: str | None, data: dict) -> Text:
-        """qi 的 auto 分派:pi 没有这个概念,用它的行风格呈现(无底色)。"""
+        """v1 的分派行(只在回放旧会话时出现):pi 没有这个概念,用它的行风格呈现。"""
         p = self.p
         shown = str(data.get("display_name") or agent or "?")
         source = data.get("source") or "?"
@@ -518,7 +519,8 @@ class TuiRenderer:
                 text.append(" · ", style=muted)
             text.append(hint, style=Style(color=p.hex("text")))
         text.append("\n")
-        text.append("qi 是多 agent 编码框架:专职角色 + auto 分派;/help 看全部命令。", style=dim)
+        text.append("qi 是编码 agent 框架(单 agent core;MCP / 多 agent / web 走扩展);"
+                    "/help 看全部命令。", style=dim)
         text.append("\n\n")
         if agents:
             text.append("[Agents]\n", style=dim)
@@ -1571,7 +1573,7 @@ class _TuiUi:
 
 class QiTui(App):
     TITLE = "qi"
-    SUB_TITLE = "多 agent · auto 分派"
+    SUB_TITLE = "单 agent · 扩展"
 
     CSS = """
     /* pi 没有滚动条/边框 chrome:inline 区域尽量只剩内容本身 */
@@ -1651,13 +1653,29 @@ class QiTui(App):
                  cont: bool = False, fork_id: str | None = None,
                  no_session: bool = False, name: str | None = None,
                  approve_project: bool | None = None,
-                 extension_flags: list[str] | None = None):
+                 extension_flags: list[str] | None = None,
+                 extra_extension_paths: list[Path] | None = None,
+                 tools: str | None = None, exclude_tools: str | None = None,
+                 no_tools: bool = False, no_builtin_tools: bool = False,
+                 append_system_prompt: list[str] | None = None):
         super().__init__()
         self._rt = runtime
         # 项目信任的三态(None = 看 settings.defaultProjectTrust);`qi -a` / `-na` 透传到这里
         self._approve_project = approve_project
         # `qi --ext name=value` 原样带下去 —— 解析要等扩展声明完(在 QiRuntime 里)
         self._extension_flags = list(extension_flags or [])
+        # `qi -e <dir>`:一次性试用目录(scope=temporary)。两个构造点都要带上,
+        # 否则 `/reload` 之后试用的扩展会静静消失。
+        self._extra_extension_paths = list(extra_extension_paths or [])
+        # `qi --append-system-prompt`:与 `-e` / 工具旗标同理 —— 两个构造点都要带上,
+        # 否则 `/reload` 之后追加的那段会静谧消失。
+        self._append_system_prompt = list(append_system_prompt or [])
+        # `qi -t/-xt/-nt/-nbt`:工具收窄的四个旗标。与 `-e` 同理 —— 两个构造点都要带上,
+        # 否则 `/reload` 之后工具集又变回完整的(而用户以为收窄还生效)。
+        self._tools = tools
+        self._exclude_tools = exclude_tools
+        self._no_tools = no_tools
+        self._no_builtin_tools = no_builtin_tools
         self._initial_prompt = (initial_prompt or "").strip() or None
         # 会话选择(对齐 CLI/pi:`qi -c` / `--session` / `--fork` / `-n` / `--no-session`)
         self._want_session_id = session_id
@@ -1729,7 +1747,12 @@ class QiTui(App):
                 # `ui_frontend` 在这里装上:`ctx.ui.confirm/select/input` 才真会问人
                 self._rt = QiRuntime(has_ui=True, approve_project=self._approve_project,
                                      ui_frontend=_TuiUi(self),
-                                     extension_flags=self._extension_flags)
+                                     extension_flags=self._extension_flags,
+                                     extra_extension_paths=self._extra_extension_paths,
+                                     tools=self._tools, exclude_tools=self._exclude_tools,
+                                     no_tools=self._no_tools,
+                                     no_builtin_tools=self._no_builtin_tools,
+                                     append_system_prompt=self._append_system_prompt)
             self._bind_extension_shortcuts()
             self._renderer = TuiRenderer(self._palette, self._rt.cwd)
             self._select_session()
@@ -2484,7 +2507,12 @@ class QiTui(App):
         try:
             runtime = QiRuntime(has_ui=True, approve_project=self._approve_project,
                                 ui_frontend=_TuiUi(self),
-                                extension_flags=self._extension_flags)
+                                extension_flags=self._extension_flags,
+                                extra_extension_paths=self._extra_extension_paths,
+                                tools=self._tools, exclude_tools=self._exclude_tools,
+                                no_tools=self._no_tools,
+                                no_builtin_tools=self._no_builtin_tools,
+                                append_system_prompt=self._append_system_prompt)
         except (LoadError, ConfigError) as exc:
             self._note(f"重载失败: {exc}", "error")
             return
@@ -3502,7 +3530,11 @@ def run_tui(initial_prompt: str | None = None, *, session_id: str | None = None,
             cont: bool = False, fork_id: str | None = None,
             no_session: bool = False, name: str | None = None,
             approve_project: bool | None = None,
-            extension_flags: list[str] | None = None) -> None:
+            extension_flags: list[str] | None = None,
+            extra_extension_paths: list[Path] | None = None,
+            tools: str | None = None, exclude_tools: str | None = None,
+            no_tools: bool = False, no_builtin_tools: bool = False,
+            append_system_prompt: list[str] | None = None) -> None:
     """启动 TUI;`initial_prompt` 非空时进界面即提交(来自 `qi "问题"`)。
 
     会话选择参数与 headless 路径同义:`qi -c` / `--session` / `--fork` / `-n` / `--no-session`。
@@ -3523,5 +3555,9 @@ def run_tui(initial_prompt: str | None = None, *, session_id: str | None = None,
     QiTui(initial_prompt=initial_prompt, palette=palette, session_id=session_id, cont=cont,
           fork_id=fork_id, no_session=no_session, name=name,
           approve_project=approve_project,
-          extension_flags=extension_flags).run(
+          extension_flags=extension_flags,
+          extra_extension_paths=extra_extension_paths,
+          tools=tools, exclude_tools=exclude_tools,
+          no_tools=no_tools, no_builtin_tools=no_builtin_tools,
+          append_system_prompt=append_system_prompt).run(
               inline=True, inline_no_clear=True, mouse=False)

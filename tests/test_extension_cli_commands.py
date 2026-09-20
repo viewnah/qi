@@ -160,6 +160,27 @@ def test_broken_extension_does_not_kill_the_cli(tmp_path, monkeypatch, capsys):
     assert registry.names == []
 
 
+def test_sibling_registering_commands_and_flags_does_not_eat_cli_commands(
+        tmp_path, monkeypatch):
+    """回归:轻量发现的宿主必须把 `commands` / `flags` 登记处**一起给齐**。
+
+    装载器的策略是“扩展坏 → 启动报错,不静默”,所以少给一个登记处不是“那个扩展少注册一样
+    东西”,而是**整个发现过程中断**。曾经 `_discover_cli_commands` 只传了 `cli_commands`,
+    于是 qi-mcp(`api.registerCommand('/mcp')`)与 qi-agents(`api.registerFlag`)当场抛错,
+    连带 qi-web 的 `qi web` **从未注册** —— 装了 qi-web 的人看到的是 `No such command 'web'`。
+    """
+    home = _home(tmp_path, monkeypatch)
+    _install(home, "qi-mcp-like", (
+        "def register(api):\n"
+        "    api.registerCommand('mcp', lambda args, ctx: None)\n"
+        "    api.registerFlag('agent', type='string', default='')\n"))
+    _install(home, "qi-web-like",
+             "def register(api):\n    api.registerCliCommand('web', lambda argv: 0)\n")
+
+    registry = cli._discover_cli_commands(tmp_path / "proj")
+    assert "web" in registry.names, "兄弟扩展注册命令 / 旗标,不该把 CLI 子命令一起带走"
+
+
 # ── 与 qi-web 的真实约定(qi-web 侧长这样调用)───────────
 
 def test_the_contract_qi_web_will_use(tmp_path, monkeypatch):

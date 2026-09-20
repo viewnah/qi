@@ -1,4 +1,4 @@
-"""qi-agent:多 agent 编码框架。"""
+"""qi-agent:编码 agent 框架(单 agent core + 扩展)。"""
 
 import os
 

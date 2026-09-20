@@ -90,6 +90,19 @@ def _salvaged(final_text: str, partial: str) -> str:
     return final_text if final_text else partial
 
 
+def split_tool_list(text: str) -> list[str]:
+    """`"read, grep write"` → `["read", "grep", "write"]`(逗号 / 空格 / 顿号都行)。"""
+    return [part for part in text.replace(",", " ").replace("、", " ").split() if part]
+
+
+def tool_source(catalog: Any, name: str) -> str:
+    """工具名 → 来源(`builtin` / 扩展名 …)。`source_info` 只由 `register_tool` 盖章。"""
+    tool = catalog.get(name)
+    if tool is None:
+        return ""
+    return str((getattr(tool, "source_info", None) or {}).get("source") or "")
+
+
 class QiRuntime:
     """装配好的一次性运行时(每进程一个):装载配置/插件/agents,提供 stream()。"""
 
@@ -104,7 +117,12 @@ class QiRuntime:
                  approve_project: bool | None = None,
                  has_ui: bool = False,
                  ui_frontend: Any = None,
-                 extension_flags: Iterable[str] | None = None):
+                 extension_flags: Iterable[str] | None = None,
+                 tools: str | None = None,
+                 exclude_tools: str | None = None,
+                 no_tools: bool = False,
+                 no_builtin_tools: bool = False,
+                 append_system_prompt: Iterable[str] | None = None):
         self.cwd = Path(cwd) if cwd else Path.cwd()
         # 旧版扁平布局 → ~/.qi/agent/(幂等;显式设了 QI_AGENT_HOME 时不动)
         paths.ensure_layout()
@@ -121,6 +139,11 @@ class QiRuntime:
         # 基座:项目 .qi/SYSTEM.md > ~/.qi/agent/SYSTEM.md;都没有则空串
         # (空串 = 用 system_prompt.py 里的代码内默认基座,见 docs/system-prompt.md)
         self.base_prompt, self.base_prompt_source = resolve_base_prompt(self.cwd)
+        # `--append-system-prompt <text>`(可重复):追加到**每回合** system prompt 的末尾。
+        # 多段用空行连接;全空则 None(不占位)。
+        self.append_system_prompt = "\n\n".join(
+            part.strip() for part in (append_system_prompt or ())
+            if part and part.strip()) or None
         if session_store is not None:
             self.sessions = session_store
         else:
@@ -195,6 +218,8 @@ class QiRuntime:
             if problem:
                 self.flag_errors.append(problem)
         self.notes.extend(self.flags.problems)
+        # 有角色目录、但没装能读它的扩展 —— 这是最容易"文件在那里但毫无作用"的一种静默
+        self._note_missing_agent_support()
 
         # 顶层技能(~/ .agents > qi 全局 > .agents 项目 > qi 项目 > settings)。
         # v3:技能是 **core** 的能力(与角色无关),所以它直接进提示词,不再“随 agent 绑定”。
@@ -213,8 +238,78 @@ class QiRuntime:
         self.thinking_level = normalize_thinking_level(level)
         self.llm_exec = llm or LiteLLMClient(default, auth, thinking_level=self.thinking_level,
                                             retry=self.settings.retry)
+        # CLI 的工具收窄(pi 的 `--tools` / `-xt` / `-nt` / `-nbt`)。
+        # 必须等扩展注册完(B)才能算 —— `--no-builtin-tools` 要知道每个工具的来源。
+        self._apply_tool_flags(tools=tools, exclude_tools=exclude_tools,
+                               no_tools=no_tools, no_builtin_tools=no_builtin_tools)
+
+    def _apply_tool_flags(self, *, tools: str | None, exclude_tools: str | None,
+                          no_tools: bool, no_builtin_tools: bool) -> None:
+        """把 CLI 的四个工具旗标落成一次"工具集覆盖"(对齐 pi 的口径)。
+
+        优先级照 pi(`docs/usage.md` 的旗标表 + `docs/settings.md` 的 `defaultTools` 段):
+        `--tools` 是**严格白名单**(替换默认集),`--no-tools` 全禁,`--no-builtin-tools`
+        只去内置;`--exclude-tools` **最后**过滤结果。`--tools` 与后两者矛盾,已在 CLI 拦住。
+
+        未注册的工具名**不静默丢掉**:记一条 note(与 `api.setActiveTools` 同一口径)。
+        没有旗标时**不动**覆盖 —— `None` 与"空集"是两件事(`tool_names()` 靠它区分)。
+        """
+        if not any((tools, exclude_tools, no_tools, no_builtin_tools)):
+            return
+        known = set(self.catalog.names)
+        unknown: list[str] = []
+        if tools:
+            wanted = split_tool_list(tools)
+            unknown += [n for n in wanted if n not in known]
+            chosen = [n for n in wanted if n in known]
+        elif no_tools:
+            chosen = []
+        elif no_builtin_tools:
+            chosen = sorted(n for n in known if tool_source(self.catalog, n) != "builtin")
+        else:
+            chosen = sorted(known)
+        if exclude_tools:
+            dropped = split_tool_list(exclude_tools)
+            unknown += [n for n in dropped if n not in known]
+            gone = set(dropped)
+            chosen = [n for n in chosen if n not in gone]
+        if unknown:
+            self.notes.append("工具旗标里有未注册的名字:" + "、".join(dict.fromkeys(unknown)))
+        self.set_tool_names(chosen)
+        self.notes.append("本次运行的工具集:" + ("、".join(chosen) if chosen else "(空)"))
 
     # ── 工具上下文(每个会话独立) ──
+    def _has_agent_support(self) -> bool:
+        """这个运行里有没有「角色」这件事。
+
+        判据用**行为**而不是包名:qi-agents 的全部工作就是注册 `subagent` 工具,
+        而它的名字随安装通道而变(entry point 叫 `agents`、目录通道叫目录名)。
+        """
+        if "subagent" in self.catalog.names:
+            return True
+        return any(str(name).replace("_", "-") in {"agents", "qi-agents"}
+                   for name in (self.extensions or ()))
+
+    def _note_missing_agent_support(self) -> None:
+        """有角色目录、但没有能读它的扩展 → 说一句(否则那些文件静默无效)。
+
+        与 `docs/extensions.md` §8.1 那张表同源:`.qi/agents/` 归 qi-agents,
+        core 不读它。未信任的项目目录也有可能读不到 —— 但那种情况另有提示
+        (信任门控自己会说),这里只说"扩展不在"。
+        """
+        if self._has_agent_support():
+            return
+        roots = [paths.global_home() / paths.AGENTS_DIR_NAME,
+                 paths.project_home(self.cwd) / paths.AGENTS_DIR_NAME]
+        found = [root for root in roots
+                 if root.is_dir() and any(root.glob(f"*/{paths.AGENT_FILE_NAME}"))]
+        if not found:
+            return
+        listed = "、".join(str(root) for root in found)
+        self.notes.append(
+            f"检测到角色目录({listed})但没装读它的扩展:`qi-agents` 未加载 —— "
+            f"这些角色不会被使用(装法:`pip install qi-agents`,然后 `qi doctor` 确认)")
+
     def _tool_ctx(self, agent_name: str) -> ToolContext:
         """工具上下文。
 
@@ -671,7 +766,8 @@ class QiRuntime:
         built = build_system_prompt(self.base_prompt,
                                     cwd=self.workdir,
                                     tools=self.catalog.resolve(tools),
-                                    skills=self.top_skills)
+                                    skills=self.top_skills,
+                                    append=self.append_system_prompt)
         if not self.bus.has("before_agent_start"):
             return built, None
         result = await self.bus.emit(

@@ -122,6 +122,24 @@ def test_mode_json_without_print_is_still_headless(fake_runtime):
     assert "echo:你好" in res.output
 
 
+def test_mode_json_emits_one_object_per_line(fake_runtime):
+    """`--mode json` 是 **JSONL**:一个事件一行。
+
+    曾经这里走的是 Rich 的默认行为(缩进美化),于是一个事件被摊成 5 行 ——
+    `docs/cli.md` 写的「输出事件 JSON 行」与 pi 的 JSONL 都不成立,按行切分的
+    消费端会直接崩。所以钉住它。
+    """
+    import json as _json
+
+    res = runner.invoke(app, ["--mode", "json", "你好"])
+    assert res.exit_code == 0, res.output
+    lines = [ln for ln in res.output.splitlines() if ln.startswith("{")]
+    assert lines, res.output
+    for ln in lines:            # 美化输出时这里会抛 JSONDecodeError(整行只是 "{")
+        assert "kind" in _json.loads(ln)
+    assert any(_json.loads(ln)["kind"] == "text" for ln in lines)
+
+
 def test_tui_is_not_a_subcommand(fake_runtime):
     """`qi tui` 已移除:不再被当作子命令分派(而是普通消息)。"""
     res = runner.invoke(app, ["tui"])

@@ -1,6 +1,6 @@
 """P0 契约测试:工具结果结构化 / usage 透出 / 会话 cwd / 工具往返落盘。
 
-这四项都是**前端与历史回放依赖的契约**(见 docs/web.md §13),因此单独成文件锁定形状:
+这四项都是**前端与历史回放依赖的契约**(见 design/web.md §13),因此单独成文件锁定形状:
 一旦事件 `data` 或会话 entry 的字段被改名,这里必须同步改,不能悄悄漂移。
 
 全部离线:stub LLM + tmp_path,不联网、不读用户配置。
@@ -244,7 +244,7 @@ async def test_bash_has_no_command_allowlist(tmp_path):
     """对齐 pi:内置 bash 不做命令级过滤。
 
     锁定这个契约,防止把"首词白名单"加回来——它拦掉 `mkdir`/`mv`/包安装等大量正常命令,
-    却又能被 `&&` / `;` / `>` / 裸 `python` 绕过(见 docs/bash-allowlist.md)。
+    却又能被 `&&` / `;` / `>` / 裸 `python` 绕过(见 design/bash-allowlist.md)。
     这里用复合命令 + 重定向 + 写操作把当年的四个绕过面一次覆盖。
     """
     ctx = ToolContext(agent_name="w", workdir=tmp_path)

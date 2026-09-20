@@ -148,7 +148,7 @@ def test_guidelines_follow_available_tools() -> None:
 
 
 def test_default_base_prompt_never_claims_bash_is_readonly() -> None:
-    """防回归:bash 白名单已删除(见 docs/bash-allowlist.md),提示词不得再声称只读。
+    """防回归:bash 白名单已删除(见 design/bash-allowlist.md),提示词不得再声称只读。
 
     这句旧文案曾在基座里存活过一次提交(4aaedb3 漏改),所以锁死。
     """

@@ -1,5 +1,6 @@
-"""注册表:ToolCatalog / AgentRegistry / 扩展能力注册表 + 扩展发现(docs/extensions.md)。
+"""注册表:ToolCatalog / 扩展能力注册表 + 扩展发现(docs/extensions.md)。
 
+`AgentRegistry` 不在 core 里:P-E4c 把「角色」整块移出(归 qi-agents),这里不再有它。
 `Tool` / `ToolError` / `ToolExecutor` 在 P-E2a 搬到了 `extensions.py`(扩展宿主的公开面);
 这里只**转发导入**,旧写法 `from qi_agent.registry import Tool` 仍然有效。
 """

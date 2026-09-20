@@ -254,6 +254,42 @@ def test_cli_passes_ext_values_to_the_runtime(tmp_path, monkeypatch):
     assert CREATED[-1]["extension_flags"] == ["plan", "agent=x"]
 
 
+def test_cli_passes_one_off_extension_paths_to_the_runtime(tmp_path, monkeypatch):
+    """`qi -e <dir>`(单次试用)必须真的传到 runtime。
+
+    这条管道在 runtime / registry 那侧早就存在(`extra_extension_paths` →
+    `extension_dirs(extra=…)` → scope=temporary),但 CLI 从来没人接 —— 文档里
+    `qi -e <path>` 的承诺因此是空的。这个测试就钉住那一行接线。
+    """
+    _env(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    _cli(monkeypatch, tmp_path, _RecordingRuntime)
+
+    from qi_agent.cli import app
+
+    one_off = tmp_path / "my-ext"
+    one_off.mkdir()
+    (one_off / "extension.py").write_text("def register(api):\n    pass\n", encoding="utf-8")
+
+    result = CliRunner().invoke(app, ["-p", "-e", str(one_off), "你好"])
+    assert result.exit_code == 0, result.output
+    assert CREATED[-1]["extra_extension_paths"] == [one_off]
+
+
+def test_cli_accepts_the_long_form_too(tmp_path, monkeypatch):
+    _env(tmp_path, monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    _cli(monkeypatch, tmp_path, _RecordingRuntime)
+
+    from qi_agent.cli import app
+
+    one_off = tmp_path / "another-ext"
+    one_off.mkdir()
+    result = CliRunner().invoke(app, ["-p", "--extension", str(one_off), "你好"])
+    assert result.exit_code == 0, result.output
+    assert CREATED[-1]["extra_extension_paths"] == [one_off]
+
+
 def test_cli_exits_2_on_a_bad_ext_flag(tmp_path, monkeypatch):
     """退出码 2 = 命令行打错了(与未知选项同类),而不是“运行时失败”(1)。"""
     _env(tmp_path, monkeypatch)

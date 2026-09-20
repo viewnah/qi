@@ -25,12 +25,17 @@ MODELS_FILE_NAME = "models.json"
 AUTH_FILE_NAME = "auth.json"
 SETTINGS_FILE_NAME = "settings.json"
 SYSTEM_FILE_NAME = "SYSTEM.md"
+#: 角色定义文件名。core **不读**它(qi-agents 读);这里只用来判「有没有角色目录」,
+#: 好在没装 qi-agents 时说一句(见 `QiRuntime._note_missing_agent_support`)。
+AGENT_FILE_NAME = "agent.md"
 SESSIONS_DIR_NAME = "sessions"
 AGENTS_DIR_NAME = "agents"
 PLUGINS_DIR_NAME = "plugins"        # ⚠️ v0.1 旧名,仅用于迁移;新代码用 EXTENSIONS_DIR_NAME
 EXTENSIONS_DIR_NAME = "extensions"  # 扩展目录(P-E1 改名:plugins → extensions)
 SKILLS_DIR_NAME = "skills"
 CROSS_TOOL_DIR_NAME = ".agents"   # Agent Skills 标准的跨工具目录(~/.agents, .agents)
+DOCS_DIR_NAME = "docs"           # 手册目录(打包后住 qi_agent/docs/,源码树里在仓库根)
+DOCS_INDEX_FILE_NAME = "docs.json"  # 手册索引:导航 + 重定向(见 docs/docs.json)
 
 # 环境变量
 QI_AGENT_HOME = "QI_AGENT_HOME"      # 覆盖全局 agent 目录(对齐 PI_CODING_AGENT_DIR)
@@ -51,6 +56,24 @@ LEGACY_GLOBAL_ENTRIES = (
 
 #: 旧条目名 → 现名(改名过的)。搬运时按**现名**落点,否则搬过去也没人读。
 LEGACY_ENTRY_RENAMES = {PLUGINS_DIR_NAME: EXTENSIONS_DIR_NAME}
+
+
+def package_dir() -> Path:
+    """`qi_agent` 包目录。打包后的手册就住在它下面(`qi_agent/docs/`)。"""
+    return Path(__file__).resolve().parent
+
+
+def docs_dir() -> Path | None:
+    """手册目录:优先 wheel 里那份(`qi_agent/docs/`),退回源码树的 `<repo>/docs/`。
+
+    两处都找不到就返回 `None` —— 调用方据此**整块不注入**(而不是往提示词里写一个
+    不存在的路径)。`--no-tools` 之类把 read/bash 拿掉的场景也由调用方另判。
+    """
+    packaged = package_dir() / DOCS_DIR_NAME
+    if packaged.is_dir():
+        return packaged
+    repo = package_dir().parents[1] / DOCS_DIR_NAME      # src/qi_agent → 仓库根
+    return repo if repo.is_dir() else None
 
 
 def config_root() -> Path:

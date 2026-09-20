@@ -135,7 +135,8 @@ def _note(host: Any, text: str) -> None:
 CommandHandler = Callable[[str, "ExtensionContext"], Any | Awaitable[Any]]
 #: 快捷键 handler:`async def handler(ctx) -> None`
 ShortcutHandler = Callable[["ExtensionContext"], Any | Awaitable[Any]]
-#: 能力解析器(§7.5 / E20):拿到一个**作用域**(`scope`),交回该作用域下这个种类的工具。
+#: 能力解析器(E20 的产物):拿到一个**作用域**(`scope`),交回该作用域下这个种类的工具。
+#: (MCP 已改走按值注入 E25,不再用它;完整论证见 design/extensions-design.md §13。)
 #: 返回 `list[Tool]` 或 awaitable。`scope` 的形态由提供方与消费方约定 —— qi 里通常是
 #: 一个 agent 目录(§7.4)。故意用 `...` 而不是固定签名:作用域这个参数到底长什么样,
 #: 是提供方与消费方之间的事,core 不应当插进来定它。
@@ -210,7 +211,7 @@ class ExtensionShortcut:
 
 @dataclass
 class FlagSpec:
-    """扩展声明的一个 CLI 旗标(docs/extensions.md §11.8 选定的 b 方案)。
+    """扩展声明的一个 CLI 旗标(design/extensions-design.md §11.8 选定的 b 方案)。
 
     qi **不往 typer 的选项表里动态加东西**(实测:typer 的 `get_command` 每次重建,
     往 `TyperGroup` 里塞裸 `click.Option` 会崩在它自己的内置属性上)。core 只静态声明

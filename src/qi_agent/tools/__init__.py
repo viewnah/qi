@@ -2,7 +2,7 @@
 
 安全:六个文件工具的路径限制在会话工作目录内。bash / powershell 与 pi 一致 —— **不做命令级过滤**
 (不筛子命令、不拦重定向),限制只来自工具级收窄(tools / disallowed_tools)或容器/VM。
-见 docs/tools.md §4 与 docs/bash-allowlist.md。
+见 docs/tools.md §4 与 design/bash-allowlist.md。
 """
 
 from __future__ import annotations

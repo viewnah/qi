@@ -49,6 +49,7 @@ from .loader import (
 )
 from .paths import MODELS_FILE_NAME, SETTINGS_FILE_NAME, global_home, project_home
 from .registry import CapabilityRegistry, ToolCatalog, discover_extensions
+from .packages import install_hints, package_report
 from .session import SessionStore
 from .settings import (
     SCOPES,
@@ -99,6 +100,21 @@ class QiGroup(TyperGroup):
         return ctx.args
 
 
+def _core_option_names(ctx: typer.Context) -> set[str]:
+    """顶层自己的长选项名(`--no-session` → `no-session`)。
+
+    用处:识别"把 qi 自己的选项写到了消息后面"—— click 的 Group 遇到位置参数后就
+    不再解析选项,那些 token 会落到 `ctx.args`,再被当成**扩展旗标**。报"没有对应的
+    扩展旗标"是在指错方向,用户写的明明是 core 的旗标。
+    """
+    names: set[str] = set()
+    for param in getattr(ctx.command, "params", []) or []:
+        for opt in (*getattr(param, "opts", ()), *getattr(param, "secondary_opts", ())):
+            if str(opt).startswith("--"):
+                names.add(str(opt)[2:])
+    return names
+
+
 def _classify_cli_args(tokens: list[str]) -> tuple[list[str], list[str], list[str]]:
     """把 click 留下的 token 分成「消息 / 扩展旗标 / 错误」(照抄 pi 的三条规则)。
 
@@ -133,7 +149,7 @@ def _classify_cli_args(tokens: list[str]) -> tuple[list[str], list[str], list[st
 app = typer.Typer(
     name="qi",
     cls=QiGroup,
-    help="多 agent 编码框架:专职角色 + auto 分派(参数尽量对齐 pi)",
+    help="编码 agent 框架:单 agent core;MCP / 多 agent / web 走扩展(参数尽量对齐 pi)",
     no_args_is_help=False,  # 无参 → 进 TUI(见 callback);帮助用 qi -h
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True,
                       "help_option_names": ["-h", "--help"]},
@@ -185,7 +201,7 @@ def _short_cwd(cwd: str | None, limit: int = 48) -> str:
 @app.callback(invoke_without_command=True)
 def root_callback(
     ctx: typer.Context,
-    print_mode: bool = typer.Option(False, "--print", "-p", help="无头一次执行(auto 分派)"),
+    print_mode: bool = typer.Option(False, "--print", "-p", help="无头一次执行(单 agent)"),
     cont: bool = typer.Option(False, "--continue", "-c", help="续上次会话"),
     session_id: str | None = typer.Option(None, "--session", help="指定会话 id"),
     fork_id: str | None = typer.Option(None, "--fork", help="从已有会话分叉出新会话(path|id 前缀)"),
@@ -196,12 +212,35 @@ def root_callback(
     verbose: bool = typer.Option(False, "--verbose", help="显示分派与工具调用进度(默认只输出答案,对齐 pi)"),
     skill: list[str] = typer.Option(None, "--skill", help="额外技能文件/目录(可重复;叠加)"),
     no_skills: bool = typer.Option(False, "--no-skills", "-ns", help="关闭技能自动发现(--skill 仍生效)"),
+    extension: list[str] = typer.Option(None, "-e", "--extension",
+                                       help="一次性试用一个扩展目录(可重复;仅本进程,scope=temporary)。"
+                                            "与 `--ext` 不同:`--ext` 是给扩展声明过的**旗标**传值(name=value)"),
     ext: list[str] = typer.Option(None, "--ext",
                                   help="扩展旗标:name=value(可重复;由扩展 registerFlag 声明。"
                                        "已声明的旗标也可直接写 --name 或 --name=value)"),    approve: bool = typer.Option(False, "--approve", "-a", help="信任项目 .qi(加载项目级扩展)"),
     no_approve: bool = typer.Option(False, "--no-approve", "-na", help="不信任项目 .qi(显式拒绝)"),
     thinking: str | None = typer.Option(None, "--thinking", help="思考级别: " + "/".join(THINKING_LEVELS)),
+    tools: str | None = typer.Option(None, "--tools",
+                                     help="工具白名单(严格;逗号/空格分隔。对齐 pi 的 --tools,可写 -t)"),
+    exclude_tools: str | None = typer.Option(None, "--exclude-tools",
+                                             help="从最终工具集里排除这些工具(对齐 pi 的 -xt)"),
+    no_tools: bool = typer.Option(False, "--no-tools", help="禁用全部工具(对齐 pi 的 -nt)"),
+    no_builtin_tools: bool = typer.Option(False, "--no-builtin-tools",
+                                          help="禁用内置工具、保留扩展工具(对齐 pi 的 -nbt)"),
+    offline: bool = typer.Option(False, "--offline",
+                                 help="对齐 pi 的旗标;qi 启动期没有任何网络操作,所以它无实际作用"),
+    version: bool = typer.Option(False, "--version", "-v", is_eager=True, help="显示版本并退出"),
+    append_prompt: list[str] = typer.Option(None, "--append-system-prompt",
+                                            help="追加到 system prompt 末尾(可重复;对齐 pi 同名旗标)"),
 ) -> None:
+    if version:
+        console.print(f"qi {__version__}")
+        raise typer.Exit()
+    # `--tools`(严格白名单)与另外两个整集选择互相矛盾 —— 报出来,不替用户选一个赢。
+    if tools and (no_tools or no_builtin_tools):
+        err_console.print("[red]--tools 与 --no-tools/--no-builtin-tools 冲突:"
+                          "前者是严格白名单,后两者是整集选择[/red]")
+        raise typer.Exit(code=2)
     if ctx.invoked_subcommand is not None:
         # 开了 `ignore_unknown_options` 后,子命令自己仍然严格解析,但**顶层**的未知选项
         # 会落到这里(实测:`qi --zzz agents list` 会让子命令不再被分派)。不能静默丢。
@@ -221,6 +260,17 @@ def root_callback(
     if after_dashdash and tokens[-len(after_dashdash):] == after_dashdash:
         tokens = tokens[:-len(after_dashdash)]
     messages, cli_flags, cli_errors = _classify_cli_args(tokens)
+    # 把 core 自己的选项写到消息后面 = 解析不到:报得具体一点(否则用户会去查那个
+    # 根本没写的 `--ext`)。`--tools=read` 这种带值的也按名字判。
+    core_options = _core_option_names(ctx)
+    misplaced = [name for name in cli_flags
+                 if name.split("=", 1)[0].replace("_", "-") in core_options]
+    if misplaced:
+        for name in misplaced:
+            err_console.print(
+                f"[red]选项 `--{name.split('=', 1)[0]}` 要写在**消息之前**:"
+                f"qi 的顶层选项在遇到消息后不再解析(写成 `qi --{name.split('=', 1)[0]} … \"消息\"`)[/red]")
+        raise typer.Exit(code=2)
     messages += after_dashdash
     if cli_errors:
         for problem in cli_errors:
@@ -242,7 +292,11 @@ def root_callback(
         _launch_tui(prompt or None, session_id=session_id, cont=cont, fork_id=fork_id,
                     no_session=no_session, name=name,
                     approve_project=_trust_flag(approve, no_approve),
-                    extension_flags=extension_flags)
+                    extension_flags=extension_flags,
+                    extra_extension_paths=[Path(p) for p in (extension or [])],
+                    tools=tools, exclude_tools=exclude_tools,
+                    no_tools=no_tools, no_builtin_tools=no_builtin_tools,
+                    append_system_prompt=append_prompt)
         return
     if not prompt:
         usage = (
@@ -265,7 +319,11 @@ def root_callback(
                             thinking_level=thinking,
                             approve_project=_trust_flag(approve, no_approve),
                             extension_flags=extension_flags,
-                            extra_skill_paths=[Path(p) for p in (skill or [])])
+                            extra_skill_paths=[Path(p) for p in (skill or [])],
+                            extra_extension_paths=[Path(p) for p in (extension or [])],
+                            tools=tools, exclude_tools=exclude_tools,
+                            no_tools=no_tools, no_builtin_tools=no_builtin_tools,
+                            append_system_prompt=append_prompt)
     except _LoadErr as exc:
         console.print(f"[red]装载失败:[/red] {escape(str(exc))}")
         raise typer.Exit(code=1) from exc
@@ -317,8 +375,12 @@ def root_callback(
         # (且走 stderr,不污染 stdout)。`--mode json` 本就输出全部事件,不受此开关影响。
         async for ev in runtime.stream(prompt, session):
             if mode == "json":
+                # `indent=None` = 不美化:一个事件**一行**(JSONL)。
+                # 这条流是给脚本/管道消费的(见 docs/json.md),多行美化会让消费端无法
+                # 按行切分 —— “输出事件 JSON 行”与 pi 的 JSONL 都会不成立。
                 console.print_json(data={"kind": ev.kind, "agent": ev.agent,
-                                         "tool": ev.tool, "text": ev.text, "data": ev.data})
+                                         "tool": ev.tool, "text": ev.text, "data": ev.data},
+                                   indent=None)
             elif ev.kind == "text" and ev.text:
                 console.print(ev.text)
             elif ev.kind == "error":
@@ -466,6 +528,16 @@ def doctor() -> None:
     for warning in ext_warnings:
         console.print(f"  [yellow]⚠ {escape(warning)}[/yellow]")
 
+    # 包声明层比对(只读):声明了没装 / 装了没声明。装法输出**可复制的命令**,不自己调 pip。
+    try:
+        report = package_report(Path.cwd())
+    except SettingsError as exc:
+        # 上面已经报过一次;这里只说“包声明这一节为何缺席”
+        console.print(f"  [dim]包声明:跳过({escape(str(exc))})[/dim]")
+        report = None
+    if report is not None:
+        _print_package_report(report)
+
     store = AuthStore()
     if cfg.providers:
         table = Table(title="providers")
@@ -507,6 +579,58 @@ def doctor() -> None:
 
 
 # ── models ──────────────────────────────────────────────
+
+def _print_package_report(report) -> None:
+    """`qi doctor` 与 `qi list` 共用的包声明输出。
+
+    两个方向 + 认不出的那些都要印:只印一个方向会让另一个方向的偏差永远不被发现。
+    """
+    if report.missing:
+        console.print("[green]包声明:[/green]")
+        for decl in report.missing:
+            console.print(f"  [yellow]✗[/yellow] 声明了但没装: {escape(decl.spec)}"
+                          f" [dim]({decl.source})[/dim]")
+            for hint in install_hints(decl.spec):
+                console.print(f"      [dim]{escape(hint)}[/dim]")
+    elif report.declared:
+        tail = "与已装扩展一致" if report.consistent else ""
+        console.print(f"[green]包声明:[/green] {len(report.declared)} 条{tail}")
+    # 认不出的声明必须印 —— “声明了但看起来没声明”比报错难诊断得多
+    for bad in report.unparsed:
+        console.print(f"  [yellow]⚠ 无法解析的声明:[/yellow] {escape(bad)}")
+        console.print("      [dim]用 `名字 @ URL` 写法才认得出名"
+                      "(如 qi-mcp @ git+https://host/repo)[/dim]")
+    if report.undeclared:
+        names = "、".join(item.name for item in report.undeclared)
+        console.print(f"  [dim]已装但未声明({len(report.undeclared)}): {escape(names)}"
+                      " —— 写进 settings.packages 才能在 uv tool 重建后补回[/dim]")
+
+
+@app.command("list")
+def list_extensions() -> None:
+    """列出已装的扩展,并与 settings.packages 的声明比对。"""
+    try:
+        report = package_report(Path.cwd())
+    except SettingsError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(code=2) from exc
+    if not report.installed and not report.declared:
+        console.print("[dim]没有已装扩展,settings.packages 里也没有声明。[/dim]")
+        console.print("[dim]装法:uv tool install qi-agent --with qi-mcp[/dim]")
+        return
+    declared_names = {item.name for item in report.declared}
+    table = Table(title="扩展")
+    table.add_column("扩展"); table.add_column("通道"); table.add_column("版本")
+    table.add_column("来源"); table.add_column("声明")
+    for item in report.installed:
+        table.add_row(item.name, item.channel, item.version or "—",
+                      f"{item.origin} · {item.scope}",
+                      "是" if item.name in declared_names else "否")
+    for decl in report.missing:            # 声明了却加载不到 —— 单独一行,不混进已装列表
+        table.add_row(decl.name, decl.channel, "—", f"{decl.spec} · {decl.source}", "未安装")
+    console.print(table)
+    _print_package_report(report)
+
 
 models_app = typer.Typer(help="查看命名模型")
 app.add_typer(models_app, name="models")
@@ -592,7 +716,7 @@ def sessions_show(session_id: str = typer.Argument(...)) -> None:
                           f"[dim]{escape(args[:120])}[/dim]")
         elif e.get("type") == "custom" and e.get("custom_type") == "assistant_narration":
             # 工具调用**之前**的叙述:直播时走 text_delta,回放时必须同位置重现,
-            # 否则 CLI 回放与实时看到的内容不一致(见 web.md §13 的顺序不变量)
+            # 否则 CLI 回放与实时看到的内容不一致(见 design/web.md §13 的顺序不变量)
             who = names.get(str(e.get("agent", "")), e.get("agent", ""))
             console.print(f"[dim]叙述[/dim] {who}: {escape(str(e.get('content', ''))[:200])}")
 
@@ -1178,7 +1302,11 @@ def _launch_tui(initial_prompt: str | None = None, *, session_id: str | None = N
                 cont: bool = False, fork_id: str | None = None,
                 no_session: bool = False, name: str | None = None,
                 approve_project: bool | None = None,
-                extension_flags: list[str] | None = None) -> None:
+                extension_flags: list[str] | None = None,
+                extra_extension_paths: list[Path] | None = None,
+                tools: str | None = None, exclude_tools: str | None = None,
+                no_tools: bool = False, no_builtin_tools: bool = False,
+                append_system_prompt: list[str] | None = None) -> None:
     """启动 TUI(顶层 `qi` 的默认去向)。
 
     刻意不做成子命令:`pi` 也没有 `pi tui` —— 裸 `qi` 就是交互界面。
@@ -1192,7 +1320,11 @@ def _launch_tui(initial_prompt: str | None = None, *, session_id: str | None = N
         raise typer.Exit(code=1) from exc
     run_tui(initial_prompt, session_id=session_id, cont=cont, fork_id=fork_id,
             no_session=no_session, name=name, approve_project=approve_project,
-            extension_flags=extension_flags)
+            extension_flags=extension_flags,
+            extra_extension_paths=extra_extension_paths,
+            tools=tools, exclude_tools=exclude_tools,
+            no_tools=no_tools, no_builtin_tools=no_builtin_tools,
+            append_system_prompt=append_system_prompt)
 
 
 
@@ -1212,15 +1344,50 @@ def _discover_cli_commands(cwd: Path | None = None) -> CliCommandRegistry:
 
     **未信任的项目目录不扫**(§5.3):CLI 子命令会在 typer 之前执行扩展的代码,而项目目录是
     仓库控制的。
+
+    **登记处必须给齐**(与 `_extension_report` 那份一样):装载器的策略是"扩展坏 → 启动报错,
+    不静默"(registry.py 里那句 `扩展 X 装载失败`),所以少给一个登记处不是"那个扩展少注册
+    一样东西",而是**整个发现过程中断**。曾因缺 `commands`/`flags` 使 qi-mcp(`api.registerCommand`)
+    与 qi-agents(`api.registerFlag`)当场倒下,连带 qi-web 的 `qi web` 从未注册。
+    这里只消费 `cli_commands`,其余两个只是让兄弟们能正常走完 `register()`。
     """
     registry = CliCommandRegistry()
+    # 登记处从 `.extensions` 取(与 `_extension_report` 同源);局部导入避免 CLI 模块顶部就拖上宿主
+    from .extensions import CommandRegistry, FlagRegistry
+
     try:
         discover_extensions(ToolCatalog(), CapabilityRegistry(), cwd,
-                            bus=ExtensionBus(), cli_commands=registry,
+                            bus=ExtensionBus(),
+                            commands=CommandRegistry(), flags=FlagRegistry(),
+                            cli_commands=registry,
                             project_trusted=False)
     except Exception as exc:      # noqa: BLE001 一个扩展装坏不该让整个 CLI 不可用
         err_console.print(f"[yellow]扩展发现失败(忽略): {escape(str(exc))}[/yellow]")
     return registry
+
+
+#: 官方扩展提供的 CLI 子命令 → 提供它的包。
+#: 与 `docs/extensions.md` §8.1 那张表同源:core 不内置它们,所以这份名单必须写在 core 里 ——
+#: 否则"没装那个扩展的人"永远只能看到 `No such command`,而不知道要装什么。
+_OFFICIAL_EXTENSION_COMMANDS = {"web": "qi-web"}
+
+
+def _hint_missing_extension_command(argv: list[str]) -> None:
+    """`qi <官方扩展子命令>` 但那个扩展没装 → 报装法(而不是 `No such command`)。
+
+    代价故意压到零:只有 `argv[0]` 命中那份小名单时才去发现扩展命令表(那步要装载)。
+    """
+    if not argv or argv[0].startswith("-") or argv[0] in _core_subcommand_names():
+        return
+    package = _OFFICIAL_EXTENSION_COMMANDS.get(argv[0])
+    if package is None or _discover_cli_commands().find(argv[0]) is not None:
+        return
+    err_console.print(f"[red]`qi {argv[0]}` 需要 **{package}** 扩展(这条子命令由它提供,"
+                      f"core 不内置)。[/red]")
+    for hint in install_hints(f"pip:{package}"):
+        err_console.print(f"  [dim]{escape(hint)}[/dim]")
+    err_console.print("[dim]装完用 `qi doctor` 确认宿主真的收到了它。[/dim]")
+    raise typer.Exit(code=2)
 
 
 def _dispatch_extension_command(argv: list[str]) -> bool:
@@ -1291,6 +1458,45 @@ def _extension_report(cwd: Path | None = None) -> tuple[list[str], list[str]]:
     return lines, warnings
 
 
+#: pi 的多字符短旗标 → qi 的长旗标。click 的短选项是**按字符**解析的(它只在 `_short_opt`
+#: 里查 `-n`、`-x` 这类单字符键),所以 `-nt` 会被拆成 `-n t` —— 会话名悄悄变成 `"t"`。
+#: 多字符短选项因此必须在 typer 看到 argv **之前**展开。pi 的 CLI 是手写 argv 循环
+#: (`cli/args.ts`),没有这个问题;qi 的这套展开就是那个循环的最小替代(见 E19)。
+_SHORT_FLAG_ALIASES = {"-nt": "--no-tools", "-nbt": "--no-builtin-tools",
+                       "-t": "--tools", "-xt": "--exclude-tools"}
+#: 会**吃掉下一个 token** 的选项:预处理时不能把它们的值当旗标改写
+#:(`-n -nt` 里的 `-nt` 是会话名,不是旗标)。
+_VALUE_FLAGS = {"--session", "--fork", "--name", "-n", "--export", "--mode", "--skill",
+                "--ext", "-e", "--extension", "--thinking", "--tools", "--exclude-tools"}
+
+
+def normalize_short_flags(argv: list[str]) -> list[str]:
+    """把 pi 的短旗标展开成长旗标;`--` 之后一律不动(那是消息原文)。"""
+    out: list[str] = []
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        if token == "--":
+            out.extend(argv[i:])
+            break
+        if token in ("-t", "-xt"):
+            out.append(_SHORT_FLAG_ALIASES[token])
+            if i + 1 < len(argv):        # 缺值就交给 click 报错(不在这里猜)
+                i += 1
+                out.append(argv[i])
+        elif token in _SHORT_FLAG_ALIASES:
+            out.append(_SHORT_FLAG_ALIASES[token])
+        elif token in _VALUE_FLAGS:
+            out.append(token)
+            if "=" not in token and i + 1 < len(argv):
+                i += 1
+                out.append(argv[i])
+        else:
+            out.append(token)
+        i += 1
+    return out
+
+
 def main() -> None:
     """CLI 入口:先确保目录布局(旧扁平布局 → `~/.qi/agent/`),再交给 typer。"""
     try:
@@ -1302,6 +1508,10 @@ def main() -> None:
         console.print("[green]已迁移到 agent 目录(对齐 pi):[/green]")
         for src, dst in moved:
             console.print(f"  {src} → {dst}")
+    # pi 的短旗标先展开再交给 typer(见 `normalize_short_flags`)
+    sys.argv = [sys.argv[0], *normalize_short_flags(list(sys.argv[1:]))]
+    # 「装了但没装那个扩展」的官方子命令:先给装法,别让 typer 报 No such command
+    _hint_missing_extension_command(list(sys.argv[1:]))
     # 扩展子命令要在 typer 之前认出来(它的子命令表是静态的)
     if _dispatch_extension_command(list(sys.argv[1:])):
         return

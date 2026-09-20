@@ -20,6 +20,7 @@ P-E4c 起 core **不再追加角色层与数据源** —— 两者都是“角�
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Sequence
 
@@ -81,6 +82,62 @@ def build_guidelines(tool_names: Sequence[str], tools: Sequence[Tool] = ()) -> l
     return out
 
 
+def docs_navigation() -> list[tuple[str, list[tuple[str, str]]]]:
+    """读 `docs/docs.json` 的 `navigation`:`[(分组标题, [(手册标题, 路径)])]`。
+
+    读不到(打包漏了 `docs.json`、开发树里没有 docs/、文件坏了)→ 空列表。
+    调用方据此**整块不注入**,不报错也不注入半个块。
+    """
+    from .paths import DOCS_DIR_NAME, DOCS_INDEX_FILE_NAME, docs_dir   # 延迟导入,避免环
+
+    root = docs_dir()
+    if root is None:
+        return []
+    try:
+        data = json.loads((root / DOCS_INDEX_FILE_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    out: list[tuple[str, list[tuple[str, str]]]] = []
+    for group in data.get("navigation") or []:
+        if not isinstance(group, dict):
+            continue
+        items = [(str(item.get("title") or ""), str(item.get("path") or ""))
+                 for item in (group.get("items") or []) if isinstance(item, dict)]
+        items = [(title, name) for title, name in items if title and name]
+        if items:
+            out.append((str(group.get("title") or DOCS_DIR_NAME), items))
+    return out
+
+
+def render_docs_index(tool_names: Sequence[str]) -> str:
+    """把手册索引渲染成提示词里的一节(pi 的 `Additional docs:` 的 qi 版)。
+
+    两个与 pi 的差别:
+      - pi 把主题→文件写**死在源码里**;qi 从 `docs.json` 的 `navigation` 生成 ——
+        手册增删时不会漂。
+      - 与 `render_skills` 同规矩:没有能读文件的工具(`read` / `bash`)就**整块不注入**
+        (给了路径也读不到)。
+
+    路径给**绝对**的(`docs_dir()` 在 wheel 里与源码树里不一样,不能写死 `docs/`),
+    正文不塞进上下文 —— 模型自己用 read 打开。
+    """
+    if not ({"read", "bash"} & set(tool_names)):
+        return ""
+    from .paths import docs_dir
+
+    root = docs_dir()
+    navigation = docs_navigation()
+    if root is None or not navigation:
+        return ""
+    lines = ["文档(qi 自带的手册;要查用法、或要改 qi 自身,先读对应文件,不要凭记忆猜):",
+             f"- 根目录: {root}"]
+    for title, items in navigation:
+        listed = "、".join(f"{name}" for _name_title, name in items)
+        lines.append(f"- {title}: {listed}")
+    lines.append("读的时候把根目录与文件名拼成绝对路径;文件之间互相引用时按相对链接跟着走。")
+    return "\n".join(lines)
+
+
 def default_base_prompt(tools: Sequence[Tool] = ()) -> str:
     """默认基座(身份 + 可用工具 + 指南 + 环境 + 做法)。
 
@@ -90,13 +147,17 @@ def default_base_prompt(tools: Sequence[Tool] = ()) -> str:
     """
     listed = "\n".join(f"- {t.name}: {t.prompt_line}" for t in tools) or "(无)"
     guidelines = "\n".join(f"- {g}" for g in build_guidelines([t.name for t in tools], tools))
-    return "\n\n".join([
+    parts = [
         DEFAULT_IDENTITY,
         f"可用工具:\n{listed}",
         f"指南:\n{guidelines}",
         DEFAULT_ENVIRONMENT,
         DEFAULT_METHOD,
-    ])
+    ]
+    # 手册索引只随**默认基座**出现(自定义 `SYSTEM.md` 是“整体替换”,作者自己决定要不要提)
+    if (index := render_docs_index([t.name for t in tools])):
+        parts.append(index)
+    return "\n\n".join(parts)
 
 
 # ── 技能清单(pi 的 <available_skills> 形态,渐进披露)──────────
@@ -161,7 +222,8 @@ def build_system_prompt(base_prompt: str | None = None, *,
                         cwd: Path | None = None,
                         tools: Sequence[Tool] = (),
                         context_files: Sequence[tuple[Path, str]] | None = None,
-                        skills: Sequence[Skill] = ()) -> str:
+                        skills: Sequence[Skill] = (),
+                        append: str | None = None) -> str:
     """拼出 core 的 system prompt:**基座 → 项目上下文 → 技能 → 工作目录**。
 
     参数:
@@ -193,4 +255,8 @@ def build_system_prompt(base_prompt: str | None = None, *,
         parts.append(rendered_skills)
 
     parts.append(f"当前工作目录: {Path(cwd) if cwd else Path.cwd()}")
+    # `--append-system-prompt`:用户显式追加的一段,**放最后**(与 pi 同义:追加到
+    # system prompt 末尾,而不是插进某个中间层)。空/空白不占位。
+    if append and append.strip():
+        parts.append(append.strip())
     return "\n\n".join(p for p in parts if p and p.strip())

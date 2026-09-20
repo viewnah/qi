@@ -7,10 +7,12 @@ pi 的默认 prompt 是**代码内字符串 + 运行时拼接**;qi v1 曾把基�
    「可用工具」「指南」两块动态文案);
 2. `SYSTEM.md`(项目 > 用户)一旦存在就**整体替换**默认基座 —— pi 的
    customPrompt 语义,不是只换某一层;
-3. 无论走哪条分支,后面统一追加:**角色层**(agent.md 正文)→ **项目上下文**
-   (AGENTS.md 等)→ **技能清单**(XML)→ **数据源** → **当前工作目录**。
+3. 无论走哪条分支,后面统一追加:**项目上下文**(AGENTS.md 等)→ **技能清单**(XML)
+   → **当前工作目录**。
 
-角色层始终追加,这是 qi 多 agent 语义不变的关键:换 agent = 换角色层。
+P-E4c 起 core **不再追加角色层与数据源** —— 两者都是“角色”的概念,归 qi-agents
+(E1.1/E15):角色说明由它通过 `before_agent_start` 拼进来(那个钩子的返回值是链式的),
+数据源实例住在角色目录里。默认基座的身份描述也因此不再宣称“多 agent”。
 
 副作用(与 pi 一致,已写进 docs/system-prompt.md):自定义 SYSTEM.md 会丢掉
 默认基座里的「可用工具 / 指南」两块 —— 那两块只随默认基座出现。
@@ -23,14 +25,13 @@ from typing import TYPE_CHECKING, Sequence
 
 if TYPE_CHECKING:                                  # 只为类型标注,避免运行期耦合
     from .extensions import Tool
-    from .loader import AgentUnit
     from .models import Skill
 
 # ── 默认基座:静态文案 ───────────────────────────────────────
 
 DEFAULT_IDENTITY = (
-    "你是运行在 qi 框架中的 AI 助手。qi 是一个多 agent 编码框架:每次任务由一个专职 "
-    "agent(`agents/<name>/agent.md`)执行,下面附加的角色说明才是你此刻的身份。"
+    "你是运行在 qi 框架中的 AI 助手。qi 是一个编码 agent 框架:默认单 agent 干活;"
+    "装了 qi-agents 扩展后可以按某个角色运行,也能把任务委派给别的角色。"
 )
 
 DEFAULT_ENVIRONMENT = """环境:
@@ -83,7 +84,7 @@ def build_guidelines(tool_names: Sequence[str], tools: Sequence[Tool] = ()) -> l
 def default_base_prompt(tools: Sequence[Tool] = ()) -> str:
     """默认基座(身份 + 可用工具 + 指南 + 环境 + 做法)。
 
-    只在没有自定义 `SYSTEM.md` 时使用;`tools` 为该 agent **解析后**的工具集
+    只在没有自定义 `SYSTEM.md` 时使用;`tools` 为**本回合解析后**的工具集
     (`ToolCatalog.resolve` 的结果),清单即模型可调用的全集 —— 所以这里不写
     pi 那句“你可能还有别的工具”:qi 不会给出清单外的工具。
     """

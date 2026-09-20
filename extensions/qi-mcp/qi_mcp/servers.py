@@ -138,12 +138,23 @@ class ServerManager:
                 except Exception as exc:
                     self._note(f"MCP server `{name}` 列工具失败:{type(exc).__name__}: {exc}")
                     continue
-                self._tools[name] = [
-                    ToolInfo(server=name, name=str(t_name),
-                             description=str(t_desc or ""), schema=t_schema or {})
-                    for t_name, t_desc, t_schema in listed]
+                # `includeTools` / `excludeTools` 在这里生效 —— **对代理也一样**:
+                # 它决定的是这个 server 的**可见工具集**。否则过滤就是装饰:代理照样搜得到、
+                # 调得到被过滤掉的工具。
+                # 延迟导入:direct 要用本模块的 ToolInfo/qualified,顶层 import 会成环。
+                from .direct import select_tools
+
+                self._tools[name] = select_tools(
+                    [ToolInfo(server=name, name=str(t_name),
+                              description=str(t_desc or ""), schema=t_schema or {})
+                     for t_name, t_desc, t_schema in listed],
+                    spec)
             out.extend(self._tools[name])
         return out
+
+    async def tools_of(self, name: str) -> list[ToolInfo]:
+        """单个 server 的可见工具(过滤后)。直连注册用这个 —— 只要那一个 server。"""
+        return [info for info in await self.tools() if info.server == name]
 
     async def call(self, server: str, tool: str, args: dict) -> str:
         """调一个工具。不可用时抛 `ManagerError`(可读 + 带上失败原因)。"""

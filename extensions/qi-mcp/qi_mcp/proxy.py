@@ -16,11 +16,15 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 
 from qi_agent.extensions import Tool
 
 from .servers import ManagerError, ServerManager, ToolInfo, split_qualified
+
+PROXY_NAME = "mcp"
+PROMPT_SNIPPET = "访问 MCP server 的工具(先 search 再 tool+args 调用)"
 
 _SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -36,6 +40,9 @@ _SCHEMA: dict[str, Any] = {
 
 _DESC = ("访问 MCP server 的工具。本工具是一个**代理**:先用 search 找到要用的工具,"
          "再用 tool + args 调用 —— 这样不必把每个 MCP server 的全部工具定义都塞进上下文。")
+
+PROXY_DESCRIPTION = _DESC
+PROXY_SCHEMA = _SCHEMA
 
 
 def _render_params(schema: dict) -> str:
@@ -151,7 +158,7 @@ async def _call(manager: ServerManager, name: str, raw_args: Any) -> str:
 
 
 def build_tool(manager: ServerManager) -> Tool:
-    """造出那个 `mcp` 代理工具。`manager` 由宿主(runtime 侧)按会话 cwd 提供。"""
+    """造出那个 `mcp` 代理工具(manager 已定)。"""
 
     async def execute(args: dict, ctx: Any) -> str:
         # 错误一律**变成结果文本**回给模型,而不是抛出去 —— 让模型能自己改正(改关键词、
@@ -170,5 +177,22 @@ def build_tool(manager: ServerManager) -> Tool:
                  '`mcp({tool:"mcp__<server>__<tool>", args:{…}})` 调用。')
         return f"{usage} {_overview(infos, manager)}"
 
-    return Tool("mcp", _DESC, _SCHEMA, execute,
-                prompt_snippet="访问 MCP server 的工具(先 search 再 tool+args 调用)")
+    return Tool(PROXY_NAME, PROXY_DESCRIPTION, PROXY_SCHEMA, execute,
+                prompt_snippet=PROMPT_SNIPPET)
+
+
+def build_proxy_tool(manager_for: Callable[[Any], ServerManager]) -> Tool:
+    """给宿主用:按**每次调用的 ctx** 取 manager(哪个会话用哪份声明表由 cwd 决定)。
+
+    与 `build_tool(manager)` 的差别只有“manager 什么时候定下来”。返回值**归一成纯文本**:
+    `Tool.execute` 的签名是 `str | ToolOutcome`,而代理工具的契约是“总是文本”
+    (它自己从不回结构化结果),所以在这里收掉那个联合类型,不必让调用方去判。
+    """
+
+    async def execute(args: dict, ctx: Any) -> str:
+        run_tool = build_tool(manager_for(ctx)).execute      # 绑定局部:本仓已知的误报规避
+        result = await run_tool(args, ctx)
+        return result if isinstance(result, str) else result.result
+
+    return Tool(PROXY_NAME, PROXY_DESCRIPTION, PROXY_SCHEMA, execute,
+                prompt_snippet=PROMPT_SNIPPET)

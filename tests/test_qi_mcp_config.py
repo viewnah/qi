@@ -182,4 +182,6 @@ def test_mcp_command_lists_both_layers_and_flags(tmp_path, monkeypatch):
     assert "gh  (project)" in text               # 来源层标出来
     assert "stdio: project-gh" in text           # 用的是项目那份
     assert "off" in text and "disabled" in text  # 关掉的仍可见
-    assert "尚未连接 server" in text             # 别让用户以为已经能用了
+    # 切片 3 起:代理工具确实注册了、直连在会话开始时按 directTools 注册 —— 面板要说准
+    assert "代理工具 `mcp` 已注册" in text
+    assert "directTools" in text                 # 让用户知道直连从哪来

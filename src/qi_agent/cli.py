@@ -1086,6 +1086,38 @@ def auth_list() -> None:
 
 # ── qi config:settings.json(对齐 pi 的键与分层) ───────
 
+def _open_resource_panel(cwd: Path) -> None:
+    """TTY 下开资源启停面板(pi 的 `pi config` 位置);保存后把改动写成声明。
+
+    面板只回“哪些保持启用”,写声明的活在 `packages.apply_resource_selection` ——
+    所以取消时**没有任何副作用**(调用方根本不调那个函数)。
+    """
+    from .packages import apply_resource_selection, list_resources
+
+    resources = list_resources(cwd)
+    if not resources:
+        console.print("[dim]没有可启停的资源(没装扩展、settings.packages 也是空的)。[/dim]")
+        return
+    try:
+        from .tui import run_resource_panel
+    except Exception as exc:      # noqa: BLE001 textual 依赖问题 → 退化成表,不留下一个死命令
+        console.print(f"[yellow]面板不可用:{escape(str(exc))}[/yellow]")
+        _print_resources(cwd)
+        return
+    chosen = run_resource_panel([
+        (item.name, "扩展" if item.kind == "extension" else "包", item.scope, item.enabled)
+        for item in resources])
+    if chosen is None:
+        console.print("[dim]已取消,没有改动。[/dim]")
+        return
+    notes = apply_resource_selection(resources, chosen, cwd)
+    if not notes:
+        console.print("[dim]没有改动。[/dim]")
+        return
+    for note in notes:
+        console.print(f"[green]{escape(note)}[/green]")
+
+
 def _print_resources(cwd: Path) -> None:
     """`qi config` 不带旗标:列出可启停的资源。
 
@@ -1140,11 +1172,13 @@ def config_cmd(
         return
 
     if not (set_ or unset or json_out):
-        # 不带旗标 = pi 的"资源面板"位置。面板还没做,先给一张表(非 TTY / 脚本也能用):
+        # 不带旗标 = pi 的"资源面板"位置:TTY 下开面板,否则给一张表(脚本 / CI 也能用)。
         # 看得见“哪些资源被关了”本来就是面板的一半价值。
-        # **不 return** —— 后面那段设置总览(资源路径 / 各作用域的 settings 文件)也留着。
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            _open_resource_panel(cwd)
+            return
         _print_resources(cwd)
-        console.print()
+        console.print()      # 后面那段设置总览留着(不 return)
     if set_ or unset:
         for item in set_ or []:
             if "=" not in item:

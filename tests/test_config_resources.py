@@ -167,3 +167,34 @@ def test_config_get_missing_key_is_nonzero(tmp_path, monkeypatch):
     _env(tmp_path, monkeypatch)
     res = runner.invoke(app, ["config", "--get", "nope"])
     assert res.exit_code == 1
+
+
+# ── 面板(契约层:UI 只回勾选,写声明在纯函数里) ──────────────────────
+
+
+def test_apply_selection_only_writes_the_changes(tmp_path, monkeypatch):
+    from qi_agent.packages import apply_resource_selection
+
+    home = _env(tmp_path, monkeypatch)
+    items = list_resources(tmp_path / "proj")
+    notes = apply_resource_selection(items, set(range(len(items))), tmp_path / "proj")
+    assert notes == [], "全保持原状时不该动 settings:" + str(_settings(home))
+
+    off = {i for i in range(len(items)) if items[i].name != "probe"}
+    notes = apply_resource_selection(items, off, tmp_path / "proj")
+    assert len(notes) == 1 and "关闭" in notes[0]
+
+
+def test_panel_contract_save_and_cancel(monkeypatch):
+    """面板的契约:`ctrl+s` 交回**保持启用**的下标,`escape` 交回 None。"""
+    from qi_agent.tui import ResourcePanel
+
+    app = ResourcePanel([("a", "扩展", "user", True), ("b", "包", "user", False)])
+    seen: dict = {}
+    monkeypatch.setattr(app, "exit", lambda value=None: seen.update(value=value))
+    monkeypatch.setattr(app, "_chosen", lambda: {1})
+
+    app.action_save()
+    assert seen["value"] == {1}
+    app.action_cancel()
+    assert seen["value"] is None

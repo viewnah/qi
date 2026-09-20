@@ -3572,6 +3572,76 @@ def _open_session_ref(store: Any, ref: str) -> Any:
     return store.get(ref)
 
 
+class ResourcePanel(App[Any]):
+    """`qi config` 的资源启停面板(对齐 pi 的 `pi config`:space 勾选 / ctrl+s 保存)。
+
+    它**不碰 settings** —— 只把“哪些保持启用”(下标集合)交回去,写声明由
+    `packages.apply_resource_selection` 做。这样面板能被单独驱动测试,
+    取消(escape)时也不会留下任何副作用。
+
+    **已关闭的项照样列出来**(只是不勾)—— 那是“状态被记住”换来的能力,
+    也是 pi 的 `pi config -l` 能把继承项置灰的同一件事。
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "取消"),
+        Binding("ctrl+s", "save", "保存"),
+        Binding("ctrl+a", "pick_all", "全选", show=False),
+        Binding("ctrl+x", "pick_none", "全不选", show=False),
+    ]
+
+    CSS = "#resource-box { padding: 1 2; height: auto; }"
+
+    def __init__(self, items: list[tuple[str, str, str, bool]]) -> None:
+        """`items` = `(名字, 类型, 作用域, 启用)`。"""
+        super().__init__()
+        self._items = items
+
+    def compose(self) -> ComposeResult:
+        from textual.widgets import SelectionList
+        from textual.widgets.selection_list import Selection
+
+        selections = [
+            Selection(f"{name}  [{kind} · {scope}]", index, enabled)
+            for index, (name, kind, scope, enabled) in enumerate(self._items)
+        ]
+        with Vertical(id="resource-box"):
+            yield Static("资源:space 勾选 · ctrl+s 保存 · ctrl+a 全选 · ctrl+x 全不选 · "
+                         "escape 取消(不勾 = 关掉那个资源)", id="resource-hint")
+            yield SelectionList[int](*selections, id="resource-list")
+
+    def action_save(self) -> None:
+        self.exit(self._chosen())
+
+    def action_cancel(self) -> None:
+        self.exit(None)
+
+    def _chosen(self) -> set[int]:
+        from textual.widgets import SelectionList
+
+        return set(self.query_one("#resource-list", SelectionList).selected)
+
+    def action_pick_all(self) -> None:
+        from textual.widgets import SelectionList
+
+        self.query_one("#resource-list", SelectionList).select_all()
+
+    def action_pick_none(self) -> None:
+        from textual.widgets import SelectionList
+
+        self.query_one("#resource-list", SelectionList).deselect_all()
+
+
+def run_resource_panel(items: list[tuple[str, str, str, bool]]) -> set[int] | None:
+    """起面板;返回**保持启用**的下标集合(取消返回 None)。
+
+    与 qi 的主 TUI 同一渲染方式(inline:不占全屏、不进备用屏)。
+    """
+    _reset_mouse_reporting()
+    _harden_inline_input()
+    return ResourcePanel(items).run(inline=True, inline_no_clear=True, mouse=False)
+
+
 def run_tui(initial_prompt: str | None = None, *, session_id: str | None = None,
             cont: bool = False, fork_id: str | None = None,
             no_session: bool = False, name: str | None = None,

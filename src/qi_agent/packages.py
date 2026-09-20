@@ -388,6 +388,23 @@ def set_resource_enabled(resource: Resource, enabled: bool, cwd: Path | None = N
             f"({scope} settings.packages 写成{'一行' if enabled else '对象形态 extensions: []'})")
 
 
+def apply_resource_selection(resources: list[Resource], enabled: set[int],
+                            cwd: Path | None = None) -> list[str]:
+    """面板 / 脚本交回“哪些保持启用”(下标)后,把**改动**写成声明。返回人话列表。
+
+    纯函数式的分工:UI 只负责显示与收回勾选,写声明在这里 —— 于是
+    “面板怎么用”与“写了什么”可以分别测,而且取消时不会留下副作用(调用方根本不调它)。
+    没变的项不动(不重写 settings,也不在输出里噬噬)。
+    """
+    notes: list[str] = []
+    for index, resource in enumerate(resources):
+        wanted = index in enabled
+        if wanted == resource.enabled:
+            continue
+        notes.append(set_resource_enabled(resource, wanted, cwd))
+    return notes
+
+
 def _abs(path: Path) -> Path:
     """比较用的绝对路径(解析不了就退原样 —— 不因此把排除项当成没写)。"""
     try:

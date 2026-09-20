@@ -140,7 +140,7 @@ qi -ne | -nc                                  # 关扩展发现 / 关 AGENTS.md 
 
 | 命令 | 说明 | pi 对齐 |
 | --- | --- | --- |
-| `qi config [-l] [--get K] [--set K=V] [--unset K] [--json]` | 不带旗标:列**可启停的资源**(带启用状态)+ 设置总览;`--get` 读一个键(点号路径);`--set` / `--unset` 写/删键;`-l` 作用于项目 `.qi/settings.json` | 🟡 `pi config` 开 TUI 面板,qi 先给表(面板待做) |
+| `qi config [-l] [--get K] [--set K=V] [--unset K] [--json]` | 不带旗标:**TTY 下开资源启停面板**(space 勾选 · ctrl+s 保存 · escape 取消;`-l` 切作用域),非 TTY 打一张资源表 + 设置总览;`--get` 读键、`--set` / `--unset` 写删键 | ✅ `pi config` |
 | `qi init [-y] [-l] [--provider … --model …]` | 引导默认模型(写 `settings.json`);凭证写 `auth.json` | qi 新增(生态惯例) |
 | `qi auth login\|logout <provider>` | 存/删该 provider 凭证 | ✅ pi `/login` `/logout` |
 | `qi auth list` | 只列已存 provider 名(不回显 key) | ✅ |
@@ -240,7 +240,7 @@ qi -ne | -nc                                  # 关扩展发现 / 关 AGENTS.md 
 
 | pi 的 | 为什么 qi 不做 |
 | --- | --- |
-| `pi config` 的资源启停 TUI | `qi config` 目前只做「查看 + 写键」(见 §5) |
+| `pi config` 的资源启停 TUI | **已对齐**(`qi config` TTY 下面板;见 §5) |
 | `-e/--extension <source>` 的 **npm / git** 来源 | Python 侧的分发走 pip(`settings.packages`);没有 npm / git 那种"从任意源拉"的通道 |
 | `--append-system-prompt` 传**文件路径** | **已实现**(值是可读文件就读文件内容) |
 

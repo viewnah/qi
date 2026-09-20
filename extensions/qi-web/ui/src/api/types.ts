@@ -162,16 +162,24 @@ export interface SessionDetail {
    usage: UsageSummary;
 }
 
+/** 一个角色 —— 数据来自 **qi-agents**(`GET /api/agents`)。
+ *
+ * P-E4c 之后 core 不再认识"角色",所以这里没有 v1 的 `display_name` / `keywords` /
+ * 技能与数据源计数:角色就是 `agent.md` 的一份 frontmatter + 正文。
+ */
 export interface AgentInfo {
    name: string;
-   display_name: string;
    description: string;
+   /** `user` | `project`(项目级同名覆盖用户级) */
    source: string;
+   /** `tools:` 白名单;**空 = 继承父**(不是"全部") */
    tools: string[];
-   keywords: string[];
-   skills: number;
-   data_sources: number;
-   mcp_private: number;
+   /** `provider/model`;空 = 继承 */
+   model: string;
+   /** 角色目录(诊断用) */
+   path: string;
+   /** 角色私有 mcp.json 里声明了几个 server */
+   mcp: number;
 }
 
 export interface ProviderInfo {
@@ -301,33 +309,41 @@ export interface FileContent {
  */
 export interface McpServerInfo {
    name: string;
-   /** `streamable-http` / `stdio` / …;没写就是空串 */
+   /** `stdio` | `http` | `socket` | `unknown` */
    transport: string;
-   /** http 类回 URL;stdio 回 `"stdio"`(命令与参数不回显) */
-   target: string;
+   /** http 的目标;**stdio 的 command/args 不出宿主**(最容易写进明文密钥的地方) */
+   url: string;
    env_keys: string[];
    header_keys: string[];
-   /** 声明绑定它的 agent 名(全局/项目层才有意义:那是门控的结果) */
-   bound_by: string[];
+   /** 声明里关了(`disabled: true`)—— 仍在界面上可见,只是不连 */
+   disabled: boolean;
+   /** `directTools`:`true` / 名字数组 / `false`(默认走代理) */
+   direct_tools: boolean | string[];
+   /** qi-mcp 不认识的字段名(生态字段还在长,只提示不判死) */
+   unknown_fields: string[];
+   source: string;
 }
 
-/** 一处 mcp.json(全局 / 项目 / 某个 agent 私有)。`exists=false` 也回,前端据此区分空态。 */
+/** 一处 mcp.json(全局 / 项目 / 某个角色私有)。`exists=false` 也回,前端据此区分空态。 */
 export interface McpSource {
-   scope: "global" | "project" | "agent";
-   /** scope=="agent" 时是 agent 名 */
-   owner: string;
+   scope: "global" | "project" | "role";
+   /** scope=="role" 时是角色名 */
+   role: string;
    path: string;
    exists: boolean;
    servers: McpServerInfo[];
 }
 
-/** `GET /api/mcp` —— 设置页 MCP 节的全部数据(v1 只有声明,没有连接状态)。 */
+/** `GET /api/mcp`。`unavailable` = 没装 qi-mcp(界面说清楚,而不是当"没有声明")。 */
 export interface McpList {
    sources: McpSource[];
+   unavailable: boolean;
 }
 
+/** `GET /api/agents`。`unavailable` = 没装 qi-agents。 */
 export interface AgentList {
    agents: AgentInfo[];
+   unavailable: boolean;
 }
 
 // ── AG-UI:输入 ───────────────────────────────────────────

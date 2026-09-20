@@ -93,7 +93,7 @@ export function AgentMenu({
 
   // chip 上的字:auto 就说 auto;选了具体的 agent 优先用它的显示名。
   const label =
-    value === null ? "auto" : (current?.display_name || current?.name || value);
+    value === null ? "auto" : (current?.name || value);
 
   return (
     <div className="agentchip">
@@ -156,10 +156,10 @@ export function AgentMenu({
                   }}
                 >
                   <span className="agentmenu__name">
-                    {agent.display_name || agent.name}
+                    {agent.name || agent.name}
                   </span>
                   <span className="agentmenu__note">
-                    {agent.display_name ? `${agent.name} · ` : ""}
+                    {agent.source === "project" ? "项目 · " : ""}
                     {agent.source}
                   </span>
                 </button>

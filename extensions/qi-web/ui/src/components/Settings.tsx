@@ -126,23 +126,25 @@ function Dot({ ok, on, off }: { ok: boolean; on: string; off: string }) {
 
 /** 来源层的展示名。agent 私有那层带上是谁的 —— 它可以有很多个。 */
 function sourceLabel(src: McpSource): string {
-   if (src.scope === "agent") return `agent 私有 · ${src.owner}`;
+   if (src.scope === "role") return `角色私有 · ${src.role}`;
    return src.scope === "global" ? "全局" : "项目";
 }
 
 /**
- * 一个 server 在**谁那里生效**。
+ * 一个 server 在界面上的**状态**。
  *
- * 全局/项目里的 server 是**声明表**:只有被某个 agent 的 `mcp_servers` 点名才算绑上
- * ——能绑多个(它不是一个"归属",是一条"可见性");"无人绑定"是个**真结论**,
- * 不是加载失败:文件写在那儿等着谁来声明。agent 私有那份不需要点名,写在自己目录里
- * 就自动绑。
+ * v1 的"绑定"概念随 agent 配置一起消失了(P-E4c):现在是"声明表 → 谁点名谁用",
+ * 而角色的 MCP 面由 `agent.md` 的 `tools:` 里有没有 mcp 条目决定。所以这里显示的是
+ * qi-mcp 真实有的那几个状态位。
  */
 function bindLabel(src: McpSource, server: McpServerInfo): string {
-   if (src.scope === "agent") return "自动绑定";
-   return server.bound_by.length > 0
-      ? `绑定:${server.bound_by.join("、")}`
-      : "无人绑定";
+   const bits: string[] = [];
+   if (server.disabled) bits.push("已关闭");
+   if (server.direct_tools) bits.push("直连注册");
+   if (server.unknown_fields.length > 0)
+      bits.push(`未识别字段 ${server.unknown_fields.length} 个`);
+   if (bits.length === 0) bits.push(src.scope === "role" ? "跟随角色" : "走代理");
+   return bits.join(" · ");
 }
 
 export function Settings({
@@ -483,7 +485,7 @@ export function Settings({
                                  <li className="set-card" key={agent.name}>
                                     <div className="set-card__head">
                                        <span className="set-card__name">
-                                          {agent.display_name || agent.name}
+                                          {agent.name}
                                        </span>
                                        <span className="set-card__route">
                                           {agent.name}
@@ -503,14 +505,14 @@ export function Settings({
                                           value={agent.tools.join(", ") || "(无)"}
                                        />
                                        <Field
-                                          label="资源"
-                                          value={`技能 ${agent.skills} · 数据源 ${agent.data_sources} · 私有 MCP ${agent.mcp_private}`}
+                                          label="MCP"
+                                          value={`私有 ${agent.mcp} 个`}
                                        />
-                                       {agent.keywords.length > 0 ? (
-                                          <Field
-                                             label="关键词"
-                                             value={agent.keywords.join(", ")}
-                                          />
+                                       {agent.model ? (
+                                          <Field label="模型" value={agent.model} />
+                                       ) : null}
+                                       {agent.path ? (
+                                          <Field label="位置" value={agent.path} />
                                        ) : null}
                                     </div>
                                  </li>
@@ -575,10 +577,9 @@ export function Settings({
                            </>
                         }
                      >
-                        {mcpMissing ? (
+                        {mcpMissing || mcp?.unavailable ? (
                            <p className="set-sec__empty">
-                              此宿主没有 <code>/api/mcp</code>(旧宿主),读不到 MCP
-                              声明。
+                              没装 <code>qi-mcp</code> 扩展,读不到 MCP 声明。
                            </p>
                         ) : mcp === null ? (
                            <p className="set-sec__empty">读取中…</p>
@@ -587,7 +588,7 @@ export function Settings({
                               {mcp.sources.map((src) => (
                                  <div
                                     className="mcp-src"
-                                    key={`${src.scope}:${src.owner}`}
+                                    key={`${src.scope}:${src.role}`}
                                  >
                                     <div className="mcp-src__head">
                                        <span className="set-card__tag">
@@ -635,7 +636,7 @@ export function Settings({
                                                    <Field
                                                       label="目标"
                                                       value={
-                                                         server.target ||
+                                                         server.url ||
                                                          "(未声明)"
                                                       }
                                                    />

@@ -11,6 +11,8 @@ qi 的**角色系统**扩展:角色发现 + 角色选择 + `subagent` 委派。
 pip install qi-agents            # 或 -e ./extensions/qi-agents(开发)
 ```
 
+它会一并装上 **qi-mcp**(E25 定的硬依赖)—— 角色自带的 MCP server 由 qi-mcp 负责连与注册。
+
 装完 `qi` 下次启动就会自动发现它(entry point `qi.extensions`)。
 
 ## 写一个角色
@@ -64,6 +66,38 @@ qi "看看这个模块"                                       # 用 subagent 工
 **项目级角色是仓库控制的提示词**,所以走项目层时要显式指定,且项目未被信任时会先问一句。
 
 TUI 里 `/agents` 列角色(带 `both` 看项目级)。
+
+## 角色怎么拿到 MCP 工具(`tools:` 的第二种语义)
+
+角色可以带自己的 MCP server:`<角色目录>/mcp.json`(**qi-agents 自己读它** —— agent 目录是
+它的自包含包,包主人点自己的成员;qi-mcp 只管连与注册)。角色的 server 集合 =
+**qi 两层**(`~/.qi/agent/mcp.json` → `<git 根>/.qi/mcp.json`)**+ 角色私有那份**,
+同名时**角色私有覆盖** qi 级。
+
+能不能**用**它们由 `tools:` 决定 —— 而这里与内置工具的语义**不一样**,值得说清楚:
+
+| `tools:` 里写到 | 拿到什么 |
+| --- | --- |
+| 什么都不写 | **没有任何 MCP 访问**(默认拒绝,而且连都不连) |
+| `mcp` | 那个全局**代理**工具(`mcp({search:"…"})` 发现 → `mcp({tool,args})` 调用),覆盖 qi 两层;**角色私有的 server 额外直连注册**(全局代理看不见它们) |
+| `mcp__github__*` / `mcp__github__create_issue` | **直连**匹配的工具(**不给代理**)—— 适合"这个角色就常用这几把" |
+
+```markdown
+---
+name: reviewer
+description: 只读审查员
+tools: read, grep, mcp__github__*     # 内置工具 + 只授权 github 的 MCP 工具
+---
+
+你是一名严格的审查员……
+```
+
+**为什么不一致**:内置工具是"列出来的才有"(`tools:` 就是全集);MCP 的 **server 集合**由
+`mcp.json` 决定,`tools:` 决定的是**接入方式**(走代理还是直连、授权哪些)。一句话读法:
+**`tools:` = 这个角色要哪些内置工具 + MCP 走哪条路**。
+
+好处是白名单仍然meaningful:角色的 MCP 面 = **它按需注册的 server** ∩ 白名单 ——
+不写就没有,写了也不会因此多拿到别的 server。(这条不对称是 E25 明确记下的代价。)
 
 ## 为什么子 agent 是**进程内**的
 

@@ -572,6 +572,24 @@ P-E6 收尾时若仍无人用就删 —— 不留无人使用的公开面。
 6. **litellm 的 ~6.8s import**(与本设计无关的独立性能问题):它拖累每一次 `qi -p` 的首次响应。查瘦身开关(`LITELLM_MODE=PRODUCTION` 一类)或换 provider 直连 —— 它会同时放大 §7.2 选了进程内的那个理由
 7. **`agent.md` 的 `tools` 省略语义在 agent-as-tool 下有提权风险**(E17 决定先不动):父会话被 `-t` 收窄时,子 agent 按"省略 = catalog 全部"会拿到**全工具**。qi-agents 落地时二选一:① 在扩展里显式解析(用父的 active tools 作基,推荐,不动 `agent.md` 语义);② 改 `agent.md` 的省略语义为"继承父"
 8. ~~`registerFlag` 怎么做~~ → **已决(E19)**,已实现:宽容长旗标 + `--ext` 两条并存。仍待定的两条尾巴:① **与 core 选项同名的扩展旗标收不到**(click 先吃掉,如 `--agent`;现在无诊断,只写在文档里);② 短旗标是否要开放给扩展(现照 pi 一律拒绝)。
+
+9. **静态检查对本仓扩展包一律解析不到(环境问题,不是代码问题)** —— 从测试里 `import qi_mcp…` /
+   `import qi_agents…` 被报 `reportMissingImports`。**已定性**(做了判定性实验):
+
+   | 试过 | 结果 |
+   | --- | --- |
+   | 同一文件相邻两行 `import qi_agents` / `import qi_mcp` | 前者不报、后者报 → 排除"按文件缓存" |
+   | 造**全新名字**的同构包 `qi_probe` + 进 extraPaths | **也报** → 排除"名字被缓存" |
+   | site-packages 里放指向活代码的**符号链接** | 仍报 → 排除"没装" |
+   | `extraPaths`(两个扩展都在)/ `executionEnvironments` 两种相对路径写法 | 无效 |
+
+   → **这台环境里"本地包解析得到"这个信号既给假阳性也给假阴性,不可信**;`qi_agents` 那条
+   clean 是陈旧的成功判定。运行期完全正常(venv 有 `_qi_extensions.pth` + 两个符号链接,
+   测试里另有 `sys.path.insert`),全量 659 passed。
+   **可检验的预测**:若原因是分析器对 extraPaths 目录清单的缓存在会话内不刷新,则 LSP 重启 /
+   下一回合后应自行消失。**处理原则:不动代码、不加 `# type: ignore`** —— 那条意见本身
+   ("这个包没装")是对的(扩展确实不是装上去的,是 pyproject 里的独立发行包),
+   绕开它只是掩盖;真要根治就补 venv 的 pip 后做 editable 安装。
 9. **`sendUserMessage` 不自开一轮**(P-E3c-2 已实现,但有意缺这一步):pi 在 agent 空闲时 `triggerTurn`,那需要“在处理器里嵌套跑一轮”的能力(嵌套流式、与当前回合共享会话写入)。qi 现在只**排队**,由前端决定要不要因此开一轮。要补就与 `ctx.runAgent`(E12)一起做 —— 同一套“宿主内起一个受管子运行”的机制。
 10. **P-E3d-3 推迟的两块**(理由相同:**不在三件套扩展的关键路径上** + 各自需要一次专门决策):
 

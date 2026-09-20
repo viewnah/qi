@@ -441,26 +441,41 @@ qi-agents(唯一知道角色目录的人)
 (pi 的适配器同样不碰对方目录)。qi 选 pull 多一条 pi 做不到的理由:角色的 MCP 工具只能进
 **那一次子运行**的工具清单(`RunSpec.tools`),不能污染主会话(runtime-register 是会话级的)。
 
-#### 由它导出的决定(E24):代理兜底 + 白名单驱动直连
+#### 最终形状(E25,取代 E24):照搬 pi-mcp-adapter
 
-pi-mcp-adapter 默认**只给一个 `mcp` 代理工具**(`mcp({search:"…"})` 发现 → `mcp({tool,args})` 调用),
-server 默认 lazy;直连注册是 `directTools` 的显式选项。理由是上下文:一个 server 的工具定义轻松
-10k+ token。qi 采一半:
+**决定(用户判定)**:qi-mcp 就是 pi-mcp-adapter 的移植;qi-agents **直接依赖**它;
+agent 那层的 MCP 发现由 **qi-agents** 自己做。
 
-| 场景 | 给什么工具 |
+| 项 | 形状 |
 | --- | --- |
-| 主会话(无 `tools:` 白名单) | 只给一个 `mcp` 代理工具(省上下文;server lazy) |
-| 角色写了 `mcp__github__*` | **直连**匹配的工具,**且不给代理**(白名单即“我常用这些 + 只授权这些”) |
-| 角色只写内置工具 | **完全没有 MCP 访问**(默认拒绝) |
+| **qi-mcp** | 照搬 pi-mcp-adapter:固定配置层清单(后到者胜)+ **一个 `mcp` 代理工具**为默认暴露(server lazy)+ 每 server `directTools` opt-in 直连 + 别的扩展**按值**注入服务器(pi 的 runtime-register 那一套) |
+| **依赖** | `qi-agents` 的 `dependencies` 里写 `qi-mcp`(不再走能力交接);`qi-web` 依赖这两者 |
+| **agent 层发现** | **qi-agents 读** `<角色目录>/mcp.json`,把 server 定义按值交给 qi-mcp |
 
-**为什么否掉“纯照 pi”**:代理工具能调任何 server 的工具,所以角色的 `tools:` 白名单就限制不了 MCP
-—— 一个 `tools: read, grep` 的角色照样能调所有 MCP。而 qi 相对 pi 唯一的差异就是“角色 = 精确的
-工具范围”。让白名单形同虚设正是本仓最忌的**半对齐**(“半对齐比不对齐更容易踩空”)。代价诚实记下:
-两种模式并存,`tools:` 里有 mcp 条目与没有条目时行为不同。
+**为什么这个形状自洽**(而不是 §7.5 上半段推的 scope 交接):
 
-**第一版范围(随之确定)**:stdio + Streamable HTTP(E21)+ lazy 启动 + 每 server 的
-`includeTools`/`excludeTools` 通配 / `toolPrefix` / `disabled`(这几项**不是可选** —— E24 的
-白名单展开与它们共用同一套过滤机制)。**不做**:OAuth 与凭据存储、状态快照事件(留给后续版本)。
+1. **agent 目录是 qi-agents 的“自包含包”** —— §7.4 的差异点就是 `agent.md` + `skills/` +
+   `mcp.json` + `data_sources.json` 可整体 import/export。**谁拥有包格式,谁就知道包里有什么成员**;
+   qi-agents 认识 `mcp.json` 不叫泄漏,叫包主人点自己的东西。我先前那条“谁知道文件名”的分界
+   在这里**用错了层级** —— 它适用于两个互不相关的扩展,不适用于“包的主人”。
+2. **E24 的顾虑在新形状下前提消失**:角色的 MCP 面 = **该角色按需注册的 server 集合** ∩
+   (其 `tools:` 里有没有 `mcp`)。角色没有 `mcp.json` → 没有 server,代理无物可调;白名单再不写
+   `mcp` → 彻底没有路径。**顾虑的前提没了,不是被绕过。**
+3. **pi 的先例直接可抄**:照写比自己发明 `Scope` 交接少一层概念,也少一处双方要共同维护的协议。
+
+**代价(照实记)**:
+
+- `pip install qi-agents` 会拖上 qi-mcp(`mcp` + 传输层依赖)—— “只装 qi-agents”不再是可用组合。
+  选直连依赖必然付这笔钱,已接受。
+- 角色 `tools:` 对 MCP 的语义与内置工具**不一致**:内置是“列出来的才有”,MCP 是“server 由
+  `mcp.json` 决定、代理工具由 `tools:` 决定要不要”。这条要写进角色文档,否则用户会困惑。
+
+**core 里已建好的 `registerResolver` / `resolveTools`(§7.5 上半段,已实现 + 12 条测试)**:
+MCP 不再走它,但它是 **E18「通用作用域」的一般机制**(data_sources 等仍可能用)。**暂留**;
+P-E6 收尾时若仍无人用就删 —— 不留无人使用的公开面。
+
+**第一版范围**(不变):stdio + Streamable HTTP(E21)+ lazy + per-server
+`includeTools`/`excludeTools` 通配 / `toolPrefix` / `disabled`。**不做**:OAuth 与凭据存储、状态快照事件。
 
 ## 8. 兼容与迁移(**一刀切**)
 
@@ -540,11 +555,12 @@ server 默认 lazy;直连注册是 `directTools` 的显式选项。理由是上�
 | E17 | agent 配置对齐 | **先不对齐**:不补 `model`、不改 `tools` 省略语义、不降级 `keywords`。与 CC / pi 的三方对照与理由见 §12;per-agent 模型若需要,走**工具参数**而非 `agent.md` 字段。**已知代价见 §11.7** |
 | E18 | 私有配置归属 | qi-agents 定义 **agent 目录 = 一个 scope**;配置种类提供者(qi-mcp / db 插件)按 scope 自取 —— 目录遍历只一处(§7.4) |
 | E19 | 扩展旗标 | **照抄 pi 的宽容解析 + 静态 `--ext` 两条并存**。启用 click 的 `ignore_unknown_options`,自己按 pi 的三条规则分类 click 剩下来的 token(长旗标宽容 / 短旗标报错 / `--` 之后全字面),装载后由 `FlagRegistry` 对账(未注册名、缺值都报错退 2)。**实测依据**(不动态改 typer 的选项表):`typer.main.get_command()` 每次重建(对返回值 append 白做);往 `TyperGroup` 里塞裸 `click.Option` 会崩(`'Context' object has no attribute '_param_default_explicit'`);纯 click 能 append 但 `expose_value=False` 时值不回 `ctx.params`、`True` 时又把参数当 kwarg 传给回调而破签名。**pi 为什么能这么做**:它的 CLI 是**手写 argv 循环**(`cli/args.ts`,447 行),未知长旗标直接收进 `unknownFlags` map,所以循环根本不存在。**对 E14 的影响**:qi-agents 的角色选择语法两种都行 —— `qi --agent=reviewer` 与 `qi --ext agent=reviewer` |
-| E20 | qi-agents ↔ qi-mcp 的耦合 | **能力交接,互不 import**。qi-mcp 声明 `provides_config("mcp_servers")` + 注册 resolver;qi-agents 只调 `api.resolveTools("mcp_servers", scope=…)`。core 补“消费方”那半(§7.5)。**收益**:可分别安装、MCP 实现可换、qi-web 不用做中介;**代价**:core 多两个 API |
+| E20 | qi-agents ↔ qi-mcp 的耦合 | **能力交接,互不 import**。qi-mcp 声明 `provides_config("mcp_servers")` + 注册 resolver;qi-agents 只调 `api.resolveTools("mcp_servers", scope=…)`。core 补“消费方”那半(§7.5)。**收益**:可分别安装、MCP 实现可换、qi-web 不用做中介;**代价**:core 多两个 API **→ 已由 E25 取代** |
 | E21 | MCP 传输范围 | **stdio + Streamable HTTP**;旧 SSE 不做(已过时) |
 | E22 | MCP 工具命名 | **`mcp__<server>__<tool>`**(Claude Code 约定),角色白名单支持 `mcp__<server>__*` 通配。理由:不撞名、可前缀过滤,且“角色只拿某 server 的工具”只能靠通配写 |
 | E23 | MCP 这一块有没有 pi 可抄 | **没有**。pi 官方文档明确不内置 MCP(`docs/usage.md`:“intentionally does not include built-in MCP…”),205 个 TS 源文件里 “MCP” 仅出现一次(注释里的 “MCP bridges”)。所以 qi-mcp 的接口(qi 级两层 / scope 交接 / 命名)全属 qi 自己的决定,**不得以“对齐 pi”为理由** |
-| E24 | MCP 工具的暴露方式 | **代理兜底 + 白名单驱动直连**。主会话只给一个 `mcp` 代理工具(~200 token,pi 的做法);角色的 `tools:` 里写了 `mcp__github__*` → 对**那个角色**直连匹配的工具、**且不给代理**;没写任何 mcp 条目 → 该角色**完全没有** MCP 访问。**否掉了“纯照 pi”**(代理默认 + `directTools`):代理能调**任何** server 的工具,于是角色的 `tools:` 白名单限制不了 MCP —— 而 qi 相对 pi 的差异正是“角色 = 精确的工具范围”,白名单形同虚设是本仓最忌的半对齐。**代价**:两种模式并存 |
+| E24 | MCP 工具的暴露方式 | **代理兜底 + 白名单驱动直连**。主会话只给一个 `mcp` 代理工具(~200 token,pi 的做法);角色的 `tools:` 里写了 `mcp__github__*` → 对**那个角色**直连匹配的工具、**且不给代理**;没写任何 mcp 条目 → 该角色**完全没有** MCP 访问。**否掉了“纯照 pi”**(代理默认 + `directTools`):代理能调**任何** server 的工具,于是角色的 `tools:` 白名单限制不了 MCP —— 而 qi 相对 pi 的差异正是“角色 = 精确的工具范围”,白名单形同虚设是本仓最忌的半对齐。**代价**:两种模式并存 **→ 已由 E25 取代** |
+| E25 | qi-mcp 的形状与依赖方向(取代 E20/E24) | **照搬 pi-mcp-adapter;qi-agents 直接依赖 qi-mcp;agent 层的 MCP 发现归 qi-agents**。理由:① agent 目录是 qi-agents 的**自包含包**,包主人认识包成员不是泄漏;② E24 的白名单顾虑在新形状下**前提消失**(角色的 server 集合本就按需注册);③ 照抄 pi 少一层自造协议。代价:`pip install qi-agents` 会拖上 MCP 栈;角色 `tools:` 对 MCP 的语义与内置工具不一致(要写进角色文档) |
 ## 11. 未定清单
 
 1. 装载顺序是否承诺稳定(现在是"确定但非 API";pi 也不承诺)

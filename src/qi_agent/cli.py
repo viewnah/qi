@@ -1086,11 +1086,36 @@ def auth_list() -> None:
 
 # ── qi config:settings.json(对齐 pi 的键与分层) ───────
 
+def _print_resources(cwd: Path) -> None:
+    """`qi config` 不带旗标:列出可启停的资源。
+
+    “关”写在该作用域的声明里(目录扩展→`-<路径>` 否定项;pip 包→对象形态 `extensions: []`),
+    所以**状态是被记住的** —— 这张表能区分“启用”与“主动关了”,而不是只能看到“存在”。
+    """
+    from .packages import list_resources
+
+    resources = list_resources(cwd)
+    if not resources:
+        console.print("[dim]没有可启停的资源(没装扩展、settings.packages 也是空的)。[/dim]")
+        return
+    table = Table(title="资源")
+    table.add_column("资源"); table.add_column("类型"); table.add_column("作用域")
+    table.add_column("状态"); table.add_column("位置")
+    for item in resources:
+        table.add_row(item.name, "扩展" if item.kind == "extension" else "包", item.scope,
+                      "[green]启用[/green]" if item.enabled else "[yellow]已关闭[/yellow]",
+                      item.detail)
+    console.print(table)
+    console.print("[dim]关/开写进该作用域的声明(目录扩展 `-<路径>`;包对象形态"
+                  "`extensions: []`),所以状态被记住。改:直接改那个 settings.json。[/dim]")
+
+
 @app.command("config")
 def config_cmd(
     local: bool = typer.Option(False, "--local", "-l",
                                help=f"操作项目 {'.qi'}/{SETTINGS_FILE_NAME}(默认全局 agent 目录)"),
     set_: list[str] = typer.Option(None, "--set", help="写键:--set skills='[\"~/x\"]'(可重复)"),
+    get_: str | None = typer.Option(None, "--get", help="读一个键(点号路径,如 compaction.enabled)"),
     unset: list[str] = typer.Option(None, "--unset", help="删键(可重复)"),
     json_out: bool = typer.Option(False, "--json", help="以 JSON 输出合并后的设置"),
 ) -> None:
@@ -1098,6 +1123,28 @@ def config_cmd(
     scope = "project" if local else "user"
     cwd = Path.cwd()
 
+    # `--get <键>`:读**该作用域自己**的那份(点号路径,与 --set 对称)
+    if get_ is not None:
+        from .settings import read_json
+
+        path = settings_scope_path(scope, cwd)
+        value: Any = read_json(path) if path.is_file() else {}
+        for part in [p for p in get_.split(".") if p]:
+            if isinstance(value, dict) and part in value:
+                value = value[part]
+            else:
+                err_console.print(f"[yellow]{scope} settings 里没有 {escape(get_)}[/yellow]")
+                raise typer.Exit(code=1)
+        console.print(json.dumps(value, ensure_ascii=False, indent=2)
+                      if isinstance(value, (dict, list)) else str(value))
+        return
+
+    if not (set_ or unset or json_out):
+        # 不带旗标 = pi 的"资源面板"位置。面板还没做,先给一张表(非 TTY / 脚本也能用):
+        # 看得见“哪些资源被关了”本来就是面板的一半价值。
+        # **不 return** —— 后面那段设置总览(资源路径 / 各作用域的 settings 文件)也留着。
+        _print_resources(cwd)
+        console.print()
     if set_ or unset:
         for item in set_ or []:
             if "=" not in item:

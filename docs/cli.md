@@ -140,7 +140,7 @@ qi -ne | -nc                                  # 关扩展发现 / 关 AGENTS.md 
 
 | 命令 | 说明 | pi 对齐 |
 | --- | --- | --- |
-| `qi config [-l] [--set K=V] [--unset K] [--json]` | 查看/编辑 `settings.json`;`-l` 作用于项目 `.qi/settings.json` | ✅ `pi config` |
+| `qi config [-l] [--get K] [--set K=V] [--unset K] [--json]` | 不带旗标:列**可启停的资源**(带启用状态)+ 设置总览;`--get` 读一个键(点号路径);`--set` / `--unset` 写/删键;`-l` 作用于项目 `.qi/settings.json` | 🟡 `pi config` 开 TUI 面板,qi 先给表(面板待做) |
 | `qi init [-y] [-l] [--provider … --model …]` | 引导默认模型(写 `settings.json`);凭证写 `auth.json` | qi 新增(生态惯例) |
 | `qi auth login\|logout <provider>` | 存/删该 provider 凭证 | ✅ pi `/login` `/logout` |
 | `qi auth list` | 只列已存 provider 名(不回显 key) | ✅ |
@@ -149,7 +149,12 @@ qi -ne | -nc                                  # 关扩展发现 / 关 AGENTS.md 
 | `qi auth check [--provider P] [--model M] [--json] [--credentials]` | 就绪检查(带退出码) | ✅ `pi auth check` |
 
 **`qi config`** —— 字段清单、合并规则与资源路径解析见 [settings.md](settings.md);
-`--set` 的值先按 JSON 解析、失败则当字符串;`--unset` 支持点号路径(`compaction.enabled`)。
+`--set` 的值先按 JSON 解析、失败则当字符串;`--get` / `--unset` 支持点号路径(`compaction.enabled`)。
+
+**资源的“关”写的是声明,不是删条目** —— 目录扩展→`settings.extensions[]` 里加 `-<路径>`
+否定项;pip 包→`settings.packages` 里那一条换成对象形态 `{"source": X, "extensions": []}`。
+所以状态**被记住**了(`qi config` 那张表能区分“启用”与“主动关了”),而且能表达“项目关掉、
+全局还开着”。详见 [packages.md](packages.md) §1。
 
 **`qi init`** —— 流程:`Provider Configuration`(选已有/新建 → Base URL → API 类型 → API Key,
 直接写 `auth.json`)→ `Add Models`(`Add a model?` 循环)→ `Activate LLM Model`(选 provider →

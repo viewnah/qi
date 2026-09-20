@@ -288,6 +288,114 @@ def package_report(cwd: Path | None = None, *, project_trusted: bool = False
     return build_report(installed, declared, unparsed)
 
 
+@dataclass(frozen=True)
+class Resource:
+    """一个**可启停的资源项**:目录扩展 或 声明的 pip 包。
+
+    "关"的表示法两种(都照 pi,**都不是新字段**),所以状态是**记住的** ——
+    面板能区分"没配过"与"主动关了",这也是 `pi config -l` 能把继承项置灰的前提:
+
+    * 目录扩展 → `settings.extensions[]` 里加一条否定项 `-<路径>`;
+    * pip 包   → `settings.packages` 里那一条换成对象形态 `{"source": X, "extensions": []}`。
+    """
+
+    kind: str        # "extension" | "package"
+    name: str
+    detail: str      # 路径 / 原样声明
+    scope: str       # user | project
+    enabled: bool
+    spec: str = ""   # package 用:"开"时写回的原样声明
+
+
+def list_resources(cwd: Path | None = None, *, trusted: bool = True) -> list[Resource]:
+    """可启停的资源清单(目录扩展 + 声明的 pip 包),带当前启用状态。
+
+    面得比 pi 窄一点:`local:` 声明目前只是**声明**(loader 不从 `packages` 读目录通道),
+    所以它列不出来 —— 目录通道的资源请写进 `settings.extensions[]`(那才是它生效的地方)。
+    不知道"关"状态的(比如 `settings.packages` 里的结构体写法)按**开**算。
+    """
+    from . import paths
+    from .settings import (load_settings_by_scope, settings_exclude_paths,
+                           settings_include_paths)
+
+    scopes = load_settings_by_scope(cwd)
+    out: list[Resource] = []
+    for scope in ("user", "project"):
+        if scope == "project" and not trusted:
+            continue
+        settings = scopes.get(scope)
+        excluded = {_abs(p) for p in settings_exclude_paths(settings, scope, "extensions", cwd)}
+        seen: set[Path] = set()
+        home = paths.project_home(cwd) if scope == "project" else paths.global_home()
+        candidates: list[Path] = []
+        builtin = home / paths.EXTENSIONS_DIR_NAME
+        if builtin.is_dir():
+            candidates += sorted(builtin.iterdir())
+        for entry in settings_include_paths(settings, scope, "extensions", cwd):
+            candidates += [entry] if (entry / EXTENSION_ENTRY_FILE).is_file() else (
+                sorted(entry.iterdir()) if entry.is_dir() else [])
+        for child in candidates:
+            if not (child.is_dir() and (child / EXTENSION_ENTRY_FILE).is_file()):
+                continue
+            key = _abs(child)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(Resource(kind="extension", name=child.name, detail=str(child),
+                                scope=scope, enabled=key not in excluded))
+
+    declared, _unparsed = discover_declared(cwd)
+    for decl in declared:
+        if decl.channel != "pip":
+            continue          # 目录通道的见上(它们该写在 settings.extensions)
+        out.append(Resource(kind="package", name=decl.name, detail=decl.spec,
+                            scope=decl.source.split(":")[-1],
+                            enabled=decl.contributes_extensions, spec=decl.spec))
+    return out
+
+
+def set_resource_enabled(resource: Resource, enabled: bool, cwd: Path | None = None) -> str:
+    """把一个资源开关写成声明;返回一句人话(给 CLI 打出来)。
+
+    只动该资源**所在作用域**的 settings —— 这正是"项目关掉、全局还开着"能表达的原因。
+    """
+    from .settings import load_settings_by_scope, set_value
+
+    scope = resource.scope
+    settings = load_settings_by_scope(cwd).get(scope)
+    if resource.kind == "extension":
+        values = [str(item) for item in (getattr(settings, "extensions", None) or [])]
+        negated = f"-{resource.detail}"
+        if enabled:
+            values = [item for item in values if item != negated]
+        elif negated not in values:
+            values.append(negated)
+        set_value(scope, "extensions", values, cwd)
+        return (f"{'启用' if enabled else '关闭'}扩展 {resource.name}"
+                f"({scope} settings.extensions {'去掉' if enabled else '加了'}否定项)")
+
+    raw = list(getattr(settings, "packages", None) or [])
+    rewritten: list[Any] = []
+    for item in raw:
+        decl = parse_declaration(item, f"settings:{scope}")
+        if decl is not None and decl.name == resource.name:
+            rewritten.append(resource.spec if enabled
+                             else {"source": resource.spec, "extensions": []})
+        else:
+            rewritten.append(item)
+    set_value(scope, "packages", rewritten, cwd)
+    return (f"{'启用' if enabled else '关闭'}包 {resource.name}"
+            f"({scope} settings.packages 写成{'一行' if enabled else '对象形态 extensions: []'})")
+
+
+def _abs(path: Path) -> Path:
+    """比较用的绝对路径(解析不了就退原样 —— 不因此把排除项当成没写)。"""
+    try:
+        return path.resolve()
+    except OSError:
+        return path
+
+
 def install_hints(spec: str) -> list[str]:
     """一条声明的**可复制**装法。
 

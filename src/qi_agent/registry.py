@@ -102,7 +102,8 @@ def _specifier_allows(reqs: list[str], version: str | None) -> bool | None:
 
 
 def warn_host_dependency(name: str, dist: Any,
-                         report: Callable[[str], None] | None) -> None:
+                         report: Callable[[str], None] | None, *,
+                         script: Any = None) -> None:
     """报告“扩展把宿主写进了依赖”这件亊(§5.5 / E11)。
 
     为什么不静默:pi 用 `peerDependencies` + `"*"` 表达“宿主提供、别自己打包”,
@@ -113,9 +114,18 @@ def warn_host_dependency(name: str, dist: Any,
     **只报告不拒绝**:声明它本身不危险(危险的是被 pip 解成一棵冲突的树),
     拒载会让一个本来能跑的扩展直接不可用 —— 而用户此刻需要的是“知道并去改 pyproject”。
     """
-    if report is None or dist is None:
+    if report is None:
         return
-    requires = [str(r) for r in (getattr(dist, "requires", None) or ())]
+    if dist is not None:                        # pip 通道:读装上的 dist 元数据
+        requires = [str(r) for r in (getattr(dist, "requires", None) or ())]
+        where = "pyproject 的 dependencies"
+    elif script is not None:                    # 目录通道:读 PEP 723 的内联声明
+        from .pep723 import dependencies_of
+
+        requires = dependencies_of(script)
+        where = "脚本的 `# /// script` 声明"
+    else:
+        return
     host_specs = [r for r in requires if _requirement_targets_host(r)]
     if not host_specs:
         return
@@ -124,10 +134,13 @@ def warn_host_dependency(name: str, dist: Any,
     verdict = ("" if allowed is None else
                "当前版本**满足**它" if allowed else "当前版本**不满足**它")
     detail = "" if allowed is not None else "(未能判定是否满足:缺 packaging 或版本信息)"
-    report(f"扩展 {name} 把宿主 {HOST_DISTRIBUTION} 写进了依赖:{'、'.join(host_specs)};"
-           f"当前 {HOST_DISTRIBUTION} {installed or '未知'}。{verdict}{detail} "
-           "宿主应当由 qi 自己提供,不该出现在扩展的 dependencies 里"
-           "(否则 pip 可能把 qi 自己降级)—— 请从 pyproject 里去掉。")
+    hint = ("从 pyproject 里去掉" if dist is not None
+            else "从脚本的 `# /// script` 声明里去掉")
+    report(f"扩展 {name} 把宿主 {HOST_DISTRIBUTION} 写进了依赖({where}):"
+           f"{'、'.join(host_specs)};当前 {HOST_DISTRIBUTION} {installed or '未知'}。"
+           f"{verdict}{detail} "
+           f"宿主应当由 qi 自己提供,不该出现在扩展的依赖里(否则 pip 可能把 qi 自己降级)"
+           f"—— 请{hint}。")
 
 
 class ToolCatalog:
@@ -274,7 +287,8 @@ def discover_extensions(catalog: ToolCatalog, capabilities: CapabilityRegistry,
                 continue
             register(api)
             capabilities.merge(api)
-            warn_host_dependency(name, origin.get("dist"), on_warning)
+            warn_host_dependency(name, origin.get("dist"), on_warning,
+                                         script=origin.get("path"))
             loaded.append(name)
         except Exception as exc:  # 扩展坏 → 启动报错(不静默)
             raise RuntimeError(f"扩展 {name} 装载失败: {exc}") from exc

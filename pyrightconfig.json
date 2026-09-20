@@ -17,24 +17,5 @@
     ".venv",
     "web/node_modules",
     "web/dist"
-  ],
-  "executionEnvironments": [
-    {
-      "root": "src"
-    },
-    {
-      "root": "extensions/qi-agents"
-    },
-    {
-      "root": "extensions/qi-mcp"
-    },
-    {
-      "root": "tests",
-      "extraPaths": [
-        "src",
-        "extensions/qi-agents",
-        "extensions/qi-mcp"
-      ]
-    }
   ]
 }

@@ -1,7 +1,7 @@
 # qi:可扩展编码框架(总设计)
 
 > **⚠️ v3 重构进行中**:定位从「多 Agent 编码框架」改为「**单 agent 框架 + 可选多 agent 扩展**」——core 收窄到 pi 同款,MCP / 多 agent / web 拆成独立官方扩展(qi-mcp / qi-agents / qi-web)。
-> 设计与阶段拆解见 **[docs/extensions.md](docs/extensions.md)**;本文下面描述的 agent / 插件 / auto 分派是**当前已实现状态**,随 P-E1..P-E6 逐步迁移。
+> 设计与阶段拆解见 **[docs/extensions.md](docs/extensions.md)**;下面 agent / 插件那两节的内容**已迁到扩展**(P-E1..P-E5 完成):裸 core 是单 agent,角色归 qi-agents、MCP 归 qi-mcp、web 归 qi-web —— 本节保留为索引与对照。
 >
 > 目标:用 Python 实现一个「类似 pi」的编码框架——core 只留 pi 也有的东西(单 agent + 工具 + 会话 + TUI),增值功能全部走 **extension**。参考 hikqin_sdk 与 pi 的设计,独立实现。
 > **开发计划见 [docs/PLAN.md](docs/PLAN.md)**;本文是设计总入口:文档索引、架构总览、决策索引、技术选型与目录布局。
@@ -19,7 +19,7 @@ qi init -y --provider deepseek --model deepseek-chat \
 # 2. 校验配置与凭证
 qi doctor
 
-# 3. 运行:裸 `qi` 直接进 TUI(交互,auto 分派);`-p` 是无头一次执行
+# 3. 运行:裸 `qi` 直接进 TUI(交互,单 agent);`-p` 是无头一次执行
 qi
 qi -p "分析这个仓库"
 
@@ -28,16 +28,16 @@ qi -p "分析这个仓库"
 qi "分析这个仓库"          # 进 TUI 并把这句话作为首条发出(对齐 pi 的 `pi "问题"`)
 ```
 
-零配置即可跑:框架内置了一个 `general`(兜底角色)与一份**代码内默认基座提示词**,不需要先装任何 agent。
+零配置即可跑:core 带一份**代码内默认基座提示词** —— **裸 core 就是单 agent**(没有角色层)。角色与委派装 **qi-agents** 扩展。
 想定制角色就装自己的 agent;想定制基座提示词就写 `.qi/SYSTEM.md`(**整体替换**默认基座,注意第 3 步说的副作用)。
 
 ```bash
 # 4.(可选)装专职 agent 与自定义基座提示词
-qi agents import examples/agents/code-analyst   # 装专职角色(默认落在 ~/.qi/agent)
+cp -r examples/agents/code-analyst ~/.qi/agent/agents/   # 装一个角色(qi-agents 读这个目录)
 vim .qi/SYSTEM.md                              # 项目级基座提示词(整体替换默认基座;可提交共享)
 ```
 
-优先级:**项目 `.qi/agents/` > 用户 `~/.qi/agent/agents/` > 包内置**;**项目 `.qi/SYSTEM.md` > `~/.qi/agent/SYSTEM.md` > 代码内默认基座**。
+优先级:**项目 `.qi/agents/` > 用户 `~/.qi/agent/agents/`**(包内置那层已随 P-E4c 去掉;角色目录归 qi-agents);**项目 `.qi/SYSTEM.md` > `~/.qi/agent/SYSTEM.md` > 代码内默认基座**。
 详见 [docs/system-prompt.md](docs/system-prompt.md) 与 [docs/agent-config.md](docs/agent-config.md)。
 
 `qi init` 交互流程与样式复刻 QwenPaw `init`:**Provider Configuration**(选已有/新建 → Base URL → API 类型 → API Key)→ **Add Models**(`Add a model?` 循环,含 reasoning/contextWindow/maxTokens)→ **Activate LLM Model**(选 provider → 选 model)。完整用法、选项与示例见 [docs/model-config.md §7](docs/model-config.md#7-qi-init-用法)。
@@ -87,7 +87,7 @@ vim .qi/SYSTEM.md                              # 项目级基座提示词(整体
 | 概念 | 结论 | 详见 |
 | --- | --- | --- |
 | agent | **内容**:自包含目录 `agents/<name>/`(agent.md 定义,frontmatter + 正文即 system prompt) | agent-config.md |
-| agent 位置 | **3 处**:包内置 `qi_agent/builtin/agents/`(仅 `general` 兜底,`loader.py:70`)→ `~/.qi/agent/agents/` → `<项目>/.qi/agents/`;项目静默覆盖全局;同层重复报错。**v3:这三处的语义搬进 qi-agents** | agent-config.md §3 |
+| agent 位置 | **2 处**:`~/.qi/agent/agents/` → `<项目>/.qi/agents/`(原先还有"包内置 `general`"那层,P-E4c 删掉了;discovery 在 qi-agents 里);项目静默覆盖全局;同层重复报错。**已搬进 qi-agents(P-E5 ①)** | agent-config.md §3 |
 | agent.md 字段(v1) | name / display_name / description(路由信号)/ keywords / tools / include / opening | agent-config.md §4 |
 | 技能 | 私有自动绑定、渐进披露、无内置、无共享库;同一 agent 内同名报错 | agent-config.md §5 |
 | MCP(v1) | 私有 mcp.json(仅本 agent,凭证 env)+ 全局 `~/.qi/agent/mcp.json` / 项目 `.qi/mcp.json` 按 `mcp_servers` 绑定 | agent-config.md §8 |
@@ -96,8 +96,8 @@ vim .qi/SYSTEM.md                              # 项目级基座提示词(整体
 | 工具 | 代码全局注册 ToolCatalog;**tools 三态**:省略或 `*` = 全部,名单 = allowlist;未知名报错 | tools.md |
 | 内置工具(v1) | 8 个:read / ls / find / grep / write / edit(diff 精确)/ bash(真 bash)/ powershell(仅 Windows) | tools.md §2 |
 | 模型 | 全局 `models.json`:`defaultProvider/defaultModel`(执行)/ `routerProvider/routerModel`(分派);agent 不声明模型 | model-config.md |
-| 插件 → 扩展 | pip 包(entry point `qi.plugins`)+ 本地目录双通道;register():add_tool / provides_config / provides_types。**v3 改名 extension 并扩到 pi 整套 hook 面**,见 extensions.md | plugins.md |
-| 运行 | auto 默认(Dispatcher **每轮**分派,不做会话亲和);`--agent` manual;`@` 点名。**v3:auto 取消,多 agent 改为 agent-as-tool 扩展** | cli.md / extensions.md §7 |
+| 插件 → 扩展 | pip 包(entry point `qi.extensions`)+ 本地目录双通道;`register(api)`:工具 / 事件 / 命令 / 旗标 / 能力交接整套面。**P-E1 已改名 extension**,见 extensions.md | plugins.md |
+| 运行 | **单 agent**(core 不再分派);多 agent 走 **agent-as-tool**(qi-agents)。**P-E4c 已取消 auto 与 `--agent`** | cli.md / extensions.md §7 |
 | 命令 | 参数尽量对齐 pi:`qi [-p\|-c\|-r\|…] [--] [@files…] [msg…]` + 子命令 | cli.md |
 | Web(v2) | HTTP 宿主在框架(`qi web`),UI 插件化;不做外置 RPC 桥。**v3:整包拆成 qi-web 扩展**(独立 pip 包,core 不内置) | web.md / extensions.md §6 |
 | 配置形态 | agent 定义 = Markdown + frontmatter;模型配置 = JSON `models.json`(对齐 pi,分层:env → 项目 → 用户);应用设置/默认模型 = `settings.json` | settings.md |

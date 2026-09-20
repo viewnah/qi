@@ -109,7 +109,7 @@ qi_web_ui = ["ui/**/*"]
 
 ## 7. 待定(并入对应主题)
 
-- `[web]` 配置字段与端口默认(应用配置主题)
+- qi-web 扩展的配置与端口默认(应用配置主题)
 - UI 插件首发范围(会话聊天 + 分派可视化 + agent/配置查看?)
 - SSE vs WebSocket(事件量大时的取舍,v2 实现时定)
 - 语义色策略:是否保留有彩色状态色(dsh web 实测为纯灰阶,无状态色;qi 必须补)。见 §12
@@ -388,8 +388,8 @@ Web 宿主应把它转成 error 帧(而不是断开连接);CLI 保持与旧版�
 ### 14.1 跑起来
 
 ```bash
-uv pip install -e ".[web]"      # 只会多装 fastapi/uvicorn 等(web 是可选 extra)
-cd extensions/qi-web/ui && npm install && npm run build && cd ..   # 前端构建产物 → src/qi_agent/web/static/
+pip install -e ./extensions/qi-web   # fastapi/uvicorn 是 **qi-web 自己的**依赖(core 不再带)
+cd extensions/qi-web/ui && npm install && npm run build   # 产物 → extensions/qi-web/qi_web/static/
 qi web                           # → http://127.0.0.1:30142
 ```
 
@@ -462,7 +462,7 @@ data: {"type":"RUN_FINISHED","outcome":{"type":"success"}}
    而不是 `id:`/`Last-Event-ID` 续传。
 3. **qi 独有概念走 `Custom{name, value}`**(AG-UI 的协议级扩展点),不污染标准事件。
 
-映射表(实现在 `src/qi_agent/web/agui.py`):
+映射表(实现在 `extensions/qi-web/qi_web/agui.py`):
 
 | qi | AG-UI |
 | --- | --- |
@@ -509,7 +509,7 @@ queue-steer 语义 / headless RPC / UI 插件拆包。
 
 ### 14.6 打包注意
 
-前端产物**不入版本控制**(`.gitignore` 已忽略 `src/qi_agent/web/static/`),
+前端产物**不入版本控制**(`.gitignore` 已忽略 `extensions/qi-web/qi_web/static/`),
 但**进 wheel**。因此打包前必须先 `cd extensions/qi-web/ui && npm run build`;
 若缺产物,`qi web` 会给一个说明页而不是坏页面(`static_ready: false`)。
 
@@ -520,12 +520,12 @@ queue-steer 语义 / headless RPC / UI 插件拆包。
 .venv/bin/python -m pytest -q          # 322 项
 
 # 前端
-cd web
+cd extensions/qi-web/ui
 npm test                               # 28 项(vitest)
 npm run typecheck                      # tsc --noEmit(含测试文件)
 npm run check:design                   # 两个门禁:check-design + check-dsh-tokens
 npm run check:tokens                   # 只跑 dsh 令牌保真(需要 data/deepseek-harness 或 DSH_REPO)
-npm run build                          # 产出 → src/qi_agent/web/static/
+npm run build                          # 产出 → extensions/qi-web/qi_web/static/
 ```
 
 | 层 | 工具 | 管什么 |

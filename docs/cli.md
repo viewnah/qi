@@ -9,8 +9,8 @@
 ── 运行 ────────────────────────────────
 qi                              # 进 TUI(交互)
 qi "<问题>"                      # 进 TUI,并把该消息作为首条发出(对齐 pi)
-qi -p "<问题>"                    # 无头一次执行(auto 分派)
-qi -p --agent <name> "<问题>"     # 指定 agent(manual)
+qi -p "<问题>"                    # 无头一次执行(单 agent)
+qi -p --ext agent=<name> "<问题>"  # 以某个角色运行(需装 qi-agents)
 
 ── 会话 ────────────────────────────────
 qi -c | -r | --session <id> | --fork <id> | -n <名> | --no-session
@@ -18,9 +18,9 @@ qi sessions list | show <id> | rm <id>
 qi --export <file>
 
 ── Agent ────────────────────────────────
-qi agents list | show <name>     # 查看装载的 agent / 单 agent 诊断
-qi agents import <source> [-l] [--force]   # 导入(拷贝+校验,见 agent-config.md §10)
-qi agents export <name> [-o <path>]        # 导出目录/包,产物可直接 import
+# 角色相关命令(`qi agents list|show|import|export`)随 P-E4c 移出 core → 归 qi-agents
+# 装角色:把 `agent.md` 放进 ~/.qi/agent/agents/<名>/ 或 <项目>/.qi/agents/<名>/(见 qi-agents README)
+qi --ext agent=reviewer "<问题>"           # 用某个角色跑(名字见 /agents)
 
 ── 插件 ────────────────────────────────
 qi install <source> [-l] | remove|uninstall <name> [-l] | list [-l] | update
@@ -46,8 +46,8 @@ qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt
 | 命令 | 说明 | pi 对齐 |
 | --- | --- | --- |
 | `qi [options] [--] [@files...] [messages...]` | **不带 `-p` 且 `--mode text` = 进 TUI**(无 `qi tui` 子命令,对齐 pi 的裸 `pi`);给了 messages 就在进界面后作为首条消息提交;`-p` = 无头执行后退出 | ✅ 形态同 pi |
-| `-p, --print` | 无头一次执行;**auto 分派**;给 `--agent` 即 manual。**默认只输出答案**(对齐 pi 的 "Print response and exit");分派行/工具进度默认不显示,加 `--verbose` 才输出(走 stderr,不污染 stdout) | ✅ |
-| `--agent <name>` | 指定 agent(长参;不用 `-a`,pi 的 `-a`=approve) | qi 新增 |
+| `-p, --print` | 无头一次执行;**单 agent**;要按角色跑用 `--ext agent=<名>`(qi-agents)。**默认只输出答案**(对齐 pi 的 "Print response and exit");分派行/工具进度默认不显示,加 `--verbose` 才输出(走 stderr,不污染 stdout) | ✅ |
+| ~~`--agent <name>`~~ | **已删(P-E4c)**:角色选择归 qi-agents(`qi --ext agent=<名>`);`-a` 现在是**信任项目** | — |
 | `--mode <text\|json>` | 输出格式(`rpc` 二期)。`json` 输出事件 JSON 行,**隐含无头**(不进 TUI) | ✅ |
 | `-t <tools>` / `-xt <tools>` | 工具 allowlist / denylist 临时覆盖(tools 三态) | ✅ |
 | `--thinking <级别>` | 思考级别(off/minimal/low/medium/high/xhigh/max;非法值退出码 2)。不传则用 settings.json 的 defaultThinkingLevel,再退 off。provider 拒收 `reasoning_effort` 时自动去掉参数重试,并在 stderr 提示一次 | ✅ `pi --thinking` |
@@ -73,11 +73,10 @@ qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt
 
 | 命令 | 说明 |
 | --- | --- |
-| `--agent <name>` | 指定 agent(manual);省略 = auto 分派 |
-| `qi agents list` | 装载的 agent:来源/描述/工具/绑定 |
-| `qi agents show <name>` | 单 agent 解析诊断(skills/mcp/data_sources 是否生效) |
-| `qi agents import <source> [-l] [--force]` | 导入 agent(拷贝 + 装载校验器预检 + 凭证扫描);详见 agent-config.md §10 |
-| `qi agents export <name> [-o <path>]` | 导出 agent 目录/压缩包(产物可直接 import) |
+| ~~`--agent <name>`~~ | **已删(P-E4c)**;改用 `--ext agent=<名>`(qi-agents) | — |
+| ~~`qi agents list\|show\|import\|export`~~ | **四条都已删(P-E4c)**:角色归 qi-agents。
+装角色 = 把 `agent.md` 放进 `~/.qi/agent/agents/<名>/`;用它跑 = `qi --ext agent=<名>`;
+列角色 = TUI 里 `/agents`。详见 qi-agents 的 README |
 
 ## 4. 插件(对齐 pi 命名与 `-l`,底层 pip 生态)
 

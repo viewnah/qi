@@ -1,5 +1,11 @@
 # Agent 配置设计
 
+> **归属变更(P-E5 ①)**:本文件描述的**角色系统**(agent 目录、`agent.md`、私有技能 /
+> `mcp.json` / `data_sources.json`、`qi agents …` 命令)**已从 core 移出**,归 **qi-agents** 扩展
+> (见 [extensions.md](extensions.md) §7 / E25)。core 现在只认识运行单元
+> `RunSpec = {name, prompt, tools}`,**裸启动是单 agent**。
+> 下文保留为**设计参考**(字段语义、导入导出约定仍然适用),但**命令与路径以 qi-agents 为准**。
+
 > ⚠️ **v3 归属变更**:`.qi/agents/` 的目录语义要**搬进 qi-agents 扩展**(core 不再认识 agent,只认 `{system_prompt, tools, model}`);本文的 **agent.md 字段定义与装载校验规则仍然有效** —— qi-agents 沿用同一套 frontmatter。见 [extensions.md §1.1 / §7](extensions.md)。
 >
 > 状态:设计讨论中,随讨论演进。文末附「决策记录」与「待定决策」。

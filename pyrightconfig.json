@@ -8,9 +8,10 @@
     "extensions"
   ],
   "extraPaths": [
-    "src",
     "extensions/qi-agents",
-    "extensions/qi-mcp"
+    "extensions/qi-mcp",
+    "extensions/qi-web",
+    "src"
   ],
   "exclude": [
     "**/__pycache__",

@@ -1185,87 +1185,6 @@ def _launch_tui(initial_prompt: str | None = None, *, session_id: str | None = N
             extension_flags=extension_flags)
 
 
-def _port_free(host: str, port: int) -> bool:
-    """端口能不能绑定(启动前预检)。
-
-    为什么必须预检:uvicorn 的 bind 失败发生在 `console.print(URL)` **之后**,
-    于是“端口被占用”会表现成“启动成功但页面是旧的/坏的”——真发生过。
-    """
-    import socket
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        try:
-            probe.bind((host, port))
-        except OSError:
-            return False
-    return True
-
-
-@app.command("web")
-def web_cmd(
-    port: int = typer.Option(30142, "--port", "-p", help="端口(默认 30142,与 pi-web 的 30141 错开)"),
-    hostname: str = typer.Option("127.0.0.1", "--hostname", "-H", help="绑定地址(默认只回环)"),
-    no_open: bool = typer.Option(False, "--no-open", help="不自动打开浏览器"),
-    cwd: str | None = typer.Option(None, "--cwd", help="默认工作目录(默认当前目录)"),
-    password: str | None = typer.Option(None, "--password", help="访问口令(也可用 QI_WEB_PASSWORD)"),
-) -> None:
-    """启动本地 Web UI(默认 http://127.0.0.1:30142)。"""
-    import contextlib
-    import os
-    import threading
-    import webbrowser
-
-    from .web.security import is_loopback, require_safe_config
-
-    try:
-        import uvicorn
-
-        from .web.app import create_app
-    except ImportError as exc:  # web 是可选 extra
-        console.print(f"[red]缺少 web 依赖:[/red] {escape(str(exc))}")
-        console.print("  安装: [bold]pip install 'qi-agent[web]'[/bold]")
-        raise typer.Exit(code=2) from exc
-
-    pw = password or os.environ.get("QI_WEB_PASSWORD") or None
-    # 不安全的组合直接拒启(跨回环 + 无口令),见 web/security.py
-    require_safe_config(hostname, pw)
-
-    workdir = Path(cwd).expanduser() if cwd else Path.cwd()
-    if not workdir.is_dir():
-        console.print(f"[red]工作目录不存在:[/red] {escape(str(workdir))}")
-        raise typer.Exit(code=2)
-
-    allowed = [h for h in os.environ.get("QI_WEB_ALLOWED_HOSTS", "").split(",") if h.strip()]
-    if not _port_free(hostname, port):
-        console.print(f"[red]端口已被占用:[/red] {hostname}:{port}")
-        console.print(f"  换个端口: [bold]qi web -p {port + 1}[/bold]")
-        raise typer.Exit(code=2)
-
-    app_obj = create_app(cwd=workdir.resolve(), password=pw, allowed_hosts=allowed,
-                         bind_host=hostname)
-
-    shown = "127.0.0.1" if is_loopback(hostname) else hostname
-    url = f"http://{shown}:{port}"
-    console.print(f"[green]qi web[/green] → [bold]{url}[/bold]")
-    console.print(f"[dim]默认工作目录: {escape(str(workdir))}[/dim]")
-    if pw:
-        console.print("[dim]已启用口令(Bearer 或 Basic,用户名任意)[/dim]")
-    if not is_loopback(hostname):
-        console.print("[yellow]警告:[/yellow] 已绑定到回环之外——它能执行高权限操作,请确认网络可信。")
-    if not (Path(__file__).parent / "web" / "static").is_dir():
-        console.print("[dim]未找到前端产物;先访问 API,或 cd web && npm install && npm run build[/dim]")
-
-    if not no_open:
-        def _open() -> None:
-            # 尽力而为:服务起来前打开可能白页,失败也不影响启动
-            with contextlib.suppress(Exception):
-                webbrowser.open(url)
-
-        threading.Timer(1.5, _open).start()
-
-    uvicorn.run(app_obj, host=hostname, port=port, log_level="warning")
-
-
 
 def _core_subcommand_names() -> set[str]:
     """core 自己的子命令名(从 typer 的登记表拿;拿不到就退回空集,只是少了这层保护)。"""
@@ -1282,7 +1201,7 @@ def _discover_cli_commands(cwd: Path | None = None) -> CliCommandRegistry:
     """只装载扩展、只要它们的 CLI 子命令表(轻量发现:没有 runtime / 会话 / 模型)。
 
     **未信任的项目目录不扫**(§5.3):CLI 子命令会在 typer 之前执行扩展的代码,而项目目录是
-    仓库控制的。要项目级的命令,先把项目标成信任(主命令路径会走完整判定)。
+    仓库控制的。
     """
     registry = CliCommandRegistry()
     try:
@@ -1297,9 +1216,8 @@ def _discover_cli_commands(cwd: Path | None = None) -> CliCommandRegistry:
 def _dispatch_extension_command(argv: list[str]) -> bool:
     """`qi <扩展子命令> …` → 交给扩展。返回 True 表示已处理。
 
-    **必须在 `app()` 之前**:typer 的子命令表是静态的,动态加会踩坑(E19),而"第一个词是不是
-    扩展命令"只需要一次轻量发现。**core 自己的名字优先** —— 扩展撞了 core 的子命令名要被看见,
-    而不是悄悄接管。
+    **必须在 `app()` 之前**:typer 的子命令表是静态的,动态加会踩坑(E19)。
+    **core 自己的名字优先** —— 扩展撞了 core 的子命令名要被看见,而不是悄悄接管。
     """
     if not argv or argv[0].startswith("-") or argv[0] in _core_subcommand_names():
         return False

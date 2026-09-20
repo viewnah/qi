@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from qi_agent.web import browse
+from qi_web import browse
 
 
 @pytest.fixture

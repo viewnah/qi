@@ -27,7 +27,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..models import AgentEvent
+from qi_agent.models import AgentEvent
 
 # ── 组帧(与官方 encodeSSE 逐字节一致)────────────────────────────────
 

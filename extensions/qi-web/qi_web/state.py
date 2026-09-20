@@ -23,8 +23,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
-from ..runtime import QiRuntime
-from ..session import Session, SessionStore
+from qi_agent.runtime import QiRuntime
+from qi_agent.session import Session, SessionStore
 
 #: 建 runtime 的方式。默认就是 `QiRuntime` 本身;测试传替身工厂(接受 `cwd=` 关键字)。
 RuntimeFactory = Callable[..., QiRuntime]

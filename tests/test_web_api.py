@@ -20,10 +20,10 @@ from qi_agent import paths
 from qi_agent.llm import LLMDelta, ToolCallOut
 from qi_agent.runtime import QiRuntime, RuntimeConfig
 from qi_agent.session import SessionStore
-from qi_agent.web.app import create_app
-from qi_agent.web.schemas import CONTRACT_VERSION
-from qi_agent.web.security import is_loopback, mask_key, require_safe_config
-from qi_agent.web.state import WebState
+from qi_web.app import create_app
+from qi_web.schemas import CONTRACT_VERSION
+from qi_web.security import is_loopback, mask_key, require_safe_config
+from qi_web.state import WebState
 from qi_agent.workspaces import WorkspaceStore
 
 
@@ -168,7 +168,7 @@ def test_tool_details_survive_the_agui_layer():
     映射层没有把它丢掉 —— 两处都通,插件才真的能渲染。
     """
     from qi_agent.models import AgentEvent, TOOL_OK
-    from qi_agent.web.agui import AguiTranslator
+    from qi_web.agui import AguiTranslator
 
     payload = {"ui": [{"type": "list", "items": [{"label": "写实现", "state": "active"}]}]}
     t = AguiTranslator(thread_id="s", run_id="r")
@@ -302,7 +302,7 @@ async def test_busy_session_is_serialised(client, tmp_path):
 def test_webstate_gate_is_symmetric():
     """闸门语义:重复占用拒绝、释放可重复、释放后可再占用。"""
     import tempfile
-    from qi_agent.web.state import RunBusy, WebState
+    from qi_web.state import RunBusy, WebState
 
     web = WebState(Path(tempfile.mkdtemp()))
     assert web.is_busy("s") is False
@@ -460,7 +460,7 @@ def test_port_preflight_detects_busy_port():
     """
     import socket
 
-    from qi_agent.cli import _port_free
+    from qi_web.serve import _port_free
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))

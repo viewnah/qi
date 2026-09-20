@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "qi-web"
+version = "0.1.0"
+description = "qi 的 Web UI 扩展:HTTP 宿主(REST + SSE)+ AG-UI 桥 + 官方界面"
+readme = "README.md"
+requires-python = ">=3.12"
+# 宿主 qi-agent 由 qi 自己装着,不写进 dependencies(§5.5 / E11)。
+# web 栈是**本扩展自己的**依赖 —— core 已不再拖它(P-E5 ③:core 一点不留)。
+dependencies = ["fastapi>=0.115", "uvicorn[standard]>=0.32", "rich>=13"]
+
+[project.entry-points."qi.extensions"]
+web = "qi_web.serve:register"
+
+[tool.hatch.build.targets.wheel]
+packages = ["qi_web"]

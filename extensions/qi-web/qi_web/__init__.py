@@ -13,7 +13,7 @@ from __future__ import annotations
 
 
 def __getattr__(name: str):
-    """惰性转出 `create_app`,让 `import qi_agent.web` 不强制拉起 fastapi。
+    """惰性转出 `create_app`,让 `import qi_web` 不强制拉起 fastapi。
 
     这样在没装 `[web]` extra 的环境里,`qi doctor` 等命令仍可正常导入本包。
     """

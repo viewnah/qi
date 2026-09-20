@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import httpx  # noqa: E402
 import pytest  # noqa: E402
 
-from qi_agent.web import files as fileapi  # noqa: E402
+from qi_web import files as fileapi  # noqa: E402
 
 
 # ── 1. 边界(纯函数层,最该钉死)─────────────────────────
@@ -152,8 +152,8 @@ def web(tmp_path, monkeypatch):
     """最小宿主(复用 test_web_api 的那套环境变量约定)。"""
     from qi_agent.runtime import QiRuntime, RuntimeConfig
     from qi_agent.session import SessionStore
-    from qi_agent.web.app import create_app
-    from qi_agent.web.state import WebState
+    from qi_web.app import create_app
+    from qi_web.state import WebState
     from qi_agent.workspaces import WorkspaceStore
 
     (tmp_path / "models.json").write_text(json.dumps(

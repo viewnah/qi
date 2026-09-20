@@ -18,12 +18,12 @@ from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Reques
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .. import __version__
-from ..auth import AuthStore, resolve_key
-from ..config import ConfigError, load_config, resolve_default_model, resolve_router_model
-from ..loader import LoadError
-from ..session import usage_summary
-from ..workspaces import WorkspaceStore, normalize
+from qi_agent import __version__
+from qi_agent.auth import AuthStore, resolve_key
+from qi_agent.config import ConfigError, load_config, resolve_default_model, resolve_router_model
+from qi_agent.loader import LoadError
+from qi_agent.session import usage_summary
+from qi_agent.workspaces import WorkspaceStore, normalize
 from . import agui, browse, files as fileapi, schemas
 from .security import check_credentials, check_host, mask_key
 from .state import RunBusy, WebState

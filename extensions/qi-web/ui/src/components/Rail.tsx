@@ -95,7 +95,7 @@ export function Rail({
   onRenameSession: (session: SessionSummary) => void;
   onForkSession: (id: string) => void;
   onDeleteSession: (session: SessionSummary) => void;
-  /** 工作区行「…」里的两件事。改名只改**显示名**,目录不动;删除见 docs/web.md。 */
+  /** 工作区行「…」里的两件事。改名只改**显示名**,目录不动;删除见 design/web.md。 */
   onRenameWorkspace: (group: ProjectGroup) => void;
   onDeleteWorkspace: (group: ProjectGroup) => void;
   /** 「未分组」桶的清除:这一桶里的会话一起删(它们没有 cwd,没有工作区能带走它们)。 */

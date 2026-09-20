@@ -43,7 +43,7 @@ function safeHref(url: string | null | undefined): string | null {
   return SAFE_SCHEME.test(url.trim()) ? url.trim() : null;
 }
 
-/** 一个代码块:语言标签 + 复制 + 原文。不做语法高亮(见 docs/web.md §18.23)。 */
+/** 一个代码块:语言标签 + 复制 + 原文。不做语法高亮(见 design/web.md §18.23)。 */
 function CodeBlock({
   code,
   lang,

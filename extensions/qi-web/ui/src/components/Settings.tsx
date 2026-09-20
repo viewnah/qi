@@ -258,7 +258,7 @@ export function Settings({
 
    /**
     * MCP 是**可选能力**:老宿主没这个端点(404)。单独一趟请求 + 单独处理失败
-    * —— 与 App 里 `/api/workspaces` 的降级同一条规矩(docs/web.md §18.5):
+    * —— 与 App 里 `/api/workspaces` 的降级同一条规矩(design/web.md §18.5):
     * 少一节内容比整页白屏好。
     */
    useEffect(() => {
@@ -569,10 +569,12 @@ export function Settings({
                               三处声明:全局 <code>~/.qi/agent/mcp.json</code>
                               、项目 <code>.qi/mcp.json</code>
                               、以及各 agent 目录里的私有 <code>mcp.json</code>。
-                              v1 只做解析与门控(没有 MCP client,见 PLAN.md),
-                              所以这里只有"声明"、没有"已连接";全局/项目里的 server
-                              必须被某个 agent 的 <code>mcp_servers</code> 声明才算绑上,
-                              同名时<strong>项目覆盖全局</strong>。
+                              本面板只做解析与门控(client 由 lazy 连接按需启动,
+                              状态快照事件尚未实现,见 design/PLAN.md),所以这里
+                              只有"声明"、没有"已连接";谁能调由它的
+                              <code>tools:</code> 决定(写 <code>mcp</code> 拿代理工具,
+                              写 <code>mcp__server__*</code> 直连),同名时
+                              <strong>角色私有 &gt; 项目 &gt; 全局</strong>。
                               <code>env</code> / <code>headers</code> 只显示键名。
                            </>
                         }

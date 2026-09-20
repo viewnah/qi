@@ -365,7 +365,7 @@ def messages_snapshot(entries: list[dict]) -> dict:
 
     只取会进对话的那一类(`message`),并映射到 AG-UI 的 message 形状。
     qi 的 `custom`(叙述)/`tool`/`dispatch`/`state` 不属于 messages —— 它们各自有
-    `Custom` 事件表达,由前端在历史回放时另行处理(见 docs/web.md)。
+    `Custom` 事件表达,由前端在历史回放时另行处理(见 design/web.md)。
     """
     out = []
     for e in entries:

@@ -1,4 +1,4 @@
-"""qi-web HTTP 宿主(docs/web.md §3):REST + SSE + 静态托管。
+"""qi-web HTTP 宿主(design/web.md §3):REST + SSE + 静态托管。
 
 同进程直连 `QiRuntime.stream()` —— web 是 CLI/TUI 之外的**第三个 consumer**,零协议桥。
 契约版本见 `schemas.CONTRACT_VERSION`;前端从 `/api/meta` 读取并据此降级。
@@ -86,7 +86,7 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
                           "auth_write": True, "config_read": True, "trajectory": True,
                           # 扩展面:插件据这两个开关决定要不要发结构化 UI。
                           # `ag_ui` = 事件形状是 AG-UI;`ui_v1` = 认 details["ui"] 的词汇表
-                          # (见 docs/web.md §16.2)。缺哪个都退回"折叠显示原始 JSON"。
+                          # (见 design/web.md §16.2)。缺哪个都退回"折叠显示原始 JSON"。
                           "ag_ui": True, "ui_v1": True},
         )
 
@@ -311,7 +311,7 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
 
     # ── 工作区:只有"改过的显示名"这一份偏好 ────────────────
     # 项目列表本身是派生的(会话 cwd),所以这里没有"列表"端点,也没有"新建工作区"——
-    # 在某个目录下新建会话就是新建工作区。三种方法的语义见 docs/web.md §18.3。
+    # 在某个目录下新建会话就是新建工作区。三种方法的语义见 design/web.md §18.3。
 
     @app.get("/api/workspaces", response_model=schemas.WorkspaceNames,
              dependencies=[Depends(guard)])
@@ -473,7 +473,7 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
 
     # ── AG-UI:单次 POST,响应即流 ──────────────────────────────
     #
-    # 这是 docs/web.md 记的**破坏性替换**:旧的 `POST /turn`(202)+ `POST /cancel`
+    # 这是 design/web.md 记的**破坏性替换**:旧的 `POST /turn`(202)+ `POST /cancel`
     # + `GET /events`(两跳、带 `event:`/`id:`、`snapshot` 收尾)已全部移除。
     #
     # 三条硬约束来自**官方编码器**(`@ag-ui/encoder@0.0.59` 的 `encodeSSE`),
@@ -687,11 +687,15 @@ def _mcp_server_info(name, config, scope):
                  "http" if config.get("url") else
                  "socket" if config.get("socket") else "unknown")
     direct = config.get("directTools", False)
+    # `disabled` 是布尔开关:**只认真正的 JSON true**(`"true"` / `1` 都不算)。
+    # 等价于 `config.get("disabled") is True`,但用 isinstance 门写 —— 与下面 direct_tools
+    # 同一惯用法,且避开“identity comparison with literal”的静态检查。
+    disabled = config.get("disabled")
     return McpServerInfo(
         name=name, transport=transport,
         url=str(config.get("url", "")) if transport == "http" else "",
         env_keys=sorted(str(k) for k in env),
         header_keys=sorted(str(k) for k in headers),
-        disabled=config.get("disabled") is True,
+        disabled=isinstance(disabled, bool) and disabled,
         direct_tools=direct if isinstance(direct, (bool, list)) else False,
         unknown_fields=unknown, source=scope)

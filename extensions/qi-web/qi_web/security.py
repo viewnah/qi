@@ -1,6 +1,6 @@
 """暴露面控制:默认只回环 + 可选密码。
 
-对齐 docs/web.md §3:默认 `127.0.0.1`;跨回环必须**显式**指定 hostname **且**设密码,
+对齐 design/web.md §3:默认 `127.0.0.1`;跨回环必须**显式**指定 hostname **且**设密码,
 否则拒绝启动——暴露出去的是一个能执行高权限操作的 agent,不是一个静态站点。
 
 密码**不加密传输**:远端访问应经 HTTPS 反代或 VPN(与 pi-web 的告警语义一致)。
@@ -67,7 +67,7 @@ def check_host(allowed: list[str], host_header: str | None, bind_host: str) -> b
 
 
 def mask_key(key: str | None) -> str:
-    """只回尾 4 位:凭证永远不以明文出现在响应里(docs/web.md §4)。"""
+    """只回尾 4 位:凭证永远不以明文出现在响应里(design/web.md §4)。"""
     if not key:
         return ""
     return f"…{key[-4:]}" if len(key) > 4 else "…"

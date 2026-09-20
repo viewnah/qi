@@ -1,4 +1,4 @@
-"""qi-web:HTTP 宿主(REST + SSE + 静态托管),见 docs/web.md。
+"""qi-web:HTTP 宿主(REST + SSE + 静态托管),见 design/web.md。
 
 分层:
 

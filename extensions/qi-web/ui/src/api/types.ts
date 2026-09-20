@@ -219,7 +219,7 @@ export interface SkillInfo {
 /**
  * `TOOL_CALL_RESULT.metadata["qi.tool"]` —— qi 的工具结构化结果。
  *
- * `details` 是**插件唯一的 UI 下行通道**(docs/web.md §16):开放字典,
+ * `details` 是**插件唯一的 UI 下行通道**(design/web.md §16):开放字典,
  * 宿主不为任何具体插件改接口。
  */
 export interface QiToolMeta {
@@ -301,7 +301,7 @@ export interface FileContent {
 }
 
 /**
- * 一个 MCP server 的**结构**(不含值,见 docs/web.md §18.18)。
+ * 一个 MCP server 的**结构**(不含值,见 design/web.md §18.18)。
  *
  * 宿主只投影出名字 / 传输类型 / 目标 / `env` 与 `headers` 的**键名**:
  * `env` 值、`headers` 值、stdio 的 `command` / `args` 都不出宿主 —— mcp.json 的

@@ -548,7 +548,7 @@ export function App() {
    * (转录里每条消息下面那个按钮用,与 dsh 的 branch 同一语义)。
    *
    * 不论是否需要确认:**分叉只新增文件、不动任何已有数据** —— 与左栏那个分叉同一理由
-   * (docs/web.md §18.1)。
+   * (design/web.md §18.1)。
    */
   const forkSession = useCallback(
     async (id: string, at?: string) => {
@@ -806,7 +806,7 @@ export function App() {
         setView("settings");
       }
     },
-    // 依赖列全:漏一个就会拿到过期闭包(这个文件里为此踩过一次,见 docs/web.md §18.8)。
+    // 依赖列全:漏一个就会拿到过期闭包(这个文件里为此踩过一次,见 design/web.md §18.8)。
     [
       askRenameSession,
       createSession,
@@ -886,7 +886,7 @@ export function App() {
             `title` 属性给的是全名:名字长时会被省略号截断,悬停能看全。
 
             空态**整条不渲染**(§17.7):一屏白底 —— 居中 hero + 输入卡,顶上什么都没有。
-            代价写进 docs/web.md §17.4:第一次发言之前没有开遥测的入口(现在入口在左栏,
+            代价写进 design/web.md §17.4:第一次发言之前没有开遥测的入口(现在入口在左栏,
             所以这条代价已经不成立了)。 */}
         {empty ? null : (
           <header className="work__head">
@@ -936,7 +936,7 @@ export function App() {
                       value={sessionId ? cwd : draftCwd}
                       // **新会话页(草稿)上必须可点** —— 反馈要的就是"在这儿切工作区或新建工作区"。
                       // 会话一旦建好、并且已经说过话,cwd 才是它的属性(改成静态回声) ——
-                      // 那时换目录等于改历史,后端也只支持改名(docs/web.md §18.3)。
+                      // 那时换目录等于改历史,后端也只支持改名(design/web.md §18.3)。
                       disabled={projects.length === 0 || !blank}
                       onPick={(picked) => {
                         // 草稿页上换来换去只是改"下一条会话落在哪";若当前开着的是一条**空**会话

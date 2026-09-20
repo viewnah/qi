@@ -50,7 +50,7 @@
      · 表单控件 `font-family: inherit` —— UA 样式表把 button/textarea 钉在
        Arial/monospace 上,不显式继承就会与周围文字不是同一套字体。
    这些以前就没有,只是以前外壳本来就不满屏、也没人把两边的字并排量过
-   (docs/web.md §17.7(6) 记账)。 */
+   (design/web.md §17.7(6) 记账)。 */
 
 html,
 body,
@@ -2876,7 +2876,7 @@ pre,
  gap: 8px;
 }
 
-/* ── 插件 UI 词汇表(details["ui"],见 docs/web.md §16.2)────────────
+/* ── 插件 UI 词汇表(details["ui"],见 design/web.md §16.2)────────────
    插件输出数据、宿主实现渲染。样式上刻意保持"证据块"的语汇:
    等宽、细边、无阴影、状态不单靠颜色。 */
 

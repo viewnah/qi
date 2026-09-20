@@ -1,7 +1,7 @@
 /**
  * API 客户端:唯一允许与宿主说话的地方。
  *
- * 两条刻意的约束(为将来的桌面壳留路,见 docs/web.md):
+ * 两条刻意的约束(为将来的桌面壳留路,见 design/web.md):
  *   1. **不依赖 cookie 会话** —— 口令走 `Authorization` 头,换到别的 origin 的壳里也不失效。
  *   2. **不用 `EventSource`** —— 它不能带自定义头、也不能中途 abort(Stop 按钮靠后者)。
  *      代价是要自己切帧。AG-UI 的编码器只写 `data:` 行(`encodeSSE` =

@@ -1,7 +1,7 @@
 """qi-web API 的请求/响应模型(`/api` v1 契约)。
 
 契约版本(`CONTRACT_VERSION`)是 UI 与宿主的依赖面:前端在 `/api/meta` 里读到它,
-形状不兼容时**显式报错**而不是白屏(见 docs/web.md §3 的"契约语义版本化")。
+形状不兼容时**显式报错**而不是白屏(见 design/web.md §3 的"契约语义版本化")。
 """
 
 from __future__ import annotations
@@ -167,7 +167,7 @@ class SessionDetail(BaseModel):
     #: 整条分支的用量汇总(与窗口无关:它统计的是落盘的全部)
     usage: UsageSummary = Field(default_factory=UsageSummary)
 class ProviderInfo(BaseModel):
-    """凭证状态**只回掩码与来源**,永不回明文(docs/web.md §4)。"""
+    """凭证状态**只回掩码与来源**,永不回明文(design/web.md §4)。"""
 
     name: str
     base_url: str | None = None

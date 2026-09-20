@@ -441,6 +441,27 @@ qi-agents(唯一知道角色目录的人)
 (pi 的适配器同样不碰对方目录)。qi 选 pull 多一条 pi 做不到的理由:角色的 MCP 工具只能进
 **那一次子运行**的工具清单(`RunSpec.tools`),不能污染主会话(runtime-register 是会话级的)。
 
+#### 由它导出的决定(E24):代理兜底 + 白名单驱动直连
+
+pi-mcp-adapter 默认**只给一个 `mcp` 代理工具**(`mcp({search:"…"})` 发现 → `mcp({tool,args})` 调用),
+server 默认 lazy;直连注册是 `directTools` 的显式选项。理由是上下文:一个 server 的工具定义轻松
+10k+ token。qi 采一半:
+
+| 场景 | 给什么工具 |
+| --- | --- |
+| 主会话(无 `tools:` 白名单) | 只给一个 `mcp` 代理工具(省上下文;server lazy) |
+| 角色写了 `mcp__github__*` | **直连**匹配的工具,**且不给代理**(白名单即“我常用这些 + 只授权这些”) |
+| 角色只写内置工具 | **完全没有 MCP 访问**(默认拒绝) |
+
+**为什么否掉“纯照 pi”**:代理工具能调任何 server 的工具,所以角色的 `tools:` 白名单就限制不了 MCP
+—— 一个 `tools: read, grep` 的角色照样能调所有 MCP。而 qi 相对 pi 唯一的差异就是“角色 = 精确的
+工具范围”。让白名单形同虚设正是本仓最忌的**半对齐**(“半对齐比不对齐更容易踩空”)。代价诚实记下:
+两种模式并存,`tools:` 里有 mcp 条目与没有条目时行为不同。
+
+**第一版范围(随之确定)**:stdio + Streamable HTTP(E21)+ lazy 启动 + 每 server 的
+`includeTools`/`excludeTools` 通配 / `toolPrefix` / `disabled`(这几项**不是可选** —— E24 的
+白名单展开与它们共用同一套过滤机制)。**不做**:OAuth 与凭据存储、状态快照事件(留给后续版本)。
+
 ## 8. 兼容与迁移(**一刀切**)
 
 已定:不保留"官方扩展自动装载"。`qi web`、`.qi/agents/`、`mcp.json` 都要求**显式装扩展**。
@@ -523,7 +544,7 @@ qi-agents(唯一知道角色目录的人)
 | E21 | MCP 传输范围 | **stdio + Streamable HTTP**;旧 SSE 不做(已过时) |
 | E22 | MCP 工具命名 | **`mcp__<server>__<tool>`**(Claude Code 约定),角色白名单支持 `mcp__<server>__*` 通配。理由:不撞名、可前缀过滤,且“角色只拿某 server 的工具”只能靠通配写 |
 | E23 | MCP 这一块有没有 pi 可抄 | **没有**。pi 官方文档明确不内置 MCP(`docs/usage.md`:“intentionally does not include built-in MCP…”),205 个 TS 源文件里 “MCP” 仅出现一次(注释里的 “MCP bridges”)。所以 qi-mcp 的接口(qi 级两层 / scope 交接 / 命名)全属 qi 自己的决定,**不得以“对齐 pi”为理由** |
-| E24 | MCP 工具的暴露方式(**待定**) | `pi-mcp-adapter` 默认**不给每个 server 注册 N 个工具**,而是注册**一个 ~200 token 的 `mcp` 代理工具**(`mcp({search})` 发现 → `mcp({tool,args})` 调用),server 默认 lazy;直连注册要 `directTools` 显式开启(理由:一个 server 的工具定义轻松 10k+ token)。**E22 的“每工具一个名字 + 白名单通配”只在直连模式下成立** —— 默认走代理还是直连待定 |
+| E24 | MCP 工具的暴露方式 | **代理兜底 + 白名单驱动直连**。主会话只给一个 `mcp` 代理工具(~200 token,pi 的做法);角色的 `tools:` 里写了 `mcp__github__*` → 对**那个角色**直连匹配的工具、**且不给代理**;没写任何 mcp 条目 → 该角色**完全没有** MCP 访问。**否掉了“纯照 pi”**(代理默认 + `directTools`):代理能调**任何** server 的工具,于是角色的 `tools:` 白名单限制不了 MCP —— 而 qi 相对 pi 的差异正是“角色 = 精确的工具范围”,白名单形同虚设是本仓最忌的半对齐。**代价**:两种模式并存 |
 ## 11. 未定清单
 
 1. 装载顺序是否承诺稳定(现在是"确定但非 API";pi 也不承诺)

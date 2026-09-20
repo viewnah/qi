@@ -345,6 +345,43 @@ core 技能发现:同理(私有技能自动绑定)
 - 代价:接口层比 pi 多一个 `scope` 参数 —— 记为可接受
 - 边界:**只在 agent 目录内**。全局(`~/.qi/agent/`)与项目(`<项目>/.qi/`)那两层的声明表沿用 v1 的作用域(它们不是 agent 私有)
 
+### 7.5 角色自带 MCP:走**能力交接**,不 import 兄弟扩展(P-E5 ②,已定 E20)
+
+§7.4 定的是形状,P-E5 ② 落到具体接口。**qi-agents 与 qi-mcp 互不 import** —— 两边都只依赖 core 的
+一个小契约:
+
+```python
+# qi-mcp:声明“我提供 mcp_servers 这个种类” + 给一个解析器
+api.provides_config("mcp_servers")                 # 已有(P-E1)
+api.registerResolver("mcp_servers", resolve)       # 新增:resolve(scope) -> list[Tool]
+
+# qi-agents:问宿主“谁能提供”,自己不知道 MCP 存在
+tools = await api.resolveTools("mcp_servers", scope=role_dir)   # 新增;没人提供 → [],角色照跑
+```
+
+为什么不用直接依赖(qi-agents 的 `dependencies` 里写 `qi-mcp`):
+
+| | 直接 import 兄弟扩展 | 能力交接 |
+| --- | --- | --- |
+| 只装 qi-agents | **装不上**:被拖上 MCP 栈与它的传输层依赖,或直接 ImportError | 角色照跑,只是没有 MCP 工具(优雅降级) |
+| 想换 MCP 实现 | 换不掉 | 换个提供者即可(扩展系统的本意) |
+| qi-web 的位置 | 还得替这两者做一层中介 | 什么都不用做 |
+
+**代价**:core 要新增两个 API(`registerResolver` / `resolveTools`)—— `provides_config` 此前
+只有“声明”那一半,这次补齐“消费”那一半。这是 P-E5 ② 的第一件事,先于写客户端。
+
+**传输范围(E21)**:stdio + Streamable HTTP。旧 SSE 不做 —— 已过时,为它多背一块代码不值。
+
+**工具命名(E22)**:`mcp__<server>__<tool>`(Claude Code 约定)。
+
+- 双下划线几乎不可能与内置工具或第三方扩展撞名;
+- 一个前缀就能 grep / 分节 / 过滤;
+- **因此角色的 `tools:` 白名单支持通配**:`tools: read, grep, mcp__github__*` —— 这也是唯一让
+  “角色只拿到某个 server 的工具”写得出来的办法(逐条列工具名会在 server 升级后失效)。
+
+**作用域三层**(沿用 v1,勿改):全局 `~/.qi/agent/mcp.json` → 项目 `<git 根>/.qi/mcp.json`
+(同名覆盖全局)→ **agent 私有** `<agent 目录>/mcp.json`(自动绑定,只本角色可见)。
+
 ## 8. 兼容与迁移(**一刀切**)
 
 已定:不保留"官方扩展自动装载"。`qi web`、`.qi/agents/`、`mcp.json` 都要求**显式装扩展**。
@@ -423,6 +460,9 @@ core 技能发现:同理(私有技能自动绑定)
 | E17 | agent 配置对齐 | **先不对齐**:不补 `model`、不改 `tools` 省略语义、不降级 `keywords`。与 CC / pi 的三方对照与理由见 §12;per-agent 模型若需要,走**工具参数**而非 `agent.md` 字段。**已知代价见 §11.7** |
 | E18 | 私有配置归属 | qi-agents 定义 **agent 目录 = 一个 scope**;配置种类提供者(qi-mcp / db 插件)按 scope 自取 —— 目录遍历只一处(§7.4) |
 | E19 | 扩展旗标 | **照抄 pi 的宽容解析 + 静态 `--ext` 两条并存**。启用 click 的 `ignore_unknown_options`,自己按 pi 的三条规则分类 click 剩下来的 token(长旗标宽容 / 短旗标报错 / `--` 之后全字面),装载后由 `FlagRegistry` 对账(未注册名、缺值都报错退 2)。**实测依据**(不动态改 typer 的选项表):`typer.main.get_command()` 每次重建(对返回值 append 白做);往 `TyperGroup` 里塞裸 `click.Option` 会崩(`'Context' object has no attribute '_param_default_explicit'`);纯 click 能 append 但 `expose_value=False` 时值不回 `ctx.params`、`True` 时又把参数当 kwarg 传给回调而破签名。**pi 为什么能这么做**:它的 CLI 是**手写 argv 循环**(`cli/args.ts`,447 行),未知长旗标直接收进 `unknownFlags` map,所以循环根本不存在。**对 E14 的影响**:qi-agents 的角色选择语法两种都行 —— `qi --agent=reviewer` 与 `qi --ext agent=reviewer` |
+| E20 | qi-agents ↔ qi-mcp 的耦合 | **能力交接,互不 import**。qi-mcp 声明 `provides_config("mcp_servers")` + 注册 resolver;qi-agents 只调 `api.resolveTools("mcp_servers", scope=…)`。core 补“消费方”那半(§7.5)。**收益**:可分别安装、MCP 实现可换、qi-web 不用做中介;**代价**:core 多两个 API |
+| E21 | MCP 传输范围 | **stdio + Streamable HTTP**;旧 SSE 不做(已过时) |
+| E22 | MCP 工具命名 | **`mcp__<server>__<tool>`**(Claude Code 约定),角色白名单支持 `mcp__<server>__*` 通配。理由:不撞名、可前缀过滤,且“角色只拿某 server 的工具”只能靠通配写 |
 
 ## 11. 未定清单
 

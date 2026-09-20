@@ -198,3 +198,17 @@ def test_panel_contract_save_and_cancel(monkeypatch):
     assert seen["value"] == {1}
     app.action_cancel()
     assert seen["value"] is None
+
+
+def test_scope_is_declarations_plus_local_dirs(tmp_path, monkeypatch):
+    """与 pi **逐字相同**的范围:已声明的包 + 本地资源数组。
+
+    用 `pip install` 自己装进去、没写进 `settings.packages` 的包**不列** —— 它是个该被修的
+    状态(由 `qi doctor` 报出来并告诉你该写什么),不是面板该默认接受的常态。
+
+    钉住这条是因为它看着像"漏了":以后顺手把未声明的 entry point 补进来很容易,
+    但那会让面板默认“未声明”合理,并且与 pi 的 `pi config` 出现行为差异。
+    """
+    _env(tmp_path, monkeypatch)          # 故意不写 packages 声明
+    items = list_resources(tmp_path / "proj")
+    assert [i.kind for i in items] == ["extension"], items

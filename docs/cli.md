@@ -156,6 +156,11 @@ qi -ne | -nc                                  # 关扩展发现 / 关 AGENTS.md 
 所以状态**被记住**了(`qi config` 那张表能区分“启用”与“主动关了”),而且能表达“项目关掉、
 全局还开着”。详见 [packages.md](packages.md) §1。
 
+> **面板/清单的范围与 pi 逐字相同**:已声明的包 + 本地资源数组(`extensions[]` 等)。
+> 用 `pip install` 自己装进去、**没写进 `settings.packages`** 的扩展**不出现** ——
+> 那是个该被修的状态,由 `qi doctor` 报出来并告诉你该写什么(pi 也一样:它的
+> `pi config` 只看 `packages` 与本地目录)。
+
 **`qi init`** —— 流程:`Provider Configuration`(选已有/新建 → Base URL → API 类型 → API Key,
 直接写 `auth.json`)→ `Add Models`(`Add a model?` 循环)→ `Activate LLM Model`(选 provider →
 选 model,写默认模型)。上下键选择 + 可见输入;已有凭证回车保留。

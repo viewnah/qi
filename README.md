@@ -1,162 +1,76 @@
-# qi:可扩展编码框架(总设计)
+# qi
 
-> **⚠️ v3 重构进行中**:定位从「多 Agent 编码框架」改为「**单 agent 框架 + 可选多 agent 扩展**」——core 收窄到 pi 同款,MCP / 多 agent / web 拆成独立官方扩展(qi-mcp / qi-agents / qi-web)。
-> 设计与阶段拆解见 **[docs/extensions.md](docs/extensions.md)**;下面 agent / 插件那两节的内容**已迁到扩展**(P-E1..P-E5 完成):裸 core 是单 agent,角色归 qi-agents、MCP 归 qi-mcp、web 归 qi-web —— 本节保留为索引与对照。
+**用 Python 写的编码 agent 框架**,形状对齐 [pi](https://pi.dev):core 只留 pi 也有的东西
+(**单 agent** + 工具 + 会话 + TUI),增值功能(MCP / 多 agent / web)全部走 **extension**。
+
+> 现状:**core 就是单 agent**;`qi-mcp` / `qi-agents` / `qi-web` 是三个独立官方 pip 包,各自带
+> 自己的手册。
 >
-> 目标:用 Python 实现一个「类似 pi」的编码框架——core 只留 pi 也有的东西(单 agent + 工具 + 会话 + TUI),增值功能全部走 **extension**。参考 hikqin_sdk 与 pi 的设计,独立实现。
-> **开发计划见 [docs/PLAN.md](docs/PLAN.md)**;本文是设计总入口:文档索引、架构总览、决策索引、技术选型与目录布局。
+> [总设计](design/overview.md) · [手册](docs/index.md) · [开发计划](design/PLAN.md) ·
+> [怎么跑源码](docs/development.md)
+
+## 装
+
+```bash
+pip install qi-agent                 # 或: uv tool install qi-agent
+```
+
+官方扩展按需装 —— **core 不内置、不默认装**:
+
+```bash
+pip install qi-mcp qi-agents qi-web  # 或: uv tool install qi-agent --with qi-mcp
+qi doctor                            # 「声明了但没装」「装了但没声明」在这里报出来
+```
 
 ## 快速开始
 
 ```bash
-# 1. 引导配置默认模型(交互:上下键选 provider/模型 → 写 models.json + settings.json + auth.json)
-qi init
-
-# 非交互(CI / 脚本)
-qi init -y --provider deepseek --model deepseek-chat \
-    --base-url https://api.deepseek.com/v1 --api openai-completions --api-key sk-xxx
-
-# 2. 校验配置与凭证
-qi doctor
-
-# 3. 运行:裸 `qi` 直接进 TUI(交互,单 agent);`-p` 是无头一次执行
-qi
-qi -p "分析这个仓库"
-
-# TUI 视觉/配色与 pi 同源(theme/dark.json、light.json),主题默认跟随终端背景
-# (`qi config --set theme=dark|light|auto`,或 `QI_THEME=light qi`)
-qi "分析这个仓库"          # 进 TUI 并把这句话作为首条发出(对齐 pi 的 `pi "问题"`)
+qi init                              # 引导配置:选 provider/模型 → 写 models.json + settings.json + auth.json
+qi doctor                            # 校验配置与凭证
+qi                                   # 进 TUI(单 agent)
+qi -p "分析这个仓库"                  # 无头一次执行
+qi "分析这个仓库"                     # 进 TUI 并把这句话作为首条发出(对齐 pi)
 ```
 
-零配置即可跑:core 带一份**代码内默认基座提示词** —— **裸 core 就是单 agent**(没有角色层)。角色与委派装 **qi-agents** 扩展。
-想定制角色就装自己的 agent;想定制基座提示词就写 `.qi/SYSTEM.md`(**整体替换**默认基座,注意第 3 步说的副作用)。
+CI / 脚本里跳过交互:
 
 ```bash
-# 4.(可选)装专职 agent 与自定义基座提示词
-cp -r examples/agents/code-analyst ~/.qi/agent/agents/   # 装一个角色(qi-agents 读这个目录)
-vim .qi/SYSTEM.md                              # 项目级基座提示词(整体替换默认基座;可提交共享)
+qi init -y --provider deepseek --model deepseek-chat \
+    --base-url https://api.deepseek.com/v1 --api openai-completions --api-key sk-xxx
 ```
 
-优先级:**项目 `.qi/agents/` > 用户 `~/.qi/agent/agents/`**(包内置那层已随 P-E4c 去掉;角色目录归 qi-agents);**项目 `.qi/SYSTEM.md` > `~/.qi/agent/SYSTEM.md` > 代码内默认基座**。
-详见 [docs/system-prompt.md](docs/system-prompt.md) 与 [docs/agent-config.md](docs/agent-config.md)。
+**零配置也能跑**:core 带一份**代码内默认基座提示词**。想定制基座就写 `.qi/SYSTEM.md`(整体替换,
+项目 > 全局 > 代码内默认);想装角色就装 qi-agents,把角色目录放进 `.qi/agents/`。
 
-`qi init` 交互流程与样式复刻 QwenPaw `init`:**Provider Configuration**(选已有/新建 → Base URL → API 类型 → API Key)→ **Add Models**(`Add a model?` 循环,含 reasoning/contextWindow/maxTokens)→ **Activate LLM Model**(选 provider → 选 model)。完整用法、选项与示例见 [docs/model-config.md §7](docs/model-config.md#7-qi-init-用法)。
+逐步说明见 [quickstart.md](docs/quickstart.md);完整选项与交互流程见 [cli.md](docs/cli.md)、
+[model-config.md](docs/model-config.md);提示词与项目上下文的推出顺序见
+[system-prompt.md](docs/system-prompt.md)。
 
-## 1. 文档索引
+## 索引
 
-| 文档 | 内容 |
+| 去处 | 内容 |
 | --- | --- |
-| [PLAN.md](docs/PLAN.md) | 开发计划(v1/v2 阶段)与未决清单 |
-| [docs/agent-config.md](docs/agent-config.md) | agent = 自包含目录(agent.md / skills / assets / mcp.json / data_sources.json)、装载校验、MCP、数据源、导入导出 |
-| [docs/system-prompt.md](docs/system-prompt.md) | 系统提示词:代码内默认基座 + 可选 `SYSTEM.md` 整体替换 + 动态追加(工具清单 / 项目上下文 AGENTS.md / 技能 / 数据源 / 工作目录) |
-| [docs/tools.md](docs/tools.md) | ToolCatalog、内置 8 工具(含 Windows 的 powershell)、tools 三态、bash 策略(真 bash + 无命令级过滤) |
-| [docs/bash-allowlist.md](docs/bash-allowlist.md) | bash 策略**变更记录**:为何删掉首词白名单、与 pi(v0.85.1)的对照、可绕过的四种写法 |
-| [dispatcher.md](docs/dispatcher.md) | auto 模式:信号分层、分派管线、Router 契约、优先级(**将被 qi-agents 扩展取代**,见 extensions.md §7) |
-| [docs/model-config.md](docs/model-config.md) | `models.json`(对齐 pi:`providers` / `baseUrl` / `api` / `models`);默认模型 default / 分派 router;凭证 auth store + 约定 env + apiKey 引用 |
-| [docs/settings.md](docs/settings.md) | `settings.json`(对齐 pi):两级分层深合并、字段清单(含“仅存储未生效”清单)、资源路径与排除项、`qi config` |
-| [docs/extensions.md](docs/extensions.md) | ⭐ **扩展机制(v3)**:core/扩展分界、pi 对齐的整套 hook 面、中间件链语义、前置件、qi-mcp / qi-agents / qi-web、阶段拆解 |
-| [docs/plugins.md](docs/plugins.md) | v1 插件机制(**被 extensions.md 取代**):pip(entry point)+ 本地目录双通道、消费型配置动态装载 |
-| [docs/cli.md](docs/cli.md) | 命令面(参数尽量对齐 pi) |
-| [docs/tui.md](docs/tui.md) | TUI 交互:`/` 命令草案、布局、消息队列(与 cli.md 区分) |
-| [docs/web.md](docs/web.md) | v2:HTTP 宿主在框架 + UI 插件化 |
-| [examples/agents/](examples/agents/) | code-analyst 完整样例(agent.md + assets + skills + mcp.json) |
+| [docs/index.md](docs/index.md) | **手册**:使用 / 扩展与定制 / 参考 / 程序化 / 开发 |
+| [design/overview.md](design/overview.md) | 总设计:架构总览、既定决策索引、技术选型、目录布局、安全总原则 |
+| [design/PLAN.md](design/PLAN.md) | 开发计划、阶段表、未决清单 |
+| [design/](design/) | 其余设计记录:web / 角色 / 扩展 / dispatcher / bash 策略(**改动者**读) |
+| [extensions/](extensions/) | 官方扩展与各自的手册(qi-mcp / qi-agents / qi-web) |
+| [examples/agents/](examples/agents/) | 角色样例(不自动加载) |
+| [docs/development.md](docs/development.md) | 怎么跑源码 / 测试 / 自检 |
 
-## 2. 架构总览
+**两轨边界**:`docs/` 写给**使用者与模型**(随 wheel 发布:force-include 到 `qi_agent/docs/`,索引注入提示词);`design/` 写给
+**改动者**(不进 wheel、不注入)。扩展的手册归**扩展自己**([extensions.md §6](docs/extensions.md)),
+core 的 `docs/` 只留指针。
 
-```
-┌──────────────────────────────────────────────────────────┐
-│ 前端(同为 stream() 的 consumer,同进程)                      │
-│   TUI(textual)· CLI(typer 一次性)· HTTP(v2,SSE)           │
-├──────────────────────────────────────────────────────────┤
-│ 编排层                                                     │
-│   Runtime.stream() ── @点名 ── Dispatcher(每轮重新路由)      │
-│        │                                      │           │
-│        ▼                                      ▼           │
-│   AgentUnit(装载自 .qi/agents/)       Router-LLM(L1/L3/L4)│
-├──────────────────────────────────────────────────────────┤
-│ 内核                                                       │
-│   AgentRunner(tool-loop)· ToolCatalog · Session(JSONL)     │
-│   LLMClient(models.json)· 事件总线                          │
-└──────────────────────────────────────────────────────────┘
-```
+## 安全(三条)
 
-**一句话运行流**:用户输入 → (auto)Dispatcher 选 agent → 该 agent 的 tool-loop 执行 → 消息/事件写入会话 JSONL → 前端消费同一事件流。
+- **bash 不筛命令**(对齐 pi):内置 bash 以 qi 进程权限执行任意命令。要收紧就在角色 `tools:`
+  里只列需要的工具(白名单),或本次运行用 `-nt`(全禁)/ `-nbt`(只留扩展工具)/ `-t` / `-xt`
+  收窄,或把进程放进容器/VM —— 进程内的半吊子过滤容易被误当成安全边界
+- 扩展与角色是**全权限代码 / 可执行指令**:仅可信源。项目级 `.qi/extensions/` 需信任,未信任时
+  **不加载**(`settings.defaultProjectTrust`;`ask` 现在保守判不信任)
+- 凭证三源:auth store(`~/.qi/agent/auth.json`,0600)→ 约定环境变量 → `models.json` 的 `apiKey`
+  引用;配置文件与导入包**零明文**
 
-## 3. 核心概念与既定决策
-
-| 概念 | 结论 | 详见 |
-| --- | --- | --- |
-| agent | **内容**:自包含目录 `agents/<name>/`(agent.md 定义,frontmatter + 正文即 system prompt) | agent-config.md |
-| agent 位置 | **2 处**:`~/.qi/agent/agents/` → `<项目>/.qi/agents/`(原先还有"包内置 `general`"那层,P-E4c 删掉了;discovery 在 qi-agents 里);项目静默覆盖全局;同层重复报错。**已搬进 qi-agents(P-E5 ①)** | agent-config.md §3 |
-| agent.md 字段(v1) | name / display_name / description(路由信号)/ keywords / tools / include / opening | agent-config.md §4 |
-| 技能 | 私有自动绑定、渐进披露、无内置、无共享库;同一 agent 内同名报错 | agent-config.md §5 |
-| MCP(v1) | 私有 mcp.json(仅本 agent,凭证 env)+ 全局 `~/.qi/agent/mcp.json` / 项目 `.qi/mcp.json` 按 `mcp_servers` 绑定 | agent-config.md §8 |
-| 数据源 | 实例在 agent `data_sources.json`(私有,凭证 env);**插件消费型配置**:插件缺席不装载 | agent-config.md §9 / plugins.md |
-| 导入导出 | import = 拷贝 + 复用装载校验器 + 明文凭证扫描;export 产物可直接 import | agent-config.md §10 |
-| 工具 | 代码全局注册 ToolCatalog;**tools 三态**:省略或 `*` = 全部,名单 = allowlist;未知名报错 | tools.md |
-| 内置工具(v1) | 8 个:read / ls / find / grep / write / edit(diff 精确)/ bash(真 bash)/ powershell(仅 Windows) | tools.md §2 |
-| 模型 | 全局 `models.json`:`defaultProvider/defaultModel`(执行)/ `routerProvider/routerModel`(分派);agent 不声明模型 | model-config.md |
-| 插件 → 扩展 | pip 包(entry point `qi.extensions`)+ 本地目录双通道;`register(api)`:工具 / 事件 / 命令 / 旗标 / 能力交接整套面。**P-E1 已改名 extension**,见 extensions.md | plugins.md |
-| 运行 | **单 agent**(core 不再分派);多 agent 走 **agent-as-tool**(qi-agents)。**P-E4c 已取消 auto 与 `--agent`** | cli.md / extensions.md §7 |
-| 命令 | 参数尽量对齐 pi:`qi [-p\|-c\|-r\|…] [--] [@files…] [msg…]` + 子命令 | cli.md |
-| Web(v2) | HTTP 宿主在框架(`qi web`),UI 插件化;不做外置 RPC 桥。**v3:整包拆成 qi-web 扩展**(独立 pip 包,core 不内置) | web.md / extensions.md §6 |
-| 配置形态 | agent 定义 = Markdown + frontmatter;模型配置 = JSON `models.json`(对齐 pi,分层:env → 项目 → 用户);应用设置/默认模型 = `settings.json` | settings.md |
-| 会话 | JSONL 每会话文件(pi 风格,entry 带 type/agent_id);位置:**全局 `~/.qi/agent/sessions/`** | cli.md §2 |
-| Dispatcher | auto:信号分层(L1 规则 / L2 embedding 默认关 / L3 Router 读 description / L4 兜底)+ @ 点名;**每轮都重新路由,无 sticky 沿用**。**v3:整个取消,改 agent-as-tool** | dispatcher.md / extensions.md §7 |
-| bash 策略 | **无命令级过滤**(对齐 pi);限制靠 `tools`/`disallowed_tools` 收窄,或容器/VM;文件工具路径限会话目录 | tools.md §4 / bash-allowlist.md |
-| clarify / denylist | v1 内置 clarify 通用工具;`disallowed_tools` v1 | tools.md |
-
-## 4. 技术选型
-
-| 项 | 选择 | 状态 |
-| --- | --- | --- |
-| 语言 | Python ≥3.12 + asyncio | ✅ |
-| 数据模型/校验 | **pydantic v2**(AgentConfig/Tool 参数 schema/配置校验) | ✅ |
-| LLM 接入 | litellm 统一 或 直连 openai/deepseek SDK | ⏳ 待定(倾向 litellm) |
-| 会话存储 | JSONL 每会话文件(不选 SQLite:追加写/可读/零迁移) | ✅ |
-| CLI | typer + rich(薄;**无独立 REPL**,交互 = TUI) | ✅ |
-| TUI | textual(事件驱动增量渲染,渲染器 = event → lines) | ✅ |
-| 配置 | `models.json`(格式对齐 pi)+ `settings.json`(默认模型/字符串资源,分层深合并)+ pydantic 校验;凭证不入配置文件(auth store / env) | ✅ |
-
-## 5. 目录布局(运行时)
-
-全局侧比项目侧深一层,与 pi 同构:`~/.pi/agent/` ↔ `<项目>/.pi/`。全部用户级状态都挂在 `agent/` 下,
-`~/.qi` 本身只是名字空间外壳(`QI_CONFIG_DIR` 可改)。
-
-```text
-~/.qi/                      # 名字空间根(空壳)
-└── agent/                  # 全局(QI_AGENT_HOME 可覆盖此路径,对齐 PI_CODING_AGENT_DIR)
-    ├── settings.json       # 默认模型 / skills 追加路径 / theme …
-    ├── models.json         # providers / 模型(格式对齐 pi)
-    ├── auth.json           # 凭证(0600,按 provider)
-    ├── SYSTEM.md           # 可选:整体替换默认基座(见 system-prompt.md §3 副作用)
-    ├── AGENTS.md           # 可选:全局项目上下文(注入 <project_context>)
-    ├── skills/<name>/      # 全局技能(qi 私有)
-    ├── agents/<name>/      # 全局 agent
-    ├── plugins/<name>/     # 本地目录插件通道(P-E1 起改名 extensions/,入口 plugin.py → extension.py)
-    └── sessions/*.jsonl    # 会话
-
-<项目>/.qi/                 # 项目级(扁平;与 ~/.qi/agent 配对)
-├── settings.json           # 覆盖全局(深合并;数组整体替换)
-├── models.json
-├── skills/  agents/  plugins/
-└── SYSTEM.md
-
-~/.agents/skills/           # Agent Skills 标准目录(.qi 的同级,跨工具共享)
-```
-
-> 旧版扁平布局(`~/.qi/models.json` 等)在启动时**自动迁移**到 `~/.qi/agent/`,
-> 只在目标不存在时搬,绝不覆盖。
->
-> 提示词的两个入口不要混:`SYSTEM.md` **整体替换**默认基座(项目 > 全局 > 代码内默认);
-> `AGENTS.md` / `CLAUDE.md`(全局 `~/.qi/agent/` + 项目根及各级祖先,止于 git 根)则作为
-> `<project_context>` **追加**。两者与角色层、技能、数据源、工作目录的推出顺序见
-> [docs/system-prompt.md](docs/system-prompt.md)。
-
-## 6. 安全总原则
-
-- **bash 不筛命令**(对齐 pi):内置 bash 以 qi 进程权限执行任意命令;要收紧就在 agent 级摘工具(`disallowed_tools: [bash]`),要真边界就把进程放进容器/VM——进程内的半吊子过滤容易被误当成安全边界
-- 内容(技能/第三方 agent)是可执行指令:**先审后装/导入时提示**
-- 插件/扩展代码 = 全权限:仅可信源;项目级 `.qi`(extensions/agents)需信任 —— **信任门控目前未实现**(`.qi/plugins/` 是无条件扫描的),见 extensions.md §5.3
-- 凭证三源:auth store(`~/.qi/agent/auth.json`,0600,按 provider)→ 约定环境变量 → `models.json` 的 `apiKey` 引用;配置文件与导入包**零明文**(导入时扫描)
-- Web/远程暴露需显式开启 + 鉴权(默认回环)
+完整安全模型见 [security.md](docs/security.md);口径与已知缺口见
+[design/overview.md §5](design/overview.md)。

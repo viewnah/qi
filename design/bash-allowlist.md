@@ -3,15 +3,15 @@
 > 状态:**已实施**。本文记录 qi bash 策略的一次变更——删掉"命令首词只读白名单",与 pi 对齐为
 > **无命令级过滤**——并保留 pi 的设计取向作为对照。
 > 文件名 `bash-allowlist.md` 是历史名(变更前本文叫《bash 白名单设计与 pi 对照》)。
-> 相关:[tools.md](tools.md) §4(bash 策略)、[README.md §6 安全总原则](../README.md)。
+> 相关:[tools.md](../docs/tools.md) §4(bash 策略)、[overview.md §5 安全总原则](overview.md)。
 > pi 侧结论取自本机安装的 `@earendil-works/pi-coding-agent` **v0.85.1** 的 `docs/`、`examples/`
 > 与打包产物(未实跑,见 §6)。
 
 ## 1. 结论先行
 
 - **qi 现在与 pi 一致:内置 bash 不做命令级过滤。** 不筛子命令、不拦重定向、不做只读 allowlist。
-- 限制手段只剩**工具级收窄**:`tools` 三态 + `disallowed_tools`(等价 pi 的
-  `--tools` / `--exclude-tools` / `defaultTools`)。要连 bash 一起摘掉就 `disallowed_tools: [bash]`。
+- 限制手段只剩**工具级收窄**:角色 `tools` 三态 + `disallowed_tools`(denylist),以及 CLI 的
+  `-t`/`-xt`/`-nt`/`-nbt`。要连 bash 一起摘掉就 `disallowed_tools: [bash]`,或 `qi -nt` 全禁。
 - 需要真边界时把 qi 整个进程放进容器/VM,与 pi 的 `docs/containerization.md` 路线相同。
 - 旧实现("首词白名单")是本仓库最典型的**"看起来像边界、实际不是"**:
   拦掉 `mkdir`/`mv`/`cp`/包安装等大量正常命令,却能被 `&&` / `;` / `|` / `>` / 裸 `python` 绕过。
@@ -60,7 +60,7 @@ return sub in GIT_READ_ONLY, f"git {sub} 不在只读列表;{WRITE_HINT}"
 
 - **错误提示指向不存在的配置项**:`WRITE_HINT` 说"配置 `[runtime] bash` 放开",
   但**全仓库没有任何代码读取 `[runtime]`**。`dispatcher.py` 的注释(`# B6:可配 [runtime]`)
-  与 `docs/PLAN.md` 是同一处悬空设计。
+  与 `PLAN.md` 是同一处悬空设计。
 - **TUI 的 `!` 命令完全绕过白名单**:`tui.py` 的 `_exec_bash` 直接
   `create_subprocess_shell`,不调 `_bash_allowed`。这可能是有意设计(用户亲手敲的操作
   不算模型越权),但它意味着白名单只约束**模型发起**的 bash。变更后这个区别不再重要:

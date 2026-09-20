@@ -1,7 +1,7 @@
 # qi:开发计划与未决清单
 
-> 总设计见 [../README.md](../README.md)。本文只放**怎么干**(阶段/验收)与**开工前要拍板的事**。
-> **v3 扩展化重构(进行中)的完整设计在 [extensions.md](extensions.md)**,阶段表见本文 §3。
+> 总设计见 [overview.md](overview.md)。本文只放**怎么干**(阶段/验收)与**开工前要拍板的事**。
+> **v3 扩展化重构(进行中)的完整设计在 [extensions.md](../docs/extensions.md)**,阶段表见本文 §3。
 
 ## 1. 项目目录结构(可打包 wheel)与打包设计
 
@@ -10,30 +10,43 @@
 ```text
 /workspace/qi/                  ← 仓库根(uv build / pip install . 从这里打)
 ├── pyproject.toml              # name = "qi-agent",hatchling 构建
-├── README.md                   # 总设计(项目根)
-├── docs/                       # 设计文档 + 本 PLAN.md(不进 wheel)
-├── examples/agents/            # 样例 agent(教学样例;不自动加载,不进 wheel)
-├── src/qi_agent/               # 包代码
+├── README.md                   # 入口页(装 + 快速开始 + 索引)
+├── docs/                       # 手册(force-include → qi_agent/docs,随 wheel 发布;索引进提示词)
+├── design/                     # 设计记录 + 本 PLAN.md(不进 wheel、不注入)
+├── examples/agents/            # 样例角色(不自动加载)
+├── examples/extensions/        # 样例扩展(不自动加载)
+├── extensions/                 # 官方三件套:qi-mcp / qi-agents / qi-web(各自独立 pip 包)
+├── src/qi_agent/               # core 包代码
 │   ├── __init__.py             # __version__
 │   ├── py.typed                # PEP 561
-│   ├── builtin/agents/general/ # ⭐ 包内置兜底 agent(进 wheel;可被用户/项目同名覆盖)
 │   ├── cli.py                  # [project.scripts] qi → qi_agent.cli:main
-│   ├── config.py               # TOML 分层装载 + pydantic 校验
-│   ├── llm.py                  # LLMClient 协议 + 实现(N8 待定)
-│   ├── models.py               # AgentConfig/Tool/Message/事件类型
-│   ├── registry.py             # AgentRegistry / ToolCatalog / 插件能力注册表
-│   ├── loader.py               # agents 发现(内置/用户/项目)+ agent.md/技能解析 + 校验 + SYSTEM.md 解析 + AGENTS.md 项目上下文
-│   ├── tools/                  # 内置 8 工具(read/ls/find/grep/write/edit/bash/powershell)+ shell 解析
+│   ├── tui.py                  # textual 界面(event → lines)
+│   ├── runtime.py              # QiRuntime:stream() / 会话绑定 / 事件派发
 │   ├── runner.py               # AgentRunner(tool-loop)
-│   ├── system_prompt.py        # ⭐ 系统提示词构建:代码内默认基座 + 动态注入(工具清单/指南/AGENTS.md/技能/数据源/cwd)
-│   ├── dispatcher.py           # Router-LLM 分派
-│   ├── runtime.py              # AutoRuntime:manual/@点名/每轮重新路由/stream()
-│   ├── session.py              # JSONL 会话读写
-│   ├── events.py               # 事件总线
-│   ├── mcp.py                  # MCP client 装载(v1)
-│   └── tui/                    # textual 界面
-├── tests/                      # pytest
-├── .venv/  uv.lock             # uv 工作流(对齐 hikqin_sdk)
+│   ├── extensions.py           # 扩展宿主:ExtensionBus / ExtensionApi / Tool / register_tool
+│   ├── system_prompt.py        # ⭐ 提示词构建:代码内默认基座 + 动态注入
+│   ├── prompt.py               # 交互式提示控件(选择 / 输入)
+│   ├── registry.py             # ToolCatalog / 扩展能力注册表
+│   ├── session.py              # JSONL 会话读写 + 分支树
+│   ├── compaction.py           # 上下文压缩
+│   ├── llm.py                  # LLMClient(litellm)+ model registry
+│   ├── models.py               # 核心数据模型:Message / 事件 / 工具结果
+│   ├── settings.py             # settings.json(分层深合并)
+│   ├── auth.py                 # auth store(~/.qi/agent/auth.json)
+│   ├── packages.py             # settings.packages ↔ 实装 比对(qi list / doctor)
+│   ├── pep723.py               # 目录通道扩展的 PEP 723 声明
+│   ├── loader.py               # markdown + frontmatter 解析(技能/内容共用)
+│   ├── paths.py                # 运行时目录约定(QI_CONFIG_DIR / QI_AGENT_HOME …)
+│   ├── theme.py / themes/      # 主题(dark / light,移植自 pi)
+│   ├── titling.py              # 会话自动命名(用模型起短标题)
+│   ├── abort.py                # 协作式中断信号
+│   ├── workspaces.py           # 工作区显示名覆盖
+│   ├── config.py               # models.json 装载 + 解析
+│   └── tools/                  # 内置 8 工具 + clarify
+│       ├── __init__.py         # read/ls/find/grep/write/edit/bash/powershell/clarify
+│       └── shell.py            # bash 解析(shellPath → Git Bash → PATH → /bin/bash → sh)
+├── tests/                      # pytest(54 个文件)
+├── .venv/  uv.lock             # uv 工作流
 └── sdk/                        # 参考用的 hikqin_sdk:独立产品,不参与本包构建
 ```
 
@@ -47,37 +60,48 @@ build-backend = "hatchling.build"
 [project]
 name = "qi-agent"
 version = "0.1.0"
+description = "多 agent 编码框架:专职角色 agent + auto 分派(Dispatcher)"
+readme = "README.md"
 requires-python = ">=3.12"
-dependencies = [                    # 核心最小集
+license = { text = "MIT" }
+dependencies = [
     "pydantic>=2.10",
     "typer>=0.12",
     "rich>=13.0",
     "textual>=0.80",
-    "mcp>=1.26",                    # MCP v1
-]                                   # LLM 接入待定(N8):litellm 或直连 SDK
+    "PyYAML>=6.0",
+    "litellm>=1.40",
+]
 
 [project.optional-dependencies]
-web = ["fastapi>=0.115", "uvicorn[standard]>=0.32"]   # v2:qi web 宿主
-dev = ["pytest>=8", "pytest-asyncio", "uv"]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
 
 [project.scripts]
 qi = "qi_agent.cli:main"
 
-[project.entry-points."qi.plugins"]  # 插件注册组(框架自身不装任何插件)
+[project.entry-points."qi.extensions"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/qi_agent"]
+
+[tool.pytest.ini_options]
+markers = [
+    "real_extensions: 本测试要装载**本机真装的扩展**(退出默认的 entry-point stub)",
+]
+asyncio_mode = "auto"
+testpaths = ["tests"]
 ```
 
 ### wheel 内容边界
 
 | 进 wheel | 不进 wheel |
 | --- | --- |
-| `qi_agent/*` 代码、py.typed | docs/、examples/(仓库内容) |
-| 内置 8 工具、CLI/TUI/MCP 代码 | sdk/(独立产品) |
-| 无任何 agent/技能数据(零内置) | 运行时 ~/.qi 数据(永不打包) |
+| `qi_agent/*` 代码、py.typed | `design/`、`examples/`、`extensions/`(仓库内容) |
+| 内置 8 工具 + `clarify`、CLI/TUI、扩展宿主 | `sdk/`(独立产品) |
+| 无任何角色/技能数据(**零内置**;角色归 qi-agents) | 运行时 `~/.qi` 数据(永不打包) |
+| `docs/` 手册(**已落地**:force-include → `qi_agent/docs/`,提示词里注入索引) | MCP / web 代码(core 不含,归 qi-mcp / qi-web) |
 
-安装后:`pip install qi-agent` → `qi` 命令可用,`~/.qi/` 首次运行创建;web 前端(v2)按 web.md 走**独立 UI 插件包**,不进本 wheel。
+安装后:`pip install qi-agent` → `qi` 命令可用,`~/.qi/` 首次运行创建;MCP / 角色 / web 都在**独立扩展包**里(qi-mcp / qi-agents / qi-web),core 一个都不带。
 
 ## 2. v1(核心库 + CLI + TUI + MCP + 数据源)
 
@@ -96,7 +120,7 @@ packages = ["src/qi_agent"]
 ## 3. v3:扩展化重构(进行中)
 
 > 目标:core 收窄到 **pi 同款**(单 agent + 工具 + 会话 + TUI + 扩展宿主),MCP / 多 agent / web 拆成**独立官方 pip 扩展**(qi-mcp / qi-agents / qi-web)。
-> 完整设计(边界、hook 面、中间件链语义、前置件、三件套)见 **[extensions.md](extensions.md)**;本节只放阶段与验收。
+> 完整设计(边界、hook 面、中间件链语义、前置件、三件套)见 **[extensions.md](../docs/extensions.md)**;本节只放阶段与验收。
 > 连带:定位从「多 Agent 编码框架」→「**单 agent 框架 + 可选多 agent 扩展**」,`auto` 分派取消(改 **agent-as-tool**)。
 
 | 阶段 | 内容 | 验收 |
@@ -147,9 +171,9 @@ packages = ["src/qi_agent"]
 | B10 | 样例 | examples/ 加 writer + general(演示 auto 多角色) |
 | A7 | 凭证存储 | auth store `~/.qi/agent/auth.json`(0600,git 不跟踪);解析顺序 auth store → 约定 env → models.json `apiKey` 引用;`qi auth login/logout/list` + 只读三件套 `print-api-key` / `print-bearer-token` / `check`(退出码对齐 pi:0/1/2)、`qi init` 引导 |
 | A8 | 全局目录层级 | `~/.qi/agent/` ↔ `<项目>/.qi` 配对(对齐 pi 的 `~/.pi/agent` ↔ `.pi`);旧扁平布局启动时自动迁移(不覆盖);`QI_AGENT_HOME` = agent 目录、`QI_CONFIG_DIR` = 名字空间根 |
-| A9 | 设置文件 | `settings.json` 两级深合并、数组整体替换;默认模型只属于 settings(`models.json` 里已不读取);字段清单与“仅存储未生效”清单见 [settings.md](settings.md);`qi config` 读写 |
+| A9 | 设置文件 | `settings.json` 两级深合并、数组整体替换;默认模型只属于 settings(`models.json` 里已不读取);字段清单与“仅存储未生效”清单见 [settings.md](../docs/settings.md);`qi config` 读写 |
 | A10 | 顶层技能 | 六级来源(低→高):`~/.agents/skills` → `~/.qi/agent/skills` → user `settings.skills` → 项目 `.agents/skills` 祖先链 → `<git根>/.qi/skills` → project `settings.skills`;agent 自带者最高;同层同名报错、跳层覆盖;排除项作用于整个发现集 |
-| A11 | 系统提示词 | 默认基座**代码内**(`system_prompt.py`,按解析后的工具集生成「可用工具 / 指南」);`SYSTEM.md` **整体替换**默认基座(项目 > 全局);之后动态追加角色层 → `<project_context>`(AGENTS.override.md > AGENTS.md > AGENTS.MD > CLAUDE.md > CLAUDE.MD,全局 + 祖先链至 git 根)→ `<available_skills>` XML(无 `read`/`bash` 则不注入)→ 数据源 → cwd。取消包内置 `SYSTEM.md`;自身文档索引未做。详见 [system-prompt.md](system-prompt.md) |
+| A11 | 系统提示词 | 默认基座**代码内**(`system_prompt.py`,按解析后的工具集生成「可用工具 / 指南」+ **手册索引**);`SYSTEM.md` **整体替换**默认基座(项目 > 全局);之后动态追加 `<project_context>`(AGENTS.override.md > AGENTS.md > AGENTS.MD > CLAUDE.md > CLAUDE.MD,全局 + 祖先链至 git 根)→ `<available_skills>` XML(无 `read`/`bash` 则不注入)→ cwd → `--append-system-prompt`。角色层与数据源**不在 core**(归 qi-agents / 提供方扩展)。详见 [system-prompt.md](../docs/system-prompt.md) |
 | A12 | 轮次 / 超时 / 中断 | **对齐 pi:runner 里既不设轮次上限,也不套回合级请求超时** —— 循环是 `while True`,退出靠模型不再调工具 / 中止 / 嵌入方谓词 `stop_after`(pi 的 `shouldStopAfterTurn` 同形,默认 `None` = 不限)。**qi 自己从不传谓词**(pi-coding-agent 也从不实现那个钩子):交互式靠 `escape` / 客户端断开,无头靠 `SIGTERM`/`SIGHUP` → `kill_live_children()` + `exit(143/129)`(对齐 pi 的 `killTrackedDetachedChildren`)。请求级超时与重试归 **provider 层**(`settings.json` 的 `retry.provider.timeoutMs` / `maxRetries` → litellm `timeout` / `num_retries`;对齐 pi 的 `getProviderRetrySettings`)。中断是**协作式**(`abort.py` 的 `AbortSignal`):未执行的 tool_call 补“已中断”结果、半截回答照常落盘、照常发 `agent_end`(data 带 `aborted`);TUI `escape` 宽限 3s 后 `cancel_all()` 兜底;硬取消(`CancelledError`,含 SIGINT/ASGI 取消)也先落盘再抛 |
 
 ### 仍待定(v2 + 实现期)
@@ -158,11 +182,10 @@ packages = ["src/qi_agent"]
 - C2:import adapter(Claude/SKILL.md)— v2
 - C3:headless RPC 协议细节 — v2
 - C4:扩展工具名前缀/冲突策略 — **v3 并入 qi-mcp / qi-agents 的工具命名约定**(见 extensions.md §6/§7);v1 的「db 插件」形态取消
-- **litellm 的 ~6.8s import**(2026-09 实测,热缓存 3 次稳定)— 拖累每一次 `qi -p` 的首次响应,也是 v3 选「子 agent 进程内」的量化依据(子进程 = 6.8s × N);待查瘦身开关或 provider 直连。见 extensions.md §11.6
+- **litellm 的 ~6.8s import**(2026-09 实测,热缓存 3 次稳定)— 拖累每一次 `qi -p` 的首次响应,也是 v3 选「子 agent 进程内」的量化依据(子进程 = 6.8s × N);待查瘦身开关或 provider 直连。见 [extensions-design.md §11.6](extensions-design.md)
 - 会话 JSONL entry 类型表具体字段(P3 定稿)
-- qi 自身文档索引注入:pi 在 prompt 尾部给 README/docs/examples 绝对路径 + 按主题指路(qi 版见 system-prompt.md §6);障碍是 `docs/` 不进 wheel,装入后路径不存在 —— 要么改打包(把 docs 打进 wheel),要么只在源码仓库里存在时注入
+- ~~qi 自身文档索引注入~~ → **已落地**:`docs/` 经 force-include 进 wheel(`qi_agent/docs/`),默认基座末尾注入由 `docs.json` 生成的索引;`--append-system-prompt` 也一并接上(见 [system-prompt.md §6](../docs/system-prompt.md))
 - 回合级重试(pi 的 `retry.enabled` / `maxRetries` / `baseDelayMs`:失败回合退避重试)未接;已接的是 provider 层的 `retry.provider.timeoutMs` / `maxRetries`(见 settings.md)。pi 的 `retry.provider.maxRetryDelayMs` 无对应 litellm 参数,也未映射
-- qi 自身文档索引注入:pi 在 prompt 尾部给 README/docs/examples 绝对路径 + 按主题指路(qi 版见 system-prompt.md §6);障碍是 `docs/` 不进 wheel,装入后路径不存在 —— 要么改打包(把 docs 打进 wheel),要么只在源码仓库里存在时注入
 - Router prompt 模板细节(dispatcher.md 草案之上微调)
 
 ## 6. 收口节奏

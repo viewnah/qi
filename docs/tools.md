@@ -1,6 +1,6 @@
-# 工具设计
+# 工具
 
-> 状态:设计讨论中。相关文档:[agent-config.md](agent-config.md)(agent 如何引用工具)、[model-config.md](model-config.md)。
+> 相关文档:[agent-config-design.md](../design/agent-config-design.md)(v1 的 agent 如何引用工具)、[extensions.md](extensions.md)(扩展注册工具)、[model-config.md](model-config.md)。
 
 ## 1. 定位与原则
 
@@ -44,10 +44,11 @@ class ToolResult:
 
 ## 4. bash 策略(已定 v1;审批细化在 v2)
 
-> **变更历史与设计取舍见 [bash-allowlist.md](bash-allowlist.md)。**
+> **变更历史与设计取舍见 [bash-allowlist.md](../design/bash-allowlist.md)。**
 
 - **已定:内置 bash 不做命令级过滤**——不筛子命令、不拦重定向、不做只读 allowlist。与 pi 取向一致(`pi docs/security.md`:*A partial in-process sandbox would be easy to misunderstand as a security boundary*)。
-- 限制手段 = **工具级收窄**(对齐 pi 的 `--tools` / `defaultTools`):`tools` 三态 + `disallowed_tools`。连 bash 都不给就 `disallowed_tools: [bash]`,模型只剩文件工具。
+- 限制手段 = **工具级收窄**(对齐 pi 的 `--tools` / `defaultTools`):`tools` 三态(省略或 `*` = 全部 / 名单 = allowlist)。要“连 bash 都不给”就用**白名单**(别列 `bash`),或者用 **`disallowed_tools`**(denylist,支持 `mcp__server__*` 通配)。
+  会话级还有 CLI 的四个旗标:**`-t`** 严格白名单 / **`-xt`** 排除 / **`-nt`** 全禁 / **`-nbt`** 只去内置(见 [cli.md](cli.md) §1)。
 - **执行器是解析出来的真 shell**,不是系统默认 shell:`bash` 永远走 bash 系二进制(Windows 上找 Git Bash/PATH,Unix 上 `/bin/bash` → PATH → `sh`),Windows 原生走 `powershell`。`settings.shellPath` 可显式指定(对齐 pi)。旧实现用 `create_subprocess_shell`,在 Windows 上等于 cmd.exe――工具名叫 bash 却跑 cmd。
 - 子进程的 stdin 是 `DEVNULL`(对齐 pi 的 `ignore`):命令读不到 TUI 的按键;超时时按**进程组**回收(子进程不会逃逸成孤儿)。
 - 需要真边界时把 qi 整个进程放进容器/VM(对齐 pi `docs/containerization.md` 的路线)。
@@ -58,7 +59,7 @@ class ToolResult:
 
 > 变更记录(2026-09):v1 早期实现是"命令首词只读白名单"(`READ_ONLY_FIRST` + `GIT_READ_ONLY`),
 > 拦掉了 `mkdir`/`mv`/`cp`/包安装等大量正常命令,却能被 `&&` / `;` / `>` / 裸 `python` 绕过,
-> 且错误提示指向一个不存在的 `[runtime] bash` 配置项。已删除,与 pi 对齐。详见 [bash-allowlist.md](bash-allowlist.md)。
+> 且错误提示指向一个不存在的 `[runtime] bash` 配置项。已删除,与 pi 对齐。详见 [bash-allowlist.md](../design/bash-allowlist.md)。
 
 ## 5. 预留(二期)
 
@@ -74,7 +75,7 @@ MCP 已是 v1,见 [agent-config.md](agent-config.md) §8。
 | 命名分歧 | 文件名搜索用 `find`(跟 pi),不用 `glob`(hikqin) |
 | edit 方案 | v1 即 diff 精确编辑,不做整写简化版 |
 | tools 三态 | 省略 / `["*"]` = 全部;显式名单 = allowlist;未知名报错(对齐 Claude Code) |
-| denylist | `disallowed_tools` v1(Claude 同款;先 denylist 后 allowlist) |
+| denylist | `disallowed_tools`(角色级,Claude 同款:先 denylist 后 allowlist;两边都列到就移除) |
 | clarify | v1 内置全局通用工具 |
 | bash 策略 | 与 pi 对齐:**无命令级过滤**;限制靠 `tools`/`disallowed_tools` 收窄或容器/VM;文件工具路径限会话目录 |
 | bash 执行器 | 解析**真 bash**(`shellPath` → Git Bash → PATH → `/bin/bash` → `sh`),不用系统默认 shell;Windows 原生走 `powershell` 工具 |

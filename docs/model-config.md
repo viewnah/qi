@@ -1,7 +1,8 @@
-# 模型配置设计
+# 模型配置
 
-> 状态:v1 实现。模型配置**不进入 agent.md**,统一归 `models.json`(格式对齐 pi)。
+> 模型配置统一归 `models.json`(格式对齐 pi),**不进** `agent.md`。
 > 凭证明文只进 `auth.json` 或环境变量,`models.json` 只允许引用。
+> 相关:[providers.md](providers.md)(provider 与 API 形态)、[settings.md](settings.md)、[security.md](security.md)(凭证三源)。
 
 ## 1. 设计要点
 

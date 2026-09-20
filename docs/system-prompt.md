@@ -1,8 +1,8 @@
 # 系统提示词:代码内默认 + 可选整体替换 + 动态追加
 
-> 状态:v2 已实现(对齐 pi 的 `core/system-prompt.js`)。相关文档:
-> [agent-config.md](agent-config.md)(agent = 角色层)、[dispatcher.md](dispatcher.md)(auto 分派)、
-> [model-config.md](model-config.md)(模型)、[PLAN.md](PLAN.md)(未决项)。
+> 对齐 pi 的 `core/system-prompt.js`。相关文档:
+> [skills.md](skills.md)(技能如何进提示词)、[settings.md](settings.md)(`SYSTEM.md` / `AGENTS.md` 的位置)、
+> [model-config.md](model-config.md)(模型)、[PLAN.md](../design/PLAN.md)(未决项)。
 
 ## 0. 一句话
 
@@ -95,7 +95,7 @@ qi 相对 pi 保留的唯一结构差异是**角色层**:`agent.md` 正文永远
 + **环境**:会话工作目录 + 「需要事实时才用工具」+ 需求不明确用 `clarify`。
 + **做法**:先看再做 / 小步验证 / 不编造 / 务实。
 
-**没有任何 bash 白名单文案**:bash 不做命令级过滤(见 [bash-allowlist.md](bash-allowlist.md)),
+**没有任何 bash 白名单文案**:bash 不做命令级过滤(见 [bash-allowlist.md](../design/bash-allowlist.md)),
 提示词不得声称「只读」——`tests/test_system_prompt.py` 有防回归断言。
 
 ## 5. 项目上下文(AGENTS.md)
@@ -113,7 +113,7 @@ AGENTS.override.md > AGENTS.md > AGENTS.MD > CLAUDE.md > CLAUDE.MD
 + 显式关闭:程序接口传 `context_files=[]`(测试/嵌入方要确定性时用)。
 + 未实现:pi 的 `git worktree` 影子文件去重(嵌套 worktree 与主仓库同作用域时只取一份)。
 
-## 6. 技能与数据源
+## 6. 技能与手册索引
 
 技能清单是 pi 式的 XML(渐进披露:只给名字/描述/路径,正文用时再读):
 
@@ -131,17 +131,46 @@ AGENTS.override.md > AGENTS.md > AGENTS.MD > CLAUDE.md > CLAUDE.MD
 + **两者都没有 → 整块不注入**(注入了也读不到,只会诱导模型调用不存在的工具);pi 同款。
 + 相对路径以 SKILL.md 所在目录为基准解析,并在工具命令里用绝对路径。
 
-数据源是 qi 独有的一块:列出 `id (type)` + 「先查 schema 确认表结构,只读查询,禁止写操作」。
+数据源**不在 core**:core 不注入数据源 —— `data_sources.json` 住在角色目录里,归提供该配置
+种类的扩展自己读(见 [extensions-design.md §13](../design/extensions-design.md));v1 那条
+`id (type)` 列表的实现已经不存在。
 
-**未决(见 [PLAN.md](PLAN.md))**:pi 会注入自身文档索引(README/docs/examples 绝对路径 + 12 条
-按主题指路)。qi 的 `docs/` 目前不进 wheel,注入会指向不存在的路径,故暂不实现。
+### 6.1 手册索引(pi 的 `Additional docs`)
+
+默认基座末尾还会给一段**手册索引**:根目录(绝对路径)+ 按主题列出的手册文件名。
+
+```text
+文档(qi 自带的手册;要查用法、或要改 qi 自身,先读对应文件,不要凭记忆猜):
+- 根目录: /…/qi_agent/docs
+- 开始: index.md、quickstart.md、usage.md、cli.md、tui.md、settings.md、security.md
+- 参考: sessions.md、session-format.md、compaction.md、model-config.md、tools.md、providers.md
+```
+
+- 表**由 `docs/docs.json` 的 navigation 生成**(pi 把"主题 → 文件"写死在源码里,qi 从索引生成
+  —— 手册增删时不会漂)。
+- 路径取**实际解析结果**(`paths.docs_dir()`):先找 wheel 里的 `qi_agent/docs/`,再退源码树的
+  `<repo>/docs/`;两处都找不到就**整块不注入**,不往提示词里写不存在的路径。
+- **只在默认基座分支出现**:自定义 `SYSTEM.md` 是"整体替换",作者自己决定要不要提手册。
+- 与技能同规矩:没有能读文件的工具(`read` / `bash`)时整块不注入。
+- 正文**不塞进上下文** —— 只给路径,模型自己用 `read` 打开(渐进披露)。
+
+### 6.2 追加自己的段落(`--append-system-prompt`)
+
+`qi --append-system-prompt "<文本>"`(可重复)把文本追加到**每回合** system prompt 的**末尾**,
+多段之间空行连接(空白段忽略)。与另外两个入口的区别:
+
+| 入口 | 语义 | 落盘 |
+| --- | --- | --- |
+| `.qi/SYSTEM.md` | **整体替换**基座 | 是(仓库文件) |
+| `--append-system-prompt` | **追加**到末尾 | 否(只在本次运行) |
+| 扩展的 `before_agent_start` | 改 `system_prompt`(链式,看到的是已拼好的全文) | 否 |
 
 ## 7. 用法
 
 ### 7.1 用默认的(零配置)
 
 ```bash
-qi -p "你好"     # 代码内默认基座 + 内置 general 角色
+qi -p "你好"     # 代码内默认基座(单 agent)
 ```
 
 ### 7.2 全局覆盖 / 项目覆盖

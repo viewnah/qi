@@ -1,8 +1,8 @@
 # Web 能力设计(宿主 + UI 插件)
 
-> ⚠️ **v3 归属变更**:整个 web(HTTP 宿主 + AG-UI 桥 + UI 资源)要**拆成独立官方 pip 包 `qi-web`**,core 不内置、不默认装 —— 不装时 `qi web` 这条子命令不存在。本文的 **API 契约 / AG-UI 事件 / 安全规则仍然有效**,变的是「谁提供它」。见 [extensions.md §6](extensions.md)。
+> ⚠️ **v3 归属变更**:整个 web(HTTP 宿主 + AG-UI 桥 + UI 资源)要**拆成独立官方 pip 包 `qi-web`**,core 不内置、不默认装 —— 不装时 `qi web` 这条子命令不存在。本文的 **API 契约 / AG-UI 事件 / 安全规则仍然有效**,变的是「谁提供它」。见 [extensions.md §6](../docs/extensions.md)。
 >
-> 状态:设计定稿(v2 实现)。相关文档:[plugins.md](plugins.md)(插件机制)、[tools.md](tools.md)(ToolCatalog)。参照物:pi 的 RPC 模式、pi-web(独立 Web 应用)、hikqin(宿主形态)。
+> 状态:设计定稿(v2 实现)。相关文档:[plugins.md](plugins.md)(插件机制)、[tools.md](../docs/tools.md)(ToolCatalog)。参照物:pi 的 RPC 模式、pi-web(独立 Web 应用)、hikqin(宿主形态)。
 >
 > **参照物事实核对(2026-09,对已装包实测,不是转述)**——这一节存在的原因是本文早先
 > 把 pi-web 写成了「子进程 + JSONL-RPC」,实测不对:
@@ -149,7 +149,7 @@ qi 又必须表达 success/error/warning、diff 增删、agent 身份与工具�
 | 项 | 理由 |
 | --- | --- |
 | ~~`--dsw-*` 前缀~~ **【已推翻·2026-09】** | 原写“抄纪律不抄前缀;qi 用 `--qi-*`”。**已改为逐字照搬 `--dsw-*`**(见 §8.4):手抄一套改名的令牌会静默漂移,而且无法与 dsh 源文件逐条对拍 |
-| dsh 的插件底座(Cordis)与 profile/组合包 | qi 的插件机制是 pip entry point + 本地目录双通道(docs/plugins.md),不同构;只借“能力可替换”的概念,不搬实现 |
+| dsh 的插件底座(Cordis)与 profile/组合包 | qi 的插件机制是 pip entry point + 本地目录双通道(plugins.md),不同构;只借“能力可替换”的概念,不搬实现 |
 | dsh TUI 的 `dark-ansi` 第三套色板 | 那是终端 16 色的能力降级,浏览器无此约束 |
 | 品牌资产(字标、logo、成套主题、吉祥物色 `clawd_*`) | 色值可借鉴,品牌资产不复刻 |
 | 窗口 chrome 的 `#C0C0C0` 竖条 | 那是截图里的宿主窗口标题栏,不是 web UI 的一部分 |
@@ -2324,7 +2324,7 @@ cd extensions/qi-web/ui && npm run typecheck && npm test && npm run check:design
 但**抽屉本身留着** —— 分派理由、上下文占用、动作计数是诊断事实,不该因为"不想看见那行"
 就删掉。所以换了个入口:指令菜单 **`/tele`**(点「+」或输入 `/` 都能到,与其它指令并列)。
 
-代价写清楚:**发现性变差**。`docs/web.md` 一直把这三样记成"一等公民"(聊天界面最缺的就是
+代价写清楚:**发现性变差**。`web.md` 一直把这三样记成"一等公民"(聊天界面最缺的就是
 "为什么这么走"与"还剩多少上下文");现在它从"常驻可见"变成"用时才开"。`/help` 里会列出它。
 
 #### (2) tab 标题:`qi · 多 agent` → `Qi Web`

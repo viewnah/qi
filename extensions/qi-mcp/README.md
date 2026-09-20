@@ -45,19 +45,30 @@ TUI 里 `/mcp` 列出现有声明(带来源层与 disabled/directTools 标记)�
 
 ## 状态
 
+五个切片全部落地:
+
 | 切片 | 内容 | 状态 |
 | --- | --- | --- |
 | 1 | 两层声明表 + `/mcp` 面板 | ✅ |
-| 2 | `mcp` 代理工具(search/describe/call)+ lazy 连接 | ⏳ |
-| 3 | `directTools` 直连 + `includeTools`/`excludeTools` 通配 + `toolPrefix` | ⏳ |
-| 4 | 给 qi-agents 的按值注入 API | ⏳ |
+| 2 | `mcp` 代理工具(search / describe / call)+ lazy 连接 | ✅ |
+| 2b/2c | 真客户端:stdio + Streamable HTTP(端到端跑真 server) | ✅ |
+| 3 | `directTools` 直连 + `includeTools`/`excludeTools` 通配 + `toolPrefix` | ✅ |
+| 4 | 给 qi-agents 的按值注入 API | ✅ |
 
 **尚未实现,别按它配置**:`lifecycle` / `idleTimeout` / `oauth` / `caFile` / 状态快照事件。
 字段会被原样保留并在 `/mcp` 里标成"未识别字段",不会被判死(生态字段还在长)。
 
-## 与 v1 的一处差别(待定)
+## 角色怎么拿到 MCP(与 v1 的差别)
 
 v1 的模型更严:全局/项目两层只是**声明表**,哪个角色真能看到由 `agent.md` 的 `mcp_servers`
 显式点名(凭证敏感 → 默认无)。E25 的模型是:角色的 server 集合 = 它自己的 `mcp.json` +
-qi 两层,能不能调由 `tools:` 里有没有 `mcp` 决定 —— **不再要求逐 server 点名**。
-要不要保留 v1 那道更严的闸,等切片 4 接线时再定。
+qi 两层(**角色私有同名覆盖 qi 级**),能不能调由 `tools:` 里写什么决定:
+
+| 角色 `tools:` 里写到 | 拿到什么 |
+| --- | --- |
+| 什么都不写 | **没有任何 MCP 访问**(默认拒绝;连都不连) |
+| `mcp` | 那个全局代理工具(覆盖 qi 两层);**角色私有 server 的工具额外直连** —— 全局代理看不见它们 |
+| `mcp__github__create_*` | 直连匹配的工具(**不给代理**) |
+
+所以**不再要求逐 server 点名**:闸门在 `tools:` 这一行,粒度可以细到工具名(`fnmatch` 通配)。
+实现见 `qi_mcp/role.py`。

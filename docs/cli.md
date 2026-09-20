@@ -1,7 +1,7 @@
 # CLI 命令面
 
-> 状态:设计讨论中。原则:**参数尽量与 pi 保持一致**;差异仅来自多 agent / pip 生态 / 无密钥存储。
-> 相关文档:[agent-config.md](agent-config.md)、[plugins.md](plugins.md)、[web.md](web.md)(v2)。
+> 原则:**参数尽量与 pi 保持一致**;差异只来自扩展(MCP / 多 agent / web)与 pip 生态。
+> 相关文档:[extensions.md](extensions.md)(扩展与旗标)、[settings.md](settings.md)、[tools.md](tools.md)(`tools` 三态与会话级收窄)、[json.md](json.md)(`--mode json`)。
 
 ## 0. 速查(按用途分类)
 
@@ -23,8 +23,8 @@ qi --export <file>
 qi --ext agent=reviewer "<问题>"           # 用某个角色跑(名字见 /agents)
 
 ── 插件 ────────────────────────────────
-qi install <source> [-l] | remove|uninstall <name> [-l] | list [-l] | update
-qi -p --plugin <path>            # 本次运行临时试用插件
+qi list                          # 列出已装扩展 + 与 settings.packages 的声明比对
+qi doctor                        # 诊断(含「声明了没装」的安装命令);无 install 子命令,见 §4
 
 ── 初始化 / 凭证 ──────────────────────
 qi init                         # 引导默认模型(复刻 QwenPaw):Provider Config → Add Models → Activate LLM
@@ -39,6 +39,9 @@ qi -a | -na                      # 信任 / 不信任项目 .qi;两个同给报�
 
 ── 通用 ────────────────────────────────
 qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt
+# 工具收窄四件套等价的长写法:--tools / --exclude-tools / --no-builtin-tools / --no-tools
+# ⚠️ 选项写在**消息之前**(`qi -nt "问题"`,不是 `qi "问题" -nt`):顶层选项在遇到
+#    消息后不再解析 —— 写反了会报错并提示怎么改
 ```
 
 ## 1. 启动与运行
@@ -48,11 +51,14 @@ qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt
 | `qi [options] [--] [@files...] [messages...]` | **不带 `-p` 且 `--mode text` = 进 TUI**(无 `qi tui` 子命令,对齐 pi 的裸 `pi`);给了 messages 就在进界面后作为首条消息提交;`-p` = 无头执行后退出 | ✅ 形态同 pi |
 | `-p, --print` | 无头一次执行;**单 agent**;要按角色跑用 `--ext agent=<名>`(qi-agents)。**默认只输出答案**(对齐 pi 的 "Print response and exit");分派行/工具进度默认不显示,加 `--verbose` 才输出(走 stderr,不污染 stdout) | ✅ |
 | ~~`--agent <name>`~~ | **已删(P-E4c)**:角色选择归 qi-agents(`qi --ext agent=<名>`);`-a` 现在是**信任项目** | — |
-| `--mode <text\|json>` | 输出格式(`rpc` 二期)。`json` 输出事件 JSON 行,**隐含无头**(不进 TUI) | ✅ |
-| `-t <tools>` / `-xt <tools>` | 工具 allowlist / denylist 临时覆盖(tools 三态) | ✅ |
+| `--mode <text\|json>` | 输出格式。`json` = **事件流(一行一个 JSON 对象,隐含无头**、不进 TUI;stdout 只有事件,提示走 stderr) → 见 [json.md](json.md)。`rpc` 是二期 | ✅ |
+| `--tools <tools>`(=`-t`) | 工具**严格白名单**(逗号/空格分隔):最终工具集就是这些(不再叠加默认集)。与 `--no-tools`/`--no-builtin-tools` **互斥**(同给报错退出码 2)。未注册的名字**会报一条提示**,不静默丢掉 | ✅ `pi --tools` |
 | `--thinking <级别>` | 思考级别(off/minimal/low/medium/high/xhigh/max;非法值退出码 2)。不传则用 settings.json 的 defaultThinkingLevel,再退 off。provider 拒收 `reasoning_effort` 时自动去掉参数重试,并在 stderr 提示一次 | ✅ `pi --thinking` |
-| `-nt` / `-nbt` | 禁用全部工具 / 保留插件工具 | ✅ |
-| `--plugin <path>` | 本次运行临时加载插件 | 🟡 pi `-e` |
+| `--exclude-tools <tools>`(=`-xt`) | 从**最终**工具集里排除这些工具(在 `--tools` / `--no-tools` / `--no-builtin-tools` 之后过滤) | ✅ `pi -xt` |
+| `--no-builtin-tools`(=`-nbt`) | 禁用内置工具,**保留扩展装的工具** | ✅ `pi -nbt` |
+| `--no-tools`(=`-nt`) | 禁用**全部**工具 | ✅ `pi -nt` |
+| `-e, --extension <path>` | 本次运行临时加载一个扩展目录(可重复;仅本进程,`scope=temporary`)。**TUI 与无头都生效**。与 `--ext` 区分开:`--ext` 是给扩展声明过的**旗标**传值 | ✅ pi `-e` |
+| `--append-system-prompt <文本>` | 追加到**每回合** system prompt 的末尾(可重复,空行连接)。区别:`.qi/SYSTEM.md` 是**整体替换**,这个是**追加**且不落盘 → 见 [system-prompt.md](system-prompt.md) §6.2 | ✅ pi 同名 |
 
 ## 2. 会话
 
@@ -78,16 +84,38 @@ qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt
 装角色 = 把 `agent.md` 放进 `~/.qi/agent/agents/<名>/`;用它跑 = `qi --ext agent=<名>`;
 列角色 = TUI 里 `/agents`。详见 qi-agents 的 README |
 
-## 4. 插件(对齐 pi 命名与 `-l`,底层 pip 生态)
+## 4. 扩展的安装与声明
 
-| 命令 | 说明 | pi 对齐 |
-| --- | --- | --- |
-| `qi install <source> [-l]` | 本地目录 → 插件目录通道;`pip:<pkg>` → 转 pip | ✅ `pi install` |
-| `qi remove\|uninstall <name> [-l]` | 移除本地目录插件 | ✅ |
-| `qi list [-l]` | 列出已安装插件 | ✅ |
-| `qi update [source\|self]` | 插件 / 本体更新 | ✅ |
+**qi 没有 `install` / `remove` / `update` 子命令**(pi 有 `pi install`;qi 不对齐这一项)。
+不做的理由:装扩展就是调 pip,而 pip 的目标环境分为「qi 自己的 venv」「uv tool 托管」
+「只读的系统解释器」三种,封装一层只会把环境差异藏起来。qi 只负责**告诉你不一致**,
+并把两条命令原样给你复制。
 
-`-l`:写入项目 `.qi/`(而非用户 `~/.qi/`),同 pi 的 project 语义。
+| 命令 | 说明 |
+| --- | --- |
+| `qi list` | 列出已装扩展(entry point + 目录通道),并与 `settings.packages` 的声明**双向**比对 |
+| `qi doctor` | 同上,并输出「声明了没装」项的**可复制**装法 |
+
+声明的**全部**写法(含归一、裸 URL 为什么不猜名字)、两条装法的失效面对比、以及输出的逐项读法,
+见 [packages.md](packages.md);这里只给命令。
+
+装法自己跑(两条路,失效面不同):
+
+```bash
+# 直接装进 qi 自己的 venv:最直接,但 uv tool 重建环境时会丢
+/path/to/qi/venv/bin/python -m pip install qi-mcp
+# 写进 uv 的托管依赖:升级 / 重建都不丢
+uv tool install qi-agent --with qi-mcp
+```
+
+装完把它写进 `settings.json` 的 `packages`,否则 `qi doctor` 下次重建环境后无从知道它丢过:
+
+```json
+{ "packages": ["pip:qi-mcp", "pip:qi-agents"] }
+```
+
+声明里认不出名字的写法(如裸 `git+https://…`)会被 `qi list` / `qi doctor` **原样报出**,
+不静默丢掉 —— 写成 `名字 @ URL` 才认得出来。
 
 ## 5. 设置、初始化与凭证
 
@@ -138,6 +166,14 @@ qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt
 
 `-h/--help`、`-v/--version`、`--verbose`、`--offline`、`--`(结束参数解析)。
 
+- **`--offline` 无实际作用**:它对齐 pi 的"关掉全部启动期网络操作"(版本检查 / 包检查 /
+  遥测)。qi 启动期**没有任何网络操作**(唯一联网的地方就是模型调用,而那是它存在的意义),
+  所以这个旗标被接受但什么都不做 —— 宁可接受也不假装。
+- **短旗标 `-t` / `-xt` / `-nt` / `-nbt` 是 argv 展开,不是 click 的短选项**:click 的短选项
+  按**字符**解析(`-nt` 会被拆成 `-n t`,于是会话名静默变成 `"t"` —— 这是修掉的一个真实缺陷)。
+  qi 在交给 typer 之前把它们展开成长写法(见 `cli.normalize_short_flags`);代价是值位置上的
+  `-nt` 不会被当旗标(`qi -n -nt` = 会话名叫 `-nt`),这是对的。
+
 ### 输出约定(无头)
 
 | 流 | 内容 |
@@ -162,7 +198,7 @@ qi -h | -v | --verbose | --offline | -t <tools> | -xt <tools> | -nt | -nbt
 
 ## 9. 二期
 
-- `qi web`:HTTP 宿主(web.md)
+- `qi web`:HTTP 宿主([web.md](../design/web.md))
 - `--mode rpc`:headless JSONL-RPC,给外部客户端(IDE)
 
 ## 10. 明确不保留(理由落档)

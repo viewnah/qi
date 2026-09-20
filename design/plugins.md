@@ -1,9 +1,9 @@
 # 插件机制(v1 —— 已被取代)
 
-> ⚠️ **本文描述的「插件」已被 [extensions.md](extensions.md) 取代(v3)**。保留它的原因是:本文的**双通道发现**、**消费型配置门控**两项机制会被 extensions.md 原样继承(只改名),且它们是**已实现**代码的说明。
+> ⚠️ **本文描述的「插件」已被 [extensions.md](../docs/extensions.md) 取代(v3)**。保留它的原因是:本文的**双通道发现**、**消费型配置门控**两项机制会被 extensions.md 原样继承(只改名),且它们是**已实现**代码的说明。
 > 差异:v1 只有 `add_tool` + `provides_config`;v3 扩到 pi 的整套 hook 面(事件 / 命令 / UI / 会话),并改名 **extension**。
 >
-> 状态:设计讨论中。相关文档:[agent-config.md](agent-config.md)(agent 如何引用)、[tools.md](tools.md)(ToolCatalog)、[model-config.md](model-config.md)。
+> 状态:设计讨论中。相关文档:[agent-config.md](../docs/agent-config.md)(agent 如何引用)、[tools.md](../docs/tools.md)(ToolCatalog)、[model-config.md](../docs/model-config.md)。
 
 ## 1. 定位
 
@@ -52,7 +52,7 @@ def register(registry):            # 框架启动时发现并调用
 
 ## 4. 数据源示例(db 插件)
 
-db 插件提供 `db_schema` / `db_query` 工具 + type 解析/校验/连接;实例(带凭证 env 引用)在 agent 的 `data_sources.json`,见 [agent-config.md](agent-config.md) §9。工具从运行时 ctx 取当前 agent 的实例清单做权限校验(`data_source_id` 不在清单 → 拒绝),工具不持有配置。只读强制在插件侧校验(对齐 hikqin `db_query` 的"禁止一切写操作")。
+db 插件提供 `db_schema` / `db_query` 工具 + type 解析/校验/连接;实例(带凭证 env 引用)在 agent 的 `data_sources.json`,见 [agent-config.md](../docs/agent-config.md) §9。工具从运行时 ctx 取当前 agent 的实例清单做权限校验(`data_source_id` 不在清单 → 拒绝),工具不持有配置。只读强制在插件侧校验(对齐 hikqin `db_query` 的"禁止一切写操作")。
 
 ## 5. 安全与信任
 
@@ -61,7 +61,10 @@ db 插件提供 `db_schema` / `db_query` 工具 + type 解析/校验/连接;实�
 
 ## 6. 预留 / 待定
 
-- `qi install/remove/list` 命令封装(pip 包/目录双通道、写配置)
+- ~~`qi install/remove/list` 命令封装(pip 包/目录双通道、写配置)~~ → **已否决**:
+  封装 pip 会把「qi 自己的 venv / uv tool 托管 / 只读的系统解释器」三种环境的差异藏起来,
+  且 uv tool 重建后 `--sync` 也补不回(环境已被整个替换)。改为**声明层 + 比对**:
+  `settings.packages` + `qi list` / `qi doctor`(**已落地**,见 [extensions.md §5.5](../docs/extensions.md))。
 - 运行时热装载(hot reload:运行中装插件立即生效,而非下次装载)
 - 插件内嵌内容分发(agent 样板/技能随插件带出,与"内容跟 agent 走"的边界)
 

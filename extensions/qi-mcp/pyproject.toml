@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "qi-mcp"
+version = "0.1.0"
+description = "qi 的 MCP 支持:两层 mcp.json 声明表 + 一个 mcp 代理工具 + lazy server"
+readme = "README.md"
+requires-python = ">=3.12"
+# 宿主 qi-agent 由 qi 自己装着,不写进 dependencies(§5.5 / E11:写进去会让 pip
+# 把宿主降级)。MCP SDK 是**本扩展自己的**依赖 —— core 已经不拖它了(1651593)。
+dependencies = ["mcp>=1.0"]
+
+[project.entry-points."qi.extensions"]
+mcp = "qi_mcp:register"
+
+[tool.hatch.build.targets.wheel]
+packages = ["qi_mcp"]

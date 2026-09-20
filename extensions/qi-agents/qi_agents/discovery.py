@@ -34,13 +34,15 @@ class Role:
     description: str
     prompt: str
     tools: list[str] | None = None      # None = 继承父(不是"全部":那会提权)
+    disallowed_tools: list[str] | None = None   # 从上面的结果里**减掉**的(支持 fnmatch 通配)
     model: str | None = None            # "provider/model";None = 继承父
     source: str = "user"                # user | project
     path: Path | None = None
 
     def as_dict(self) -> dict:
         return {"name": self.name, "description": self.description, "source": self.source,
-                "tools": self.tools, "model": self.model, "path": str(self.path or "")}
+                "tools": self.tools, "disallowed_tools": self.disallowed_tools,
+                "model": self.model, "path": str(self.path or "")}
 
 
 def _parse_tools(value: object) -> list[str] | None:
@@ -73,6 +75,7 @@ def _read_role(md: Path, source: str) -> Role | None:
                 description=" ".join(description.split()),
                 prompt=body.strip(),
                 tools=_parse_tools(meta.get("tools")),
+                disallowed_tools=_parse_tools(meta.get("disallowed_tools")),
                 model=str(model).strip() if isinstance(model, str) and model.strip() else None,
                 source=source, path=md)
 

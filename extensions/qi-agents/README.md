@@ -42,6 +42,23 @@ model: anthropic/claude-sonnet-4
 工具省略若解释成"全部",一个角色就能悄悄拿到比父更多的权限,那是一条提权路径)。
 `description` 必填:模型靠它挑角色。
 
+### frontmatter 字段(全部)
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `name` | ✅ | 角色名。也用 `qi --ext agent=<name>` 与 `subagent` 的 `agent` 参数引用它 |
+| `description` | ✅ | 供模型挑选角色;也会展示给人 |
+| `tools` | | 工具名单,**省略 = 继承父**;另有 MCP 的两种写法(`mcp` / `mcp__server__*`)见下文 |
+| `disallowed_tools` | | 从上面的结果里**减掉**的名单(denylist,支持 `fnmatch` 通配如 `mcp__github__*`)。`tools` 省略时先把父的当前集合取出来再减;两边都列到就移除 |
+| `model` | | `provider/model`;省略 = 继承主会话当前模型 |
+
+正文(Markdown)就是那个角色的系统提示词,会拼在**基座之后**。
+
+**不支持的字段(写了不会生效,不会报错)**:`display_name` `keywords` `include` `opening`
+`data_sources` —— 这几个是 v2/v3 设计里出现过的概念,现在都不在解析范围内。
+尤其是 `include`(拼入 assets)与 `data_sources`,**已经不存在实现**;要拼参考内容就直接写进正文,
+要外部数据就用自己的工具或 MCP。
+
 ## 用
 
 ```bash
@@ -98,6 +115,21 @@ tools: read, grep, mcp__github__*     # 内置工具 + 只授权 github 的 MCP 
 
 好处是白名单仍然meaningful:角色的 MCP 面 = **它按需注册的 server** ∩ 白名单 ——
 不写就没有,写了也不会因此多拿到别的 server。(这条不对称是 E25 明确记下的代价。)
+
+## 角色私有技能
+
+除顶层技能([skills.md](../../docs/skills.md) §1 的六层)之外,角色还可以带**自己的**技能目录:
+
+```text
+<角色目录>/skills/<技能名>/SKILL.md
+```
+
+- **单层扫描**:只认 `skills/<名>/SKILL.md`,不递归、不接受根级散落的 `*.md`;
+- 同一角色内同名直接报错;
+- 这些技能只在这个角色跑的时候可见,并且**优先于顶层同名技能**(越具体越优先);
+- 注入形态与顶层技能一致(name/description/location 进提示词、正文按需 `read`)。
+
+角色目录是一个**自包含包**:人设(`agent.md`)、私有技能、私有 MCP 声明都在里面,复制整个目录就能带走。
 
 ## 为什么子 agent 是**进程内**的
 

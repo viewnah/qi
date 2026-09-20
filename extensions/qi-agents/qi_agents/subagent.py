@@ -107,6 +107,28 @@ async def _role_mcp_names(api: Any, role: Role, ctx: Any,
         on_note=(ui.notify if ui is not None else None))
 
 
+def _apply_disallowed(tools: list[str] | None, disallowed: list[str] | None,
+                      api: Any) -> list[str] | None:
+    """减掉角色声明的 `disallowed_tools`(denylist)。
+
+    口径照 Claude Code(设计里引的就是它):**先应用 denylist,allowlist 在剩余池里解析** ——
+    两边都列到就移除。支持 `fnmatch` 通配(`mcp__github__*` 一并减掉)。
+
+    `tools=None` 是"继承父":要减就得先把父的**当前集合具象化**,否则无从下手。
+    拿不到(没有 `getActiveTools`)就退回 `None` —— 宁可不减,不假装减了。
+    """
+    if not disallowed:
+        return tools
+    from fnmatch import fnmatch
+
+    if tools is None:
+        getter = getattr(api, "getActiveTools", None)
+        if getter is None:
+            return None
+        tools = [str(t) for t in getter()]
+    return [t for t in tools if not any(fnmatch(t, pattern) for pattern in disallowed)]
+
+
 async def _run_one(api: Any, role: Role, task: str, ctx: Any,
                    sem: asyncio.Semaphore | None = None) -> dict:
     """跑一个角色。返回结构化结果(带 usage/错误),失败**不抛**给上层 ——
@@ -118,6 +140,8 @@ async def _run_one(api: Any, role: Role, task: str, ctx: Any,
     if tools is not None:
         rest = [t for t in tools if t != "mcp" and not t.startswith("mcp__")]
         tools = [*rest, *mcp_names]
+    # denylist 放最后:它要能减掉 MCP 直连出来的工具(`mcp__github__*`)
+    tools = _apply_disallowed(tools, role.disallowed_tools, api)
     spec = {"system_prompt": role.prompt or f"你是 {role.name}。",
             "name": role.name, "tools": tools, "model": role.model}
     try:

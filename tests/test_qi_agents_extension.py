@@ -32,25 +32,33 @@ _SETTINGS = '{"defaultProvider": "ollama", "defaultModel": "x"}'
 
 
 def _write_role(root: Path, name: str, *, description="做这个的", body="你是{name}。",
-                tools='["read"]', model=None) -> Path:
+                tools: str | None = '["read"]', model: str | None = None,
+                disallowed_tools: str | None = None) -> Path:
     d = root / name
     d.mkdir(parents=True, exist_ok=True)
     extra = f"model: {model}\n" if model else ""
+    # `tools=None` = **不写这一行** = 省略 = 继承父(而不是写个字符串 "None")
+    if tools is not None:
+        extra += f"tools: {tools}\n"
+    if disallowed_tools is not None:
+        extra += f"disallowed_tools: {disallowed_tools}\n"
     (d / "agent.md").write_text(
-        f"---\nname: {name}\ndescription: {description}\ntools: {tools}\n{extra}---\n"
+        f"---\nname: {name}\ndescription: {description}\n{extra}---\n"
         + body.format(name=name), encoding="utf-8")
     return d
 
 
 class _LLM:
-    """记下每次调用收到的消息;按脚本回答。"""
+    """记下每次调用收到的消息与工具名;按脚本回答。"""
 
     def __init__(self, script: list[ChatResponse] | None = None) -> None:
         self.script = list(script or [])
         self.calls: list[list] = []
+        self.tools: list[list[str]] = []
 
     async def chat(self, messages, tools=None, temperature=None):
         self.calls.append(list(messages))
+        self.tools.append(sorted(t["function"]["name"] for t in (tools or [])))
         return self.script.pop(0) if self.script else ChatResponse(text="好")
 
     def system(self, index: int = -1) -> str:
@@ -123,6 +131,7 @@ def test_discovery_parses_tools_and_model(tmp_path, monkeypatch):
 
     role = discover(None, "user")["scout"]
     assert role.tools == ["read", "grep"]         # 逗号写法也认
+    assert role.disallowed_tools is None
     assert role.model == "beta/m3"
 
 
@@ -167,6 +176,52 @@ async def test_unknown_agent_name_becomes_a_note_not_a_crash(tmp_path, monkeypat
 # ── 委派:subagent 工具 ─────────────────────────────────
 
 _SUB = {"agent": "scout", "task": "查一下"}
+
+
+def test_discovery_parses_disallowed_tools(tmp_path, monkeypatch):
+    from qi_agents.discovery import discover
+
+    home = _env(tmp_path, monkeypatch)
+    _write_role(home / "agents", "scout", disallowed_tools='["bash", "mcp__gh__*"]')
+    role = discover(tmp_path / "proj", "user")["scout"]
+    assert role.disallowed_tools == ["bash", "mcp__gh__*"]
+
+
+@pytest.mark.asyncio
+async def test_disallowed_tools_subtracts_from_the_resolved_list(tmp_path, monkeypatch):
+    """denylist 在 allowlist/MCP **之后**应用 —— 两边都列到就移除(Claude Code 口径)。"""
+    from qi_agent.llm import ToolCallOut
+
+    llm = _LLM([ChatResponse(text="", tool_calls=[ToolCallOut(id="c1", name="subagent", args=_SUB)]),
+                ChatResponse(text="子:好了"), ChatResponse(text="父:收到")])
+    home = _env(tmp_path, monkeypatch)
+    _write_role(home / "agents", "scout", tools='["read", "grep", "bash"]',
+                disallowed_tools='["bash"]')
+    runtime = _runtime(tmp_path, monkeypatch, llm, approve=True)
+    session = runtime.sessions.create("t", cwd=runtime.cwd)
+    async for _e in runtime.stream("查", session):
+        pass
+
+    assert llm.tools[1] == ["grep", "read"], llm.tools
+
+
+@pytest.mark.asyncio
+async def test_disallowed_tools_with_inherited_tools(tmp_path, monkeypatch):
+    """`tools` 省略 = 继承父;此时要减就先得把父的当前集合具象化。"""
+    from qi_agent.llm import ToolCallOut
+
+    llm = _LLM([ChatResponse(text="", tool_calls=[ToolCallOut(id="c1", name="subagent", args=_SUB)]),
+                ChatResponse(text="子:好了"), ChatResponse(text="父:收到")])
+    home = _env(tmp_path, monkeypatch)
+    _write_role(home / "agents", "scout", tools=None, disallowed_tools='["bash", "powershell"]')
+    runtime = _runtime(tmp_path, monkeypatch, llm, approve=True)
+    session = runtime.sessions.create("t", cwd=runtime.cwd)
+    async for _e in runtime.stream("查", session):
+        pass
+
+    child = llm.tools[1]
+    assert "bash" not in child and "powershell" not in child
+    assert "read" in child, f"继承父集合时不该把别的也清掉:{child}"
 
 
 @pytest.mark.asyncio

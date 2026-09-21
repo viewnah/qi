@@ -1,19 +1,17 @@
-"""把会话的 HTML 传成**私有** GitHub gist(pi 的 `/share`)。
+"""把会话的 HTML 传成**私有** GitHub gist(pi 的 `/share` 的**一条**路径)。
 
-逐项核过 pi 的实现(`dist/modes/interactive/session-share.js`)后对齐的:
+**读完全部 183 行后修正的两处**(第一版我写错了,已改):
 
-* **直调 API,不走 `gh` CLI** —— pi 就是这么做的,所以 qi 不引入对 `gh` 的依赖;
-* 端点 `https://api.github.com/gists`,头是 `Authorization: Bearer <token>`;
-* **`public: false`**(私有 gist),里面放一个 `.html` 文件 —— 内容就是
-  `export_html.render_session_html()` 那份自包含 HTML。
+1. pi 的 gist 路径**就是 shell 出 `gh`**(`spawnSync("gh", ["auth","status"])` 先查登录,
+   再 `gh gist create --public=false <file>`);它用 `getAuthCredential` 取的 token 是给
+   **另一条路径**(pi 自建的 Radius 服务)的,不是给 gist 的。
+2. pi 的 `/share` 有**两条**路径:先试 Radius(上传 **JSONL** + 注入分享元数据
+   `systemPrompt` / 工具定义),失败才退 gist(上传 **HTML**)。半径那条是 pi 的托管服务,
+   qi 没有对应物 —— 所以 qi 只做 gist 这条,并且在 §10 记档。
 
-token **顺序照 qi 的凭证总原则**(`docs/security.md`:auth store → 约定环境变量)—— 这也正是
-pi 的做法:它从自己的凭证库取(`getAuthCredential`)。环境变量兜底,依次
-`GITHUB_TOKEN` → `GH_TOKEN`。用 stdlib 的 `urllib.request`,不引新依赖。
-
-**核过的 pi 流程**(`session-share.js`):导出 JSONL → 转 HTML → 读回 → 以
-`public: false` + 一个 `.html` 文件 POST 到 `api.github.com/gists`。qi 少了前两步:
-导出器直接吃 session 对象,产物同样是那份自包含 HTML(结果一致,少两个临时文件)。
+qi 与 pi 的**刻意偏离**:qi **直调 API**(stdlib `urllib`),不 shell 出 `gh` —— 少一个外部
+依赖,也不用要求用户先 `gh auth login`。代价是没有 pi 的 viewer 预览链接(那需要 pi 的
+服务),qi 只能给 gist 链接本身。
 """
 
 from __future__ import annotations

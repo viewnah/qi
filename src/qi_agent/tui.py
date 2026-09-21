@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import functools
+import inspect
 import json
 import os
 import re
@@ -572,6 +573,62 @@ class ToolBlock(Static):
         self.update(combined)
 
 
+class ExtensionToolBlock(Vertical):
+    """工具卡片的**扩展渲染**容器(pi 的 `renderCall` / `renderResult`)。
+
+    有渲染钩子时由扩展的组件完全接管(与 pi 同义:给了 `renderResult` 就替换默认渲染);
+    没有就继续走内置的 `ToolBlock`。组件必须在**本容器自己挂载之后**才能挂,
+    所以先用一个待挂槽位存着,`on_mount` 里再真挂(Textual 不允许给自己未挂载的 widget mount 子项)。
+    """
+
+    def __init__(self, palette: Palette) -> None:
+        super().__init__(classes="msg tool-msg")
+        self._palette = palette
+        self._widget: Any = None
+        self._pending: Any = None
+        self._state = "pending"
+
+    def show(self, widget: Any) -> None:
+        """挂上(或替换成)扩展给的组件。"""
+        if widget is None:
+            return
+        old = self._widget
+        self._widget = widget
+        if self.is_mounted:
+            if old is not None:
+                # 旧组件可能已经被前端卸载了 —— 移除失败在这里是正常情况,不是错误
+                with contextlib.suppress(Exception):
+                    old.remove()
+            self.mount(widget)
+        else:
+            self._pending = widget
+        setter = getattr(widget, "set_state", None)
+        if callable(setter):
+            setter(self._state)
+
+    def on_mount(self) -> None:
+        pending, self._pending = self._pending, None
+        if pending is not None:
+            self.mount(pending)
+
+    def set_state(self, state: str) -> None:
+        self._state = state
+        setter = getattr(self._widget, "set_state", None)
+        if callable(setter):
+            setter(state)
+
+    def set_output(self, body: Any) -> None:
+        """转给扩展组件(它自己知道怎么显示结果);没实现就什么也不做。"""
+        setter = getattr(self._widget, "set_output", None)
+        if callable(setter):
+            setter(body)
+
+    def set_expanded(self, expanded: bool) -> None:
+        setter = getattr(self._widget, "set_expanded", None)
+        if callable(setter):
+            setter(expanded)
+
+
 class BashBlock(Static):
     """`!` / `!!` 手动 bash(对齐 pi 的 `bash-execution.js`)。
 
@@ -1042,6 +1099,52 @@ class PromptScreen(ModalScreen[str | None]):
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         self.dismiss(event.value)
+
+
+class EditorScreen(ModalScreen[str | None]):
+    """多行编辑器(`ctx.ui.editor`)。ctrl+s 保存,escape 取消(→ None)。"""
+
+    BINDINGS = [("escape", "dismiss(None)", "取消"),
+                ("ctrl+s", "save", "保存")]
+
+    def __init__(self, title: str, prefill: str = "") -> None:
+        super().__init__()
+        self._title = title
+        self._prefill = prefill
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="model-box"):
+            yield Static(self._title, id="model-hint")
+            yield TextArea(self._prefill, id="editor-modal")
+
+    def on_mount(self) -> None:
+        self.query_one("#editor-modal", TextArea).focus()
+
+    def action_save(self) -> None:
+        self.dismiss(self.query_one("#editor-modal", TextArea).text)
+
+
+class CustomScreen(ModalScreen[Any]):
+    """`ctx.ui.custom` 的模态外壳:把扩展给的组件放进去,等它调 `done(value)` 或 escape。
+
+    `box` 是一个可变单槽 —— 因为 `done` 回调必须在组件**造出来之前**就存在
+    (pi 的 factory 拿到的就是 `done`),而组件又是 `compose` 时才取的。
+    """
+
+    BINDINGS = [("escape", "dismiss(None)", "关闭")]
+
+    def __init__(self, box: dict, title: str | None = None) -> None:
+        super().__init__()
+        self._box = box
+        self._title = title
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="model-box"):
+            if self._title:
+                yield Static(self._title, id="model-hint")
+            widget = self._box.get("widget")
+            if widget is not None:
+                yield widget
 
 
 class PickerScreen(ModalScreen[str | None]):
@@ -1531,6 +1634,74 @@ class _TuiUi:
         return await self._app.await_screen(PromptScreen(
             f"{title or '输入'}:{message}", default=default or "", secret=secret))
 
+    # ── 数据层:多行编辑 / 状态 / 外观(pi 的 ctx.ui 数据层)──
+    async def editor(self, prefill: str = "", *, title: str | None = None) -> str | None:
+        return await self._app.await_screen(EditorScreen(title or "编辑", prefill))
+
+    def set_status(self, key: str, text: str | None) -> None:
+        self._app.set_extension_status(key, text)
+
+    def set_title(self, title: str) -> None:
+        self._app.set_terminal_title(title)
+
+    def set_working_message(self, message: str | None = None) -> None:
+        self._app.set_working_message(message)
+
+    def set_working_visible(self, visible: bool) -> None:
+        self._app.set_working_visible(visible)
+
+    def set_working_indicator(self, options: dict | None = None) -> None:
+        self._app.set_working_indicator(options or {})
+
+    def set_hidden_thinking_label(self, label: str | None = None) -> None:
+        self._app.set_hidden_thinking_label(label)
+
+    def get_tools_expanded(self) -> bool:
+        return bool(getattr(self._app, "_expanded", False))
+
+    def set_tools_expanded(self, expanded: bool) -> None:
+        self._app.set_tools_expanded(bool(expanded))
+
+    @property
+    def theme(self) -> Any:
+        return getattr(self._app, "_palette", None)
+
+    def get_all_themes(self) -> list[dict]:
+        return self._app.all_themes()
+
+    def get_theme(self, name: str) -> Any:
+        return self._app.theme_by_name(name)
+
+    def set_theme(self, theme: Any) -> dict:
+        return self._app.apply_theme(theme)
+
+    def paste_to_editor(self, text: str) -> None:
+        current = self._app.get_editor_text()
+        self._app.set_editor_text(current + str(text))
+
+    def set_editor_text(self, text: str) -> None:
+        self._app.set_editor_text(text)
+
+    def get_editor_text(self) -> str:
+        return self._app.get_editor_text()
+
+    # ── 组件层(TUI-only;pi 的 setWidget / custom / setFooter / setHeader)──
+    def set_widget(self, key: str, content: Any,
+                   options: dict | None = None) -> None:
+        self._app.set_extension_widget(key, content, options or {})
+
+    async def custom(self, factory: Any, options: dict | None = None) -> Any:
+        return await self._app.await_custom(factory, options or {})
+
+    def set_footer(self, factory: Any) -> None:
+        self._app.set_extension_footer(factory)
+
+    def set_header(self, factory: Any) -> None:
+        self._app.set_extension_header(factory)
+
+    def on_terminal_input(self, handler: Any) -> Any:
+        return self._app.add_terminal_input_handler(handler)
+
 
 class QiTui(App):
     TITLE = "qi"
@@ -1682,7 +1853,9 @@ class QiTui(App):
         self._abort: AbortSignal | None = None   # 当前回合的中断信号(escape 用)
         self._expanded = False
         self._live: AssistantMessage | None = None
-        self._tool_blocks: list[tuple[ToolBlock, str, str]] = []  # (块, 工具名, 输出)
+        # (块, 工具名, 输出)。块可能是内置 `ToolBlock`,也可能是扩展渲染的
+        # `ExtensionToolBlock` —— 两者都提供 set_state / set_output。
+        self._tool_blocks: list[tuple[Any, str, str]] = []
         self._current_tool: ToolBlock | None = None
         self._model: ResolvedModel | None = None
         self._usage = {"prompt_tokens": 0, "completion_tokens": 0}
@@ -1690,6 +1863,8 @@ class QiTui(App):
         # 必须在 _default_status() 之前初始化 —— 它会把排队数写进状态行。
         self._pending_steer: list[str] = []
         self._pending_follow: list[str] = []
+        # 扩展写的状态行片段:必须在 `_default_status()` 之前初始化(它会拼进状态行)
+        self._ext_statuses: dict[str, str] = {}
         self._status = self._default_status()
         self.footer_text = Text("")
         self._branch: str | None = None
@@ -1712,15 +1887,33 @@ class QiTui(App):
         self._thinking_widgets: list[ThinkingMessage] = []
         self._live_thinking: ThinkingMessage | None = None
         self._reasoning_warned = False
+        # ── 扩展 UI(ctx.ui 的数据层 + setWidget)────────────────
+        #: `ctx.ui.set_status` 写的状态行片段(`_ext_statuses` 在上面、`_default_status()` 之前)
+        #: `ctx.ui.set_working_message` / `set_working_visible` / `set_working_indicator`
+        self._working_message: str | None = None
+        self._working_visible = True
+        self._working_frames: list[str] = list(SPINNER_FRAMES)
+        self._working_interval = SPINNER_INTERVAL
+        #: `ctx.ui.set_hidden_thinking_label`
+        self._hidden_thinking_label: str | None = None
+        #: `ctx.ui.set_widget` 挂的常驻 widget(`key -> widget`)
+        self._ext_widgets: dict[str, Any] = {}
+        #: `ctx.ui.set_footer` / `set_header` 的工厂(挂出的组件带 `.ext-footer` / `.ext-header`)
+        self._ext_footer: Any = None
+        self._ext_header: Any = None
+        #: `ctx.ui.on_terminal_input` 的处理器(按注册顺序逐个试)
+        self._terminal_input_handlers: list[Any] = []
 
     # -- 布局 -----------------------------------------------------------
     def compose(self) -> ComposeResult:
         with Vertical(id="body"):
             yield VerticalScroll(id="log")
             yield OptionList(id="completions")
+            yield Vertical(id="ext-widgets-above")
             yield Static("", id="border-top")
             yield Editor(id="editor")
             yield Static("", id="border-bottom")
+            yield Vertical(id="ext-widgets-below")
             yield Static("", id="footer")
 
     def on_mount(self) -> None:
@@ -1796,6 +1989,74 @@ class QiTui(App):
         editor = self.query_one("#editor", Editor)
         editor.styles.padding = (0, number("editorPaddingX", 1))
 
+    # -- 渲染回调(pi 的 renderCall / renderResult / register*Renderer / markdown)------
+    def _renderers(self) -> Any:
+        rt = self._rt
+        return getattr(rt, "renderers", None) if rt is not None else None
+
+    def _ext_ctx(self) -> Any:
+        # 测试里的 FakeRuntime 只有 UI 那几样 —— 缺 `extension_ctx` 时当“没上下文”处理,
+        # 而不是让渲染路径因为一个 AttributeError 把工具卡弄没。
+        if self._rt is None:
+            return None
+        factory = getattr(self._rt, "extension_ctx", None)
+        return factory() if callable(factory) else None
+
+    def _tool_def(self, name: str) -> Any:
+        """取工具定义(没有 catalog 的宿主返回 None)。"""
+        catalog = getattr(self._rt, "catalog", None) if self._rt is not None else None
+        getter = getattr(catalog, "get", None)
+        return getter(name) if callable(getter) else None
+
+    def _transform_markdown(self, text: str) -> str:
+        """`register_markdown_transformer`:渲染前链式改写(user / assistant 的最终文本)。"""
+        renderers = self._renderers()
+        if renderers is None or renderers.is_empty:
+            return text
+        return renderers.apply_markdown(text, self._ext_ctx())
+
+    def _extension_widget(self, fn: Any, payload: Any) -> Any:
+        """调一个渲染回调并返回组件。按形参个数喂 `(payload, ctx)` —— pi 的三参
+        `(x, theme, context)` 写法会拿到 `(payload, ctx, None)`,不报错。"""
+        if not callable(fn):
+            return None
+        try:
+            arity = len(inspect.signature(fn).parameters)
+        except (TypeError, ValueError):
+            arity = 0
+        args = (payload, self._ext_ctx(), None)[:max(0, arity)]
+        try:
+            return fn(*args)
+        except Exception as exc:  # noqa: BLE001 扩展的渲染回调坏不该把卡片弄没
+            self._note(f"扩展渲染回调失败: {type(exc).__name__}: {exc}", "warning")
+            return None
+
+    def _tool_block(self, name: str, args: dict, *, state: str = "pending") -> Any:
+        """建工具块:有 `render_call` 就用扩展的组件,否则用内置 `ToolBlock`。"""
+        tool = self._tool_def(name)
+        render_call = getattr(tool, "render_call", None) if tool is not None else None
+        if render_call is not None:
+            widget = self._extension_widget(render_call, args)
+            if widget is not None:
+                block = ExtensionToolBlock(self._palette)
+                block.set_state(state)
+                try:
+                    block.show(widget)
+                    return block
+                except Exception as exc:  # noqa: BLE001 挂载失败 → 退回内置
+                    self._note(f"扩展工具渲染失败({name}): {exc}", "warning")
+        block = ToolBlock(self._renderer.tool_title(name, args), self._palette)
+        block.set_state(state)
+        return block
+
+    def _tool_result_widget(self, name: str, result: str) -> Any:
+        """`tool_end` 时:有 `render_result` 就让扩展自己画结果,否则返回 None(走内置)。"""
+        tool = self._tool_def(name)
+        render_result = getattr(tool, "render_result", None) if tool is not None else None
+        if render_result is None:
+            return None
+        return self._extension_widget(render_result, result)
+
     def _append(self, widget) -> None:
         log = self.query_one("#log", VerticalScroll)
         if len(log.children):
@@ -1863,14 +2124,17 @@ class QiTui(App):
         p = self._palette
         color_key = self._editor_color_key()
         border = Style(color=p.hex(color_key))
-        if not self._working:
+        frames = self._working_frames
+        if not self._working or not self._working_visible or not frames:
             return Text("─" * width, style=border)
-        label = f" {SPINNER_FRAMES[self._frame]} Working "
+        frame = frames[self._frame % len(frames)]
+        text = self._working_message or "Working"
+        label = f" {frame} {text} "
         head = "── "
         rest = "─" * max(0, width - len(head) - len(label))
         line = Text(head, style=Style(color=p.hex("border")))
-        line.append(SPINNER_FRAMES[self._frame], style=Style(color=p.hex("accent")))
-        line.append(" Working ", style=Style(color=p.hex("muted")))
+        line.append(frame, style=Style(color=p.hex("accent")))
+        line.append(f" {text} ", style=Style(color=p.hex("muted")))
         line.append(rest, style=Style(color=p.hex("border")))
         return line
 
@@ -1889,14 +2153,15 @@ class QiTui(App):
     def _set_working(self, working: bool) -> None:
         self._working = working
         if working and self._frame_timer is None:
-            self._frame_timer = self.set_interval(SPINNER_INTERVAL, self._tick)
+            self._frame_timer = self.set_interval(self._working_interval, self._tick)
         elif not working and self._frame_timer is not None:
             self._frame_timer.stop()
             self._frame_timer = None
         self._repaint_borders()
 
     def _tick(self) -> None:
-        self._frame = (self._frame + 1) % len(SPINNER_FRAMES)
+        frames = self._working_frames
+        self._frame = (self._frame + 1) % max(1, len(frames))
         self._repaint_borders()
 
     # -- footer ---------------------------------------------------------
@@ -2048,7 +2313,7 @@ class QiTui(App):
             self._append(Static(Text("运行时不可用。", style=self._palette.hex("error")), classes="msg"))
             return
         rt = self._rt
-        self._append(UserMessage(text, self._renderer, self._palette))
+        self._append(UserMessage(self._transform_markdown(text), self._renderer, self._palette))
         if self._session is None:
             self._session = self._session_store().create("tui", cwd=rt.cwd)
         self.run_worker(self._run(text), exclusive=False, exit_on_error=False)
@@ -2094,29 +2359,33 @@ class QiTui(App):
                     if self._live is None:
                         self._live = AssistantMessage(self._palette, self._output_pad)
                         self._append(self._live)
-                    self._live.set_text(ev.text, renderer)
+                    self._live.set_text(self._transform_markdown(ev.text), renderer)
                     self._live = None
                     self._live_thinking = None      # 收束思考块(保留可 ctrl+t 切换)
                     # 最终回答(不带工具调用的那条)才供 /copy 使用
                     if ev.text.strip() and not ev.data.get("tool_calls"):
                         self._last_answer = ev.text
                 elif ev.kind == "tool_start":
-                    block = ToolBlock(renderer.tool_title(ev.tool or "?", ev.data.get("args") or {}),
-                                      self._palette)
+                    block = self._tool_block(ev.tool or "?", ev.data.get("args") or {})
                     self._current_tool = block
                     self._append(block)
                 elif ev.kind == "tool_end":
                     block = self._current_tool
                     if block is None:
-                        block = ToolBlock(renderer.tool_title(ev.tool or "?", {}), self._palette)
+                        block = self._tool_block(ev.tool or "?", {})
                         self._append(block)
                     status = "ok" if ev.data.get("status") == "ok" else "error"
                     block.set_state(status)
                     name = ev.tool or "?"
                     is_error = status != "ok"
-                    block.set_output(renderer.tool_body(name, ev.text or "",
-                                                        expanded=self._expanded,
-                                                        is_error=is_error))
+                    widget = self._tool_result_widget(name, ev.text or "")
+                    if widget is not None and isinstance(block, ExtensionToolBlock):
+                        with contextlib.suppress(Exception):
+                            block.show(widget)
+                    else:
+                        block.set_output(renderer.tool_body(name, ev.text or "",
+                                                            expanded=self._expanded,
+                                                            is_error=is_error))
                     self._tool_blocks.append((block, name, ev.text or ""))
                     if status == "error" and ev.data.get("error"):
                         block.set_output(Text("\n" + str(ev.data["error"]),
@@ -2205,14 +2474,18 @@ class QiTui(App):
         elif cmd == "/new":
             if rt is None:
                 return
-            self._switch_session(store.create("tui", cwd=rt.cwd), note="已开新会话(auto)")
+            self._run_guarded(self._switch_guarded(
+                store.create("tui", cwd=rt.cwd), reason="new",
+                note="已开新会话(auto)"))
         elif cmd == "/resume":
             if arg:
                 s = store.get(arg)
                 if s is None:
                     self._note(f"会话不存在 {arg}", "error")
                 else:
-                    self._switch_session(s, note=f"已恢复 {s.id}(分支 {s.message_count} 条消息)")
+                    self._run_guarded(self._switch_guarded(
+                        s, reason="resume",
+                        note=f"已恢复 {s.id}(分支 {s.message_count} 条消息)"))
             else:
                 self._show_session_selector()          # 模态选择器(对齐 pi)
                 self._scroll_end()
@@ -2240,11 +2513,12 @@ class QiTui(App):
                     if target is None:
                         self._note(f"找不到那条用户消息:{arg}(共 {len(options)} 条)", "warning")
                     else:
-                        self._fork_from(session, target)
+                        self._run_guarded(self._fork_guarded(session, target))
                 else:
                     self.push_screen(
                         PickerScreen("从哪条用户消息 fork(选中后重新提问)", options),
-                        lambda value: self._fork_from(session, value) if value else None)
+                        lambda value: self._run_guarded(self._fork_guarded(session, value))
+                        if value else None)
                     self._scroll_end()
                     return
         elif cmd == "/clone":
@@ -2789,7 +3063,10 @@ class QiTui(App):
             if session is None:
                 self._flash("会话不存在")
                 return
-            self._switch_session(session, note=f"已恢复 {session.id}")
+            # 与 `/resume <id>` 走**同一道闸门**(pi 的 `session_before_switch`):
+            # 选择器这条路以前绕过事件,于是“扩展能拦命令行、拦不住选择器”。
+            self._run_guarded(self._switch_guarded(
+                session, reason="resume", note=f"已恢复 {session.id}"))
 
         self.push_screen(
             SessionSelector(store.list, on_rename=self._rename_session,
@@ -3012,7 +3289,7 @@ class QiTui(App):
 
         def picked(value: str | None) -> None:
             if value:
-                self._jump_to(value)
+                self._run_guarded(self._jump_guarded(value))
 
         self.push_screen(TreeSelector(
             lambda mode, query, show_ts: self._tree_rows(session, mode, query, show_ts),
@@ -3024,6 +3301,60 @@ class QiTui(App):
         return [(str(e.get("id")), self._entry_label(e))
                 for e in session.branch()
                 if e.get("type") == "message" and e.get("role") == "user"]
+
+    # -- 会话操作的事件闸门(pi 的 session_before_* / session_tree)----
+    #
+    # 为什么要这一层:`/fork` / `/tree` / `/new` / `/resume` 原本直接调 SessionStore,
+    # 于是扩展的 `session_before_*` 只能拦住**扩展自己发起**的操作,拦不住用户按的键 ——
+    # 闸门名不副实。`before_session_op` 把这个判断收进 runtime(那里才有总线),
+    # TUI 只负责在动手前 await 一次。
+    async def _session_gate_async(self, event: str, payload: dict) -> bool:
+        """跑一次可取消的会话事件。返回 True = 放行。"""
+        rt = self._rt
+        gate = getattr(rt, "before_session_op", None) if rt is not None else None
+        if not callable(gate):
+            return True
+        try:
+            pending: Any = gate(event, payload)
+            verdict = await pending if inspect.isawaitable(pending) else pending
+        except Exception as exc:  # noqa: BLE001 闸门坏了不该把会话操作卡死
+            self._note(f"会话事件 {event} 派发失败: {exc}", "warning")
+            return True
+        if verdict and verdict.get("cancel"):
+            self._flash("已被扩展取消")
+            return False
+        return True
+
+    async def _fork_guarded(self, session: Any, entry_id: str) -> None:
+        if await self._session_gate_async("session_before_fork", {"entryId": entry_id}):
+            self._fork_from(session, entry_id)
+
+    async def _jump_guarded(self, entry_id: str) -> None:
+        if not await self._session_gate_async("session_before_tree", {"targetId": entry_id}):
+            return
+        self._jump_to(entry_id)
+        rt = self._rt
+        notify = getattr(rt, "notify_session_tree", None) if rt is not None else None
+        if callable(notify):
+            notify(entry_id)
+
+    async def _switch_guarded(self, session: Any, *, reason: str, note: str) -> None:
+        """`/new` / `/resume` 的统一入口:先过 `session_before_switch`,再真正切。"""
+        if not await self._session_gate_async("session_before_switch", {"reason": reason}):
+            return
+        rt = self._rt
+        emit = getattr(rt, "emit_session_shutdown", None) if rt is not None else None
+        old = self._session
+        if callable(emit) and old is not None and old.id != getattr(session, "id", None):
+            with contextlib.suppress(Exception):
+                result: Any = emit(reason)
+                if inspect.isawaitable(result):
+                    await result
+        self._switch_session(session, note=note)
+
+    def _run_guarded(self, coro: Any) -> None:
+        """把闸门+操作放进 worker(它们是 async,而 `_command` 是同步的)。"""
+        self.run_worker(coro, exclusive=False, exit_on_error=False)
 
     def _jump_to(self, entry_id: str) -> None:
         session = self._session
@@ -3198,17 +3529,30 @@ class QiTui(App):
         if banner is not None:
             self._append(Static(banner, classes="msg"))
         renderer = self._renderer
+        renderers = self._renderers()
         for entry in session.branch():
             kind = entry.get("type")
+            custom_type = entry.get("custom_type")
+            # ① 扩展的渲染器优先:custom entry 用 entry renderer,custom message 用
+            # message renderer(pi 的 registerEntryRenderer / registerMessageRenderer)。
+            # 回调返回 None 或抛错 → 退回下面的内置渲染(绝不白屏)。
+            if renderers is not None and custom_type:
+                fn = (renderers.message_renderer(custom_type) if kind == "message"
+                      else renderers.entry_renderer(custom_type))
+                widget = self._extension_widget(fn, entry)
+                if widget is not None:
+                    self._append(widget)
+                    continue
             if kind == "message" and entry.get("role") == "user":
-                self._append(UserMessage(str(entry.get("content") or ""), renderer, self._palette))
+                self._append(UserMessage(self._transform_markdown(str(entry.get("content") or "")),
+                                         renderer, self._palette))
             elif kind == "message" and entry.get("role") == "assistant":
                 message = AssistantMessage(self._palette, self._output_pad)
-                message.set_text(str(entry.get("content") or ""), renderer)
+                message.set_text(self._transform_markdown(str(entry.get("content") or "")), renderer)
                 self._append(message)
             elif kind == "custom" and entry.get("custom_type") == "assistant_narration":
                 message = AssistantMessage(self._palette, self._output_pad)
-                message.set_text(str(entry.get("content") or ""), renderer)
+                message.set_text(self._transform_markdown(str(entry.get("content") or "")), renderer)
                 self._append(message)
             elif kind == "dispatch":
                 self._append(Static(renderer.dispatch_line(entry.get("agent"), entry),
@@ -3216,16 +3560,27 @@ class QiTui(App):
             elif kind == "tool":
                 name = str(entry.get("tool") or "?")
                 status = "ok" if entry.get("status") == "ok" else "error"
-                block = ToolBlock(renderer.tool_title(name, entry.get("args") or {}),
-                                  self._palette)
-                block.set_state(status)
                 result = str(entry.get("result") or "")
-                block.set_output(renderer.tool_body(name, result, expanded=self._expanded,
-                                                    is_error=status != "ok"))
+                block = self._tool_block(name, entry.get("args") or {}, state=status)
+                widget = self._tool_result_widget(name, result)
+                if widget is not None and isinstance(block, ExtensionToolBlock):
+                    with contextlib.suppress(Exception):
+                        block.show(widget)
+                else:
+                    block.set_output(renderer.tool_body(name, result, expanded=self._expanded,
+                                                        is_error=status != "ok"))
                 self._tool_blocks.append((block, name, result))
                 self._append(block)
             elif kind in ("compaction", "branch_summary"):
                 self._append_compaction(entry)
+            elif kind == "custom":
+                # 未注册渲染器的 custom entry:**退回原始显示,绡不丢弃**
+                # (docs/extensions.md §8.2 的旧会话回放兼容)。以前这里什么都不画,
+                # 于是“扩展存的状态”在回放里凭空消失 —— 那是很难查的一类不一致。
+                self._append(Static(
+                    f"[{custom_type or 'custom'}] "
+                    f"{json.dumps(entry.get('data') or {}, ensure_ascii=False)}",
+                    classes="msg"))
         self._sync_log_height()
         self._scroll_end()
 
@@ -3321,12 +3676,17 @@ class QiTui(App):
             return items, row_start, row_start + col
 
         # 1b) 参数补全:`/cmd <前缀>`(还没输入第二个参数)
+        #     内置表 + **扩展命令的 `getArgumentCompletions`**(pi 的 registerCommand 选项)
         if before.startswith("/") and " " in before:
             cmd, _, rest = before.partition(" ")
-            if " " not in rest and cmd.lower() in ARG_COMPLETION_COMMANDS:
-                items = self._argument_candidates(cmd.lower(), rest)
-                start = row_start + len(cmd) + 1
-                return items, start, row_start + col
+            if " " not in rest:
+                key = cmd.lower()
+                items = (self._argument_candidates(key, rest)
+                         if key in ARG_COMPLETION_COMMANDS else [])
+                items = [*items, *self._extension_argument_candidates(cmd, rest)]
+                if items:
+                    start = row_start + len(cmd) + 1
+                    return items, start, row_start + col
 
         # 2) 文件补全:`@路径` 或 `@"带空格的路径"`(pi 的 PATH_DELIMITERS / 引号规则)
         match = _at_prefix(before)
@@ -3335,6 +3695,42 @@ class QiTui(App):
         start, raw, quoted = match
         items = self._file_candidates(raw, quoted=quoted)
         return items, row_start + start, row_start + col
+
+    def _extension_argument_candidates(self, cmd: str, prefix: str) -> list[Candidate]:
+        """扩展命令的参数补全(pi 的 `getArgumentCompletions(prefix)`)。
+
+        收 `list[str]` 或 `list[{value|label, description}]`。**async 返回值不支持** ——
+        补全路径是同步的;遇到 coroutine 会记一条 note 并忽略(不静默)。
+        """
+        if self._rt is None:
+            return []
+        command = self._rt.commands.find(cmd.lstrip("/"))
+        fn = getattr(command, "get_argument_completions", None) if command is not None else None
+        if not callable(fn):
+            return []
+        try:
+            raw: Any = fn(prefix)
+        except Exception as exc:  # noqa: BLE001 扩展的补全坏不该把输入框弄挂
+            self._note(f"扩展参数补全失败({cmd}): {exc}", "warning")
+            return []
+        if inspect.isawaitable(raw):
+            # 不 await 就把 coroutine 关掉 —— 否则 Python 会报 "never awaited" 警告,
+            # 测试与日志里都是噪声。
+            close = getattr(raw, "close", None)
+            if callable(close):
+                close()
+            self._note(f"扩展参数补全({cmd})返回了 async 结果 —— 补全路径是同步的,已忽略")
+            return []
+        items: list[Candidate] = []
+        for entry in list(raw or []):
+            if isinstance(entry, str):
+                items.append(Candidate(entry, entry, ""))
+            elif isinstance(entry, dict):
+                value = str(entry.get("value") or entry.get("label") or "")
+                if value:
+                    items.append(Candidate(value, value,
+                                           str(entry.get("description") or "")))
+        return items
 
     def _argument_candidates(self, cmd: str, prefix: str) -> list[Candidate]:
         """`/model` `/thinking` `/login` 的第一个参数候选。"""
@@ -3475,6 +3871,24 @@ class QiTui(App):
         """执行用户手敲的命令;`!` 会把「命令 + 输出」落成一条 user 消息供后续回合参考。"""
         rt = self._rt
         cwd = str(rt.cwd) if rt is not None else str(Path.cwd())
+        # `user_bash`(pi):`!` / `!!` 命令执行**前**通知。契约照 pi:
+        # `{operations: {command}}` 可换掉要跑的命令,`{result: "…"}` 则直接给结果不执行。
+        if rt is not None and getattr(getattr(rt, "bus", None), "has", lambda _e: False)(
+                "user_bash"):
+            verdict = await rt.bus.emit(
+                "user_bash",
+                {"command": command, "excludeFromContext": bool(excluded), "cwd": cwd},
+                ctx=rt.extension_ctx(self._abort))
+            for src, exc in verdict.errors:
+                rt.notes.append(f"扩展 {src} 的 user_bash 处理失败: {exc}")
+            operations = verdict.payload.get("operations")
+            if isinstance(operations, dict) and operations.get("command"):
+                command = str(operations["command"])
+            given = verdict.payload.get("result")
+            if isinstance(given, str):
+                block.set_result(given, 0)
+                self._scroll_end()
+                return
         try:
             proc = await asyncio.create_subprocess_shell(
                 command, cwd=cwd,
@@ -3545,10 +3959,13 @@ class QiTui(App):
     # -- 底部状态行的瞬时提示(pi 的状态区,不加额外 chrome)----------
     def _default_status(self) -> str:
         # P-E4c:"分派模式"不再存在(core 是单 agent,auto 取消) —— 所以状态行不再报模式。
-        # 角色(qi-agents)要显示自己的东西就走 `ctx.ui.setStatus`(P-E3 的接口)。
+        # 角色(qi-agents)要显示自己的东西就走 `ctx.ui.set_status`。
         status = "qi"
         if self._queue_count():
             status += f" · 排队 {self._queue_count()}"
+        # 扩展写的状态片段:按 key 字典序(渲染顺序稳定,不因插入次序而抳)
+        for key in sorted(self._ext_statuses):
+            status += f" · {self._ext_statuses[key]}"
         return status
 
     def _flash(self, message: str, seconds: float = 2.0) -> None:
@@ -3559,6 +3976,276 @@ class QiTui(App):
     def _restore_status(self) -> None:
         self._status = self._default_status()
         self._refresh_footer()
+
+    # -- 扩展 UI 后端(ctx.ui 的方法委托到这里)----------------
+    def set_extension_status(self, key: str, text: str | None) -> None:
+        """`ctx.ui.set_status`:footer 状态行里的一条(`text=None` 清除)。"""
+        if text is None:
+            self._ext_statuses.pop(key, None)
+        else:
+            self._ext_statuses[str(key)] = str(text)
+        self._status = self._default_status()
+        self._refresh_footer()
+
+    def set_terminal_title(self, title: str) -> None:
+        """`ctx.ui.set_title`:终端窗口/标签页标题(Textual `App.title`)。"""
+        self.title = str(title)
+
+    def set_working_message(self, message: str | None) -> None:
+        self._working_message = str(message) if message else None
+        self._repaint_borders()
+
+    def set_working_visible(self, visible: bool) -> None:
+        self._working_visible = bool(visible)
+        self._repaint_borders()
+
+    def set_working_indicator(self, options: dict) -> None:
+        """`ctx.ui.set_working_indicator`:`{"frames": [...], "intervalMs": int}`。"""
+        frames = options.get("frames")
+        if isinstance(frames, list):
+            self._working_frames = [str(f) for f in frames]
+            self._frame = 0
+        raw = options.get("intervalMs") or options.get("interval_ms")
+        if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw > 0:
+            try:
+                interval = float(raw) / 1000.0
+            except (TypeError, ValueError):
+                interval = 0.0
+            if interval > 0:
+                self._working_interval = interval
+                if self._frame_timer is not None:
+                    self._frame_timer.stop()
+                    self._frame_timer = self.set_interval(self._working_interval, self._tick)
+        self._repaint_borders()
+
+    def set_hidden_thinking_label(self, label: str | None) -> None:
+        self._hidden_thinking_label = str(label) if label else None
+
+    def set_tools_expanded(self, expanded: bool) -> None:
+        """`ctx.ui.set_tools_expanded`:等同内置的“展开工具输出”。"""
+        self._expanded = bool(expanded)
+        for block in [*self._bash_blocks, *self._compaction_blocks]:
+            setter = getattr(block, "set_expanded", None)
+            if callable(setter):
+                setter(self._expanded)
+        self._refresh_footer()
+
+    def get_editor_text(self) -> str:
+        try:
+            return self.query_one("#editor", TextArea).text
+        except (NoMatches, ScreenStackError):
+            return ""
+
+    def set_editor_text(self, text: str) -> None:
+        try:
+            self.query_one("#editor", TextArea).text = str(text)
+        except (NoMatches, ScreenStackError):
+            return
+
+    # -- 主题(ctx.ui.getAllThemes / getTheme / setTheme)--------
+    def all_themes(self) -> list[dict]:
+        from . import theme as theme_mod
+        return [{"name": name, "path": str(theme_mod.THEMES_DIR / f"{name}.json")}
+                for name in theme_mod.THEME_CHOICES]
+
+    def theme_by_name(self, name: str) -> Any:
+        from .theme import Palette, ThemeError, load_palette
+        try:
+            palette: Palette = load_palette(str(name))
+        except ThemeError:
+            return None
+        return palette
+
+    def apply_theme(self, theme: Any) -> dict:
+        """`ctx.ui.set_theme`:切主题(名字或 Palette)。返回 `{success, error?}`。"""
+        from .theme import Palette, ThemeError, load_palette
+        try:
+            palette = theme if isinstance(theme, Palette) else load_palette(str(theme))
+        except ThemeError as exc:
+            return {"success": False, "error": str(exc)}
+        self._palette = palette
+        try:
+            textual = textual_theme(palette)
+            self.register_theme(textual)
+            self.theme = textual.name
+            self.console.push_theme(rich_theme(palette))
+            self.refresh()
+        except Exception as exc:  # noqa: BLE001 主题切换失败不该把应用弄崩
+            return {"success": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"success": True}
+
+    # -- setWidget / custom ----------------------------------------
+    def set_extension_widget(self, key: str, content: Any, options: dict) -> None:
+        """`ctx.ui.set_widget`:在编辑器上/下方挂一个常驻 widget。"""
+        existing = self._ext_widgets.pop(key, None)
+        if existing is not None:
+            try:
+                existing.remove()
+            except Exception as exc:  # noqa: BLE001 移除失败不该把命令打断,但要看得见
+                self._note(f"移除扩展 widget {key!r} 失败: {exc}", "warning")
+        if content is None:
+            return
+        placement = str(options.get("placement") or "aboveEditor")
+        slot_id = "ext-widgets-below" if placement == "belowEditor" else "ext-widgets-above"
+        try:
+            slot = self.query_one(f"#{slot_id}")
+        except (NoMatches, ScreenStackError):
+            self._note(f"扩展 widget 槽位不存在({slot_id})", "warning")
+            return
+        ctx = self._rt.extension_ctx() if self._rt is not None else None
+        widget: Any = content(ctx) if callable(content) else None
+        if widget is None:
+            text = ("\n".join(str(x) for x in content)
+                    if isinstance(content, (list, tuple)) else str(content))
+            widget = Static(text)
+        try:
+            widget.id = f"ext-widget-{key}"
+            slot.mount(widget)
+        except Exception as exc:  # noqa: BLE001 挂载失败要看得见(否则组件“静静消失”)
+            self._note(f"挂载扩展 widget {key!r} 失败: {exc}", "warning")
+            return
+        self._ext_widgets[key] = widget
+
+    async def await_custom(self, factory: Any, options: dict) -> Any:
+        """`ctx.ui.custom`:把扩展给的组件放进模态,等它调 `done(value)` 或 escape。
+
+        factory 可以收 `(ctx, done)` / `(ctx)` / 无参 —— 按形参个数适配(pi 的 factory
+        拿到的是 `(tui, theme, keybindings, done)`,qi 没有 tui 对象,所以给 ctx)。
+        """
+        box: dict = {"widget": None}
+        screen = CustomScreen(box, options.get("title"))
+
+        def done(value: Any = None) -> None:
+            with contextlib.suppress(Exception):
+                screen.dismiss(value)
+
+        if callable(factory):
+            try:
+                arity = len(inspect.signature(factory).parameters)
+            except (TypeError, ValueError):
+                arity = 0
+            ctx = self._rt.extension_ctx() if self._rt is not None else None
+            if arity >= 2:
+                box["widget"] = factory(ctx, done)
+            elif arity == 1:
+                box["widget"] = factory(ctx)
+            else:
+                box["widget"] = factory()
+        else:
+            box["widget"] = factory
+        if box["widget"] is None:
+            return None
+        return await self.await_screen(screen)
+
+    # -- setFooter / setHeader ------------------------------------
+    def _build_extension_component(self, factory: Any, what: str) -> Any:
+        """把扩展给的组件工厂变成 widget(收 `(ctx) -> Widget`,也直接收 Widget)。"""
+        widget = None
+        if factory is not None:
+            if callable(factory):
+                ctx = self._rt.extension_ctx() if self._rt is not None else None
+                try:
+                    arity = len(inspect.signature(factory).parameters)
+                except (TypeError, ValueError):
+                    arity = 0
+                widget = factory(ctx) if arity else factory()
+            else:
+                widget = factory
+        if widget is None:
+            self._note(f"扩展的 {what} 工厂没有返回组件(已忽略)", "warning")
+        return widget
+
+    def set_extension_footer(self, factory: Any) -> None:
+        """`ctx.ui.set_footer`:整个替换 footer(`None` = 恢复内置)。"""
+        for old in list(self.query(".ext-footer")):
+            old.remove()
+        self._ext_footer = factory
+        try:
+            builtin = self.query_one("#footer")
+        except NoMatches:
+            return
+        if factory is None:
+            builtin.styles.display = "block"
+            self._refresh_footer()
+            return
+        widget = self._build_extension_component(factory, "footer")
+        if widget is None:
+            return
+        # 内置 footer 只是**藏起来**,不卸载 —— `_refresh_footer` 仍按原样写它,
+        # 而扩展把 footer 撤回去时立即就能恢复(否则得重建一个 widget)。
+        builtin.styles.display = "none"
+        widget.add_class("ext-footer")
+        try:
+            self.query_one("#body").mount(widget, before=builtin)
+        except Exception as exc:  # noqa: BLE001 挂载失败要看得见
+            self._note(f"挂载扩展 footer 失败: {exc}", "warning")
+
+    def set_extension_header(self, factory: Any) -> None:
+        """`ctx.ui.set_header`:在对话区上方放一个 header(`None` = 移除)。"""
+        for old in list(self.query(".ext-header")):
+            old.remove()
+        self._ext_header = factory
+        if factory is None:
+            return
+        widget = self._build_extension_component(factory, "header")
+        if widget is None:
+            return
+        widget.add_class("ext-header")
+        try:
+            self.query_one("#body").mount(widget, before=self.query_one("#log"))
+        except Exception as exc:  # noqa: BLE001
+            self._note(f"挂载扩展 header 失败: {exc}", "warning")
+
+    # -- onTerminalInput ------------------------------------------
+    def add_terminal_input_handler(self, handler: Any) -> Any:
+        """`ctx.ui.on_terminal_input`:注册一个原始按键处理器,返回**退订函数**。
+
+        handler 返回 `{"consume": True}` = 这个键不再往下走(pi 的 `consume` 语义)。
+        pi 的 `data`(改写按键)qi 不支持 —— 返回它也不会有第二次分派,所以不假装支持。
+        """
+        if not callable(handler):
+            return lambda: None
+        self._terminal_input_handlers.append(handler)
+
+        def _unsubscribe() -> None:
+            try:
+                self._terminal_input_handlers.remove(handler)
+            except ValueError:
+                return
+        return _unsubscribe
+
+    def on_key(self, event: events.Key) -> None:
+        """给扩展一次看按键的机会(未被编辑器与 priority 绑定吃掉的键会冒泡到这里)。"""
+        for handler in list(self._terminal_input_handlers):
+            try:
+                result = handler(event.key)
+            except Exception as exc:  # noqa: BLE001 第三方代码
+                self._note(f"扩展终端输入处理器失败: {exc}", "warning")
+                continue
+            if isinstance(result, dict) and result.get("consume"):
+                event.stop()
+                return
+
+    async def on_unmount(self) -> None:
+        """退出前发 `session_shutdown`(pi 的 `quit` 语义)。
+
+        扩展用它做收尾(提交、落盘、关连接)—— 所以幂等由这个标志兼管:Textual 卸载
+        与显式 exit 都可能走到这里。
+        """
+        rt = self._rt
+        if rt is None or getattr(self, "_session_shutdown_sent", False):
+            return
+        bus = getattr(rt, "bus", None)
+        emit = getattr(rt, "emit_session_shutdown", None)
+        if bus is None or not callable(emit) or not bus.has("session_shutdown"):
+            return
+        self._session_shutdown_sent = True
+        try:
+            result: Any = emit("quit")
+            if inspect.isawaitable(result):
+                await result
+        except Exception:  # noqa: BLE001 收尾失败不该阻止退出
+            return
 
 
 def _version() -> str:

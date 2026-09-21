@@ -154,7 +154,7 @@ qi 与 pi 的差异(已落档):
   作为迭代上下文(`UPDATE` 提示词);`/compact <提示>` 会追加 `Additional focus:`。
 - 触发估算用**重建后的上下文**(摘要 + 保留段),不是原始 entry 之和 —— 否则每轮都会重复压。
 - TUI 里压缩显示成 pi 同款底色块(`[compaction]` / `[branch]`,`ctrl+o` 展开看摘要)。
-- qi 与 pi 的差异:pi 在 `/tree` 跳转前**先问**要不要摘要,qi 直接做并提示;pi 还有
+- qi 与 pi 的差异(以前):pi 在 `/tree` 跳转前**先问**要不要摘要,qi 直接做并提示 —— 现在**两边一样**了:qi 也先问,默认「不摘要」;`settings.branchSummary.skipPrompt: true` 关掉这一问(= 也不摘要,与 pi 的 defaults to no summary 同义)。原差异句末的:pi 还有
   `branch_summary` 的树内过滤/标签渲染,qi 只显示块。
 
 ### 命令(内置;**输入 `/` 补全全部** —— 扩展注册的命令也在里面)
@@ -168,7 +168,7 @@ qi 与 pi 的差异(已落档):
 | `/hotkeys` · `/quit` | 键位 / 退出 —— **这两条扩展不能顶掉**(顶掉 `/quit` 等于把用户锁在界面里) |
 | `/new` · `/resume` · `/session` | 新会话 / 选或恢复(选择器里可改名、删除)/ 会话信息 |
 | `/name` | 设置会话显示名 |
-| `/tree` · `/fork` · `/clone` | 跳到本会话任意节点 / 从某条消息 fork / 复制当前分支 |
+| `/tree` · `/fork` · `/clone` | 跳到本会话任意节点(跳前先问「要把被放弃的那段压成摘要吗」,默认不摘要;`settings.branchSummary.skipPrompt` 可关掉这一问)/ 从某条消息 fork / 复制当前分支 |
 | `/trust [yes\|no\|forget]` | 按**目录**记住信任决定(`~/.qi/agent/trust.json`);连带记住上一层,写完要重启才生效 |
 | `/compact` | 压缩上下文(摘要旧消息);可跟 `<提示>` 追加 focus |
 | `/model` · `/scoped-models` · `/thinking` | 当前或切换模型 / 挑 Ctrl+P 轮换的模型 / 思考级别 |

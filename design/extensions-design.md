@@ -30,14 +30,21 @@
 | **P-E5 三件套迁移** | qi-mcp → qi-agents → qi-web(按依赖从少到多);**qi-agents 落地后把仓库 agents 搬回 `.qi/agents/`(E15)**;`ctx.ui` 的 web 侧 + `add_route`/`add_static` | 三个包各自可装可卸;不装时启动提示与 `qi doctor` 正确;`qi web` 由扩展提供;`qi --agent <name>` 由 qi-agents 提供。**子命令分派的前提**:轻量发现宿主必须给齐 `commands` / `flags` / `cli_commands` 三个登记处 —— 装载器对"扩展装载失败"是**整体中断**,少给一个不是"少注册一样东西",而是**所有兄弟扩展的命令一起消失**(`qi web` 曾因此从未注册,见 docs/extensions.md §8.2) |
 | **P-E6 收尾** | 参考扩展样例(至少一个 `examples/extensions/` 下的完整例子)+ 目录通道的 PEP 723 声明解析 + 冲突报告 + 文档重写(agent-config.md / [web.md](web.md) / [dispatcher.md](dispatcher.md) 归档)+ 迁移提示打磨 | 新用户按 extensions.md 能写出并装上第一个扩展;声明与实装不一致时 `qi doctor` 报得出来 |
 
-**依赖关系**:P-E1 ✅ → **P-E2 ✅** → **P-E3 ✅**(a/b/c/d-1) → **P-E4a ✅** → **P-E4b ✅** → P-E4c → P-E5 → P-E6。
+**依赖关系**:P-E1 ✅ → **P-E2 ✅** → **P-E3 ✅**(a/b/c/d-1) → **P-E4a ✅** → **P-E4b ✅** → P-E4c → P-E5 → **P-E7 ✅**(与 pi 的接口对齐) → P-E6。
+
+| 阶段 | 内容 | 验收 |
+| --- | --- | --- |
+| **P-E7 与 pi 的接口对齐** ✅ | ① 事件面补完(36/36):`message_*`/`tool_execution_*`/`before_provider_*`/`after_provider_response`/`user_bash`/`ui_prompt_*`/`resources_discover`/`session_shutdown`/`agent_settled`/`session_before_*`/`session_tree`;② `api.*` 补完(renderer 三件套 / `setSessionName` / `setLabel` / `setModel` / 思考级别 / `unregisterProvider` / `exec` 形状 / `sendMessage` 的 pi 形状与 `triggerTurn`);③ `ctx` 补完(`mode` / `abort` / `isIdle` / `hasPendingMessages` / `shutdown` / `compact` / `getContextUsage` / `getSystemPrompt*` / `waitForIdle` / 四个会话操作 / `ModelView` / `ModelRegistryView`);④ `ctx.ui` 数据层全集 + 组件层的 `setWidget`/`custom`;⑤ 命名与参数形状双收(E26) | `tests/test_extension_alignment.py` 21 项 + 全量 963 项;docs/extensions.md §3 按代码重写,并逐条记下 §3.4 的剩余差异 |
 
 > **P-E3 剩下的两块与三件套无关**:P-E3d-2(压缩事件,**已落地**)与 P-E3d-3(renderer + 会话操作事件)。
 > 三件套扩展真正依赖的扩展面已全部就位 —— 除了 `ctx.runAgent`,那是 **P-E4** 的事。
 > **P-E2 整段完成**:工具面(注册 / 元数据 / 来源 / 运行时集合 / `exec`)+ 输入面(`input`、`before_agent_start`)+ 轮次与工具事件(`turn_*`、`context`、`tool_call`、`tool_result`)+ 依赖契约。
 > 剩下的 P-E6 尾巴:PEP 723 目录通道声明解析、冲突报告深度、`qi doctor` 汇总。
 
-**命名规则**(避免以后再纠结):**方法名照 pi 保留 camelCase**(`registerTool` / `getAllTools` / `setActiveTools` …) —— 那是扩展作者要背的那部分;qi **自己的数据结构用 snake_case**(`prompt_snippet` / `source_info` 的键)。v1 的旧名(`add_tool`)作为别名留着。
+**命名规则**(E26 —— 取代原先的“方法名照 pi 保留 camelCase”):**snake_case 是正式名,
+pi 的驼峰是别名**(两者绑定同一个函数对象);**参数形状两边都收**(pi 的 options 对象与
+qi 的关键字)。qi 自己的数据结构用 snake_case(`prompt_snippet` / `source_info` 的键),
+**事件 payload 的键也用 snake_case**、不发 `type` 判别字段。v1 的旧名(`add_tool`)作为别名留着。
 
 ## 11. 未定清单
 
@@ -89,18 +96,24 @@
     async for event in runtime.stream("…", session): …
     ```
 
-11. **`sendUserMessage` 不自开一轮**(P-E3c-2 已实现,但有意缺这一步):pi 在 agent 空闲时 `triggerTurn`,那需要“在处理器里嵌套跑一轮”的能力(嵌套流式、与当前回合共享会话写入)。qi 现在只**排队**,由前端决定要不要因此开一轮。要补就与 `ctx.runAgent`(E12)一起做 —— 同一套“宿主内起一个受管子运行”的机制。
-12. **P-E3d-3 推迟的两块**(理由相同:**不在三件套扩展的关键路径上** + 各自需要一次专门决策):
-
-    - **renderer 三件套**(`registerMessageRenderer` / `registerEntryRenderer` /
-      `registerMarkdownTransformer`):pi 的形状是扩展**直接返回宿主的 UI 组件**。qi 的 TUI 是
-      textual —— 照搬就把扩展绑在 textual 的组件 API 上,而那正是 [web.md §16](web.md) 已经明确**拒绝过**
-      的路线(扩展点放数据层,不放组件层 —— 那是 `details["ui"]` 词汇表的由来)。
-      所以要么定一个与前端无关的渲染契约(与 `details["ui"]` 合流),要么明说“只对 TUI 有效”
-      并承担耦合。**先决策,再实现**。
-    - **`session_before_switch` / `session_before_fork` / `session_before_tree`**:对应的操作
-      (`/new` `/resume` `/fork` `/tree`)现在住在 **TUI** 里(直接调 `SessionStore`)。
-      要发“可取消”的事件,得先把这些会话操作收进 runtime —— 那是一次比服务扩展更大的重构。
+11. **`sendUserMessage` 的 `triggerTurn`(P-E7 已接一半)**:pi 在 agent 空闲时 `triggerTurn`
+    会直接开一轮。qi 的做法是把“该开一轮”记成一条**请求**(`take_turn_request()`),
+    由前端在命令 / 本轮处理完之后领取并跑 —— 所以语义到位了,但**不由 runtime 自己嵌套跑一轮**。
+    要真做到“handler 里直接跑一轮”,需要嵌套流式(与当前回合共享会话写入),
+    那就与 `ctx.runAgent`(E12)是同一套机制的另一半;现在不做。
+12. **P-E3d-3 曾经推迟的两块,P-E7/P-E8 已补完**:
+    - **renderer 三件套与工具渲染钩子**:**已端到端接线** —— `RendererRegistry` 登记,
+      TUI 消费(`register_entry_renderer` / `register_message_renderer` 在 `_replay_branch`
+      里接管该 `custom_type`,`register_markdown_transformer` 改 user/assistant 的最终文本,
+      工具的 `render_call` / `render_result` 走 `ExtensionToolBlock`)。契约见 docs §3.5。
+    - **`session_before_switch` / `session_before_fork` / `session_before_tree` / `session_tree`**:
+      已实现。runtime 拥有四个会话操作,并对外给了一个公开闸门
+      `before_session_op(event, payload)`;TUI 的命令路径(`/new` `/resume <id>` `/fork` `/tree`)
+      **与交互式会话选择器**都过它。
+    - **仍未实现的两个组件层接口**:`set_editor_component`(qi 的 `Editor` 是承重的,
+      15 处 `query_one("#editor", Editor)` 在用它更宽的面 —— 要接得先定 qi 编辑器协议)
+      与 `add_autocomplete_provider`(pi 传的是 pi-tui 的 provider 对象)。两个都是
+      “接口在、前端未实现” → 调用时记 note 并 no-op。
 
 ## 12. agent 配置对齐(Claude Code / pi / qi 三方对照)
 

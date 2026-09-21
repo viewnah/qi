@@ -245,6 +245,9 @@ qi -ne | -nc                                  # 关扩展发现 / 关 AGENTS.md 
 
 | pi 的 | 为什么 qi 不做 |
 | --- | --- |
+| `/share` 的 **Radius** 路径 | 那是 pi 的**托管服务**(上传 JSONL,并先注入 `pi.share` entry:`systemPrompt` + 工具定义);qi 没有对应物,不做 |
+| `/share` 的 **viewer 预览链接** | pi 展示自己的预览服务链接(`getShareViewerUrl(gistId)`);qi 只能给 gist 链接本身 |
+| `/share` 的 **`gh` 依赖** | **刻意偏离**:pi 的 gist 路径就是 shell 出 `gh`(先 `gh auth status` 查登录,再 `gh gist create --public=false`);qi **直调 API**(stdlib `urllib`),少一个外部依赖 |
 | `pi config` 的资源启停 TUI | **已对齐**(`qi config` TTY 下面板;见 §5) |
 | `-e/--extension <source>` 的 **npm / git** 来源 | Python 侧的分发走 pip(`settings.packages`);没有 npm / git 那种"从任意源拉"的通道 |
 | `--append-system-prompt` 传**文件路径** | **已实现**(值是可读文件就读文件内容) |

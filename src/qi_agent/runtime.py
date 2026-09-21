@@ -53,7 +53,8 @@ from .registry import CapabilityRegistry, ToolCatalog, discover_extensions
 from .runner import AgentRunner, RunnerSettings, RunSpec
 from .session import Session, SessionStore
 from .titling import suggest_title
-from .settings import extension_dirs, load_settings, resolve_project_trust, session_dir
+from .settings import (extension_dirs, load_settings, load_settings_by_scope,
+                       resolve_project_trust, session_dir)
 from .tools import ToolContext, register_builtin_tools
 
 
@@ -210,8 +211,20 @@ class QiRuntime:
         #: next_turn 留到下一次用户输入(见 `_drain_messages` 与 `_stream_inner` 开头)。
         self._pending_messages: dict[str, list[tuple[str, str, str]]] = {
             "steer": [], "follow_up": [], "next_turn": []}
+        # 信任决定**只从用户级 settings 读**(`defaultProjectTrust`)。项目级那份不能自己声明
+        # “我可信”:否则仓库只要提交一行 `"defaultProjectTrust": "always"` 就能让自己的
+        # 任意代码跑起来 —— 而这正是这道门控要防的事(实测过:确实能跑)。
+        # pi 同模型:它的信任决定也存在用户 home 里(`trust.json`),不在仓库里。
+        scopes = load_settings_by_scope(self.cwd)
         self.project_trusted, self.trust_reason = resolve_project_trust(
-            self.settings, approve=approve_project, has_ui=has_ui)
+            scopes.get("user"), approve=approve_project, has_ui=has_ui)
+        declared_by_repo = (getattr(scopes.get("project"), "defaultProjectTrust", None)
+                            or "").strip()
+        if declared_by_repo:
+            # 不静默:一个仓库自称可信是值得报警的事
+            self.notes.append(
+                f"项目 settings 里写了 defaultProjectTrust={declared_by_repo} —— **已忽略**:"
+                "信任决定不能由仓库自己声明(用 `qi -a`,或写进**用户级** settings)")
         if not self.project_trusted and paths.project_extensions_dir(self.cwd).is_dir():
             self.notes.append(
                 f"未信任项目({self.trust_reason}):`.qi/extensions/` 未加载;用 `qi -a` 信任")

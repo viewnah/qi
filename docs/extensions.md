@@ -211,7 +211,9 @@ def notify(message, *, level="info") -> None
 
 项目级扩展 = **仓库控制的任意代码**,必须在信任之后才加载。鸡生蛋:`project_trust` 事件本身由"用户级 + `-e` 扩展"参与,项目扩展不参与 —— **机制必须在 core**。
 
-- `settings.defaultProjectTrust`(`ask`/`always`/`never`)已存在(`settings.py:78`),把它接上
+- `settings.defaultProjectTrust`(`ask`/`always`/`never`)已存在(`settings.py:78`),把它接上 ——
+  **只从用户级读**:项目级那份不能自己声明"我可信"(否则仓库一行配置就能让`.qi/extensions/`
+  里的任意代码跑起来),写了会忽略并上报
 - `-a` / `-na`(cli.md 已登记,未实现)落地为"本次信任 / 不信任"
 - 未信任时:项目 `.qi/extensions/`、`.qi/agents/`、`.agents/skills` 一律不加载(现在 `.qi/extensions/` 是**无条件扫**的,`registry.py:_iter_plugin_loaders` 是真口子)
 - **无 UI 时的默认 = 不信任**(已定,E16):`ask` + headless `-p` 没有人可问 → 跳过项目级资源,并在 stderr 打一条「未信任项目,项目级资源未加载(用 `-a` 信任)」。CI 必须显式传 `-a`。理由:扩展是**仓库控制的任意代码**,fail-safe 只能是"不执行"

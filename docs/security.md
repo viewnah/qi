@@ -29,7 +29,12 @@ qi 能执行任意命令、读写任意文件、并且**装进来的扩展就是
 | `always` | 直接信任 |
 | `never` | 直接不信任 |
 
-优先级:**CLI 显式表态(`-a` / `-na`)> `settings.defaultProjectTrust`**。
+优先级:**CLI 显式表态(`-a` / `-na`)> `settings.defaultProjectTrust`**(**只从用户级 settings 读**)。
+
+> **项目级写 `defaultProjectTrust` 会被忽略,并打一条提示。** 信任决定不能由仓库自己声明 ——
+> 否则仓库只要提交一行 `"defaultProjectTrust": "always"` 就能让自己的任意代码跑起来,
+> 而这正是这道门控要防的事(这个漏洞真存在过,已修;回归见 `tests/test_trust_scope.py`)。
+> pi 同样是这个模型:它的信任决定存在用户 home 里(`trust.json`),不在仓库里。
 
 ```bash
 qi -a     # / --approve    信任本项目(加载项目级扩展)

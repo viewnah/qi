@@ -54,7 +54,7 @@ from .runner import AgentRunner, RunnerSettings, RunSpec
 from .session import Session, SessionStore
 from .titling import suggest_title
 from .settings import (default_tools, extension_dirs, load_settings, load_settings_by_scope,
-                       resolve_project_trust, session_dir)
+                       model_thinking_level, resolve_project_trust, session_dir)
 from .tools import ToolContext, register_builtin_tools
 
 
@@ -228,6 +228,8 @@ class QiRuntime:
             stored=TrustStore().get(self.cwd))
         #: 信任是否已被**最终**定下(见 `_bind_project_trust`)。构造期那份可能是临时的。
         self._trust_bound = False
+        #: 本会话里思考级别被**显式**设过吗(是 → 换模型不再按 `modelThinkingLevels` 覆盖)
+        self._thinking_pinned = False
         declared_by_repo = (getattr(scopes.get("project"), "defaultProjectTrust", None)
                             or "").strip()
         if declared_by_repo:
@@ -307,9 +309,12 @@ class QiRuntime:
             _flag_thinking = None
             default = resolve_default_model(self.cfg, self.cwd)
         # 思考级别:显式传参(CLI --thinking)> `--model` 的后缀 > settings.defaultThinkingLevel > off
+        # 四级优先(pi 的口径):`--thinking` > `--model provider/id:<级别>` >
+        # `modelThinkingLevels[该模型]` > `defaultThinkingLevel`
         level = (thinking_level if thinking_level is not None
                  else _flag_thinking if _flag_thinking is not None
-                 else self.settings.defaultThinkingLevel)
+                 else model_thinking_level(self.settings, default)
+                 or self.settings.defaultThinkingLevel)
         self.thinking_level = normalize_thinking_level(level)
         self.llm_exec = llm or LiteLLMClient(default, auth, thinking_level=self.thinking_level,
                                             retry=self.settings.retry)
@@ -703,6 +708,17 @@ class QiRuntime:
         (footer 显示 high、请求里却没有 —— 这类表现最难查)。
         """
         resolved = resolve_model(self.cfg, provider, model)
+        # 换到那个模型时,**按模型配的档自动生效** —— 但要在重建客户端**之前**改,
+        # 否则客户端拿着旧级别(footer 显示 high、请求里却没有,这类最难查)。
+        # 本会话里被显式设过(`/thinking` / shift+tab / `api.setThinkingLevel`)就不再覆盖:
+        # 显式选择 > 配置。
+        tuned = model_thinking_level(self.settings, resolved)
+        if tuned is not None and not self._thinking_pinned:
+            adopted = normalize_thinking_level(tuned)
+            if adopted != self.thinking_level:
+                self.thinking_level = adopted
+                self._emit_notice("thinking_level_select", {
+                    "level": adopted, "previous_level": None, "source": "auto"})
         previous = getattr(getattr(self, "llm_exec", None), "spec", None)
         self.llm_exec = LiteLLMClient(resolved, self._auth,
                                      thinking_level=self.thinking_level,
@@ -726,6 +742,7 @@ class QiRuntime:
             client.thinking_level = self.thinking_level
         self._emit_notice("thinking_level_select", {
             "level": self.thinking_level, "previous_level": previous, "source": source})
+        self._thinking_pinned = True
         return self.thinking_level
 
     def set_session_title(self, session: Session, title: str, *, source: str = "auto") -> None:

@@ -70,6 +70,9 @@ class QiSettings(BaseModel):
     defaultProvider: str | None = None
     defaultModel: str | None = None
     defaultThinkingLevel: str | None = None
+    #: 按模型的思考级别(pi 同名段):`{"provider/模型": "high"}`。
+    #: 优先级见 `QiRuntime.__init__`:`--thinking` > `--model :级别` > 这里 > 全局默认。
+    modelThinkingLevels: dict[str, str] = Field(default_factory=dict)
     enabledModels: list[str] | None = None
 
     # 界面
@@ -323,6 +326,30 @@ def next_choice(key: str, current: str) -> str:
     except ValueError:
         return values[0]          # 手写的怪值:按一下回到第一个合法值
     return values[(index + 1) % len(values)]
+
+
+def model_thinking_level(settings: QiSettings, model: Any) -> str | None:
+    """`modelThinkingLevels` 里该模型的档(pi 同名段:`{"provider/模型": "high"}`)。
+
+    键写 **`provider/模型` 最明确**,也认**裸模型 id**(只写 id 时任何 provider 下同名模型都命中);
+    **更具体的那条赢**(先找带 provider 的)。值不认识(不在 `THINKING_LEVELS` 里)时返回 `None`
+    并按"没配"处理 —— 一个写歪的值不该让启动失败。
+    """
+    from .llm import THINKING_LEVELS          # 延迟导入:避免 settings ↔ llm 的静态环
+
+    table = dict(getattr(settings, "modelThinkingLevels", None) or {})
+    mid = str(getattr(model, "model", "") or "")
+    if not table or not mid:
+        return None
+    provider = str(getattr(model, "provider", "") or "")
+    for key in (f"{provider}/{mid}", mid):
+        raw = table.get(key)
+        if raw is None:
+            continue
+        level = str(raw).strip().lower()
+        if level in THINKING_LEVELS:
+            return level
+    return None
 
 
 def default_tools(settings: QiSettings) -> list[str] | None:

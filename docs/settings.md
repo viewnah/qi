@@ -57,6 +57,7 @@
 | 字段 | pi 中的用途 | qi 现状 |
 | --- | --- | --- |
 | `theme` | 主题名(dark/light/auto) | TUI 已接:自动探测终端背景(OSC 11),失败落 dark;`QI_THEME` 可覆盖。见 [tui.md](tui.md) §1 |
+| `modelThinkingLevels` | `{}` | 按模型的思考级别:`{"provider/模型": "high"}`(也认裸模型 id)。四级优先:`--thinking` > `--model provider/id:<级别>` > 这里 > `defaultThinkingLevel`;换模型时自动采纳,但本会话显式设过(`/thinking`)就不覆盖 |
 | `defaultThinkingLevel` | 默认思考级别 | 已接:`off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`;TUI `shift+tab` 可运行时切换(`--thinking` 可覆盖)。见 [tui.md](tui.md) §2 |
 | `enabledModels` | 模型轮换(Ctrl+P) | 已接:`/scoped-models` 勾选后写回（全局设置）；空 = 轮换 models.json 里全部 |
 | `quietStartup` | 隐藏启动头 | 已接:不写 banner(含快捷键提示);启动提示(会话不存在之类)仍会出 |

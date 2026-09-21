@@ -120,7 +120,7 @@ qi 与 pi 的差异(已落档):
   (`alt/ctrl+←/→`)、树内过滤的持久化(pi 把 `treeFilterMode` 存进 settings);
 - 标签存储不同:qi 直接写在 entry 上(`label` / `labelTimestamp` 字段),pi 另写一条
   `type=label` 的 entry;两边都是「标签属于某条 entry」的语义;
-- `/tree` 跳转时 pi 会**先问**要不要摘要被放弃的分支,qi 直接做并提示;
+- `/tree` 跳转时 pi 会**先问**要不要摘要被放弃的分支,qi 也一样先问(默认「不摘要」);
 - TUI 里回放会话(以及 web `/messages`)只展示**当前分支**(web 契约仍把 header 放在 `entries[0]`);
 - 除了 `--export` 与 TUI 回放,其它导出仍拷**整个文件**(含其它分支)。
 
@@ -154,7 +154,7 @@ qi 与 pi 的差异(已落档):
   作为迭代上下文(`UPDATE` 提示词);`/compact <提示>` 会追加 `Additional focus:`。
 - 触发估算用**重建后的上下文**(摘要 + 保留段),不是原始 entry 之和 —— 否则每轮都会重复压。
 - TUI 里压缩显示成 pi 同款底色块(`[compaction]` / `[branch]`,`ctrl+o` 展开看摘要)。
-- qi 与 pi 的差异(以前):pi 在 `/tree` 跳转前**先问**要不要摘要,qi 直接做并提示 —— 现在**两边一样**了:qi 也先问,默认「不摘要」;`settings.branchSummary.skipPrompt: true` 关掉这一问(= 也不摘要,与 pi 的 defaults to no summary 同义)。原差异句末的:pi 还有
+- qi 与 pi 的差异pi 在 `/tree` 跳转前会**先问**要不要摘要 —— qi 现在也一样(默认「不摘要」);`settings.branchSummary.skipPrompt: true` 关掉这一问(= 也不摘要,与 pi 的 defaults to no summary 同义)。但这句已不再成立:pi 还有
   `branch_summary` 的树内过滤/标签渲染,qi 只显示块。
 
 ### 命令(内置;**输入 `/` 补全全部** —— 扩展注册的命令也在里面)

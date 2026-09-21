@@ -54,7 +54,8 @@ from .runner import AgentRunner, RunnerSettings, RunSpec
 from .session import Session, SessionStore
 from .titling import suggest_title
 from .settings import (default_tools, extension_dirs, load_settings, load_settings_by_scope,
-                       model_thinking_level, resolve_project_trust, session_dir)
+                       branch_summary_skip_prompt, model_thinking_level,
+                       resolve_project_trust, session_dir)
 from .tools import ToolContext, register_builtin_tools
 
 
@@ -913,6 +914,13 @@ class QiRuntime:
         `source_branch` 必须由调用方在**移动 position 之前**取好:`/tree` 一移动 current,
         再调 `session.branch()` 拿到的就是目标分支了(摘要会静默变成空)。
         """
+        # 先过 `branchSummary.skipPrompt` 与"要不要摘要"这一问(pi 的 `/tree` 行为):
+        # `skipPrompt: true` = **不问也不摘要**;否则问一句,默认"不摘要" —— 无前端时
+        # `ui.confirm` 返回调用方给的 default,正好就是 pi 的 "defaults to no summary"。
+        if branch_summary_skip_prompt(self.settings):
+            return None
+        if not await self.ui.confirm("要把被放弃的那段压成摘要吗?", default=False):
+            return None
         target_branch = session.branch(target_id)
         entries = branch_to_summarize(source_branch, from_id, target_branch)
         if not entries:

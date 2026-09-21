@@ -73,6 +73,9 @@ class QiSettings(BaseModel):
     #: 按模型的思考级别(pi 同名段):`{"provider/模型": "high"}`。
     #: 优先级见 `QiRuntime.__init__`:`--thinking` > `--model :级别` > 这里 > 全局默认。
     modelThinkingLevels: dict[str, str] = Field(default_factory=dict)
+    #: 分支摘要(`/tree` 跳转时):`{"skipPrompt": true}` —— 不问也不摘要(pi 同名段)。
+    #: pi 的 `reserveTokens` **未接**:qi 的摘要预算固定,加一个不生效的旋钮不如不加。
+    branchSummary: dict[str, Any] = Field(default_factory=dict)
     enabledModels: list[str] | None = None
 
     # 界面
@@ -326,6 +329,22 @@ def next_choice(key: str, current: str) -> str:
     except ValueError:
         return values[0]          # 手写的怪值:按一下回到第一个合法值
     return values[(index + 1) % len(values)]
+
+
+def branch_summary_skip_prompt(settings: QiSettings) -> bool:
+    """`branchSummary.skipPrompt`(pi 同名段,默认 `false`)。
+
+    pi 的定义是 "Skip \"Summarize branch?\" prompt on `/tree` navigation (**defaults to no
+    summary**)" —— 所以它为真时**不问也不摘要**,不是"自动摘要"。写歪的值一律当 `false`
+    (即"照常问"),不因为一个错字把摘要静默关掉。
+    """
+    section = getattr(settings, "branchSummary", None)
+    if not isinstance(section, dict):
+        return False
+    # 严格布尔:写歪的值(`"yes"` / `1`)一律当 false —— 不因为一个错字把摘要静默关掉。
+    # (同 `qi_web/app.py` 里 `disabled` 的写法:避开 identity comparison 的静态检查。)
+    value = section.get("skipPrompt")
+    return isinstance(value, bool) and value
 
 
 def model_thinking_level(settings: QiSettings, model: Any) -> str | None:

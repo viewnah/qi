@@ -37,6 +37,7 @@ from qi_agent.compaction import (
 )
 from qi_agent.llm import ChatResponse
 from qi_agent.session import SessionStore
+from qi_agent.extensions import ExtensionUi  # noqa: E402
 
 
 # ── 工具 ─────────────────────────────────────────────────
@@ -463,6 +464,7 @@ async def test_runtime_manual_compact_and_branch_summary(tmp_path, monkeypatch):
 
     # 分支摘要:从被放弃的 leaf 回到当前分支的祖先
     assert runtime.sessions.set_position(session, fork_point)
+    runtime.ui = ExtensionUi(frontend=_YesUi(), notes=runtime.notes)   # pi 的语义:默认先问;无前端 = 默认「不摘要」
     summary_entry = await runtime.summarize_branch_for_jump(session, source_branch,
                                                             abandoned_leaf, fork_point)
     assert summary_entry is not None and summary_entry["type"] == "branch_summary"
@@ -495,3 +497,19 @@ def test_preparation_dataclass_defaults():
     prep = Preparation(first_kept_entry_id="x")
     assert prep.empty is True
     assert prep.tokens_before == 0 and prep.previous_summary is None
+
+
+class _YesUi:
+    """`/tree` 的「要不要摘要」一问:总是答是(只有这一条路会真摘要)。"""
+
+    async def confirm(self, message, *, title=None, default=False) -> bool:
+        return True
+
+    async def select(self, *a, **k):
+        return None
+
+    async def input(self, *a, **k):
+        return None
+
+    def notify(self, message, *, level="info") -> None:
+        return None

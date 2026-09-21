@@ -30,11 +30,12 @@
 | **P-E5 三件套迁移** | qi-mcp → qi-agents → qi-web(按依赖从少到多);**qi-agents 落地后把仓库 agents 搬回 `.qi/agents/`(E15)**;`ctx.ui` 的 web 侧 + `add_route`/`add_static` | 三个包各自可装可卸;不装时启动提示与 `qi doctor` 正确;`qi web` 由扩展提供;`qi --agent <name>` 由 qi-agents 提供。**子命令分派的前提**:轻量发现宿主必须给齐 `commands` / `flags` / `cli_commands` 三个登记处 —— 装载器对"扩展装载失败"是**整体中断**,少给一个不是"少注册一样东西",而是**所有兄弟扩展的命令一起消失**(`qi web` 曾因此从未注册,见 docs/extensions.md §8.2) |
 | **P-E6 收尾** | 参考扩展样例(至少一个 `examples/extensions/` 下的完整例子)+ 目录通道的 PEP 723 声明解析 + 冲突报告 + 文档重写(agent-config.md / [web.md](web.md) / [dispatcher.md](dispatcher.md) 归档)+ 迁移提示打磨 | 新用户按 extensions.md 能写出并装上第一个扩展;声明与实装不一致时 `qi doctor` 报得出来 |
 
-**依赖关系**:P-E1 ✅ → **P-E2 ✅** → **P-E3 ✅**(a/b/c/d-1) → **P-E4a ✅** → **P-E4b ✅** → P-E4c → P-E5 → **P-E7 ✅**(与 pi 的接口对齐) → P-E6。
+**依赖关系**:P-E1 ✅ → **P-E2 ✅** → **P-E3 ✅**(a/b/c/d-1) → **P-E4a ✅** → **P-E4b ✅** → P-E4c → P-E5 → **P-E7 ✅**(接口面) → **P-E8 ✅**(前端消费) → P-E6。
 
 | 阶段 | 内容 | 验收 |
 | --- | --- | --- |
 | **P-E7 与 pi 的接口对齐** ✅ | ① 事件面补完(36/36):`message_*`/`tool_execution_*`/`before_provider_*`/`after_provider_response`/`user_bash`/`ui_prompt_*`/`resources_discover`/`session_shutdown`/`agent_settled`/`session_before_*`/`session_tree`;② `api.*` 补完(renderer 三件套 / `setSessionName` / `setLabel` / `setModel` / 思考级别 / `unregisterProvider` / `exec` 形状 / `sendMessage` 的 pi 形状与 `triggerTurn`);③ `ctx` 补完(`mode` / `abort` / `isIdle` / `hasPendingMessages` / `shutdown` / `compact` / `getContextUsage` / `getSystemPrompt*` / `waitForIdle` / 四个会话操作 / `ModelView` / `ModelRegistryView`);④ `ctx.ui` 数据层全集 + 组件层的 `setWidget`/`custom`;⑤ 命名与参数形状双收(E26) | `tests/test_extension_alignment.py` 21 项 + 全量 963 项;docs/extensions.md §3 按代码重写,并逐条记下 §3.4 的剩余差异 |
+| **P-E8 前端真的消费这些接口** ✅ | ① 工具 `renderCall`/`renderResult` → `ExtensionToolBlock` 整个替换默认卡片;② `register_entry_renderer`/`register_message_renderer` → 回放里按 `custom_type` 接管;③ `register_markdown_transformer` → user/assistant 最终文本;④ `set_footer`/`set_header`/`set_editor_component`/`add_autocomplete_provider`/`on_terminal_input` 全部实现;⑤ 命令参数补全接进补全面板;⑥ `/new` `/resume` `/fork` `/tree` + 交互式选择器全部过 `session_before_*` 闸门 | `tests/test_tui_extension_render.py` 18 项 + 全量 981 项;docs/extensions.md 新增 §3.5(渲染回调契约) |
 
 > **P-E3 剩下的两块与三件套无关**:P-E3d-2(压缩事件,**已落地**)与 P-E3d-3(renderer + 会话操作事件)。
 > 三件套扩展真正依赖的扩展面已全部就位 —— 除了 `ctx.runAgent`,那是 **P-E4** 的事。
@@ -110,10 +111,23 @@ qi 的关键字)。qi 自己的数据结构用 snake_case(`prompt_snippet` / `so
       已实现。runtime 拥有四个会话操作,并对外给了一个公开闸门
       `before_session_op(event, payload)`;TUI 的命令路径(`/new` `/resume <id>` `/fork` `/tree`)
       **与交互式会话选择器**都过它。
-    - **仍未实现的两个组件层接口**:`set_editor_component`(qi 的 `Editor` 是承重的,
-      15 处 `query_one("#editor", Editor)` 在用它更宽的面 —— 要接得先定 qi 编辑器协议)
-      与 `add_autocomplete_provider`(pi 传的是 pi-tui 的 provider 对象)。两个都是
-      “接口在、前端未实现” → 调用时记 note 并 no-op。
+    - **两个组件层接口的协议已定(不再悬着)**:
+      * `set_editor_component`:**边界是“必须返回 `TextArea`(或子类)”**。此前担心的
+        "15 处 `query_one("#editor", Editor)` 怎么办"其实很小 —— 调用点用到的只有
+        `text` / `load_text` / `move_cursor` / `cursor_location` / `focus` / `styles`,
+        全部是 `TextArea` 就有的;真正 `Editor` 专有的只有 `reset()` 与 `history_browsing`
+        两个,给它们加了兼容回落。于是 15 处只需把 expect_type 从 `Editor` 换成 `TextArea`,
+        自定义组件也只需是个 `TextArea` 子类就能做模态编辑。
+      * `add_autocomplete_provider`:**形状定为
+        `factory(text, cursor_offset) -> list[str | {value, label, description}]`**
+        (与命令的 `getArgumentCompletions` 同一套元素形状),并**返回退订函数**
+        (pi 返回 void)。pi 那个形状(包住一个 pi-tui 的 `AutocompleteProvider`)不能镜像 ——
+        它暴露的是 pi-tui 的补全内部结构。
+    - **実装里踩到的两个 Textual 陷阱**(写下来免得下次再踩):`remove()` 的生效是延迟的
+      (挂同名 id 会撞 `DuplicateIds`),而 `call_after_refresh` **不够** —— 它等的是下一帧,
+      摘除消息可能还在队列后面;正解是 `await widget.remove()`(可 await 形式)。
+      另外换组件会在途的 `TextArea.Changed` 打成“`#editor` 不在”的状态,消息处理器要宽一点
+      (`on_text_area_changed` 与 `_completion_candidates`)。
 
 ## 12. agent 配置对齐(Claude Code / pi / qi 三方对照)
 

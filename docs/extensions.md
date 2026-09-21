@@ -160,14 +160,16 @@ qi 的 snake_case 是正式名,pi 的驼峰是属性/方法别名(`ctx.hasUI` / 
 ### 3.4 与 pi 剩余的差异(逐条写清,不用"半对齐"含糊过去)
 
 已经全齐的面:事件(36/36)、`api.*` 方法(pi 的 26 个 + qi 的 6 个增量)、
-`ctx` 成员(基础 18 项 + 命令上下文 7 项)、`ctx.ui` 数据层、**渲染回调与工具渲染钩子
-(TUI 已消费)**、命令参数补全、`/resume` 选择器过闸门。
+`ctx` 成员(基础 18 项 + 命令上下文 7 项)、**`ctx.ui` 的全部 28 个方法**
+(含组件层的 `set_widget` / `custom` / `set_footer` / `set_header` /
+`set_editor_component` / `add_autocomplete_provider` / `on_terminal_input`)、
+**渲染回调与工具渲染钩子(TUI 已消费)**、命令参数补全、`/resume` 选择器过闸门。
 
 | 剩余差异 | 形状 | 为什么 |
 | --- | --- | --- |
-| `ctx.ui.set_editor_component` / `get_editor_component` | 未实现(调用时记 note 并 no-op) | pi 这个接口换的是 pi-tui 的**编辑器组件**(要自己实现一整套 `EditorComponent` 协议)。qi 的 `Editor` 是承重的:15 处 `query_one("#editor", Editor)` 都在用它更宽的面(历史/ kill-ring / 补全 / 光标定位)—— 要接得先定一个 qi 编辑器协议并改完那 15 处,不先决策不敢动 |
-| `ctx.ui.add_autocomplete_provider(factory)` | 未实现(调用时记 note 并 no-op) | pi 传的是一个 pi-tui 的 `AutocompleteProvider` 对象(把内置 provider 包一层)。qi 的补全是自己的一套 —— 要接得先定一个与前端无关的补全契约(与上一条同一类问题) |
-| `on_terminal_input` 的 `data` 改写 | 只支持 `{consume: True}`(吃掉按键);不支持“换成另一个键” | Textual 的 `events.Key` 不是为改写设计的;需要改写按键的场景应当用 `set_editor_component`(目前也未实现) |
+| `ctx.ui.set_editor_component` 的**边界** | 要求组件是 **`TextArea`(或子类)**;不是则记 note 并拒绝 | qi 的编辑器是承重的(历史环 / kill-ring / 补全 / 光标定位)。把边界画在 TextArea 上,15 处调用点就不必各自做兼容 —— 写一个 `TextArea` 子类仍然能做 vim 式模态编辑(拦截按键、自己改文本)。契约见 §3.5 |
+| `ctx.ui.add_autocomplete_provider` 的**形状** | `factory(text, cursor_offset) -> list[str \| {value, label, description}]`;**返回退订函数**(pi 返回 void) | pi 传的是 pi-tui 的 `AutocompleteProvider` 对象(包住内置 provider)——那暴露的是 pi-tui 的补全内部结构。qi 用与命令参数补全**同一套元素形状**,两种补全只学一次 |
+| `on_terminal_input` 的 `data` 改写 | 只支持 `{consume: True}`(吃掉按键);不支持“换成另一个键” | Textual 的 `events.Key` 不是为改写设计的。需要改写按键的场景应当用 `set_editor_component` 接管编辑器 |
 | `register_command` 的 `get_argument_completions` 返回 **async** | 收下但**不支持** → 记 note 并忽略 | 补全路径是同步的(每次按键都要算);要支持得先把补全改成异步面板 |
 | 工具定义的 `executionMode` / `constrainedSampling` / `renderShell` | **不支持**(不接收) | qi 的工具循环是串行执行;后两个是 pi 的 provider / TUI shell 专有概念 |
 | `user_bash` | 只在 TUI 发 | 无头模式没有 `!` 命令这回事 |
@@ -190,6 +192,11 @@ pi 的回调直接返回**组件**。qi 同形(TUI 里返回 **textual widget**)
 | `register_markdown_transformer(fn)` | `fn(markdown, ctx) -> str` | user / assistant 的**最终文本**渲染前链式改写(流式增量不逐个改 —— 半截 markdown 改了更糟) |
 | `Tool.render_call` | `fn(args, ctx) -> Widget \| None` | `tool_start` 时挂进 `ExtensionToolBlock`(整个替换默认卡片) |
 | `Tool.render_result` | `fn(result, ctx) -> Widget \| None` | `tool_end` 时替换成结果组件 |
+| `ctx.ui.set_editor_component` | `factory(ctx) -> TextArea`(`None` = 恢复内置) | 换掉 `#editor`。**必须是个 `TextArea`**:qi 的历史环 / kill-ring / 补全面板 / 光标定位都建立在 TextArea 的接口上,把边界画在这里就不需要 15 处调用点各自兼容。只用到两个 `Editor` 专有成员(`reset` / `history_browsing`)的地方都有兼容回落 |
+| `ctx.ui.add_autocomplete_provider` | `factory(text, cursor_offset) -> list[str \| {value, label, description}]` | 与命令参数补全**同一套元素形状**。内置也有候选时插在前面共用替换区间;内置没有时用“当前词”作区间 |
+| `ctx.ui.set_footer` / `set_header` | `factory(ctx) -> Widget`(`None` = 恢复/移除) | 内置 footer 只藏起来不卸载,撤回时立即恢复 |
+| `ctx.ui.set_widget` | `fn(ctx) -> Widget`,或直接给 `list[str]` | 挂进 `#ext-widgets-above` / `-below`(由 `placement` 决定) |
+| `ctx.ui.custom` | `fn(ctx, done)` / `fn(ctx)` / `fn()` → `Widget` | 放进 `CustomScreen` 模态;`done(value)` 结束并返回 |
 
 三条规则:
 
@@ -249,12 +256,13 @@ await get_all_themes() / get_theme(name) / set_theme(theme) / theme
 await paste_to_editor / set_editor_text / get_editor_text
 ```
 
-- **组件层(TUI-only)** —— 已接:`set_widget`(编辑器上方/下方两个槽位)、`custom`
-  (模态 + `done` 回调)、`set_footer` / `set_header`(**内置 footer/header 只藏起来不卸载**,
-  所以撤回去时立即恢复)、`on_terminal_input`(支持 `{"consume": True}`,返回退订函数)。
-  尚未实现:`set_editor_component` / `get_editor_component` / `add_autocomplete_provider` ——
-  调用时记一条 note 并 no-op(**不静默**,理由见 §3.4)。非 TUI 前端下 `custom()` 返回 `None`
-  (pi 在 RPC 模式同形)。
+- **组件层(TUI-only)** —— **7 个全部已接**:`set_widget`(编辑器上方/下方两个槽位)、
+  `custom`(模态 + `done` 回调)、`set_footer` / `set_header`(内置 footer 只藏起来不卸载,
+  撤回去时立即恢复)、`set_editor_component`(**要求返回 `TextArea` 或它的子类** ——
+  写一个 `TextArea` 子类就能做 vim 式模态编辑)、`add_autocomplete_provider`
+  (`factory(text, cursor_offset) -> list[str | {value, label, description}]`,返回退订函数)、
+  `on_terminal_input`(支持 `{"consume": True}`,返回退订函数)。
+  非 TUI 前端下 `custom()` 返回 `None`(pi 在 RPC 模式同形),其余组件层调用记一条 note 并 no-op。
 
 **两条硬规则**(§4 同级的契约,有测试钉住):
 

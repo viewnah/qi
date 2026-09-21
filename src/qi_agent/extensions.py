@@ -898,13 +898,34 @@ class ExtensionUi:
             await self._emit_prompt("end", "custom", None)
 
     def set_editor_component(self, factory: Any) -> None:
+        """把输入框换成扩展给的组件(`None` = 恢复内置)。
+
+        **要求组件是 `TextArea`(或它的子类)** —— qi 的编辑器是承重的(历史环 /
+        kill-ring / 补全 / 光标定位),把边界画在这里,调用点就不必各自做兼容。
+        不满足时记一条 note 并 no-op(不静默)。
+        """
         self._forward_component("set_editor_component", factory)
 
     def get_editor_component(self) -> Any:
+        """当前的自定义编辑器工厂(`None` = 内置)。"""
         return self._forward("get_editor_component")[1] if self._frontend else None
 
-    def add_autocomplete_provider(self, factory: Any) -> None:
-        self._forward_component("add_autocomplete_provider", factory)
+    def add_autocomplete_provider(self, factory: Any) -> Any:
+        """注册一个补全提供者。**返回退订函数**(qi 的增量:pi 返回 void)。
+
+        qi 的契约:`factory(text, cursor_offset) -> list[str | {value, label, description}]`
+        (与命令的 `getArgumentCompletions` 同一套元素形状 —— 两种补全只学一次)。
+        pi 那个形状(包住一个 pi-tui 的 `AutocompleteProvider` 对象)不能镜像:它暴露的是
+        pi-tui 的补全内部结构,而 qi 的补全管线是另一套。
+        """
+        if self._frontend is None or self.mode != "tui":
+            self._component_unavailable("add_autocomplete_provider")
+            return lambda: None
+        found, value = self._forward("add_autocomplete_provider", factory)
+        if not found:
+            self._component_unavailable("add_autocomplete_provider")
+            return lambda: None
+        return value if callable(value) else (lambda: None)
 
     def on_terminal_input(self, handler: Any) -> Any:
         """听原始终端输入。返回**退订函数**(pi 同形);不可用时返回 no-op 函数。

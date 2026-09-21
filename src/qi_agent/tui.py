@@ -1699,6 +1699,15 @@ class _TuiUi:
     def set_header(self, factory: Any) -> None:
         self._app.set_extension_header(factory)
 
+    def set_editor_component(self, factory: Any) -> None:
+        self._app.set_editor_component_impl(factory)
+
+    def get_editor_component(self) -> Any:
+        return self._app.get_editor_component_impl()
+
+    def add_autocomplete_provider(self, factory: Any) -> Any:
+        return self._app.add_autocomplete_provider_impl(factory)
+
     def on_terminal_input(self, handler: Any) -> Any:
         return self._app.add_terminal_input_handler(handler)
 
@@ -1898,6 +1907,10 @@ class QiTui(App):
         self._hidden_thinking_label: str | None = None
         #: `ctx.ui.set_widget` 挂的常驻 widget(`key -> widget`)
         self._ext_widgets: dict[str, Any] = {}
+        #: `ctx.ui.set_editor_component` 的工厂(`None` = 内置 Editor)
+        self._editor_component_factory: Any = None
+        #: `ctx.ui.add_autocomplete_provider` 的补全提供者
+        self._autocomplete_providers: list[Any] = []
         #: `ctx.ui.set_footer` / `set_header` 的工厂(挂出的组件带 `.ext-footer` / `.ext-header`)
         self._ext_footer: Any = None
         self._ext_header: Any = None
@@ -1966,7 +1979,7 @@ class QiTui(App):
         self._repaint_borders()
         self._refresh_footer()
         self._sync_log_height()
-        self.query_one("#editor", Editor).focus()
+        self.query_one("#editor", TextArea).focus()
         if self._initial_prompt and self._rt is not None:
             self.call_after_refresh(self._submit, self._initial_prompt)
 
@@ -1986,7 +1999,7 @@ class QiTui(App):
         self._show_thinking = not bool(getattr(settings, "hideThinkingBlock", False))
         self._output_pad = number("outputPad", 1)
         self._completion_rows = max(1, number("autocompleteMaxVisible", COMPLETION_ROWS))
-        editor = self.query_one("#editor", Editor)
+        editor = self.query_one("#editor", TextArea)
         editor.styles.padding = (0, number("editorPaddingX", 1))
 
     # -- 渲染回调(pi 的 renderCall / renderResult / register*Renderer / markdown)------
@@ -2057,6 +2070,87 @@ class QiTui(App):
             return None
         return self._extension_widget(render_result, result)
 
+    # -- 编辑器(含自定义组件)-------------------------------------
+    def _reset_editor(self, editor: TextArea) -> None:
+        """清空编辑器。
+
+        内置 `Editor.reset()` 会**先退出历史浏览**再清空;自定义组件只有个 `TextArea` 时
+        没这个语义,退回 `load_text("")` —— 这就是“自定义编辑器组件只需要是个 TextArea”
+        的边界:qi 的调用点不会要求超出 TextArea 的接口。
+        """
+        reset = getattr(editor, "reset", None)
+        if callable(reset):
+            reset()
+            return
+        editor.load_text("")
+
+    def set_editor_component_impl(self, factory: Any) -> None:
+        """`ctx.ui.set_editor_component`:把输入框换成扩展给的组件(`None` = 恢复内置)。
+
+        要求组件是 **`TextArea`(或它的子类)**。这不是偷懒:qi 的编辑器是承重的 ——
+        历史环 / kill-ring / 补全面板 / 光标定位都挂在它身上,而它们全部建立在 TextArea
+        的接口之上。把边界画在“必须是个 TextArea”上,15 处调用点因此不需要各自做兼容。
+        """
+        if factory is None:
+            if self._editor_component_factory is None:
+                return
+            self._editor_component_factory = None
+            self._replace_editor(Editor(id="editor"))
+            return
+        widget = self._build_extension_component(factory, "editor")
+        if widget is None:
+            return
+        if not isinstance(widget, TextArea):
+            self._note(
+                "set_editor_component 需要返回一个 TextArea(或它的子类);"
+                f"收到 {type(widget).__name__} —— 已忽略", "warning")
+            return
+        self._editor_component_factory = factory
+        widget.id = "editor"
+        self._replace_editor(widget)
+
+    def _replace_editor(self, widget: TextArea) -> None:
+        """把 `#editor` 换成新组件。
+
+        两条 Textual 的事实决定了这里的形状(都是实测出来的):
+        * widget 的 `id` **一旦设过就不能改**,所以不能给旧的改名腾位;
+        * `remove()` 的**实际生效是延迟的**(要到消息周期里才从 `_nodes` 摘掉),而在它
+          生效之前挂同名 id 会撞 `DuplicateIds`。先试过 `call_after_refresh`,**不够** ——
+          它等的是“下一帧”,而摘除消息可能还在队列后面,于是偶发地把编辑器弄丢。
+
+        所以用 `remove()` 的**可 await 形式**:等它真的摘完再挂。`run_worker` 只是为了让
+        这个 await 能从一个同步入口发起(TUI 的 `/reload` 之类也是同一套办法)。
+        挂载点直接用 `#body`(编辑器在它下面、`#border-bottom` 前面)。
+        """
+        try:
+            old = self.query_one("#editor")
+        except NoMatches:
+            return
+
+        async def _swap() -> None:
+            try:
+                await old.remove()
+            except Exception as exc:  # noqa: BLE001 移除失败就没法换 —— 要看得见
+                self._note(f"替换编辑器失败(移除旧组件): {exc}", "warning")
+                return
+            try:
+                self.query_one("#body").mount(
+                    widget, before=self.query_one("#border-bottom"))
+            except Exception as exc:  # noqa: BLE001 挂不上必须说出来 —— 否则编辑器就没了
+                self._note(f"替换编辑器失败(挂载新组件): {type(exc).__name__}: {exc}",
+                           "warning")
+                return
+            self._sync_log_height()
+            try:
+                widget.focus()
+            except Exception:  # noqa: BLE001 不支持 focus 的组件也能用
+                return
+
+        self.run_worker(_swap(), exclusive=False, exit_on_error=False)
+
+    def get_editor_component_impl(self) -> Any:
+        return self._editor_component_factory
+
     def _append(self, widget) -> None:
         log = self.query_one("#log", VerticalScroll)
         if len(log.children):
@@ -2073,7 +2167,7 @@ class QiTui(App):
     def _sync_log_height(self) -> None:
         """transcript 最多占 终端高 - (编辑器实际行数 + 上下边框 + footer),超出内部滚动。"""
         try:
-            editor = self.query_one("#editor", Editor)
+            editor = self.query_one("#editor", TextArea)
             log = self.query_one("#log")
         except NoMatches:  # pragma: no cover - 挂载前/卸载后的调用
             return
@@ -2082,7 +2176,7 @@ class QiTui(App):
             reserved += min(len(self._completions), self._completion_rows)
         log.styles.max_height = max(3, self.size.height - reserved)
 
-    def _editor_rows(self, editor: Editor) -> int:
+    def _editor_rows(self, editor: TextArea) -> int:
         """编辑器会占几行(含软换行估算)。
 
         transcript 的上限必须在布局前算出来,不能反查 `editor.size.height`(循环依赖),
@@ -2141,7 +2235,7 @@ class QiTui(App):
     def _editor_color_key(self) -> str:
         """边框色:`!` = bashMode(绿),`!!` = dim,否则 border。"""
         try:
-            text = self.query_one("#editor", Editor).text.lstrip()
+            text = self.query_one("#editor", TextArea).text.lstrip()
         except (NoMatches, ScreenStackError):  # 未挂载/已卸载时有纯粹的调用
             return "border"
         if text.startswith("!!"):
@@ -2225,14 +2319,17 @@ class QiTui(App):
     # -- 输入 -----------------------------------------------------------
     def on_editor_submitted(self, event: Editor.Submitted) -> None:
         text = event.value.strip()
-        editor = self.query_one("#editor", Editor)
-        editor.reset()
+        editor = self.query_one("#editor", TextArea)
+        self._reset_editor(editor)
         self._sync_log_height()
         if not text:
             return
         # pi 只把对话与 bash 记进输入历史,内置命令不入 —— 否则 ↑ 全被 /tree 之类古满
         if not text.startswith("/"):
-            editor.add_to_history(text)
+            # 自定义编辑器组件可以没有 qi 的历史环(只要求是个 TextArea)
+            add_history = getattr(editor, "add_to_history", None)
+            if callable(add_history):
+                add_history(text)
         # 命令(`/x`)与 bash(`!x`)回合进行中也**立即执行** —— pi 就是这样,
         # 否则 `/quit` 这种命令会被推到回合结束后,等于按不下去。
         if text.startswith("/") or text.startswith("!"):
@@ -2249,7 +2346,7 @@ class QiTui(App):
         if self._completions_open:
             self._close_completions()
             return
-        editor = self.query_one("#editor", Editor)
+        editor = self.query_one("#editor", TextArea)
         if not editor.text.strip() and not self._working:
             action = double_escape_action(getattr(self._rt, "settings", None))
             if action != "none":
@@ -2272,11 +2369,11 @@ class QiTui(App):
 
     def on_editor_follow_up(self, event: Editor.FollowUp) -> None:
         """alt+enter:排队 follow-up(空闲时就直接发)。"""
-        editor = self.query_one("#editor", Editor)
+        editor = self.query_one("#editor", TextArea)
         text = editor.text.strip()
         if not text:
             return
-        editor.reset()
+        self._reset_editor(editor)
         self._sync_log_height()
         if self._working:
             self._enqueue(text, "follow")
@@ -2290,11 +2387,19 @@ class QiTui(App):
         self.action_cycle_thinking()
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
-        """编辑器变高/变矮、进入/退出 bash 模式时,同步布局与边框色。"""
+        """编辑器变高/变矮、进入/退出 bash 模式时,同步布局与边框色。
+
+        `#editor` 可能**暂时不存在**:`set_editor_component` 换组件时旧编辑器的
+        `Changed` 消息可能还在路上(实测撞过)。所以这里宽一点,不假设它一定在。
+        """
         if event.text_area.id != "editor":
             return
+        try:
+            editor = self.query_one("#editor", TextArea)
+        except (NoMatches, ScreenStackError):
+            return
         self._repaint_borders()
-        if self.query_one("#editor", Editor).history_browsing:
+        if getattr(editor, "history_browsing", False):
             self._close_completions()      # 翻历史时不弹面板,否则 ↑/↓ 会被面板抢走
         else:
             self._refresh_completions()
@@ -2871,9 +2976,9 @@ class QiTui(App):
 
     def action_clear_or_exit(self) -> None:
         """ctrl+c:清空编辑器;连按两次退出 —— 对齐 pi 的 app.clear/app.exit。"""
-        editor = self.query_one("#editor", Editor)
+        editor = self.query_one("#editor", TextArea)
         if editor.text:
-            editor.reset()
+            self._reset_editor(editor)
             self._sync_log_height()
             self._arm_exit()
             return
@@ -2892,7 +2997,7 @@ class QiTui(App):
 
     def action_exit_or_delete(self) -> None:
         """ctrl+d:编辑器为空时退出,非空时删除右侧字符(对齐 pi 的 app.exit)。"""
-        editor = self.query_one("#editor", Editor)
+        editor = self.query_one("#editor", TextArea)
         if editor.text:
             editor.action_delete_right()
         else:
@@ -2911,7 +3016,7 @@ class QiTui(App):
 
     def action_external_editor(self) -> None:
         """ctrl+g:用 $EDITOR 编辑当前输入(对齐 pi 的 app.editor.external)。"""
-        editor = self.query_one("#editor", Editor)
+        editor = self.query_one("#editor", TextArea)
         command = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
         handle = tempfile.NamedTemporaryFile("w+", suffix=".md", delete=False)
         path = Path(handle.name)
@@ -3402,7 +3507,7 @@ class QiTui(App):
         forked = self._session_store().fork_at(session, entry.get("parentId"), title=title)
         text = str(entry.get("content") or "")
         self._switch_session(forked, note=f"已 fork 出新会话 {forked.id}(那条消息已放回编辑器)")
-        editor = self.query_one("#editor", Editor)
+        editor = self.query_one("#editor", TextArea)
         editor.load_text(text)
         editor.move_cursor(self._offset_to_location(text, len(text)))
         self._sync_log_height()
@@ -3641,6 +3746,78 @@ class QiTui(App):
 
     # -- 补全(pi 的 autocomplete:`/` 命令、参数与 `@` 文件)------
     def _completion_candidates(self) -> tuple[list[Candidate], int, int]:
+        """内置候选 + **扩展补全提供者**(`ctx.ui.add_autocomplete_provider`)。
+
+        合并规则(写清楚,因为它是 qi 自己的契约 —— pi 传的是 pi-tui 的 provider 对象):
+        provider 收到 `(text, cursor_offset)`,返回 `list[str | {value, label, description}]`。
+        * 内置也有候选 → 扩展项插在**前面**,与内置项共用同一个替换区间;
+        * 内置没有候选 → 用**当前词**(到上一个空白)作区间 —— 所以“打 `#12`,选 `#1234`”
+          会正确地把 `#12` 换掉。
+        """
+        try:
+            items, start, end = self._builtin_candidates()
+        except (NoMatches, ScreenStackError):
+            return [], 0, 0
+        text, offset = self._editor_text_offset()
+        extra = self._extension_completion_items(text, offset)
+        if not extra:
+            return items, start, end
+        if items:
+            return [*extra, *items], start, end
+        return extra, self._word_start(text, offset), offset
+
+    def _extension_completion_items(self, text: str, offset: int) -> list[Candidate]:
+        """问所有注册的补全提供者要候选(单个抛错不拖垮内置补全)。
+
+        **async 返回值不支持** —— 每次按键都要算,补全路径是同步的。
+        """
+        if not self._autocomplete_providers:
+            return []
+        items: list[Candidate] = []
+        for provider in list(self._autocomplete_providers):
+            try:
+                raw: Any = provider(text, offset)
+            except Exception as exc:  # noqa: BLE001 扩展的 provider 坏不该把输入框弄挂
+                self._note(f"扩展补全提供者失败: {type(exc).__name__}: {exc}", "warning")
+                continue
+            if inspect.isawaitable(raw):
+                close = getattr(raw, "close", None)
+                if callable(close):
+                    close()
+                self._note("扩展补全提供者返回了 async 结果 —— 补全路径是同步的,已忽略")
+                continue
+            for entry in list(raw or []):
+                if isinstance(entry, str):
+                    items.append(Candidate(entry, entry, ""))
+                elif isinstance(entry, dict):
+                    value = str(entry.get("value") or entry.get("label") or "")
+                    if value:
+                        items.append(Candidate(value, value,
+                                               str(entry.get("description") or "")))
+        return items[:MAX_COMPLETION_ITEMS]
+
+    def _editor_text_offset(self) -> tuple[str, int]:
+        """编辑器全文 + 光标的字符偏移(提供者拿到的是这个,不是 (row, col))。"""
+        try:
+            editor = self.query_one("#editor", TextArea)
+        except (NoMatches, ScreenStackError):
+            return "", 0
+        text = editor.text
+        row, col = editor.cursor_location
+        lines = text.split("\n")
+        if row >= len(lines):
+            return text, len(text)
+        return text, min(len("\n".join(lines[:row])) + (row > 0) + col, len(text))
+
+    @staticmethod
+    def _word_start(text: str, offset: int) -> int:
+        """光标前那个“词”的起点(空白分隔)—— 没有内置候选时用作替换区间。"""
+        start = offset
+        while start > 0 and text[start - 1] not in " \t\n":
+            start -= 1
+        return start
+
+    def _builtin_candidates(self) -> tuple[list[Candidate], int, int]:
         """根据光标前的 token 给出候选。
 
         返回 `(candidates, start, end)`,start/end 是要被替换的区间。规则对齐 pi:
@@ -3648,7 +3825,7 @@ class QiTui(App):
           · `/cmd <前缀>` = 参数补全(`/model` `/thinking` `/login`,pi 的 getArgumentCompletions)
           · 当前 token 以 `@` 开头 = 相对路径补全
         """
-        editor = self.query_one("#editor", Editor)
+        editor = self.query_one("#editor", TextArea)
         text = editor.text
         row, col = editor.cursor_location
         lines = text.split("\n")
@@ -3825,7 +4002,7 @@ class QiTui(App):
         index = panel.highlighted if panel.highlighted is not None else 0
         picked = candidates[min(index, len(candidates) - 1)]
         value, label = picked.value, picked.label
-        editor = self.query_one("#editor", Editor)
+        editor = self.query_one("#editor", TextArea)
         text = editor.text
         # 命令补一个空格(pi 同款:`/name `);文件补一个空格;`@目录/` 与参数补全不补
         if value.startswith("/"):
@@ -3947,7 +4124,7 @@ class QiTui(App):
             return
         self._pending_steer.clear()
         self._pending_follow.clear()
-        editor = self.query_one("#editor", Editor)
+        editor = self.query_one("#editor", TextArea)
         current = editor.text.rstrip("\n")
         restored = "\n".join([current, *queued]) if current else "\n".join(queued)
         editor.load_text(restored)
@@ -4196,7 +4373,24 @@ class QiTui(App):
         except Exception as exc:  # noqa: BLE001
             self._note(f"挂载扩展 header 失败: {exc}", "warning")
 
-    # -- onTerminalInput ------------------------------------------
+    # -- onTerminalInput / addAutocompleteProvider -----------------
+    def add_autocomplete_provider_impl(self, provider: Any) -> Any:
+        """`ctx.ui.add_autocomplete_provider`:注册补全提供者,返回**退订函数**。
+
+        契约:`provider(text, cursor_offset) -> list[str | {value, label, description}]`
+        (与命令参数补全同一套元素形状 —— 两种补全只学一次)。
+        """
+        if not callable(provider):
+            return lambda: None
+        self._autocomplete_providers.append(provider)
+
+        def _unsubscribe() -> None:
+            try:
+                self._autocomplete_providers.remove(provider)
+            except ValueError:
+                return
+        return _unsubscribe
+
     def add_terminal_input_handler(self, handler: Any) -> Any:
         """`ctx.ui.on_terminal_input`:注册一个原始按键处理器,返回**退订函数**。
 

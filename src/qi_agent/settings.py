@@ -295,7 +295,9 @@ def settings_exclude_paths(settings: QiSettings | None, scope: str, key: str,
 #: 数字/路径类(`editorPaddingX` / `outputPad` / `autocompleteMaxVisible` /
 #: `shellPath` / `sessionDir`)不放面板:在 TUI 里敲数字和路径的体验比 `qi config --set` 差。
 #: 字段未设时面板显示什么 —— 显示**生效值**而不是 "None"(那是内部表示,不是用户看到的语义)
-UNSET_DISPLAY: dict[str, str] = {"theme": "auto", "defaultThinkingLevel": "off"}
+#: `defaultThinkingLevel` 的生效值同 `llm.DEFAULT_THINKING_LEVEL`(pi 默认 medium);
+#: 这里不 import llm —— 两模块有静态环(settings 里就写了延迟导入的原因),有测试锁住两边一致。
+UNSET_DISPLAY: dict[str, str] = {"theme": "auto", "defaultThinkingLevel": "medium"}
 
 SETTING_CHOICES: dict[str, tuple[str, ...]] = {
     "theme": ("dark", "light", "auto"),

@@ -13,11 +13,14 @@
 (终端滚动历史保留 —— inline 渲染,不占全屏、不进备用屏)
 
  qi v0.1.0                                                    ← bold accent + dim
- escape interrupt · ctrl+c clear/exit · ctrl+o tools · / commands · @ files · ! bash   ← 快捷提示
- qi 是编码 agent 框架(单 agent core;MCP / 多 agent / web 走扩展);输入 / 看全部命令。  ← dim 引导
+ escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o tools   ← 紧凑快捷键行
+ Qi can explain its own features and look up its docs.         ← dim 引导语(照搬 pi 句式)
+ Ask it how to use or extend Qi.
 
-[Agents]
-  code-analyst, general                  ← 只在装了 qi-agents 且发现角色时显示
+[Skills]
+  termio                                  ← 顶层技能(core 的能力,紧凑态只列名字)
+[Extensions]
+  qi-web, qi-agents                       ← 装上的扩展名(与 [Skills] 并列;空段不显示)
 
  读一下 pyproject.toml 然后总结          ← 用户消息:userMessageBg 底色块(padding 1,1)
 
@@ -34,13 +37,16 @@
 ────────────────────────────────          ← 下边框(空闲时上下都是整行 ─)
 ~/Desktop/qi (master) • tui               ← footer 1:cwd(+git 分支)(+会话名),dim
 ↑12k ↓678 1.2%/1.0M (auto)      deepseek/v4.1 • medium   ← footer 2:token 统计 + 右对齐模型
-qi · auto                                 ← footer 3:状态行
+排队 2 / LSP 就绪                        ← footer 3:**只在这些内容时出现**(排队 / 扩展状态 / 瞬时提示);
+                                            空闲时不出这一行 —— 默认不再有 `qi · auto`
 ```
 
 实现要点:
 
 - **inline**:`App.run(inline=True, inline_no_clear=True, mouse=False)`;transcript 最多占
-  `终端高 - 6`(编辑器 3 + footer 3),再长在内部滚动(不吞终端滚动历史)。
+  `终端高 - (编辑器 3 + footer 2~3)`,再长在内部滚动(不吞终端滚动历史)。
+  扩展挂件的两个槽(`#ext-widgets-above/below`)空时**不占行** —— 否则会在输入框与
+  footer 之间各撑出一块空白。
 - **输入加固(不关鼠标上报会崩)**:`mouse=False` —— qi 的界面没有任何鼠标交互
   (不点、不拖、无滚动条),而上报鼠标会让**不支持 SGR(1006)** 的终端退回旧式
   X10 报文(`ESC [ M` + 原始坐标字节)。坐标 ≥ 0x80 时整段不是合法 UTF-8,Textual
@@ -205,6 +211,8 @@ qi 与 pi 的差异(已落档):
   **`xhigh`/`max` 收敛为 `high`** —— litellm / 多数 provider 没有这两个档。
 - 只有模型在 `models.json` 里声明 `reasoning: true` 时才带参(否则某些 provider 会 400);
   footer 右侧显示 `模型 • <级别>`(off 时按 pi 的写法显示 `• thinking off`)。
+- **默认 `medium`**(pi `DEFAULT_THINKING_LEVEL`):什么都不配时 footer 右边就是
+  `模型 • medium`,不是 `• thinking off`;写歪的值仍按 `off` 处理(两件事不混)。
 - 思考内容与回答**分开流式**(`thinking_delta`),灰色斜体渲染;`ctrl+t` 可随时隐藏/显示。
 - **provider 拒收 `reasoning_effort` 时**(实测自建 LiteLLM 代理默认就是这样)自动去掉参数重试,
   并在 footer 提示一次“已按不思考运行”——不会因此整轮失败。

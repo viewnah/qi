@@ -3,11 +3,11 @@
 版式与配色对齐 pi(`@earendil-works/pi-coding-agent` 的 `modes/interactive`):
 
   · inline 渲染:不占全屏、不吞滚动历史(裸 `qi` / `qi "问题"` 的落点)
-  · 启动 banner = `qi vX` + 快捷提示 + 资源清单([Agents]/[Skills])
+  · 启动 banner = `qi vX` + 紧凑快捷键行 + 引导语 + 资源清单([Skills]/[Extensions])
   · 用户消息 = userMessageBg 底色块(padding 1,1),助手 = 无底色 markdown(padding 0,1)
   · 思考 = 灰色斜体;工具调用 = tool{Pending,Success,Error}Bg 底色块,标题 `read <path>`
   · 编辑器 = 上下 `─` 动态边框;工作中上边框内嵌 `⠋ Working` 指示器(80ms 换帧)
-  · footer = cwd(+git 分支+会话名) / token 统计 + 模型 / 状态行
+  · footer = cwd(+git 分支+会话名) / token 统计 + 模型 / 状态行(只在下述内容时出现)
 
 v1 的分派行保留**只为回放旧会话**(v3 的 core 不再发 `dispatch`),按 pi 的行样式渲染
 (`● → agent (source, 0.90)`)。
@@ -339,7 +339,10 @@ INTERRUPT_GRACE_S = 3.0
 """pi 的 loader 间隔 80ms。"""
 
 FOOTER_LINES = 3
-"""footer 占的行数(cwd / 统计+模型 / 状态);编辑器 3 行由边框各 1 行 + 输入 1 行组成。"""
+"""footer 最多占的行数(cwd / 统计+模型 / 状态);编辑器 3 行由边框各 1 行 + 输入 1 行组成。
+
+第三行（状态）是**有条件**的：只有排队中的消息、扩展状态或瞬时提示时才出（同 pi 的
+`getExtensionStatuses()` 那条），空闲时 footer 只有 2 行。"""
 
 MAX_EDITOR_ROWS = 8
 """编辑器最多长到几行(再多在编辑器内部滚动,不抢 transcript 的空间)。"""
@@ -483,7 +486,14 @@ class TuiRenderer:
         line.append(f" ({source}, {confidence:.2f})", style=Style(color=p.hex("dim")))
         return line
 
-    def banner(self, version: str, agents: list[str], skills: list[str]) -> Text:
+    def banner(self, version: str, skills: list[str],
+               extensions: list[str] | None = None) -> Text:
+        """启动头(对齐 pi 的 builtInHeader:版本 + 紧凑快捷键行 + 引导语 + 资源清单)。
+
+        pi 紧凑态第二行后面还挂一句 `Press ctrl+o to show full startup help and loaded
+        resources.` —— 那要求 ctrl+o 真能展开启动头;qi 的 ctrl+o 目前只展开工具输出,
+        所以不写那句(写了就是假的),资源清单直接平铺。
+        """
         p = self.p
         dim = Style(color=p.hex("dim"))
         muted = Style(color=p.hex("muted"))
@@ -492,22 +502,22 @@ class TuiRenderer:
         text.append("qi", style=Style(color=p.hex("accent"), bold=True))
         text.append(f" v{version}", style=dim)
         text.append("\n")
-        hints = ["escape interrupt", "ctrl+c clear/exit", "ctrl+o tools", "/ commands",
-                 "@ files", "! bash"]
+        # 只写 qi 真的实现了的键(escape 中断;ctrl+c 清空 / ctrl+d 退出;ctrl+o 展开)
+        hints = ["escape interrupt", "ctrl+c/ctrl+d clear/exit", "/ commands",
+                 "! bash", "ctrl+o tools"]
         for index, hint in enumerate(hints):
             if index:
                 text.append(" · ", style=muted)
             text.append(hint, style=Style(color=p.hex("text")))
         text.append("\n")
-        text.append("qi 是编码 agent 框架(单 agent core;MCP / 多 agent / web 走扩展);"
-                    "输入 / 看全部命令。", style=dim)
+        text.append("Qi can explain its own features and look up its docs. "
+                    "Ask it how to use or extend Qi.", style=dim)
         text.append("\n\n")
-        if agents:
-            text.append("[Agents]\n", style=dim)
-            text.append("  " + ", ".join(agents) + "\n", style=Style(color=p.hex("text")))
-        if skills:
-            text.append("[Skills]\n", style=dim)
-            text.append("  " + ", ".join(skills) + "\n", style=Style(color=p.hex("text")))
+        for name, items in (("Skills", skills), ("Extensions", extensions or [])):
+            if not items:
+                continue
+            text.append(f"[{name}]\n", style=dim)
+            text.append("  " + ", ".join(items) + "\n", style=Style(color=p.hex("text")))
         return text
 
 
@@ -1757,6 +1767,9 @@ class QiTui(App):
     Screen { height: auto; max-height: 100%; background: transparent; scrollbar-size: 0 0; }
     #body { height: auto; background: transparent; scrollbar-size: 0 0; }
     #log { height: auto; background: transparent; scrollbar-size: 0 0; }
+    /* 扩展挂件的两个槽:空时**不占行**(Textual 的 Vertical 默认 `height: 1fr`,
+       不压下去会在输入框与 footer 之间各撑出一块空白)。 */
+    #ext-widgets-above, #ext-widgets-below { height: auto; background: transparent; }
     .blank { height: 1; background: transparent; }
     .msg { width: 1fr; height: auto; }
     #border-top, #border-bottom { height: 1; background: transparent; }
@@ -1994,9 +2007,12 @@ class QiTui(App):
             self._apply_ui_settings()
             # P-E4c:技能是 core 的能力(顶层六层来源),不再从 agent 汇总;
             # agent 列表那一段 banner 里不再有(core 没有角色概念了)。
+            # 资源清单对齐 pi:紧凑态只列名字,`[Extensions]` 与 `[Skills]` 并列。
             skills = sorted({s.name for s in self._rt.top_skills})
+            extensions = sorted({str(name) for name in
+                                 (getattr(self._rt, "extensions", None) or ())})
             banner = None if self._quiet_startup else self._renderer.banner(
-                _version(), [], skills)
+                _version(), skills, extensions)
             if self._session is not None and self._session.branch():
                 self._replay_branch(self._session, banner=banner)   # 恢复历史(banner 在最上)
             elif banner is not None:
@@ -2211,10 +2227,14 @@ class QiTui(App):
             log = self.query_one("#log")
         except NoMatches:  # pragma: no cover - 挂载前/卸载后的调用
             return
-        reserved = self._editor_rows(editor) + 2 + FOOTER_LINES
+        reserved = self._editor_rows(editor) + 2 + self._footer_rows()
         if self._completions_open:
             reserved += min(len(self._completions), self._completion_rows)
         log.styles.max_height = max(3, self.size.height - reserved)
+
+    def _footer_rows(self) -> int:
+        """footer 当前真占几行（第三行只在有内容时出现；上限 `FOOTER_LINES` 兜底）。"""
+        return max(2, min(FOOTER_LINES, len(self.footer_text.plain.splitlines()) or 2))
 
     def _editor_rows(self, editor: TextArea) -> int:
         """编辑器会占几行(含软换行估算)。
@@ -2227,8 +2247,8 @@ class QiTui(App):
         rows = 0
         for line in editor.text.split("\n"):
             rows += max(1, -(-len(line) // width))
-        # 终端高 - (上下边框 2 + footer 3 + transcript 至少 3) 才是编辑器的安全上限
-        ceiling = max(1, min(MAX_EDITOR_ROWS, self.size.height - 8))
+        # 终端高 - (上下边框 2 + footer + transcript 至少 3) 才是编辑器的安全上限
+        ceiling = max(1, min(MAX_EDITOR_ROWS, self.size.height - 5 - self._footer_rows()))
         return max(1, min(ceiling, rows))
 
     def on_resize(self) -> None:
@@ -2346,10 +2366,17 @@ class QiTui(App):
             second.append(" " * max(2, width - left.cell_len - right.cell_len))
             second.append_text(right)
 
-        third = Text(self._status, style=Style(color=p.hex("muted")))
-        third.truncate(width, overflow="ellipsis")
+        # 状态行是**有条件**的(pi 同款:没内容就不占行)。先洗掉换行/制表/连续空格
+        # (pi 的 `sanitizeStatusText`)—— 否则扩展写的多行状态会把 footer 撑成 4 行,
+        # 预留行数失真 → inline 区域把输入框挤掉。
+        status = " ".join(self._status.split())
+        third = Text(status, style=Style(color=p.hex("muted")))
         first.truncate(width, overflow="ellipsis")
-        self.footer_text = Text("\n").join([first, second, third])
+        lines = [first, second]
+        if third.plain:
+            third.truncate(width, overflow="ellipsis")
+            lines.append(third)
+        self.footer_text = Text("\n").join(lines)
         try:
             footer = self.query_one("#footer", Static)
         except NoMatches:      # App 正在卸载
@@ -4191,15 +4218,16 @@ class QiTui(App):
 
     # -- 底部状态行的瞬时提示(pi 的状态区,不加额外 chrome)----------
     def _default_status(self) -> str:
-        # P-E4c:"分派模式"不再存在(core 是单 agent,auto 取消) —— 所以状态行不再报模式。
+        # P-E4c:"分派模式"不再存在(core 是单 agent,auto 取消) —— 以前那行 `qi · auto`
+        # 是模式指示,现在没有可显的东西就**整行不出现**(同 pi:第三行只放扩展状态)。
         # 角色(qi-agents)要显示自己的东西就走 `ctx.ui.set_status`。
-        status = "qi"
+        parts: list[str] = []
         if self._queue_count():
-            status += f" · 排队 {self._queue_count()}"
+            parts.append(f"排队 {self._queue_count()}")
         # 扩展写的状态片段:按 key 字典序(渲染顺序稳定,不因插入次序而抳)
         for key in sorted(self._ext_statuses):
-            status += f" · {self._ext_statuses[key]}"
-        return status
+            parts.append(self._ext_statuses[key])
+        return " · ".join(parts)
 
     def _flash(self, message: str, seconds: float = 2.0) -> None:
         self._status = message

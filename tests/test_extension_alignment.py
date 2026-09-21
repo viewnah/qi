@@ -26,7 +26,7 @@ from qi_agent.extensions import (  # noqa: E402
     RendererRegistry,
     Tool,
 )
-from qi_agent.llm import ChatResponse  # noqa: E402
+from qi_agent.llm import THINKING_LEVELS, ChatResponse  # noqa: E402
 from qi_agent.models import TOOL_OK, ToolOutcome  # noqa: E402
 from qi_agent.registry import EXTENSION_ENTRY_FILE, ToolCatalog  # noqa: E402
 from qi_agent.runner import AgentRunner, RunSpec  # noqa: E402
@@ -239,7 +239,8 @@ async def test_api_session_name_label_and_model(tmp_path, monkeypatch):
             stored = runtime.sessions.get(session.id)
             assert stored is not None
             assert stored.entries[-1]["label"] == "书签"
-            assert api.getThinkingLevel() in ("off", "low", "high", "max", "minimal")
+            assert api.getThinkingLevel() in THINKING_LEVELS
+            assert api.getThinkingLevel() == "medium"      # 没配即 pi 的默认档
             assert isinstance(api.setModel("ollama/x"), bool)
         finally:
             runtime._active_session = None

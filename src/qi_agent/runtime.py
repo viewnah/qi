@@ -42,6 +42,7 @@ from .extensions import (
     CliCommandRegistry,
 )
 from .llm import (
+    DEFAULT_THINKING_LEVEL,
     ChatMessage,
     LiteLLMClient,
     LLMClient,
@@ -349,13 +350,14 @@ class QiRuntime:
         else:
             _flag_thinking = None
             default = resolve_default_model(self.cfg, self.cwd)
-        # 思考级别:显式传参(CLI --thinking)> `--model` 的后缀 > settings.defaultThinkingLevel > off
-        # 四级优先(pi 的口径):`--thinking` > `--model provider/id:<级别>` >
-        # `modelThinkingLevels[该模型]` > `defaultThinkingLevel`
+        # 思考级别:显式传参(CLI --thinking)> `--model` 的后缀 > settings.defaultThinkingLevel
+        # > `DEFAULT_THINKING_LEVEL`(pi 默认 medium)。四级优先(pi 的口径):`--thinking` >
+        # `--model provider/id:<级别>` > `modelThinkingLevels[该模型]` > `defaultThinkingLevel`。
         level = (thinking_level if thinking_level is not None
                  else _flag_thinking if _flag_thinking is not None
                  else model_thinking_level(self.settings, default)
-                 or self.settings.defaultThinkingLevel)
+                 or self.settings.defaultThinkingLevel
+                 or DEFAULT_THINKING_LEVEL)
         self.thinking_level = normalize_thinking_level(level)
         self.llm_exec = llm or self._make_client(default)
         # CLI 的工具收窄(pi 的 `--tools` / `-xt` / `-nt` / `-nbt`)。

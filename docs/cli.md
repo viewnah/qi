@@ -61,7 +61,7 @@ qi -ne | -nc                                  # 关扩展发现 / 关 AGENTS.md 
 | ~~`--agent <name>`~~ | **已删(P-E4c)**:角色选择归 qi-agents(`qi --ext agent=<名>`);`-a` 现在是**信任项目** | — |
 | `--mode <text\|json>` | 输出格式。`json` = **事件流(一行一个 JSON 对象,隐含无头**、不进 TUI;stdout 只有事件,提示走 stderr) → 见 [json.md](json.md)。`rpc` 是二期 | ✅ |
 | `--tools <tools>`(=`-t`) | 工具**严格白名单**(逗号/空格分隔):最终工具集就是这些(不再叠加默认集)。与 `--no-tools`/`--no-builtin-tools` **互斥**(同给报错退出码 2)。未注册的名字**会报一条提示**,不静默丢掉 | ✅ `pi --tools` |
-| `--thinking <级别>` | 思考级别(off/minimal/low/medium/high/xhigh/max;非法值退出码 2)。不传则用 settings.json 的 defaultThinkingLevel,再退 off。provider 拒收 `reasoning_effort` 时自动去掉参数重试,并在 stderr 提示一次 | ✅ `pi --thinking` |
+| `--thinking <级别>` | 思考级别(off/minimal/low/medium/high/xhigh/max;非法值退出码 2)。不传则用 settings.json 的 defaultThinkingLevel,没配就用 `medium`(pi 的默认档)。provider 拒收 `reasoning_effort` 时自动去掉参数重试,并在 stderr 提示一次 | ✅ `pi --thinking` |
 | `--exclude-tools <tools>`(=`-xt`) | 从**最终**工具集里排除这些工具(在 `--tools` / `--no-tools` / `--no-builtin-tools` 之后过滤) | ✅ `pi -xt` |
 | `--no-builtin-tools`(=`-nbt`) | 禁用内置工具,**保留扩展装的工具** | ✅ `pi -nbt` |
 | `--no-tools`(=`-nt`) | 禁用**全部**工具 | ✅ `pi -nt` |

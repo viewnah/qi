@@ -98,6 +98,34 @@ def test_global_default_is_the_last_resort(tmp_path, monkeypatch):
     assert rt.thinking_level != "off"
 
 
+def test_unset_falls_back_to_pi_default_medium(tmp_path, monkeypatch):
+    """什么都没配时默认 `medium`(pi `core/defaults.js` 的 `DEFAULT_THINKING_LEVEL`)。
+
+    以前退 `off`,footer 右边就写 `• thinking off`;pi 写的是 `• medium`。
+    """
+    from qi_agent.llm import DEFAULT_THINKING_LEVEL, LiteLLMClient
+
+    rt = _runtime(tmp_path, monkeypatch)
+    assert DEFAULT_THINKING_LEVEL == "medium"
+    assert rt.thinking_level == "medium"
+    assert isinstance(rt.llm_exec, LiteLLMClient)     # 窄化后才能读 client 上的级别
+    assert rt.llm_exec.thinking_level == "medium"     # 客户端也拿到(不只是字段)
+
+
+def test_explicit_off_is_not_pushed_back_to_medium(tmp_path, monkeypatch):
+    """显式 `--thinking off` 压过默认值(`off` 是合法档,不能被 `or 默认` 吃掉)。"""
+    rt = _runtime(tmp_path, monkeypatch, thinking_level="off")
+    assert rt.thinking_level == "off"
+
+
+def test_settings_panel_unset_display_matches_the_default():
+    """/settings 面板未设时显示的值不能与生效值拄开(两边不 import 对方,所以用测锁住)。"""
+    from qi_agent.llm import DEFAULT_THINKING_LEVEL
+    from qi_agent.settings import UNSET_DISPLAY
+
+    assert UNSET_DISPLAY["defaultThinkingLevel"] == DEFAULT_THINKING_LEVEL
+
+
 # ── 运行期:换模型联动 ────────────────────────────────────────────────
 
 

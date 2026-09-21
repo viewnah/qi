@@ -110,15 +110,25 @@ def test_dispatch_line_is_pi_style():
     assert line.plain == "● → qi (router, 0.90)"
 
 
-def test_banner_lists_agents_and_skills():
-    text = _renderer().banner("0.1.0", ["general", "code-analyst"], ["termio"]).plain
+def test_banner_matches_pi_compact_header():
+    text = _renderer().banner("0.1.0", ["termio"], ["qi-web", "qi-agents"]).plain
     assert "qi v0.1.0" in text
-    # 只写 qi 真的实现了的快捷键(escape 中断、ctrl+c 清空/退出、ctrl+o 展开)
+    # 只写 qi 真的实现了的快捷键(escape 中断、ctrl+c/ctrl+d 清空退出、ctrl+o 展开)
     assert "escape interrupt" in text
-    assert "ctrl+c clear/exit" in text and "ctrl+o tools" in text
-    assert "! bash" in text and "@ files" in text      # 补全与 bash 模式已实现,可以写
-    assert "[Agents]" in text and "general, code-analyst" in text
-    assert "[Skills]" in text and "termio" in text
+    assert "ctrl+c/ctrl+d clear/exit" in text and "ctrl+o tools" in text
+    assert "! bash" in text and "/ commands" in text
+    assert "@ files" not in text                       # pi 紧凑行里没有它
+    # 引导语照搬 pi 句式(只换产品名)
+    assert "Qi can explain its own features" in text
+    # 资源清单:[Skills] / [Extensions] 平铺(没有 [Agents]:core 没有角色概念)
+    assert "[Agents]" not in text
+    assert "[Skills]" in text and "  termio" in text
+    assert "[Extensions]" in text and "  qi-web, qi-agents" in text
+
+
+def test_banner_omits_empty_resource_sections():
+    text = _renderer().banner("0.1.0", [], []).plain
+    assert "[Skills]" not in text and "[Extensions]" not in text
 
 
 def test_working_border_embeds_spinner():
@@ -281,12 +291,12 @@ async def test_tui_renders_pi_blocks_and_footer(tmp_path, monkeypatch):
         # 助手 markdown 进 transcript(分派行由 test_dispatch_line_is_pi_style 覆盖)
         assert assistants
 
-        # footer:第一行 cwd、第二行统计 + 右对齐模型、第三行状态
+        # footer:第一行 cwd、第二行统计 + 右对齐模型(第三行只在有状态时出现)
         footer = app.footer_text.plain
         assert "↑12k ↓678" in footer
         assert "deepseek/deepseek-v4.1-flash • thinking off" in footer
-        # P-E4c:状态行不再报分派模式(auto 已取消),但模型/思考级别仍在
-        assert "qi" in footer and "deepseek" in footer
+        # P-E4c:分派模式取消后默认不再有 `qi · auto` 那行(同 pi 的空闲 footer)
+        assert len(footer.split("\n")) == 2
 
 
 # ── `/` 命令:对齐 pi 的部分 + “计划中”不冒充未知 ──────────
@@ -727,8 +737,10 @@ async def test_editor_word_nav_and_undo(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_footer_stays_three_lines_and_truncates(tmp_path, monkeypatch):
-    """footer 必须恒为 3 行:超长 cwd / 模型名要被截断,不能折行(折行会挤掉输入框)。"""
+async def test_footer_is_two_lines_at_idle_and_truncates(tmp_path, monkeypatch):
+    """footer 空闲时**只有 2 行**(cwd / 统计+模型):第三行(状态)没内容就不占行。
+
+    超长 cwd / 模型名要被截断,不能折行(折行会挤掉输入框)。"""
     import dataclasses
 
     monkeypatch.chdir(tmp_path)
@@ -748,8 +760,53 @@ async def test_footer_stays_three_lines_and_truncates(tmp_path, monkeypatch):
         app._refresh_footer()
 
         lines = app.footer_text.plain.split("\n")
-        assert len(lines) == 3                      # 不折行
+        assert len(lines) == 2                      # 不折行、也不多一行空的
         assert all(len(line) <= 60 for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_footer_status_line_only_when_it_has_content(tmp_path, monkeypatch):
+    """第三行是**有条件**的(同 pi:第三行只放扩展状态/排队),空时不出现。"""
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause(0.1)
+        assert len(app.footer_text.plain.split("\n")) == 2
+
+        app.set_extension_status("lsp", "LSP 就绪")      # ctx.ui.set_status
+        lines = app.footer_text.plain.split("\n")
+        assert len(lines) == 3 and lines[2] == "LSP 就绪"
+
+        # 多行状态要被压成一行(否则 footer 撑到 4 行,预留行数失真)
+        app._flash("第一行\n第二行")
+        lines = app.footer_text.plain.split("\n")
+        assert len(lines) == 3 and lines[2] == "第一行 第二行"
+        app._restore_status()
+
+        app.set_extension_status("lsp", None)           # 清掉 → 行也收回去
+        assert len(app.footer_text.plain.split("\n")) == 2
+
+
+@pytest.mark.asyncio
+async def test_empty_extension_widget_slots_take_no_space(tmp_path, monkeypatch):
+    """扩展挂件的两个槽空着时**不占行**(否则输入框与 footer 之间会空一大块)。"""
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause(0.1)
+        above = app.query_one("#ext-widgets-above")
+        below = app.query_one("#ext-widgets-below")
+        assert above.region.height == 0 and below.region.height == 0
+        # 编辑器下边框与 footer 上下相邻(中间不允许再插空行)
+        assert app.query_one("#border-bottom").region.bottom == app.query_one("#footer").region.y
 
 
 # ── 补全(`/` 命令 与 `@` 文件)──────────────────────────

@@ -106,6 +106,12 @@ class LLMDelta:
 THINKING_LEVELS: tuple[str, ...] = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
 """思考级别(对齐 pi 的 thinkingLevel)。`off` = 不请求思考。"""
 
+DEFAULT_THINKING_LEVEL = "medium"
+"""没配任何级别时的默认档(pi `core/defaults.js` 的 `DEFAULT_THINKING_LEVEL`)。
+
+注意与 `normalize_thinking_level` 的区别:后者是**写歪的值的兑底**(一律 `off`),
+这里是**什么都没写时的生效值** —— pi 两处行为不同,不要拿一个去顶另一个。"""
+
 # qi 经 litellm 传 reasoning_effort;litellm / 各 provider 只认 minimal/low/medium/high,
 # 所以 xhigh / max 收敛到 high(pi 的 provider 侧有原生 xhigh/max,litellm 没有)。
 _EFFORT_MAP = {"minimal": "minimal", "low": "low", "medium": "medium",
@@ -113,7 +119,11 @@ _EFFORT_MAP = {"minimal": "minimal", "low": "low", "medium": "medium",
 
 
 def normalize_thinking_level(value: str | None) -> str:
-    """级别归一:未知值一律当 `off`(不能因为 settings 里写错就让请求带上怪参数)。"""
+    """级别归一:未知值一律当 `off`(不能因为 settings 里写错就让请求带上怪参数)。
+
+    "没给值"与"给了个不认识的值"在调用点合流 —— 但**默认档**的判断不在这里(那是
+    `DEFAULT_THINKING_LEVEL` 的事,由 runtime 装配时决定)。
+    """
     level = (value or "").strip().lower()
     return level if level in THINKING_LEVELS else "off"
 

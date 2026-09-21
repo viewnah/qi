@@ -173,7 +173,7 @@ qi 与 pi 的差异(已落档):
 | `/compact` | 压缩上下文(摘要旧消息);可跟 `<提示>` 追加 focus |
 | `/model` · `/scoped-models` · `/thinking` | 当前或切换模型 / 挑 Ctrl+P 轮换的模型 / 思考级别 |
 | `/settings` | 偏好面板:主题 / 思考级别 / 交互开关(enter 换值、ctrl+s 保存到**用户级** settings) |
-| `/export` · `/import` | 导出 / 导入会话 JSONL |
+| `/export` · `/import` | 导出(按扩展名:`x.html` → 自包含 HTML(当前分支),其余 → JSONL)/ 导入会话 JSONL |
 | `/copy` | 复制最后一条回答 |
 | `/reload` | 重载扩展 / 技能 / 配置 |
 | `/login` · `/logout` | 登录指引(密钥不进会话)/ 删除已存凭证 |

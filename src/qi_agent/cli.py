@@ -546,6 +546,13 @@ def _cmd_export(session_id: str, out: Path) -> None:
         raise typer.Exit(code=1)
     out.parent.mkdir(parents=True, exist_ok=True)
     try:
+        # 按**扩展名**选格式(pi 同口径:`.html` → 自包含 HTML,其余 → 原始 JSONL)
+        from .export_html import html_wanted, write_session_html
+
+        if html_wanted(out):
+            write_session_html(session, out)
+            console.print(f"[green]已导出会话(HTML,当前分支) → {out}[/green]")
+            return
         shutil.copy(session.path, out)
     except OSError as exc:
         console.print(f"[red]导出失败: {escape(str(exc))}[/red]")

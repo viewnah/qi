@@ -144,12 +144,17 @@ async def _run_one(api: Any, role: Role, task: str, ctx: Any,
     tools = _apply_disallowed(tools, role.disallowed_tools, api)
     spec = {"system_prompt": role.prompt or f"你是 {role.name}。",
             "name": role.name, "tools": tools, "model": role.model}
+    # `ctx.signal` 才是 AbortSignal(`ctx.abort()` 是**方法** —— 以前这里取错成那个方法,
+    # 结果中断根本没传下去:E12 的“协作式中断直接透传”一直是空的)。
+    signal = getattr(ctx, "signal", None)
+    # 宿主可能只有其中一种写法(snake_case 是正式名,camelCase 是别名) —— 两种都试。
+    run_agent = getattr(api, "run_agent", None) or getattr(api, "runAgent")
     try:
         if sem is not None:
             async with sem:
-                text = await api.runAgent(spec, task, abort=getattr(ctx, "abort", None))
+                text = await run_agent(spec, task, abort=signal)
         else:
-            text = await api.runAgent(spec, task, abort=getattr(ctx, "abort", None))
+            text = await run_agent(spec, task, abort=signal)
         return {"agent": role.name, "task": task, "ok": True, "output": text}
     except Exception as exc:  # noqa: BLE001 子运行失败 → 结果里如实说
         return {"agent": role.name, "task": task, "ok": False,

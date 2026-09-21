@@ -42,14 +42,17 @@ def _env(tmp_path: Path, monkeypatch, *, api: str, max_tokens: int | None,
 
 
 def _params(tmp_path, monkeypatch, **kw) -> dict:
+    from qi_agent.llm import LiteLLMClient
     from qi_agent.runtime import QiRuntime
 
     _env(tmp_path, monkeypatch, **kw)
     project = tmp_path / "proj"
     (project / ".git").mkdir(parents=True, exist_ok=True)
     rt = QiRuntime(cwd=project, approve_project=True)
+    client = rt.llm_exec
+    assert isinstance(client, LiteLLMClient), "没给 llm 时应该是真的 LiteLLMClient"
     # 这就是拼请求参数的那个方法(`chat` / `astream` 共用,所以测它等于测真实请求)
-    return rt.llm_exec._reasoning_params()
+    return client._reasoning_params()
 
 
 def test_budget_is_sent_for_anthropic(tmp_path, monkeypatch):
@@ -80,9 +83,32 @@ def test_budget_is_clamped_to_leave_room_for_the_answer(tmp_path, monkeypatch):
     assert params["thinking"]["budget_tokens"] == 3000 - 1024
 
 
-def test_junk_budget_is_ignored(tmp_path, monkeypatch):
-    """写歪的值(非正整数)当"没配" —— 不因为一个错字让请求带上怪参数。"""
-    for value in ("4096", 0, -5, None):
+def test_numeric_string_is_coerced_by_pydantic(tmp_path, monkeypatch):
+    """`"4096"` 会被 pydantic **强转**成 4096,于是真的带上。
+
+    我第一版这里期望"报错",跑出来是 `DID NOT RAISE` —— 强转是 pydantic 的默认行为。
+    记下来免得下次又猜。真正被拦住的是下面两条。
+    """
+    params = _params(tmp_path, monkeypatch, api="anthropic-messages", max_tokens=8000,
+                     extra={"thinkingBudgets": {"high": "4096"}})
+    assert params["thinking"]["budget_tokens"] == 4096
+
+
+def test_nonpositive_budget_is_dropped(tmp_path, monkeypatch):
+    """`0` / 负值过得了 pydantic,但被客户端那条 `<= 0` 挡下(当"没配")。"""
+    for value in (0, -5):
         params = _params(tmp_path, monkeypatch, api="anthropic-messages", max_tokens=8000,
                          extra={"thinkingBudgets": {"high": value}})
         assert "thinking" not in params, value
+
+
+def test_null_budget_fails_loudly_at_load(tmp_path, monkeypatch):
+    """`None` 过不了 `dict[str, int]` 的校验 —— 装载时报出来,不静默。
+
+    (报的是哪一种异常取决于 qi 是否包装 pydantic 的错误,这里只断言"**会**报"。)
+    """
+    import pytest
+
+    with pytest.raises(Exception):
+        _params(tmp_path, monkeypatch, api="anthropic-messages", max_tokens=8000,
+                extra={"thinkingBudgets": {"high": None}})

@@ -100,6 +100,12 @@ qi 要拆的三样(MCP / 多 agent / web)**正好落在这份清单上**。
 >
 > **payload 的键名用 snake_case**(`tool_name` / `system_prompt` / `turn_index`),方法名照 pi 保留
 > camelCase —— 见 §9 末尾的命名规则。写扩展时以本节为准。
+>
+> **pi 兼容层(两个都收)**:总线在派发前给每个 payload 补上 `type`(= 事件名,pi 的判别字段),
+> 以及两边**同名同义**的键的驼峰别名(`tool_name` → `toolName`、`tool_call_id` → `toolCallId`、
+> `system_prompt` → `systemPrompt`、`turn_index` → `turnIndex` …)。qi 自己的键**一个不少**,
+> 所以照 pi 写的 handler(`event.type` / `event.toolName`)与 qi 的既有消费者同时成立。
+> payload **结构**不同处不假造(如 `turn_end`:qi 给 `text`/`tool_calls`,pi 给 `message`/`toolResults`)。
 
 ### 3.2 方法(`api.*`)
 
@@ -170,15 +176,36 @@ qi 的 snake_case 是正式名,pi 的驼峰是属性/方法别名(`ctx.hasUI` / 
 | `ctx.ui.set_editor_component` 的**边界** | 要求组件是 **`TextArea`(或子类)**;不是则记 note 并拒绝 | qi 的编辑器是承重的(历史环 / kill-ring / 补全 / 光标定位)。把边界画在 TextArea 上,15 处调用点就不必各自做兼容 —— 写一个 `TextArea` 子类仍然能做 vim 式模态编辑(拦截按键、自己改文本)。契约见 §3.5 |
 | `ctx.ui.add_autocomplete_provider` 的**形状** | `factory(text, cursor_offset) -> list[str \| {value, label, description}]`;**返回退订函数**(pi 返回 void) | pi 传的是 pi-tui 的 `AutocompleteProvider` 对象(包住内置 provider)——那暴露的是 pi-tui 的补全内部结构。qi 用与命令参数补全**同一套元素形状**,两种补全只学一次 |
 | `on_terminal_input` 的 `data` 改写 | 只支持 `{consume: True}`(吃掉按键);不支持“换成另一个键” | Textual 的 `events.Key` 不是为改写设计的。需要改写按键的场景应当用 `set_editor_component` 接管编辑器 |
-| `register_command` 的 `get_argument_completions` 返回 **async** | 收下但**不支持** → 记 note 并忽略 | 补全路径是同步的(每次按键都要算);要支持得先把补全改成异步面板 |
-| 工具定义的 `executionMode` / `constrainedSampling` / `renderShell` | **不支持**(不接收) | qi 的工具循环是串行执行;后两个是 pi 的 provider / TUI shell 专有概念 |
+| `register_command` 的 `get_argument_completions` / `add_autocomplete_provider` 返回 **async** | **支持**(只是晚一拍):结果回来时若文本与光标未动就回填,动了就丢掉 | 补全主路径是同步的(每次按键都要算),所以 async 走 worker + 一次重刷;回填要校对文本,否则旧的候选对不上现在的 token |
+| `ctx.ui.on_terminal_input` 的 `data` 改写 | 只支持 `{"consume": True}`(吃掉按键);不支持“换成另一个键” | Textual 的 `events.Key` 不是为改写设计的。需要改写按键的场景应当用 `set_editor_component` 接管编辑器 |
+| `constrainedSampling` | **收下但忽略**(注册时记一条 note) | 逐工具受限采样要 provider 配合(JSON schema / grammar),litellm 没有可移植的对应物。**收而不报才是最坏的**:扩展会以为参数被约束住了 |
 | `user_bash` | 只在 TUI 发 | 无头模式没有 `!` 命令这回事 |
 | `agent_settled` | 保守近似 | qi 没有回合级重试/重压机制;provider 级重试在客户端内部,那时 `stream()` 还没返回 |
-| 事件 payload | snake_case 键、无 `type` 判别字段 | qi 的既有约定;pi 的键名(`toolName` / `turnIndex`)与 `type` 字段没有镜像 |
+| 事件 payload 的**结构** | 键名已双份(见下),但**结构**不同处不假造:如 `turn_end` qi 给 `{turn_index, text, tool_calls}`,pi 给 `{turnIndex, message, toolResults}`;`agent_end` 同理 | qi 的 payload 面向自己的前端词汇;加一个键是兼容,换一套结构就是另一回事了 |
 | `deliver_as` 取值 | `follow_up` / `next_turn`(pi `followUp` / `nextTurn`) | qi 的 snake_case 约定;**两套都收** |
 | `register_flag` 的取值通道 | 只能 `--ext name=value` | E19:typer 的选项表静态,放宽未知长旗标会把用户的笔误变成一句 prompt |
 | 入口文件名 | 固定 `extension.py`(pi 是任意 `*.ts` / `index.ts`) | E9:qi 保持"1 目录 = 1 扩展" |
 | `add_route` / `add_static` | 未实现 | qi 增量(qi-web 的 HTTP 挂载),不属 pi 面 |
+
+**已对齐的几件(上一版还列在“剩余”里)**:`renderShell`(见 §3.5)、
+`executionMode`(见下)、payload 的 `type` 字段与驼峰键别名、async 参数/补全提供者。
+
+#### `executionMode` 的并发语义(E27)
+
+pi 的 `ToolDefinition.executionMode` 是 `"sequential" | "parallel"`(默认顺序)。qi 照这个口径:
+
+| 规则 | 内容 |
+| --- | --- |
+| 默认 | 不声明 = 顺序 —— **与以前逐字节一致**(没有隐含的行为变更) |
+| 成批 | **相邻**的 parallel 工具并成一批并发跑(`asyncio.gather`) |
+| 打断 | 一个顺序工具把批次**切断** —— 顺序工具永远不会与并行工具重叠(否则“我声明了顺序”就没意义) |
+| 并发安全 | **由声明方负责**:写 `"parallel"` 等于说“我的实现是并发安全的”。qi 不做文件变更队列 —— 那份复杂度只该在真有需要时加 |
+| 顺序不变 | 事件与上下文顺序仍然确定:先把整批的 `tool_execution_start` 发完,再按**声明序**发 `tool_execution_end` / `tool_result` / 消息。所以回放、工具卡片与“模型看到的顺序”都不需要额外的排序假设 |
+| 没有 session 级默认 | pi 另有 AgentOptions 级的 `toolExecution` 默认值;qi 只认**逐工具**声明(要加默认值再说,不先提一个空旋钮) |
+
+工程上的配套改动:内部 `AgentEvent(kind="tool_start"/"tool_end")` 现在**必须带 `tool_call_id`** ——
+并发时前端(TUI 工具卡片)与落盘(runtime 的 `pending_tools`)靠它把 start/end 配对;
+以前两边都是“单个槽位”,只能一次跑一条工具。
 
 ### 3.5 渲染回调与工具渲染钩子的**契约**(qi 的形状)
 
@@ -192,6 +219,7 @@ pi 的回调直接返回**组件**。qi 同形(TUI 里返回 **textual widget**)
 | `register_markdown_transformer(fn)` | `fn(markdown, ctx) -> str` | user / assistant 的**最终文本**渲染前链式改写(流式增量不逐个改 —— 半截 markdown 改了更糟) |
 | `Tool.render_call` | `fn(args, ctx) -> Widget \| None` | `tool_start` 时挂进 `ExtensionToolBlock`(整个替换默认卡片) |
 | `Tool.render_result` | `fn(result, ctx) -> Widget \| None` | `tool_end` 时替换成结果组件 |
+| `Tool.render_shell` | `"default"`(默认) / `"self"` | 默认给扩展的组件套上**工具卡片外壳**(状态底色 + `(1,1)` 内边距);`"self"` = 扩展自己画框,qi 不碰容器 |
 | `ctx.ui.set_editor_component` | `factory(ctx) -> TextArea`(`None` = 恢复内置) | 换掉 `#editor`。**必须是个 `TextArea`**:qi 的历史环 / kill-ring / 补全面板 / 光标定位都建立在 TextArea 的接口上,把边界画在这里就不需要 15 处调用点各自兼容。只用到两个 `Editor` 专有成员(`reset` / `history_browsing`)的地方都有兼容回落 |
 | `ctx.ui.add_autocomplete_provider` | `factory(text, cursor_offset) -> list[str \| {value, label, description}]` | 与命令参数补全**同一套元素形状**。内置也有候选时插在前面共用替换区间;内置没有时用“当前词”作区间 |
 | `ctx.ui.set_footer` / `set_header` | `factory(ctx) -> Widget`(`None` = 恢复/移除) | 内置 footer 只藏起来不卸载,撤回时立即恢复 |
@@ -511,6 +539,7 @@ server 由 `mcp.json` 决定、代理工具由 `tools:` 决定要不要),这条�
 | E24 | MCP 工具的暴露方式 | **代理兜底 + 白名单驱动直连**。主会话只给一个 `mcp` 代理工具(~200 token,pi 的做法);角色的 `tools:` 里写了 `mcp__github__*` → 对**那个角色**直连匹配的工具、**且不给代理**;没写任何 mcp 条目 → 该角色**完全没有** MCP 访问。**否掉了“纯照 pi”**(代理默认 + `directTools`):代理能调**任何** server 的工具,于是角色的 `tools:` 白名单限制不了 MCP —— 而 qi 相对 pi 的差异正是“角色 = 精确的工具范围”,白名单形同虚设是本仓最忌的半对齐。**代价**:两种模式并存 **→ 已由 E25 取代** |
 | E25 | qi-mcp 的形状与依赖方向(取代 E20/E24) | **照搬 pi-mcp-adapter;qi-agents 直接依赖 qi-mcp;agent 层的 MCP 发现归 qi-agents**。理由:① agent 目录是 qi-agents 的**自包含包**,包主人认识包成员不是泄漏;② E24 的白名单顾虑在新形状下**前提消失**(角色的 server 集合本就按需注册);③ 照抄 pi 少一层自造协议。代价:`pip install qi-agents` 会拖上 MCP 栈;角色 `tools:` 对 MCP 的语义与内置工具不一致(要写进角色文档) |
 | E26 | 扩展 API 的命名与参数形状 | **snake_case 是正式名,pi 的驼峰是别名**(两者绑定同一个函数对象,`api.registerTool is api.register_tool`);**参数形状两边都收**(pi 的 options 对象与 qi 的关键字)。事件名、`ctx` 成员名、`ctx.ui` 方法名同样双名。事件 payload 的**键名仍用 snake_case**、不发 `type` 判别字段(见 §3.4)。理由:扩展作者照 pi 写的代码应当能跑,而 qi 自己的代码与文档用 pythonic 名;两全的代价只是多一层薄别名。**已知尾巴**:`deliver_as` 取值用 `follow_up`/`next_turn`,但 pi 的 `followUp`/`nextTurn` 也认 |
+| E27 | `executionMode` 的并发语义 | **逐工具声明,默认顺序(不声明 = 与以前逐字节一致)**;**相邻**的 `"parallel"` 工具并成一批并发跑,一个顺序工具把批次**打断**(顺序工具永不与并行工具重叠);**并发安全由声明方负责**(写 `"parallel"` 等于说“我的实现是并发安全的”,qi 不做文件变更队列);事件与上下文顺序**仍然确定**(先发完整批 `tool_execution_start`,再按声明序发 end / 结果 / 消息);**没有 session 级默认值**(不先提一个空旋钮)。配套:内部 `AgentEvent(kind="tool_start"/"tool_end")` 现在**必须带 `tool_call_id`** —— 并发时 TUI 工具卡片与 runtime 落盘靠它配对(以前都是单个槽位) |
 
 > **阶段计划、未定清单、与 Claude Code 的三方对照**已移到 [extensions-design.md](../design/extensions-design.md)。
 > 本节(决策记录)**留在手册里**是有意的:代码注释里有 139 处引用 `E11` / `E25` / `P-E4c` 这类编号,

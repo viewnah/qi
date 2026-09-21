@@ -49,6 +49,7 @@
 | `editorPaddingX` | number | `1` | 编辑器左右内边距(pi 默认 `0`,qi 视觉基线用 `1`) |
 | `outputPad` | number | `1` | 助手输出的左侧缩进(pi 默认 1;`0` = 顶格) |
 | `autocompleteMaxVisible` | number | `5` | 补全面板最多显示几行(pi 默认 5;候选本身不裁,面板内滚动) |
+| `tuiMode` | string | `fullscreen` | TUI 渲染模式:`fullscreen`(qi 默认)= 备用屏、qi 拥有视口,滚轮只滚 transcript;`regular` = inline(不占全屏、滚动交给终端)。非法/缺失值按 `fullscreen`。**qi 默认与 pi 不同**(pi 默认 `regular`)—— 理由见 [tui.md](tui.md) §1。启动时读;改完要重启(不想重启就用 `--tui-mode`) |
 
 ### 仅存储(预留,尚未参与行为)
 

@@ -3,14 +3,35 @@
 > 本文只放交互形态:布局、`/` 内部命令、消息渲染。与 [cli.md](cli.md) 区分:CLI = 一次性命令;TUI = 交互命令。
 > 相关:[qi-web README](../extensions/qi-web/README.md)(web 端复用同一事件流与渲染结构)、[settings.md](settings.md)(`theme`)、[themes.md](themes.md)。
 
-## 1. 布局(已实现;逐项对齐 pi)
+## 1. 布局与渲染模式(已实现;逐项对齐 pi)
 
 配色/版式以 pi 的 `modes/interactive` 为基线,数据源是同一份 `theme/dark.json` /
 `theme/light.json`(`src/qi_agent/themes/` 逐字移植),渲染细节对照过 pi 的
 `user-message.js` / `assistant-message.js` / `tool-execution.js` / `footer.js` / `dynamic-border.js`。
 
+### 1.1 两种模式(`tuiMode` / `--tui-mode`)
+
+与 pi 同名同义的两个值,但**默认相反**:
+
+| | `fullscreen`(**qi 默认**) | `regular` |
+| --- | --- | --- |
+| 屏幕 | 备用屏(alt screen),qi 拥有视口 | 主屏,不占全屏 |
+| 滚动 | 滚轮 / 拖动喂给 qi 自己的 transcript,**只在界面内移动** | 交给终端 —— 滚轮 / PageUp 会翻到启动 qi 之前的 shell 输出 |
+| 退出后 | 恢复进入前的屏幕(终端回滚历史完好) | 内容留在终端里 |
+| 鼠标 | 开着(不为别的,就是为了上面的滚动) | 关掉(见下) |
+| pi 的默认 | 否(pi 默认 `regular`,fullscreen 标为 experimental) | 是 |
+
+**为什么 qi 默认 fullscreen**:pi 的 `regular` 把滚动权交给终端,你向上翻能看到启动前的 shell
+输出;qi 要的是“滚动只在本界面内”,所以默认进备用屏。想回到 pi 的默认行为:
+`--tui-mode regular` 或 `settings.json` 里 `{"tuiMode": "regular"}`。
+
+实测的实现路径是 Textual 自己的非 inline 模式(`App.run()`,即备用屏),不是自写渲染器:
+布局上只需把 transcript 改成 `1fr` 并在内部滚动、底部固定(见 1.3)。
+
+### 1.2 屏幕内容
+
 ```text
-(终端滚动历史保留 —— inline 渲染,不占全屏、不进备用屏)
+(fullscreen:整屏归 qi —— 内容装不下时只有 transcript 自己在滚)
 
  qi v0.1.0                                                    ← bold accent + dim
  escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o tools   ← 紧凑快捷键行
@@ -32,7 +53,7 @@
  [project]                                 标题 = `read <path>`(工具名 bold + 路径 accent)
  name=qi                                   输出 10/15/20 行(按工具),超出给省略提示
 
-────────── ⠦ Working ──────────          ← 编辑器上边框;工作中内嵌 spinner(80ms)
+────────── ⠦ Working ──────────          ← 编辑器上边框;工作中内嵌 spinner(80ms);**固定在底部**
  输入…
 ────────────────────────────────          ← 下边框(空闲时上下都是整行 ─)
 ~/Desktop/qi (master) • tui               ← footer 1:cwd(+git 分支)(+会话名),dim
@@ -41,23 +62,38 @@
                                             空闲时不出这一行 —— 默认不再有 `qi · auto`
 ```
 
-实现要点:
+### 1.3 实现要点
 
-- **inline**:`App.run(inline=True, inline_no_clear=True, mouse=False)`;transcript 最多占
-  `终端高 - (编辑器 3 + footer 2~3)`,再长在内部滚动(不吞终端滚动历史)。
+- **两种模式的 CSS 选择器**:`get_default_screen()` 在 `regular` 时给首屏打上 `.regular` 类
+  (必须在首屏创建时就带上 —— 放到 `on_mount` 里再加,inline 启动的第一帧会按 fullscreen
+  规则把 Screen 撑到终端高,内联区域先空掉一屏再缩回去)。
+- **fullscreen 的布局**:`Screen` / `#body` `height: 100%`,`#log { height: 1fr }` 占满剩余
+  空间并在**内部**滚动,编辑器 + 上下边框 + footer 固定在底部。`_sync_log_height()` 在这里
+  **不插手** —— 再用 inline style 塞 `max-height` 会把 `1fr` 盖掉。
+- **regular(inline)的布局**:`App.run(inline=True, inline_no_clear=True, mouse=False)`;
+  `Screen` 高度随内容,transcript 最多占 `终端高 - (编辑器 3 + footer 2~3)`,再长在内部滚动。
   扩展挂件的两个槽(`#ext-widgets-above/below`)空时**不占行** —— 否则会在输入框与
   footer 之间各撑出一块空白。
-- **输入加固(不关鼠标上报会崩)**:`mouse=False` —— qi 的界面没有任何鼠标交互
-  (不点、不拖、无滚动条),而上报鼠标会让**不支持 SGR(1006)** 的终端退回旧式
-  X10 报文(`ESC [ M` + 原始坐标字节)。坐标 ≥ 0x80 时整段不是合法 UTF-8,Textual
-  inline 驱动里的严格解码器会抛 `UnicodeDecodeError` → 输入线程死 → `App.panic`
+- **鼠标只在 fullscreen 开**:fullscreen 下开着上报**就是为了滚动**(滚轮/拖动喂给 qi 的
+  transcript,而不是终端回滚缓冲)。regular 下必须关:上报鼠标会让**不支持 SGR(1006)**
+  的终端退回旧式 X10 报文(`ESC [ M` + 原始坐标字节),坐标 ≥ 0x80 时整段不是合法 UTF-8,
+  Textual inline 驱动里的严格解码器会抛 `UnicodeDecodeError` → 输入线程死 → `App.panic`
   把 TUI 带栈带走(`0x85 in position 4`)。上游未修(textualize/textual#6456),
   所以 `tui.py` 里另加两层:进界面前 `_reset_mouse_reporting()` 关掉残留上报
   (上次崩溃没走到还原时终端会一直留着),`_harden_inline_input()` 只把
   `linux_inline_driver` 的解码器换成 `errors="replace"`(坏字节变 U+FFFD,
-  一个坏字节不该打死会话)。关掉上报还顺带把原生文本选择/复制还给终端。
+  一个坏字节不该打死会话)。
+- **命令选择器 = pi 的 `showSelector()`**:pi 是把 `editorContainer` 的内容**换掉**,
+  所以选择器与编辑器同宽、贴在同一条底线上(上面 transcript 不动、下面 footer 不动),
+  形状是「上下 `DynamicBorder` + accent bold 标题 + `→ ` 列表 + 键位提示」,**无底色无遮罩**。
+  qi 用 `EditorSlotPanel`(ModalScreen)做到同一形状:全宽、`align-vertical: bottom`、
+  `margin-bottom` = footer 实际行数、`border-top/bottom: solid`、底色取 `$background`
+  (= 探测到的终端底色,看不出“填色”但又盖住底下的编辑器)、backdrop 透明。
+  列表渲染与补全面板**同一份**(`pi_select_text`,pi 的 `SelectList` 版式)。
+  非选择器类的面板(`PromptScreen` / `EditorScreen` / `CustomScreen` / 会话 / 树 / scoped)
+  共用同一外壳,只换正文。
 - **主题**:`theme` 设 `auto`(默认)时用 OSC 11 探测终端背景色 → dark/light,
-  并把探测到的背景色设为 Textual 主题底色 —— 于是 inline 区域看不出“被填色”。
+  并把探测到的背景色设为 Textual 主题底色 —— 于是区域看不出“被填色”。
   `QI_THEME=dark|light|auto` 可直接覆盖。
 - **编辑器**:上下两条 `─` 动态边框(`border` 色);工作态上边框嵌入
   `⠋…⠏ Working`(accent + muted)。
@@ -68,7 +104,9 @@
 - **分派行**:`● → <display_name> (source, 置信度)`,无底色,不加卡片。
 
 已知差异(Textual 与 pi 自研渲染器的边界,不做逐字节对齐):OSC133 zone 标记、
-代码块左侧 `│` 边线、图片/kitty 协议、超长历史进终端原生 scrollback。
+代码块左侧 `│` 边线、图片/kitty 协议。`tuiMode` 在 `/settings` 里改要**重启**才生效
+(pi 能当场换渲染器);`/settings` 与资源面板仍是 inline 小 App,不跟随主界面模式;
+fullscreen 退出时**不重放 transcript**(pi 有 `fullscreenExitOutput: transcript|resume-hint`)。
 
 ## 2. `/` 内部命令
 
@@ -82,21 +120,21 @@
 | `/hotkeys` | 快捷键(明写哪些 pi 键位还没做) |
 | `/quit` | 退出 |
 | `/new` | 新会话 |
-| `/resume [id]` | 不给 id = 打开**会话选择器**(模态);给 id = 直接恢复 |
+| `/resume [id]` | 不给 id = 打开**会话选择器**(占编辑器那一格的面板);给 id = 直接恢复 |
 | `/name <name>` | 会话显示名(进 footer) |
 | `/session` | 会话信息(ID/文件/cwd/消息数·仅当前分支/节点数与分支点/模型/用量) |
 | `/tree` | 会话树:跳到本会话任意节点继续(同文件内分支,见下节) |
 | `/fork [序号\|id]` | 从某条用户消息**之前**分叉出新会话,并把那条消息放回编辑器(对齐 pi) |
 | `/clone [名字]` | 把当前分支复制成新会话 |
 | `/compact [提示]` | 压缩上下文:把旧消息压成结构化摘要(可给一句关注点) |
-| `/model [p/m]` | 当前模型 / 切换模型(等同 ctrl+l / ctrl+p) |
-| `/scoped-models` | 挑 Ctrl+P 轮换哪些模型(模态勾选;空 = 全部,写回 `settings.enabledModels`) |
+| `/model [p/m]` | 不给参数 = **开选择器**(与 ctrl+l 同一个,pi 的 `showModelSelector`;`✓` 标当前、`[provider] · default` 徽标)；给 `p/m` 或唯一模型名 = 直接切 |
+| `/scoped-models` | 挑 Ctrl+P 轮换哪些模型(面板里勾选;空 = 全部,写回 `settings.enabledModels`) |
 | `/export [file]` | 导出会话 JSONL(默认 `./qi-<id>.jsonl`;**pi 默认导出 HTML** —— qi 无 HTML 导出器) |
 | `/import <file>` | 从 JSONL 导入并切换会话(重名给提示,不静默覆盖) |
 | `/copy` | 复制最后一条回答到剪贴板(OSC 52) |
 | `/reload` | 重载 agents / plugins / 配置(主题改动需重开) |
-| `/login <provider>` | **只给指引**:`qi auth login <provider>`(密钥不进会话记录) |
-| `/logout [provider]` | 删除已存凭证(无密钥输入,可直接在 TUI 里做) |
+| `/login [provider]` | 不给 provider 先弹**选择器**(列 `models.json` 里的 provider + `(已存凭证)`/`(无凭证)`),然后**遮罩输入** API key → 写 `auth.json`(0600)并重建客户端;key 不进 transcript。当前**没可用模型**时顺带选中该 provider 的第一个模型(pi 同口径)。与 pi 的差异:pi 的 `/login` 主要在做**订阅登录**(`auth.oauth`),qi 的凭证层只有 api_key |
+| `/logout [provider]` | 不给 provider 先弹已存凭证的选择器;删的是 `auth.json` 里那条(**环境变量与 `models.json` 的 `apiKey` 不受影响**,消息里会说) |
 | `/changelog` | 显示 `CHANGELOG.md`(qi 仓库暂无该文件) |
 
 ### 会话树(格式 v2,对齐 pi 的 `id`/`parentId`)
@@ -177,12 +215,12 @@ qi 与 pi 的差异(已落档):
 | `/tree` · `/fork` · `/clone` | 跳到本会话任意节点(跳前先问「要把被放弃的那段压成摘要吗」,默认不摘要;`settings.branchSummary.skipPrompt` 可关掉这一问)/ 从某条消息 fork / 复制当前分支 |
 | `/trust [yes\|no\|forget]` | 按**目录**记住信任决定(`~/.qi/agent/trust.json`);连带记住上一层,写完要重启才生效 |
 | `/compact` | 压缩上下文(摘要旧消息);可跟 `<提示>` 追加 focus |
-| `/model` · `/scoped-models` · `/thinking` | 当前或切换模型 / 挑 Ctrl+P 轮换的模型 / 思考级别 |
+| `/model` · `/scoped-models` · `/thinking` | 不给参数 = **开选择器**(占编辑器那一格,与 ctrl+l / shift+tab 同源)/ 挑 Ctrl+P 轮换的模型 / 挑思考级别(`✓` 标当前、带说明、`· default`) |
 | `/settings` | 偏好面板:主题 / 思考级别 / 交互开关(enter 换值、ctrl+s 保存到**用户级** settings) |
 | `/export` · `/import` | 导出(按扩展名:`x.html` → 自包含 HTML(当前分支),其余 → JSONL)/ 导入会话 JSONL |
 | `/copy` | 复制最后一条回答 |
 | `/reload` | 重载扩展 / 技能 / 配置 |
-| `/login` · `/logout` | 登录指引(密钥不进会话)/ 删除已存凭证 |
+| `/login` · `/logout` | 登录(选择器/遮罩输入,key 只进 auth store)/ 删除已存凭证 |
 | `/changelog` | 显示 `CHANGELOG.md` |
 | `/share` | 把当前会话传成**私有** GitHub gist(一个自包含 `.html`),并把链接复制到剪贴板。直调 API,不依赖 `gh`;token 顺序照 qi 的凭证总原则(**auth store → 环境变量**):`qi auth login github` → `GITHUB_TOKEN` → `GH_TOKEN`,需要一个带 `gist` 权限的 token |
 
@@ -219,7 +257,7 @@ qi 与 pi 的差异(已落档):
 - 思考内容**不落盘**(仅当轮展示):会话 JSONL 仍只有 message/tool/dispatch/state 四类。
 | `ctrl+x` | 复制最后一条回答 | `app.message.copy` |
 | `ctrl+g` | `$EDITOR` 编辑当前输入 | `app.editor.external` |
-| `ctrl+l` | 模型选择器(模态列表) | `app.model.select` |
+| `ctrl+l` | 模型选择器(占编辑器那一格的面板,见 §1.3) | `app.model.select` |
 | `ctrl+p` / `ctrl+shift+p` | 下一个 / 上一个模型 | `app.model.cycleForward/Backward` |
 | `ctrl+z` | 挂起(回到 shell) | `app.suspend` |
 
@@ -264,6 +302,12 @@ qi 的做法:`QiTui.check_action` 在 `screen_stack > 1` 时把 App 级快捷键
 | `escape` | 先关面板,再考虑中断 |
 | `!<命令>` | 执行 shell,输出以 pi 同款「上下 `─` + `$ cmd` + 输出」块展示,并把「命令 + 输出」落成一条 user 消息供后续回合参考 |
 | `!!<命令>` | 同样执行,但**不进上下文**(块边框变 `dim`,标题标出) |
+
+面板版式(对齐 pi 的 `select-list.js`):画在编辑器**下边框之下**(不是输入框上方),选中行
+`→` 前缀 + `accent` 标签,其余候选的说明用 `muted`,标签按列对齐(命令列 12..32 自适应,
+其余固定 32);**没有底色 / 边框 / 滚动条**,候选超过 `autocompleteMaxVisible` 时尾部给
+`(n/m)`。来源标签(`[u]/[p]/[t]`)写在**说明里**(pi 的口径),不是标签前缀。
+面板与编辑器同缩进(共用 `editorPaddingX`)。
 
 与 pi 的差异(已落档):路径补全的**来源**基本对齐(引号路径、`fd` 全树、目录优先、分隔符
 含空格/tab/`"`/`'`/`=`),但 fd 的**正则语义**是简化的(按路径段前缀连成 `a[\/]b`,`pi` 还叠了

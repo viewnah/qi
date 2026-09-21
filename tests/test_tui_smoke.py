@@ -205,16 +205,67 @@ def test_reset_mouse_reporting_writes_disable_sequences(monkeypatch):
     assert stream.getvalue() == _MOUSE_OFF
 
 
-def test_run_tui_runs_inline_without_mouse(tmp_path, monkeypatch):
-    """TUI 关掉鼠标上报:免得终端退回 X10 报文(见上一条),也让原生选择/复制可用。"""
+def test_run_tui_uses_fullscreen_by_default(tmp_path, monkeypatch):
+    """默认 fullscreen:进备用屏(`run()` 不带 inline),**且开鼠标** —— 滚轮归 transcript。
+
+    这是相对 pi 的一个明说取舍(pi 默认 regular):见 `docs/tui.md` §1。
+    """
     _tui_env(tmp_path, monkeypatch)
     from qi_agent import tui as tui_mod
 
-    calls: dict[str, dict[str, object]] = {}
+    calls = _spy_run_tui(monkeypatch)
+    tui_mod.run_tui("你好")
+
+    assert calls["run"] == {}                       # 没有 inline/inline_no_clear/mouse=False
+    assert calls["init"]["tui_mode"] == "fullscreen"
+    assert calls["init"]["initial_prompt"] == "你好"
+
+
+def test_run_tui_regular_keeps_inline_without_mouse(tmp_path, monkeypatch):
+    """`--tui-mode regular` = 旧行为:inline、不进备用屏,关掉鼠标上报。
+
+    关鼠标的理由没变:上报鼠标会让不支持 SGR(1006) 的终端退回旧式 X10 报文
+    (见 test_inline_driver_tolerates_x10_mouse_bytes),也让原生选择/复制可用。
+    """
+    _tui_env(tmp_path, monkeypatch)
+    from qi_agent import tui as tui_mod
+
+    calls = _spy_run_tui(monkeypatch)
+    tui_mod.run_tui("你好", tui_mode="regular")
+
+    assert calls["run"] == {"inline": True, "inline_no_clear": True, "mouse": False}
+    assert calls["init"]["tui_mode"] == "regular"
+
+
+def test_run_tui_mode_falls_back_to_settings(tmp_path, monkeypatch):
+    """没给 `--tui-mode` 时看 `settings.tuiMode`;写歪的值回落 qi 默认(fullscreen)。"""
+    _tui_env(tmp_path, monkeypatch)
+    settings = tmp_path / "home" / "settings.json"      # 用户级(load_settings 读的就是它)
+    settings.write_text('{"defaultProvider": "ollama", "defaultModel": "x",'
+                        ' "tuiMode": "regular"}', encoding="utf-8")
+    from qi_agent import tui as tui_mod
+
+    calls = _spy_run_tui(monkeypatch)
+    tui_mod.run_tui()
+    assert calls["init"]["tui_mode"] == "regular"
+
+    settings.write_text('{"defaultProvider": "ollama", "defaultModel": "x",'
+                        ' "tuiMode": "乱七八糟"}', encoding="utf-8")
+    calls = _spy_run_tui(monkeypatch)
+    tui_mod.run_tui()
+    assert calls["init"]["tui_mode"] == "fullscreen"    # 写歪 → 默认,不让界面起不来
+
+
+def _spy_run_tui(monkeypatch) -> dict[str, dict]:
+    """把 `QiTui` 换成只记账的替身(不启动真界面)。"""
+    from qi_agent import tui as tui_mod
+
+    calls: dict[str, dict] = {}
 
     class FakeApp:
         def __init__(self, **kwargs: object) -> None:
             calls["init"] = kwargs
+            self._fullscreen = kwargs.get("tui_mode") == "fullscreen"
 
         def run(self, **kwargs: object) -> None:
             calls["run"] = kwargs
@@ -222,8 +273,4 @@ def test_run_tui_runs_inline_without_mouse(tmp_path, monkeypatch):
     monkeypatch.setattr(tui_mod, "QiTui", FakeApp)
     monkeypatch.setattr(tui_mod, "resolve_theme", lambda *a, **k: None)
     monkeypatch.setattr(tui_mod, "_reset_mouse_reporting", lambda: None)
-
-    tui_mod.run_tui("你好")
-
-    assert calls["run"] == {"inline": True, "inline_no_clear": True, "mouse": False}
-    assert calls["init"]["initial_prompt"] == "你好"
+    return calls

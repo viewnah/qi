@@ -354,8 +354,16 @@ async def test_slash_thinking_sets_level(tmp_path, monkeypatch):
         notes: list[tuple[str, str]] = []
         app._note = lambda text, tone="dim": notes.append((text, tone))  # type: ignore[method-assign]
 
+        # 无参 = 开选择器(pi 的 `showThinkingSelector`),不再往 transcript 打印列表
         app._command("/thinking")
-        assert "当前: off" in notes[-1][0] and "xhigh" in notes[-1][0]
+        await pilot.pause(0.1)
+        selector = app.screen
+        assert isinstance(selector, tui_mod.ThinkingSelector)
+        shown = selector.rendered_text().plain
+        assert "✓ off" in shown and "xhigh" in shown       # `✓ ` 标当前
+        await pilot.press("escape")                          # 取消 → 级别不变
+        await pilot.pause(0.1)
+        assert app._thinking_level == "off"
 
         app._command("/thinking high")
         assert app._thinking_level == "high"

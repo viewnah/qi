@@ -20,11 +20,11 @@ import pytest
 from qi_agent import tui as tui_mod
 from qi_agent.config import ResolvedModel
 from qi_agent.models import AgentEvent
-from qi_agent.llm import LiteLLMClient
+from qi_agent.llm import THINKING_LEVELS, LiteLLMClient
 from qi_agent.session import SessionStore
 from qi_agent.settings import QiSettings
 from qi_agent.theme import load_palette
-from textual.widgets import Static
+from textual.widgets import Input, Static
 from qi_agent.tui import (
     MAX_EDITOR_ROWS,
     SPINNER_FRAMES,
@@ -262,6 +262,196 @@ def _tui_env(tmp_path, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_prompt_input_is_a_bare_prompt_line(tmp_path, monkeypatch):
+    """pi 的输入行 = `prompt + value`(`> ` 前缀,**没有框也没有底色**)。
+
+    pi-tui 的 `Input` 渲染就是 `this.prompt + value`,`prompt` 默认 `"> "`
+    (`components/input.js`)—— Textual 的 `Input` 自带 tall 边框,所以 qi 拼了一个
+    `> ` 前缀 + 无边框输入。
+    """
+    from textual.containers import Horizontal
+
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        assert app._rt is not None
+        app._rt.cfg = _fake_cfg()
+        app._command("/login alpha")
+        await pilot.pause(0.15)
+        screen = app.screen
+        assert isinstance(screen, tui_mod.PromptScreen)
+
+        row = screen.query_one(".input-row")
+        assert isinstance(row, Horizontal)
+        assert row.styles.height is not None and str(row.styles.height) == "1"   # 只占一行
+        assert str(row.query_one(".input-prompt").render()) == "> "
+
+        field = screen.query_one("#prompt-input", Input)
+        assert field.password is True                           # key 仍然遮罩
+        assert not field.styles.border_top[0]                    # 不再有框(Textual 用 "")
+        assert field.styles.background.is_transparent
+
+        await pilot.press("escape")
+        await pilot.pause(0.1)
+
+
+@pytest.mark.asyncio
+async def test_command_selector_uses_pi_editor_slot_shell(tmp_path, monkeypatch):
+    """命令选择器 = pi 的 `showSelector()` 形状:占编辑器那一格、全宽、上下 `─`、**不遮罩**。
+
+    pi 把 `editorContainer` 的内容换成选择器组件 —— 所以它跟编辑器同宽、底边贴在同一条线
+    (footer 之上),而**不是**居中浮层;组件本身没有底色(终端底色透上来)。
+    """
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        assert app._rt is not None
+        app._rt.cfg = _fake_cfg()
+        app._command("/model")
+        await pilot.pause(0.15)
+        screen = app.screen
+        assert isinstance(screen, tui_mod.ModelSelector)
+
+        # 不遮罩(pi 没有 modal backdrop)、不是居中浮层
+        assert screen.styles.background.is_transparent
+        assert str(screen.styles.align_vertical) == "bottom"
+
+        box = screen.query_one("#model-box")
+        assert box.styles.width is not None and box.styles.width.value == 1   # 全宽
+        assert box.styles.border_top[0] == "solid"                            # pi 的 DynamicBorder
+        assert box.styles.border_bottom[0] == "solid"
+        assert box.region.width == 100
+        # 底边贴在 footer 之上(占的就是编辑器那一格)
+        assert box.styles.margin.bottom == app._footer_rows()
+        assert box.region.bottom == 30 - app._footer_rows()
+
+        # 标题 accent + bold、键位提示 muted(pi 的颜色分工)
+        hint = screen.query_one("#model-hint")
+        assert hint.styles.color is not None
+        assert hint.styles.color.hex.lower() == PALETTE.hex("accent").lower()
+        assert hint.styles.text_style is not None and hint.styles.text_style.bold
+
+        # 行格式 = pi 的模型选择器:`→ ` + `  `/`✓ ` + id + muted `[provider]`
+        rows = screen.rendered_text().plain.split("\n")
+        assert rows[0].startswith("→   m1 [alpha]")
+
+        await pilot.press("escape")
+        await pilot.pause(0.1)
+
+
+@pytest.mark.asyncio
+async def test_thinking_selector_marks_current_and_default(tmp_path, monkeypatch):
+    """`/thinking` 无参:pi 的 `ThinkingSelectorComponent` 行(`✓ ` 当前 + 说明 + ` · default`)。"""
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        app._thinking_level = "low"
+        app._command("/thinking")
+        await pilot.pause(0.15)
+        screen = app.screen
+        assert isinstance(screen, tui_mod.ThinkingSelector)
+        rows = screen.rendered_text().plain.split("\n")
+        assert any(row.startswith("→ ✓ low") for row in rows)          # 当前档
+        assert any("· default" in row for row in rows)                 # 默认档标记
+        assert all(level in screen.rendered_text().plain for level in THINKING_LEVELS)
+
+        # 选一个:enter 真的把级别设下去
+        screen.highlighted = THINKING_LEVELS.index("high")
+        await pilot.press("enter")
+        await pilot.pause(0.15)
+        assert app._thinking_level == "high"
+    """默认 fullscreen:qi 拥有视口 —— transcript 拿 `1fr`,底部三件套钉在末尾。
+
+    这就是“滚轮只在 TUI 内移动”的前提:内容装不下时由 `#log` 自己在内滚动,
+    而不是把行推到终端回滚缓冲里。
+    """
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.1)
+        assert app._fullscreen is True
+        assert "regular" not in app.screen.classes       # 走 fullscreen 那套 CSS
+
+        log = app.query_one("#log")
+        assert str(log.styles.height) == "1fr"           # 占满剩余空间并**内部**滚动
+        assert log.styles.max_height is None             # 不塞 inline style 盖掉 1fr
+        assert log.region.height > 0
+
+        # 底部固定:footer 贴终端底边,editor 在它上方(布局没被 transcript 顶下去)
+        footer = app.query_one("#footer")
+        assert footer.region.bottom == 24
+        assert app.query_one("#editor").region.y < footer.region.y
+
+
+@pytest.mark.asyncio
+async def test_fullscreen_transcript_scrolls_without_stealing_focus(tmp_path, monkeypatch):
+    """滚轮滚的是 transcript(不是终端回滚缓冲);点 transcript 也不抢走编辑器的焦点。
+
+    这两条是 fullscreen “qi 拥有视口”的实际含义:焦点被抢走后用户点一下就打不了字。
+    """
+    from textual import events
+
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(80, 12)) as pilot:
+        await pilot.pause(0.1)
+        log = app.query_one("#log")
+        for index in range(40):
+            app._append(Static(f"line{index}"))
+        await pilot.pause(0.2)
+
+        assert log.max_scroll_y > 0                     # 内容装不下 → 由视口自己在滚
+        bottom = log.scroll_y
+        log.post_message(events.MouseScrollUp(log, 5, 5, 0, 1, 0, False, False, False))
+        await pilot.pause(0.15)
+        assert log.scroll_y < bottom                    # 滚轮真的滚了 transcript
+
+        await pilot.click("#log")
+        await pilot.pause(0.05)
+        focused = app.focused
+        assert focused is not None and focused.id == "editor"   # 焦点仍在编辑器
+
+
+@pytest.mark.asyncio
+async def test_regular_mode_is_still_inline(tmp_path, monkeypatch):
+    """`tuiMode: regular` = inline:Screen 不撑满,transcript 高度由 `_sync_log_height` 算。"""
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE, tui_mode="regular")
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.1)
+        assert app._fullscreen is False
+        assert "regular" in app.screen.classes           # 选到 inline 那套 CSS
+        assert app.query_one("#log").styles.max_height is not None   # 按终端高算出来的上限
+
+
+@pytest.mark.asyncio
 async def test_tui_renders_pi_blocks_and_footer(tmp_path, monkeypatch):
     _tui_env(tmp_path, monkeypatch)
     monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
@@ -342,19 +532,17 @@ async def test_tui_command_surface(tmp_path, monkeypatch):
         app._command("/copy")                # 还没有回答 → 底部状态行提示,不进 transcript
         assert app._status == "还没有回答可复制"
 
-        app._command("/login")
-        assert "用法" in notes[-1][0]
-        app._command("/login deepseek")
-        assert "qi auth login deepseek" in notes[-1][0]   # 密钥不进会话记录
+        app._command("/model")               # 无参 = 开选择器(pi 的 `showModelSelector`)
+        await pilot.pause(0.1)
+        assert isinstance(app.screen, tui_mod.ModelSelector)
+        await pilot.press("escape")
+        await pilot.pause(0.1)
 
-        app._command("/logout")
-        assert "用法" in notes[-1][0]
-
-        app._command("/model")               # 已实现(不再“计划中”)
-        assert "当前: " in notes[-1][0] and "切换: " in notes[-1][0]
-
-        app._command("/thinking")            # 已实现:列出当前级别 + 可选值
-        assert "当前: off" in notes[-1][0] and "xhigh" in notes[-1][0]
+        app._command("/thinking")            # 无参 = 开选择器(pi 的 `showThinkingSelector`)
+        await pilot.pause(0.1)
+        assert isinstance(app.screen, tui_mod.ThinkingSelector)
+        await pilot.press("escape")
+        await pilot.pause(0.1)
 
         app._command("/scoped-models")       # 已实现:弹出 Ctrl+P 轮换清单
         await pilot.pause(0.1)
@@ -608,18 +796,28 @@ async def test_model_keys_and_command(tmp_path, monkeypatch):
         app.action_cycle_model_back()                     # ctrl+shift+p
         assert (app._model.provider, app._model.model) == ("beta", "m3")
 
-        app._command("/model")                            # 列表 + 当前
-        assert "当前: beta/m3" in notes[-1][0]
         app._command("/model m2")                         # 只给模型名也能唯一匹配
         assert (app._model.provider, app._model.model) == ("alpha", "m2")
 
-        app.action_select_model()                         # ctrl+l → 模态选择器
+        # `/model` 无参、ctrl+l 走**同一个选择器**(pi 的 `showModelSelector`)
+        app._command("/model")
+        await pilot.pause(0.1)
+        selector = app.screen
+        assert isinstance(selector, tui_mod.ModelSelector)
+        shown = selector.rendered_text().plain
+        assert "✓ m2" in shown                           # `✓ ` 标当前(pi 的模型选择器)
+        assert "[alpha]" in shown and "[beta]" in shown  # provider 徽标(muted)
+        await pilot.press("down")                         # → beta/m3
+        await pilot.press("enter")
+        await pilot.pause(0.1)
+        assert (app._model.provider, app._model.model) == ("beta", "m3")
+
+        app.action_select_model()                         # ctrl+l
         await pilot.pause(0.1)
         assert isinstance(app.screen, tui_mod.ModelSelector)
-        from textual.widgets import OptionList as _OptionList
-
-        assert app.screen.query_one("#model-list", _OptionList).option_count == 3
         await pilot.press("escape")
+        await pilot.pause(0.1)
+        assert not isinstance(app.screen, tui_mod.ModelSelector)
         await pilot.pause(0.1)
         assert not isinstance(app.screen, tui_mod.ModelSelector)
 
@@ -679,7 +877,7 @@ async def test_editor_grows_and_transcript_yields_space(tmp_path, monkeypatch):
     monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
     monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
 
-    app = QiTui(palette=PALETTE)
+    app = QiTui(palette=PALETTE, tui_mode="regular")      # 高度算术只在 regular(inline) 里用
     async with app.run_test(size=(100, 24)) as pilot:
         await pilot.pause(0.1)
         editor = app.query_one("#editor", Editor)
@@ -1002,8 +1200,13 @@ async def test_completion_argument_candidates(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_completion_source_tag_rendered(tmp_path, monkeypatch):
-    """第三方/项目来源的候选带 `[u]/[p]/[t]` 标签(为 prompt template / 插件命令备)。"""
+async def test_completion_panel_matches_pi_style(tmp_path, monkeypatch):
+    """补全面板 = pi 的 SelectList 版式:在输入框**下面**、无底色、`→ ` 前缀 + muted 说明。
+
+    pi 的 `editor.js` 把 SelectList 画在 `renderBottomBorder()` 之后 —— 也就是下边框之下;
+    项内格式来自 `select-list.js`:`→ `/`  ` 前缀 + 标签列对齐 + `muted` 说明,
+    选中行用 `accent`(selectedText),**整行没有背景色**。
+    """
     monkeypatch.chdir(tmp_path)
     _tui_env(tmp_path, monkeypatch)
     monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
@@ -1012,18 +1215,42 @@ async def test_completion_source_tag_rendered(tmp_path, monkeypatch):
     app = QiTui(palette=PALETTE)
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause(0.1)
-        # 内置候选没有标签
-        await _editor_with(app, pilot, "/se")
-        panel = app.query_one("#completions", tui_mod.OptionList)
-        assert "[" not in str(panel.get_option_at_index(0).prompt)
+        # DOM 顺序:下边框之后才是面板(即输入框下方),不是上方
+        body = [child.id for child in app.query_one("#body").children]
+        assert body.index("completions") == body.index("border-bottom") + 1
+        assert body.index("completions") > body.index("editor")
 
-        # 带来源的候选(将来 prompt template / 插件命令):渲染成 `[p] tpl   说明`
+        await _editor_with(app, pilot, "/se")
+        panel = app.query_one("#completions", tui_mod.CompletionPanel)
+        assert "visible" in panel.classes
+        assert panel.styles.background.is_transparent        # pi 没有底色
+        # 屏幕位置:紧贴在编辑器下边框之下(即输入框**下方**),且在 footer 之上
+        assert panel.region.y == app.query_one("#border-bottom").region.bottom
+        assert panel.region.y < app.query_one("#footer").region.y
+
+        # 渲染:首行是选中项(`→ ` + accent),说明是 muted;没有 `[...]` 标签前缀
+        text = panel.rendered_text()
+        first = text.plain.split("\n")[0]
+        assert first.startswith("→ /se")
+        assert "[" not in first
+        # 选中行的「前缀 + 标签」用 accent(pi 的 selectedText),说明用 muted
+        accent = _span_style(text, 0)
+        assert accent.color is not None
+        assert accent.color.get_truecolor().hex == PALETTE.hex("accent")
+        muted_hex = PALETTE.hex("muted")
+        assert any(
+            (style := _span_style(text, index)).color is not None
+            and style.color.get_truecolor().hex == muted_hex
+            for index in range(len(text.spans))
+        )
+
+        # 带来源的候选:标签进**说明**(pi 的 `[p] 说明`),不是标签前缀
         app._completion_candidates = (  # type: ignore[method-assign]
             lambda: ([tui_mod.Candidate("/tpl", "tpl", "项目模板", "p")], 0, 0))
         app._refresh_completions()
-        panel = app.query_one("#completions", tui_mod.OptionList)
-        shown = str(panel.get_option_at_index(0).prompt)
-        assert "[p] tpl" in shown and "项目模板" in shown
+        shown = panel.rendered_text().plain
+        assert "tpl" in shown and "[p] 项目模板" in shown
+        assert "[p] tpl" not in shown
 
 
 # ── 输入历史(pi 的 editor.addToHistory / navigateHistory)──
@@ -1812,9 +2039,13 @@ async def test_ui_settings_applied_to_widgets(tmp_path, monkeypatch):
         assert editor.styles.padding.left == 0
         assert editor.styles.padding.top == 0               # 只动左右
 
-        await _editor_with(app, pilot, "/")                 # 面板 max-height 跟着设置走
-        max_height = app.query_one("#completions").styles.max_height
-        assert max_height is not None and max_height.value == 3
+        await _editor_with(app, pilot, "/")                 # 面板行数跟着设置走
+        panel = app.query_one("#completions", tui_mod.CompletionPanel)
+        assert panel._rows == 3                             # 最多 3 行候选项
+        lines = panel.rendered_text().plain.split("\n")
+        # pi 的 SelectList:`maxVisible` 个候选项之后再补一行 `(n/m)` 滚动提示
+        assert len([ln for ln in lines if not ln.strip().startswith("(")]) == 3
+        assert lines[-1].strip().startswith("(1/")
         candidates, _, _ = app._completion_candidates()
         assert len(candidates) > 3                          # 候选本身不裁,面板滚动
 
@@ -1837,6 +2068,165 @@ async def test_quiet_startup_hides_banner(tmp_path, monkeypatch):
         await pilot.pause(0.1)
         assert app._quiet_startup is True
         assert not app.query_one("#log").children           # 启动头(含 shortcuts 提示)没写
+
+
+# ── 凭证(/login · /logout)──────────────────────────────
+
+
+def _auth_path() -> Path:
+    """当前环境下的 auth.json(测试的 QI_AGENT_HOME 是临时目录,不会碰真的 ~/.qi)。"""
+    from qi_agent.auth import AuthStore
+
+    return AuthStore().path
+
+
+@pytest.mark.asyncio
+async def test_login_picks_provider_collects_key_and_saves(tmp_path, monkeypatch):
+    """`/login` 无参:provider 选择器 → 遮罩输入 → 写 auth.json;key **不进 transcript**。"""
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        assert app._rt is not None
+        app._rt.cfg = _fake_cfg()
+        notes = await _command_notes(app, monkeypatch)
+
+        app._command("/login")
+        await pilot.pause(0.05)
+        picker = app.screen
+        assert isinstance(picker, tui_mod.PickerScreen)          # 先选 provider
+        assert [value for value, _ in picker._options] == ["alpha", "beta"]
+        assert any("(无凭证)" in label for _, label in picker._options)
+        await pilot.press("enter")                                # 选 alpha
+        await pilot.pause(0.05)
+
+        assert isinstance(app.screen, tui_mod.PromptScreen)       # 再输 key
+        field = app.screen.query_one("#prompt-input", Input)
+        assert field.password is True                             # 遮罩(不进屏幕历史)
+        field.value = "sk-tui-secret"
+        await pilot.press("enter")
+        await pilot.pause(0.05)
+
+        assert _auth_path().is_file()
+        assert _auth_path().stat().st_mode & 0o777 == 0o600      # 0600
+        from qi_agent.auth import AuthStore
+        assert AuthStore().get("alpha") == "sk-tui-secret"
+        assert any("已保存 alpha" in text for text, _ in notes)
+        assert not any("sk-tui-secret" in text for text, _ in notes)   # 只进 auth store
+        assert app._model is not None                             # 有模型 → 不自动换
+        assert any("当前模型不变" in text for text, _ in notes)
+
+
+@pytest.mark.asyncio
+async def test_login_with_argument_skips_the_picker(tmp_path, monkeypatch):
+    """`/login <provider>` 直奔输入框(pi 的 `handleLoginCommand`)。"""
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        assert app._rt is not None
+        app._rt.cfg = _fake_cfg()
+        await _command_notes(app, monkeypatch)
+        app._command("/login beta")
+        await pilot.pause(0.05)
+        assert isinstance(app.screen, tui_mod.PromptScreen)       # 没有选择器那一步
+        app.screen.query_one("#prompt-input", Input).value = "sk-beta"
+        await pilot.press("enter")
+        await pilot.pause(0.05)
+        from qi_agent.auth import AuthStore
+        assert AuthStore().get("beta") == "sk-beta"
+
+
+@pytest.mark.asyncio
+async def test_login_adopts_a_model_when_none_is_usable(tmp_path, monkeypatch):
+    """当前**没模型**时登录后顺带选中该 provider 的第一个(pi 只在 previousModel 未知时选)。"""
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        assert app._rt is not None
+        app._rt.cfg = _fake_cfg()
+        app._model = None                       # 模型没解析出来(pi 的 isUnknownModel)
+        await _command_notes(app, monkeypatch)
+        app._command("/login alpha")
+        await pilot.pause(0.05)
+        app.screen.query_one("#prompt-input", Input).value = "sk-a"
+        await pilot.press("enter")
+        await pilot.pause(0.05)
+        assert app._model is not None and app._model.label == "alpha/m1"
+
+
+@pytest.mark.asyncio
+async def test_login_cancel_changes_nothing(tmp_path, monkeypatch):
+    """escape 取消选择器(或空白 key) → 不写盘、不报错。"""
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        assert app._rt is not None
+        app._rt.cfg = _fake_cfg()
+        notes = await _command_notes(app, monkeypatch)
+
+        app._command("/login")
+        await pilot.pause(0.05)
+        await pilot.press("escape")              # 取消选择器
+        await pilot.pause(0.05)
+        assert any("已取消登录" in text for text, _ in notes)
+        assert not _auth_path().is_file()        # 一个字节也没写
+
+        app._command("/login alpha")
+        await pilot.pause(0.05)
+        await pilot.press("enter")               # 空 key → 当取消
+        await pilot.pause(0.05)
+        assert not _auth_path().is_file()
+
+
+@pytest.mark.asyncio
+async def test_logout_removes_credentials(tmp_path, monkeypatch):
+    """`/logout` 无参给已存凭证选择器;`/logout <p>` 直接删。环境变量与 models.json 不受影响。"""
+    from qi_agent.auth import AuthStore
+
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+    AuthStore().set_key("alpha", "sk-alpha")
+    AuthStore().set_key("beta", "sk-beta")
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        notes = await _command_notes(app, monkeypatch)
+
+        app._command("/logout")
+        await pilot.pause(0.05)
+        picker = app.screen
+        assert isinstance(picker, tui_mod.PickerScreen)
+        assert [value for value, _ in picker._options] == ["alpha", "beta"]
+        await pilot.press("enter")
+        await pilot.pause(0.05)
+        assert AuthStore().get("alpha") is None and AuthStore().get("beta") == "sk-beta"
+        assert any("已删除 alpha" in text for text, _ in notes)
+
+        app._command("/logout gamma")
+        await pilot.pause(0.05)
+        assert any("没有已存凭证" in text for text, _ in notes)    # 不存在时不静默
 
 
 # ── /scoped-models(pi 的 Ctrl+P 轮换清单)─────────────────
@@ -2145,3 +2535,34 @@ async def test_tree_filters_search_and_labels(tmp_path, monkeypatch):
         await pilot.press("escape")
         await pilot.pause(0.05)
         assert not isinstance(app.screen, tui_mod.TreeSelector)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tone", ["dim", "text", "muted", "accent", "error", "warning",
+                                  "info", "warn", "success", "nonsense", ""])
+async def test_note_never_raises_on_any_tone(tmp_path, monkeypatch, tone):
+    """`_note` 的色调不认时回落 `dim`,不报 `ThemeError`。
+
+    补这条的原因:`/login` 里写过 `_note(..., "info")`,而调色板没有 `info` 这个键 ——
+    `_note` 又在 worker 里跑,于是整条登录流程在真终端上报 `ThemeError: 未知主题色: info`。
+    单测都在 monkeypatch `_note`,所以谁也没发现;这里**走真的 `_note`**。
+    """
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        before = len(app.query_one("#log").children)
+        app._note(f"tone={tone!r}", tone)          # 真 `_note` → `palette.hex`
+        await pilot.pause(0.05)
+        assert len(app.query_one("#log").children) > before
+
+
+def test_note_tones_cover_the_palette():
+    """`NOTE_TONES` 里的每个值都必须是真调色板键(改色调表时别把 `info` 那类漏回来)。"""
+    palette = load_palette("dark")
+    for tone, key in tui_mod.NOTE_TONES.items():
+        assert key in palette.colors, f"{tone} → {key} 不是调色板键"

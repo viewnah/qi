@@ -2,7 +2,8 @@
 
 版式与配色对齐 pi(`@earendil-works/pi-coding-agent` 的 `modes/interactive`):
 
-  · inline 渲染:不占全屏、不吞滚动历史(裸 `qi` / `qi "问题"` 的落点)
+  · 渲染模式:`fullscreen`(qi 默认,备用屏 + qi 拥有视口,滚轮只滚 transcript)/
+    `regular`(pi 默认的 inline:不占全屏、滚动交给终端)
   · 启动 banner = `qi vX` + 紧凑快捷键行 + 引导语 + 资源清单([Skills]/[Extensions])
   · 用户消息 = userMessageBg 底色块(padding 1,1),助手 = 无底色 markdown(padding 0,1)
   · 思考 = 灰色斜体;工具调用 = tool{Pending,Success,Error}Bg 底色块,标题 `read <path>`
@@ -39,24 +40,25 @@ from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult, ScreenStackError
 from textual.binding import Binding
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.message import Message
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 from textual.widgets import Input, OptionList, SelectionList, Static, TextArea
 from textual.widgets.option_list import Option
 from textual.worker import Worker, WorkerState
 
 from .abort import AbortSignal
-from .auth import AuthStore
+from .auth import AuthStore, resolve_key
 from .config import ConfigError, ResolvedModel, resolve_default_model, resolve_model
-from .llm import THINKING_LEVELS, LiteLLMClient, ThinkingLLMClient, normalize_thinking_level
+from .llm import (DEFAULT_THINKING_LEVEL, THINKING_LEVELS, LiteLLMClient, ThinkingLLMClient,
+                  normalize_thinking_level)
 from .loader import LoadError
 from .registry import ToolCatalog
 from .runtime import MAX_TOOL_ENTRY_CHARS, QiRuntime
 from .session import Session, SessionStore
-from .settings import (SettingsError, double_escape_action, next_choice,
-                       parse_value, set_value)
+from .settings import (DEFAULT_TUI_MODE, TUI_MODES, SettingsError, double_escape_action,
+                       next_choice, parse_value, set_value, tui_mode as resolve_tui_mode)
 from .theme import (
     Palette,
     format_cwd_line,
@@ -108,8 +110,8 @@ TUI_COMMANDS: dict[str, str] = {
     "/import": "从 JSONL 导入会话",
     "/reload": "重载 agents/插件/配置",
     "/copy": "复制最后一条回答",
-    "/login": "登录指引(密钥不进会话)",
-    "/logout": "删除已存凭证",
+    "/login": "登录 provider(写 auth.json)",
+    "/logout": "退出登录(删已存凭证)",
     "/changelog": "显示 CHANGELOG.md",
     "/compact": "压缩上下文(摘要旧消息)",
 }
@@ -128,8 +130,8 @@ DOUBLE_ESCAPE_WINDOW = 0.5
 class Candidate(NamedTuple):
     """补全候选(对齐 pi 的 AutocompleteItem:value/label/description + 来源标签)。
 
-    `source` 为空 = 内置;非空时按 pi 的写法在补全面板里前置 `[u]/[p]/[t]`
-    (user / project / third-party)—— 将来 prompt template 与插件命令带着它进来。
+    `source` 为空 = 内置;非空时按 pi 的写法拼在**说明前面**(`[u] 说明`,u/p/t =
+    user / project / third-party)—— pi 的 `prefixAutocompleteDescription` 就是这个口径。
     """
 
     value: str          # 写回编辑器的文本
@@ -354,6 +356,18 @@ PREVIEW_LINES = {"read": 10, "write": 10, "grep": 15, "ls": 20, "find": 20}
 # ── 渲染小工具 ──────────────────────────────────────────
 
 
+#: `_note` 收的色调 → 调色板键。pi 的 `notify` 等级也在里面(`info` = 普通正文)。
+#: 不在这里的色调**一律当 `dim`** —— `_note` 只是个提示块,跑在 worker / 命令处理里,
+#: 不该为一个配色词把流程打断。(补这段的原因:代码里写过 `_note(..., "info")`,
+#: 而调色板没有 `info` → `ThemeError`,登录等流程在真终端上直接挂;单测都 monkeypatch
+#: 了 `_note`,所以集体漏掉。)
+NOTE_TONES: dict[str, str] = {
+    "dim": "dim", "text": "text", "muted": "muted", "accent": "accent",
+    "error": "error", "warning": "warning", "warn": "warning",
+    "info": "text", "success": "success", "border": "border",
+}
+
+
 def _shorten(value: str, home: str | None = None) -> str:
     home = home or str(Path.home())
     return "~" + value[len(home):] if home and value.startswith(home) else value
@@ -522,6 +536,166 @@ class TuiRenderer:
 
 
 # ── 消息块 ──────────────────────────────────────────────
+
+
+class Transcript(VerticalScroll):
+    """transcript 视口(fullscreen 下用 `1fr` 在**内部**滚动)。
+
+    `can_focus = False`:fullscreen 开着鼠标上报,点一下 transcript 不该把焦点从编辑器抢走
+    (抢走了用户点完就没法打字)。滚轮不靠焦点 —— Textual 把 wheel 派给指针下的 scrollable。
+    """
+
+    can_focus = False
+
+
+#: pi `select-list.js` 的两个阈值:说明太窄就不画、行宽不够也不画
+PI_DESCRIPTION_MIN_WIDTH = 10
+PI_DESCRIPTION_WIDTH_GATE = 40
+#: `/` 命令的标签列宽范围(pi `SLASH_COMMAND_SELECT_LIST_LAYOUT`:12..32);其余固定 32
+PI_SLASH_MIN_COLUMN = 12
+PI_SLASH_MAX_COLUMN = 32
+PI_DEFAULT_COLUMN = 32
+
+
+def pi_select_text(items: list[Candidate], index: int, width: int, limit: int,
+                   palette: Palette, *, column: int | None = None) -> Text:
+    """按 pi 的 `SelectList` 版式渲染一列选项(箭头 + 对齐 + muted 说明 + `(n/m)`)。
+
+    pi 两个地方用同一套视觉:补全面板(`editor.js` 里的 SelectList)与命令选择器
+    (`showSelector()` 放进编辑器那一格的组件)。所以渲染只写这一份。
+
+    * `→ ` 选中项前缀 + `accent`,未选中 `  ` + `text`;
+    * 说明用 `muted`;来源标签(`[u]/[p]/[t]`)拼在**说明**里(pi 的口径);
+    * 选项装不下时尾部补 `  (n/total)`(n = 选中项序号,同 pi);
+    * `column=None` = 说明紧跟正文一个空格(pi 的模型选择器就把 `[provider]` 放在模型名后);
+      给了数字 = 正文按该列宽对齐,放不下就不画说明(pi 的两个阈值)。
+    """
+    if not items:
+        return Text("")
+    limit = max(1, limit)
+    span = min(limit, len(items))
+    index = max(0, min(index, len(items) - 1))
+    start = max(0, min(index - span // 2, len(items) - span))
+    end = start + span
+    muted = Style(color=palette.hex("muted"))
+    accent = Style(color=palette.hex("accent"))
+    plain = Style(color=palette.hex("text"))
+    out = Text()
+    for position in range(start, end):
+        if out.plain:
+            out.append("\n")
+        item = items[position]
+        selected = position == index
+        head = ("→ " if selected else "  ") + item.label
+        description = item.detail
+        if item.source:
+            description = (f"[{item.source}] {description}" if description
+                           else f"[{item.source}]")
+        head_width = Text(head).cell_len
+        room = width - head_width - 2
+        # pi 的两个门槛:行宽 > 40 才带说明,剩下的位置 > 10 才画得下
+        fits = bool(description) and width > PI_DESCRIPTION_WIDTH_GATE \
+            and room > PI_DESCRIPTION_MIN_WIDTH
+        if fits:
+            gap = " " if column is None else " " * max(1, column - head_width)
+            out.append(head, style=accent if selected else plain)
+            out.append(gap + description, style=muted)
+        else:
+            out.append(head, style=accent if selected else plain)
+    if end - start < len(items):
+        out.append("\n")
+        out.append(f"  ({index + 1}/{len(items)})", style=muted)
+    return out
+
+
+class CompletionPanel(Static):
+    """`/` 与 `@` 的补全面板(pi `SelectList` 同款版式)。
+
+    pi 把它画在编辑器**下边框之下**:选中行 `→ ` 前缀 + accent,标签按列对齐,说明用
+    muted(来源标签 `[u]/[p]/[t]` 写在说明里),**没有底色/边框/滚动条**。所以这里不用
+    Textual 的 `OptionList` —— 它自带 `$surface` 底与整行高亮底,与 pi 不是一个观感。
+
+    对外保留 `OptionList` 的那几个接口(`clear_options` / `option_count` / `highlighted`),
+    调用点不必知道换了实现。
+    """
+
+    DEFAULT_CSS = """
+    CompletionPanel { display: none; width: 1fr; height: auto; padding: 0 1;
+                      background: transparent; }
+    CompletionPanel.visible { display: block; }
+    """
+
+    #: 行数上限(由 `autocompleteMaxVisible` 播下来)
+
+    def __init__(self, palette: Palette, id: str | None = None) -> None:
+        super().__init__("", id=id)
+        self._p = palette
+        self._items: list[Candidate] = []
+        self._index = 0
+        self._rows = COMPLETION_ROWS
+        self._text = Text("")
+
+    def rendered_text(self) -> Text:
+        """面板当前画出来的文本(诊断/测试用;真正落屏走 `_paint()` → `Static.update`)。"""
+        return self._text
+
+    # -- OptionList 同形接口 -------------------------------------------
+    def clear_options(self) -> None:
+        self._items = []
+        self._index = 0
+        self._text = Text("")
+        self.update("")
+
+    def set_items(self, items: list[Candidate], rows: int) -> None:
+        self._items = list(items)
+        self._rows = max(1, _as_int(rows) or COMPLETION_ROWS)
+        self._index = 0
+        self._paint()
+
+    @property
+    def option_count(self) -> int:
+        return len(self._items)
+
+    @property
+    def highlighted(self) -> int:
+        return self._index
+
+    @highlighted.setter
+    def highlighted(self, index: int) -> None:
+        last = max(0, len(self._items) - 1)
+        try:
+            wanted = int(index)
+        except (TypeError, ValueError):
+            wanted = 0
+        self._index = max(0, min(wanted, last))
+        self._paint()
+
+    def set_padding(self, padding_x: int) -> None:
+        self.styles.padding = (0, padding_x)
+        self._paint()
+
+    def on_resize(self, _event: object = None) -> None:
+        self._paint()
+
+    # -- 渲染 -----------------------------------------------------------
+    def _column(self) -> int:
+        """标签列宽:命令按内容伸缩(12..32),其余固定 32(pi 的两个 layout)。"""
+        if not self._items or not self._items[0].value.startswith("/"):
+            return PI_DEFAULT_COLUMN
+        widest = max((Text(c.label).cell_len for c in self._items), default=0) + 2
+        return max(PI_SLASH_MIN_COLUMN, min(PI_SLASH_MAX_COLUMN, widest))
+
+    def _paint(self) -> None:
+        if not self._items:
+            self.update("")
+            self._text = Text("")
+            return
+        width = self.content_size.width or (self.size.width - 2)
+        if width <= 1:
+            width = 80
+        self._text = pi_select_text(self._items, self._index, width, self._rows,
+                                   self._p, column=self._column())
+        self.update(self._text)
 
 
 class Blank(Static):
@@ -1120,14 +1294,112 @@ class Editor(TextArea):
         self.load_text("")
 
 
-class PromptScreen(ModalScreen[str | None]):
-    """一行文本输入(`ctx.ui.input`)。enter 提交,escape 取消(→ None)。
+class EditorSlotPanel(ModalScreen[Any]):
+    """pi 那种“占编辑器那一格”的选择器 / 输入面板。
 
-    外壳 id 故意复用选择器的 `#model-box` / `#model-hint` —— 模态的视觉（底色、边距、
-    提示行位置）已经在 CSS 里定好了,新开一套迟早会和它们漂开。
+    pi 的 `showSelector()`(`interactive-mode.js`)是把 `editorContainer` 的内容**换掉** ——
+    选择器与编辑器同宽、贴在同一条底线上(上面 transcript 不动、下面 footer 不动),组件形状是
+    「上下 `DynamicBorder` + accent bold 标题 + `→ ` 列表 + 键位提示」,**没有底色、没有遮罩**。
+
+    Textual 这边仍用 `ModalScreen` 的机制(`push_screen` + 回调 / `await_screen`),但把外壳
+    做成同一形状:全宽、底部对齐、上下 `─`、底色取探测到的终端底色(看不出“填色”)、backdrop
+    透明。底边到屏幕底留出 footer 的**实际行数**(2~3,见 `_footer_rows`),这样它占的正好是
+    编辑器那一格。子类只给 `TITLE` / `HINTS` 与 `compose_body()`。
     """
 
-    BINDINGS = [("escape", "dismiss(None)", "取消")]
+    BINDINGS = [
+        Binding("escape", "cancel", "取消"),
+        Binding("up", "move(-1)", "上一个", show=False),
+        Binding("down", "move(1)", "下一个", show=False),
+        # pi 的 SelectList 也认 j/k;没 priority,所以过滤框里敲 j 仍然是打字
+        Binding("k", "move(-1)", "上一个", show=False),
+        Binding("j", "move(1)", "下一个", show=False),
+    ]
+
+    #: 面板标题(注意别叫 `TITLE` —— 那是 Textual `Screen.TITLE`)
+    PANEL_TITLE = ""
+    HINTS = "↑↓ 选择 · enter 确认 · escape 取消"
+    BOX_ID = "model-box"
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id=self.BOX_ID):
+            yield Static(self.title_text(), id="model-hint")
+            yield Static("", classes="panel-gap")
+            yield from self.compose_body()
+            yield Static("", classes="panel-gap")
+            yield Static(self.hints_text(), id="panel-hints")
+
+    # -- 子类钩子 -------------------------------------------------------
+    def title_text(self) -> str:
+        return self.PANEL_TITLE
+
+    def hints_text(self) -> str:
+        return self.HINTS
+
+    def compose_body(self) -> ComposeResult:
+        yield from ()
+
+    def on_panel_ready(self) -> None:
+        """挂载后的钩子(设焦点、画列表)。"""
+
+    def action_move(self, step: int) -> None:
+        """↑↓ / j / k:默认没有可移动的列表,子类覆盖。"""
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+    # -- 外壳 -----------------------------------------------------------
+    def on_mount(self) -> None:
+        self._fit_above_footer()
+        self.on_panel_ready()
+
+    def _fit_above_footer(self) -> None:
+        """把面板底边对齐到 footer 之上(pi 的选择器占的就是编辑器那一格)。"""
+        offset = 0
+        hook = getattr(self.app, "_editor_slot_offset", None)
+        if callable(hook):
+            try:
+                offset = max(0, int(cast(Any, hook)()))
+            except (TypeError, ValueError, NoMatches):
+                offset = 0
+        try:
+            box = self.query_one(f"#{self.BOX_ID}")
+        except NoMatches:      # pragma: no cover - 挂载竞态
+            return
+        box.styles.margin = (0, 0, offset, 0)
+
+    def palette(self) -> Palette:
+        """当前调色板 —— 屏幕自己不持有,`QiTui` 是唯一持有者。"""
+        return getattr(self.app, "_palette")
+
+    def body_width(self) -> int:
+        """正文可用宽度(给按列对齐的渲染用)。"""
+        try:
+            node = self.query_one(f"#{self.BOX_ID}")
+        except NoMatches:      # pragma: no cover
+            return 80
+        width = node.content_size.width or (node.size.width - 2)
+        return width if width > 1 else 80
+
+
+def prompt_row(field_id: str, *, placeholder: str = "", password: bool = False,
+               value: str = "") -> Horizontal:
+    """pi 的输入行:`> ` 前缀 + 无边框输入。
+
+    pi-tui 的 `Input` 渲染成 `this.prompt + value`,`prompt` 默认 `"> "`(见
+    `components/input.js`)—— 没有外框、没有底色。Textual 的 `Input` 自带 tall 边框,
+    所以这里拼一个 `Horizontal` 并把边框/底色/内边距全去掉。
+    """
+    return Horizontal(
+        Static("> ", classes="input-prompt"),
+        Input(value=value, placeholder=placeholder, password=password, id=field_id),
+        classes="input-row")
+
+
+class PromptScreen(EditorSlotPanel):
+    """一行文本输入(`ctx.ui.input`)。enter 提交,escape 取消(→ None)。"""
+
+    HINTS = "enter 提交 · escape 取消"
 
     def __init__(self, title: str, default: str = "", secret: bool = False) -> None:
         super().__init__()
@@ -1135,123 +1407,234 @@ class PromptScreen(ModalScreen[str | None]):
         self._default = default
         self._secret = secret
 
-    def compose(self) -> ComposeResult:
-        with Vertical(id="model-box"):
-            yield Static(self._title, id="model-hint")
-            yield Input(value=self._default, password=self._secret, id="prompt-input")
+    def title_text(self) -> str:
+        return self._title
 
-    def on_mount(self) -> None:
+    def compose_body(self) -> ComposeResult:
+        yield prompt_row("prompt-input", password=self._secret, value=self._default)
+
+    def on_panel_ready(self) -> None:
         self.query_one("#prompt-input", Input).focus()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         self.dismiss(event.value)
 
 
-class EditorScreen(ModalScreen[str | None]):
+class EditorScreen(EditorSlotPanel):
     """多行编辑器(`ctx.ui.editor`)。ctrl+s 保存,escape 取消(→ None)。"""
 
-    BINDINGS = [("escape", "dismiss(None)", "取消"),
-                ("ctrl+s", "save", "保存")]
+    HINTS = "ctrl+s 保存 · escape 取消"
 
     def __init__(self, title: str, prefill: str = "") -> None:
         super().__init__()
         self._title = title
         self._prefill = prefill
 
-    def compose(self) -> ComposeResult:
-        with Vertical(id="model-box"):
-            yield Static(self._title, id="model-hint")
-            yield TextArea(self._prefill, id="editor-modal")
+    def title_text(self) -> str:
+        return self._title
 
-    def on_mount(self) -> None:
+    def compose_body(self) -> ComposeResult:
+        yield TextArea(self._prefill, id="editor-modal")
+
+    def on_panel_ready(self) -> None:
         self.query_one("#editor-modal", TextArea).focus()
 
     def action_save(self) -> None:
         self.dismiss(self.query_one("#editor-modal", TextArea).text)
 
+    BINDINGS = [*EditorSlotPanel.BINDINGS, Binding("ctrl+s", "save", "保存")]
 
-class CustomScreen(ModalScreen[Any]):
+
+class CustomScreen(EditorSlotPanel):
     """`ctx.ui.custom` 的模态外壳:把扩展给的组件放进去,等它调 `done(value)` 或 escape。
 
     `box` 是一个可变单槽 —— 因为 `done` 回调必须在组件**造出来之前**就存在
     (pi 的 factory 拿到的就是 `done`),而组件又是 `compose` 时才取的。
     """
 
-    BINDINGS = [("escape", "dismiss(None)", "关闭")]
+    HINTS = "escape 关闭"
 
     def __init__(self, box: dict, title: str | None = None) -> None:
         super().__init__()
         self._box = box
         self._title = title
 
-    def compose(self) -> ComposeResult:
-        with Vertical(id="model-box"):
-            if self._title:
-                yield Static(self._title, id="model-hint")
-            widget = self._box.get("widget")
-            if widget is not None:
-                yield widget
+    def title_text(self) -> str:
+        return self._title or ""
+
+    def compose_body(self) -> ComposeResult:
+        widget = self._box.get("widget")
+        if widget is not None:
+            yield widget
 
 
-class PickerScreen(ModalScreen[str | None]):
-    """通用选择器(模型 / 会话树 / fork 点共用同一套模态外壳)。
+class PickerScreen(EditorSlotPanel):
+    """通用选择器(模型 / 思考级别 / 登录 / fork 点共用)。
 
-    返回选中的 `value`(entry id / `provider\x00model`);取消返回 None。
+    选项按 pi 的 `SelectList` 版式渲染(`→ ` + accent + muted 说明,无底色无边框)——
+    不用 Textual 的 `OptionList`,因为它自带 `$surface` 底与整行高亮底。
+    返回选中项的 `value`;取消返回 None。
     """
 
-    BINDINGS = [("escape", "dismiss(None)", "取消")]
-
     def __init__(self, title: str, options: list[tuple[str, str]],
-                 current: str | None = None) -> None:
+                 current: str | None = None, *, hints: str | None = None) -> None:
         super().__init__()
         self._title = title
         self._options = options
         self._current = current
+        self._hints = hints
+        self._index = self._current_index()
+        self._list = Static("", id="model-list")
+        self._text = Text("")
 
-    def compose(self) -> ComposeResult:
-        items = []
-        for value, label in self._options:
-            if self._current is not None and value == self._current:
-                label += "    ← 当前"
-            items.append(Option(label, id=value))
-        with Vertical(id="model-box"):
-            yield Static(self._title, id="model-hint")
-            yield OptionList(*items, id="model-list")
+    def rendered_text(self) -> Text:
+        """当前渲染出来的列表(诊断/测试用)。"""
+        return self._text
 
-    def on_mount(self) -> None:
-        listing = self.query_one("#model-list", OptionList)
-        listing.focus()
-        if self._current is not None:
-            for index, (value, _) in enumerate(self._options):
-                if value == self._current:
-                    listing.highlighted = index
-                    break
+    @property
+    def highlighted(self) -> int:
+        """当前高亮项(与 `OptionList` / `CompletionPanel` 同形,便于调用点与测试)。"""
+        return self._index
 
-    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        self.dismiss(str(event.option.id))
+    @highlighted.setter
+    def highlighted(self, index: int) -> None:
+        if not self._options:
+            return
+        try:                     # 与 `CompletionPanel` 同口径:怪值当 0,不抛
+            wanted = int(index)
+        except (TypeError, ValueError):
+            wanted = 0
+        self._index = max(0, min(wanted, len(self._options) - 1))
+        self._paint()
+
+    # -- 子类钩子 -------------------------------------------------------
+    def title_text(self) -> str:
+        return self._title
+
+    def hints_text(self) -> str:
+        return self._hints or super().hints_text()
+
+    def rows(self) -> list[Candidate]:
+        """要渲染的行;子类覆盖它以加 `✓ ` 当前标记 / muted 说明。"""
+        return [Candidate(value, label) for value, label in self._options]
+
+    def column(self) -> int | None:
+        """说明列宽(pi 的两个 layout):`None` = 紧跟正文(pi 的模型选择器就是这样)。"""
+        return None
+
+    # -- 渲染 / 键位 -----------------------------------------------------
+    def compose_body(self) -> ComposeResult:
+        yield self._list
+
+    def on_panel_ready(self) -> None:
+        self._paint()
+
+    def on_resize(self) -> None:
+        self._paint()
+
+    def _current_index(self) -> int:
+        if self._current is None:
+            return 0
+        for index, (value, _) in enumerate(self._options):
+            if value == self._current:
+                return index
+        return 0
+
+    def _paint(self) -> None:
+        self._text = pi_select_text(self.rows(), self._index, self.body_width(),
+                                    len(self._options), self.palette(),
+                                    column=self.column())
+        self._list.update(self._text)
+
+    def action_move(self, step: int) -> None:
+        if not self._options:
+            return
+        self._index = (self._index + step) % len(self._options)
+        self._paint()
+
+    def action_confirm(self) -> None:
+        if self._options:
+            self.select(self._options[min(self._index, len(self._options) - 1)][0])
+
+    def select(self, value: str) -> None:
+        """确认某个选项(子类可覆盖以做额外记账)。"""
+        self.dismiss(value)
+
+    BINDINGS = [*EditorSlotPanel.BINDINGS, Binding("enter", "confirm", "确认", show=False)]
 
 
 class ModelSelector(PickerScreen):
-    """ctrl+l / `/model`:选模型(对齐 pi 的模型选择器,只列 models.json 里的)。"""
+    """ctrl+l / `/model`:选模型(行格式照 pi 的模型选择器)。
 
-    def __init__(self, options: list[tuple[str, str, bool]]) -> None:
-        entries: list[tuple[str, str]] = []
-        current: str | None = None
-        for provider, model, is_current in options:
-            value = f"{provider}\x00{model}"
-            entries.append((value, f"{provider}/{model}"))
-            if is_current:
-                current = value
-        super().__init__("选择模型(↑↓ 选择 · enter 确认 · escape 取消)", entries,
-                         current=current)
+    pi 的行是 `→ ` + `✓ `(当前)+ 模型 id + muted `[provider]` + ` · default`
+    (`model-selector.js` 的 `renderList`)。
+    """
+
+    def __init__(self, options: list[tuple[str, str, bool]], *,
+                 default: tuple[str, str] | None = None) -> None:
+        self._entries = [(f"{provider}\x00{model}", provider, model, is_current)
+                         for provider, model, is_current in options]
+        self._default = default
+        current = next((value for value, _, _, is_current in self._entries if is_current), None)
+        super().__init__("选择模型", [(value, model) for value, _, model, _ in self._entries],
+                         current=current,
+                         hints="↑↓ 选择 · enter 确认 · escape 取消 · 轮换清单 /scoped-models")
+
+    def rows(self) -> list[Candidate]:
+        out: list[Candidate] = []
+        for value, provider, model, is_current in self._entries:
+            detail = f"[{provider}]"
+            if self._default and (provider, model) == self._default:
+                detail += " · default"
+            out.append(Candidate(value, f"{'✓ ' if is_current else '  '}{model}", detail))
+        return out
 
 
-class ScopedModelsSelector(ModalScreen[list[str] | None]):
+class ThinkingSelector(PickerScreen):
+    """`/thinking` 无参:挑思考级别(pi 的 `ThinkingSelectorComponent`)。
+
+    pi 的项是 `✓ `(当前)+ 级别 + 说明(`default` 那档再缀 ` · default`)。
+    """
+
+    #: 各级别一句话说明(pi 的 `LEVEL_DESCRIPTIONS`,换成中文)
+    DESCRIPTIONS = {
+        "off": "不请求思考",
+        "minimal": "最少思考",
+        "low": "轻量思考",
+        "medium": "均衡(pi 的默认档)",
+        "high": "更多思考",
+        "xhigh": "很多思考(provider 侧)",
+        "max": "最多思考",
+    }
+
+    def __init__(self, current: str, default: str | None = None) -> None:
+        self._default = default
+        super().__init__("思考级别", [(level, level) for level in THINKING_LEVELS],
+                         current=current,
+                         hints="↑↓ 选择 · enter 确认 · shift+tab 轮转 · escape 取消")
+
+    def column(self) -> int | None:
+        return PI_DEFAULT_COLUMN
+
+    def rows(self) -> list[Candidate]:
+        out: list[Candidate] = []
+        for level in THINKING_LEVELS:
+            description = self.DESCRIPTIONS.get(level, "")
+            if level == self._default:
+                description = f"{description} · default" if description else "default"
+            out.append(Candidate(level, f"{'✓ ' if level == self._current else '  '}{level}",
+                                 description))
+        return out
+
+class ScopedModelsSelector(EditorSlotPanel):
     """`/scoped-models`:挑 Ctrl+P 轮换哪些模型(对齐 pi 的 ScopedModelsSelectorComponent)。
 
     返回选中的 `provider/model` 列表;取消返回 None。**全选 = 空列表** = 轮换全部,
     与 pi 的「scopedModels 为空则用全部」语义一致。
     """
+
+    PANEL_TITLE = "Ctrl+P 轮换哪些模型"
+    HINTS = "space 勾选 · ctrl+s 保存 · ctrl+a 全选 · ctrl+x 全不选 · ctrl+p 切换 provider · escape 取消"
 
     BINDINGS = [
         ("escape", "dismiss(None)", "取消"),
@@ -1266,19 +1649,15 @@ class ScopedModelsSelector(ModalScreen[list[str] | None]):
         self._options = options          # (provider/model, provider)
         self._enabled = enabled
 
-    def compose(self) -> ComposeResult:
+    def compose_body(self) -> ComposeResult:
         from textual.widgets.selection_list import Selection
 
         known = {value for value, _ in self._options}
         chosen = {v for v in self._enabled if v in known} or known   # 空 = 全部
         selections = [Selection(value, value, value in chosen) for value, _ in self._options]
-        with Vertical(id="model-box"):
-            yield Static("Ctrl+P 轮换哪些模型(space 勾选 · ctrl+s 保存 · ctrl+a 全选 · "
-                         "ctrl+x 全不选 · ctrl+p 切换 provider · escape 取消)",
-                         id="model-hint")
-            yield SelectionList[str](*selections, id="scoped-list")
+        yield SelectionList[str](*selections, id="scoped-list")
 
-    def on_mount(self) -> None:
+    def on_panel_ready(self) -> None:
         self.query_one("#scoped-list", SelectionList).focus()
 
     def _listing(self) -> SelectionList[str]:
@@ -1312,14 +1691,17 @@ class ScopedModelsSelector(ModalScreen[list[str] | None]):
                 listing.select(value)
 
 
-class SessionSelector(ModalScreen[str | None]):
+class SessionSelector(EditorSlotPanel):
     """`/resume` 的会话选择器(对齐 pi 的会话选择器键位)。
+
+    外壳与其它选择器同款(`EditorSlotPanel`):贴底、全宽、上下 `─`、footer 之上。
 
     返回选中的会话 id;取消返回 None。重命名与删除直接作用在 store 上(由 App 传进来的
     回调负责),选择器只负责交互与刷新 —— 所以它在改完之后重新 `provider()` 取一遍列表。
     """
 
     SORTS = ("recent", "oldest", "name")
+    BOX_ID = "session-box"
     BINDINGS = [
         Binding("escape", "cancel", "取消"),
         Binding("ctrl+n", "toggle_named", "只看命名会话", priority=True, show=False),
@@ -1340,19 +1722,25 @@ class SessionSelector(ModalScreen[str | None]):
         self._show_path = False
         self._renaming: str | None = None
 
-    def compose(self) -> ComposeResult:
-        with Vertical(id="session-box"):
-            yield Static(self._hint(), id="session-hint")
-            yield Input(placeholder="输入以过滤(标题 / id)", id="session-filter")
-            yield OptionList(id="session-list")
+    PANEL_TITLE = "恢复会话"
+    HINTS = ("↑↓ 选择 · enter 恢复 · ctrl+n 只看命名 · ctrl+s 排序 · "
+             "ctrl+p 路径 · ctrl+r 重命名 · ctrl+d 删除 · escape 取消")
 
-    def on_mount(self) -> None:
+    def title_text(self) -> str:
+        if self._renaming is not None:
+            return "重命名:输入新名字后 enter 保存,escape 取消"
+        return self.PANEL_TITLE
+
+    def _refresh_title(self) -> None:
+        self.query_one("#model-hint", Static).update(self.title_text())
+
+    def compose_body(self) -> ComposeResult:
+        yield prompt_row("session-filter", placeholder="输入以过滤(标题 / id)")
+        yield OptionList(id="session-list")
+
+    def on_panel_ready(self) -> None:
         self.query_one("#session-filter", Input).focus()
         self._refresh()
-
-    def _hint(self) -> str:
-        return ("↑↓ 选择 · enter 恢复 · ctrl+n 只看命名 · ctrl+s 排序 · "
-                "ctrl+p 路径 · ctrl+r 重命名 · ctrl+d 删除 · escape 取消")
 
     # -- 列表 ---------------------------------------------------------
     def _visible(self) -> list[Session]:
@@ -1426,8 +1814,7 @@ class SessionSelector(ModalScreen[str | None]):
         box = self._input()
         box.value = title or ""
         box.cursor_position = len(box.value)
-        self.query_one("#session-hint", Static).update(
-            "重命名:输入新名字后 enter 保存,escape 取消")
+        self._refresh_title()
 
     def action_delete(self) -> None:
         session_id = self._highlighted_id()
@@ -1439,7 +1826,7 @@ class SessionSelector(ModalScreen[str | None]):
     def _end_rename(self) -> None:
         self._renaming = None
         self._input().value = ""
-        self.query_one("#session-hint", Static).update(self._hint())
+        self._refresh_title()
         self._refresh()
 
     def _commit_rename(self) -> None:
@@ -1499,13 +1886,14 @@ def entry_passes_tree_filter(entry: dict, mode: str) -> bool:
     return kind != "state"           # default:隐藏状态类(pi 的 settings 类 entry)
 
 
-class TreeSelector(ModalScreen[str | None]):
+class TreeSelector(EditorSlotPanel):
     """`/tree` 的会话树选择器(对齐 pi 的 tree filter 与标签键位)。
 
     返回要跳到的 entry id;取消返回 None。标签直接在环上改(回调负责落盘),
     改完重新 `provider()` 取一遍行。
     """
 
+    BOX_ID = "session-box"
     BINDINGS = [
         Binding("escape", "cancel", "取消"),
         Binding("ctrl+d", "set_filter('default')", "默认视图", priority=True, show=False),
@@ -1528,13 +1916,17 @@ class TreeSelector(ModalScreen[str | None]):
         self._show_label_time = False
         self._editing: str | None = None
 
-    def compose(self) -> ComposeResult:
-        with Vertical(id="session-box"):
-            yield Static("", id="session-hint")
-            yield Input(placeholder="输入搜索节点(空格分词)", id="session-filter")
-            yield OptionList(id="session-list")
+    def title_text(self) -> str:
+        return self._hint()
 
-    def on_mount(self) -> None:
+    def _refresh_title(self) -> None:
+        self.query_one("#model-hint", Static).update(self.title_text())
+
+    def compose_body(self) -> ComposeResult:
+        yield prompt_row("session-filter", placeholder="输入搜索节点(空格分词)")
+        yield OptionList(id="session-list")
+
+    def on_panel_ready(self) -> None:
         self.query_one("#session-filter", Input).focus()
         self._refresh()
 
@@ -1560,7 +1952,7 @@ class TreeSelector(ModalScreen[str | None]):
             listing.add_option(Option(row.text, id=row.id))
         if rows:
             listing.highlighted = 0
-        self.query_one("#session-hint", Static).update(self._hint())
+        self._refresh_title()
 
     def _highlighted_id(self) -> str | None:
         listing = self.query_one("#session-list", OptionList)
@@ -1608,7 +2000,7 @@ class TreeSelector(ModalScreen[str | None]):
         box = self._input()
         box.value = current
         box.cursor_position = len(box.value)
-        self.query_one("#session-hint", Static).update(self._hint())
+        self._refresh_title()
 
     def _end_edit(self) -> None:
         self._editing = None
@@ -1656,6 +2048,7 @@ class _TuiUi:
         self._app = app
 
     def notify(self, message: str, *, level: str = "info") -> None:
+        # 扩展的 notify 等级 → 色调:pi 的 `info` 在提示块里用 `dim`(比正文轻)
         tone = {"error": "error", "warning": "warning", "warn": "warning"}.get(level, "dim")
         self._app._note(message, tone)
 
@@ -1763,10 +2156,17 @@ class QiTui(App):
     SUB_TITLE = "单 agent · 扩展"
 
     CSS = """
-    /* pi 没有滚动条/边框 chrome:inline 区域尽量只剩内容本身 */
-    Screen { height: auto; max-height: 100%; background: transparent; scrollbar-size: 0 0; }
-    #body { height: auto; background: transparent; scrollbar-size: 0 0; }
-    #log { height: auto; background: transparent; scrollbar-size: 0 0; }
+    /* 两种模式共用:pi 没有滚动条/边框 chrome,只剩内容本身 */
+    Screen { height: 100%; background: transparent; scrollbar-size: 0 0; }
+    #body { height: 100%; background: transparent; scrollbar-size: 0 0; }
+    /* fullscreen:qi 拥有视口 —— transcript 用 1fr 占满剩余空间并在**内部**滚动,
+       输入框 / footer 固定在底部(滚轮只滚 transcript,翻不到 shell 历史)。 */
+    #log { height: 1fr; background: transparent; scrollbar-size: 0 0; }
+    /* regular(inline):不占全屏、不进备用屏 —— Screen 高度随内容,transcript 的高度
+       由 `_sync_log_height()` 按终端高算(不能写 `1fr`:inline 下没有“屏幕高度”可分配)。 */
+    Screen.regular { height: auto; max-height: 100%; }
+    Screen.regular #body { height: auto; }
+    Screen.regular #log { height: auto; }
     /* 扩展挂件的两个槽:空时**不占行**(Textual 的 Vertical 默认 `height: 1fr`,
        不压下去会在输入框与 footer 之间各撑出一块空白)。 */
     #ext-widgets-above, #ext-widgets-below { height: auto; background: transparent; }
@@ -1776,27 +2176,53 @@ class QiTui(App):
     .compaction-label, .compaction-body { background: transparent; height: auto; }
     #editor { border: none; height: auto; max-height: 8; padding: 0 1; background: transparent; }
     #editor .text-area--cursor-line { background: transparent; }
-    /* `/` 与 `@` 补全面板(pi 的 autocomplete):默认隐藏,有候选才显示 */
-    #completions { display: none; width: 1fr; height: auto; max-height: 8;
-                   padding: 0 1; background: $surface; }
+    /* `/` 与 `@` 补全面板(pi 的 autocomplete):默认隐藏,有候选才显示。
+       版式由 `CompletionPanel` 自己画 —— 这里只管显隐/宽度/缩进,不给底色与边框。 */
+    #completions { display: none; width: 1fr; height: auto;
+                   padding: 0 1; background: transparent; }
     #completions.visible { display: block; }
     #footer { height: auto; width: 1fr; background: transparent; scrollbar-size: 0 0; }
-    /* 模型选择器(ctrl+l):模态,只在需要时出现 */
-    ModelSelector { align: center middle; }
-    ScopedModelsSelector { align: center middle; }
-    #scoped-list { background: transparent; height: auto; max-height: 60%; }
-    /* 会话选择器(/resume) */
-    SessionSelector { align: center middle; }
-    TreeSelector { align: center middle; }
-    #session-box { width: 78; max-height: 70%; background: $surface; border: round $primary;
-                   padding: 0 1; }
-    #session-hint { color: $text-muted; }
-    #session-filter { background: transparent; border: none; padding: 0; height: 1; }
-    #session-list { background: transparent; height: auto; max-height: 50%; }
-    #model-box { width: 64; max-height: 70%; background: $surface; border: round $primary;
-                 padding: 0 1; }
-    #model-hint { color: $text-muted; }
-    #model-list { background: transparent; }
+    /* 命令选择器 / 输入面板:pi 的 `showSelector()` 是把**编辑器那一格**的内容换掉
+       (`editorContainer.clear()`),所以外形与编辑器一致 —— 全宽、贴底(footer 之上)、
+       上下 `─`(pi 的 DynamicBorder)、**没有圆角也没有遮罩**。
+       底色取 `$background`(= 探测到的终端底色)⇒ 看不出“填色”但又盖住底下的编辑器。 */
+    ModalScreen { align-vertical: bottom; background: transparent; }
+    #model-box, #session-box {
+        width: 1fr;
+        height: auto;
+        max-height: 80%;
+        background: $background;
+        border: none;
+        border-top: solid $secondary;
+        border-bottom: solid $secondary;
+        padding: 0 1;
+    }
+    /* pi 的面板标题是 accent bold;键位提示行是 dim */
+    #model-hint { color: $primary; text-style: bold; }
+    #panel-hints { color: $text-muted; }
+    .panel-gap { height: 1; }
+    #model-list, #session-list, #scoped-list { background: transparent; }
+    /* OptionList(会话 / 树 / scoped 列表)去掉自带的 `$surface` 底与整行高亮底,
+       只把选中行提亮成 accent —— pi 的列表没有行底色。 */
+    #session-list > .option-list--option-highlighted,
+    #scoped-list > .option-list--option-highlighted,
+    #session-list:focus > .option-list--option-highlighted,
+    #scoped-list:focus > .option-list--option-highlighted {
+        background: transparent;
+        color: $primary;
+        text-style: bold;
+    }
+    /* pi-tui 的 `Input` = `prompt + value`:一行纯文本,没有框与底色 */
+    .input-row { height: 1; }
+    .input-prompt { width: 2; }
+    #prompt-input, #session-filter {
+        border: none;
+        background: transparent;
+        padding: 0;
+        height: 1;
+        width: 1fr;
+    }
+    #session-list { height: auto; max-height: 50%; }
     """
 
     # pi 没有命令面板;Textual 默认用 ctrl+p 开面板,而 pi 的 ctrl+p = 切模型。
@@ -1853,8 +2279,13 @@ class QiTui(App):
                  no_extensions: bool = False, no_context_files: bool = False,
                  session_dir_path: str | None = None,
                  model_override: str | None = None, api_key: str | None = None,
-                 scoped_models: list[str] | None = None):
+                 scoped_models: list[str] | None = None,
+                 tui_mode: str | None = None):
         super().__init__()
+        # TUI 模式(pi 同名键;`--tui-mode` 压过 settings)。**qi 默认 fullscreen** ——
+        # 为什么不是 pi 的 regular:见 `docs/tui.md` §1。
+        self._tui_mode = tui_mode if tui_mode in TUI_MODES else DEFAULT_TUI_MODE
+        self._fullscreen = self._tui_mode == "fullscreen"
         self._rt = runtime
         # 项目信任的三态(None = 看 settings.defaultProjectTrust);`qi -a` / `-na` 透传到这里
         self._approve_project = approve_project
@@ -1970,14 +2401,24 @@ class QiTui(App):
         self._terminal_input_handlers: list[Any] = []
 
     # -- 布局 -----------------------------------------------------------
+    def get_default_screen(self) -> Screen:
+        """默认屏幕:regular 模式打上 `.regular` 类,让 CSS 选到 inline 布局。
+
+        必须在**首屏创建时**就带上 —— 若放到 `on_mount` 里再加,inline 启动的第一帧会按
+        fullscreen 规则把 Screen 撑到终端高,内联区域会先空掉一屏再缩回去。
+        """
+        return Screen(id="_default", classes="" if self._fullscreen else "regular")
+
     def compose(self) -> ComposeResult:
         with Vertical(id="body"):
-            yield VerticalScroll(id="log")
-            yield OptionList(id="completions")
+            yield Transcript(id="log")
             yield Vertical(id="ext-widgets-above")
             yield Static("", id="border-top")
             yield Editor(id="editor")
+            # 补全面板在编辑器**下边框之下**(pi 的 editor 把 SelectList 画在
+            # renderBottomBorder() 之后),不是输入框上方。
             yield Static("", id="border-bottom")
+            yield CompletionPanel(self._palette, id="completions")
             yield Vertical(id="ext-widgets-below")
             yield Static("", id="footer")
 
@@ -2054,8 +2495,11 @@ class QiTui(App):
         self._show_thinking = not bool(getattr(settings, "hideThinkingBlock", False))
         self._output_pad = number("outputPad", 1)
         self._completion_rows = max(1, number("autocompleteMaxVisible", COMPLETION_ROWS))
+        editor_pad = number("editorPaddingX", 1)
         editor = self.query_one("#editor", TextArea)
-        editor.styles.padding = (0, number("editorPaddingX", 1))
+        editor.styles.padding = (0, editor_pad)
+        # 补全面板与编辑器同缩进(pi 用同一个 `paddingX` 画 SelectList)
+        self.query_one("#completions", CompletionPanel).set_padding(editor_pad)
 
     # -- 渲染回调(pi 的 renderCall / renderResult / register*Renderer / markdown)------
     def _renderers(self) -> Any:
@@ -2221,7 +2665,13 @@ class QiTui(App):
             return
 
     def _sync_log_height(self) -> None:
-        """transcript 最多占 终端高 - (编辑器实际行数 + 上下边框 + footer),超出内部滚动。"""
+        """transcript 最多占 终端高 - (编辑器实际行数 + 上下边框 + footer),超出内部滚动。
+
+        只管 regular(inline):fullscreen 下高度由 `#log { height: 1fr }` 分配,
+        这里再塞 inline style 反而会盖掉它。
+        """
+        if self._fullscreen:
+            return
         try:
             editor = self.query_one("#editor", TextArea)
             log = self.query_one("#log")
@@ -2231,6 +2681,14 @@ class QiTui(App):
         if self._completions_open:
             reserved += min(len(self._completions), self._completion_rows)
         log.styles.max_height = max(3, self.size.height - reserved)
+
+    def _editor_slot_offset(self) -> int:
+        """编辑器那一格底边到屏幕底的距离(footer 行数)—— 选择器贴底时要让开。
+
+        pi 的选择器占的是编辑器容器那一格,footer 仍在原位;Textual 这边是 ModalScreen
+        覆盖层,所以用 `margin-bottom` 把面板底边对齐到同一条线上。
+        """
+        return self._footer_rows()
 
     def _footer_rows(self) -> int:
         """footer 当前真占几行（第三行只在有内容时出现；上限 `FOOTER_LINES` 兜底）。"""
@@ -2610,8 +3068,13 @@ class QiTui(App):
 
     # -- 命令 -----------------------------------------------------------
     def _note(self, text: str, tone: str = "dim") -> None:
-        """命令行输出:统一消息块(无底色,padding 0,1)。"""
-        self._append(Static(Text(text, style=Style(color=self._palette.hex(tone))), classes="msg"))
+        """命令行输出:统一消息块(无底色,padding 0,1)。
+
+        `tone` 经 `NOTE_TONES` 归一(pi 的 `info` 当普通正文),**不认识的一律当 `dim`** ——
+        这里只是提示的配色,不该因为一个词把命令 / worker 打断。
+        """
+        key = NOTE_TONES.get(tone, "dim")
+        self._append(Static(Text(text, style=Style(color=self._palette.hex(key))), classes="msg"))
 
     def _command(self, text: str) -> None:
         parts = text.split(maxsplit=1)
@@ -2738,11 +3201,8 @@ class QiTui(App):
             if not options:
                 self._note("models.json 里没有可选模型", "warning")
             elif not arg:
-                current = self._model.label if self._model else "(未解析)"
-                lines = [f"当前: {current}", "可选:"]
-                lines += [f"  {p}/{m}" + ("  ← 当前" if cur else "") for p, m, cur in options]
-                lines.append("切换: /model <provider/model> 或 ctrl+l / ctrl+p")
-                self._note("\n".join(lines), "text")
+                # pi 的口径:无参**也是开选择器**(`showModelSelector`),不是打印一张表
+                self.action_select_model()
             else:
                 provider, _, model = arg.partition("/")
                 if not model:
@@ -2758,12 +3218,13 @@ class QiTui(App):
             self.action_scoped_models()
         elif cmd == "/thinking":
             if not arg:
-                lines = [f"当前: {self._thinking_level}",
-                         "可选: " + " | ".join(THINKING_LEVELS)]
-                if self._model is not None and not self._model.reasoning:
-                    lines.append(f"注:{self._model.label} 未声明 reasoning,级别不会随请求发送")
-                self._note("\n".join(lines), "text")
-            elif arg.lower() not in THINKING_LEVELS:
+                # pi 的 `showThinkingSelector`:`✓ ` 标当前、带说明、`default` 那档缀 ` · default`
+                self.push_screen(
+                    ThinkingSelector(self._thinking_level, self._default_thinking_level()),
+                    lambda level: self._set_thinking_level(str(level)) if level else None)
+                self._scroll_end()
+                return
+            if arg.lower() not in THINKING_LEVELS:
                 self._note("用法: /thinking " + "|".join(THINKING_LEVELS), "warning")
             else:
                 self._set_thinking_level(arg.lower())
@@ -2810,25 +3271,14 @@ class QiTui(App):
         elif cmd == "/copy":
             self._copy_answer()
         elif cmd == "/login":
-            providers = sorted(getattr(getattr(rt, "cfg", None), "providers", {}) or {})
-            if not arg:
-                self._note("用法: /login <provider>\n可用 provider: "
-                           + (", ".join(providers) or "(models.json 里还没有 provider)"),
-                           "warning")
-            else:
-                self._note(f"密钥不在 TUI 里采集(会进会话记录)。请在终端执行:\n"
-                           f"    qi auth login {arg}")
+            # 对话框里采集 key(不进 transcript):worker 里 await 模态,与 `/compact` 同一形状
+            self.run_worker(self._login_flow(arg), exclusive=False, exit_on_error=False)
+            self._scroll_end()
+            return
         elif cmd == "/logout":
-            from .auth import AuthStore
-
-            auth = AuthStore()
-            if not arg:
-                self._note("已存凭证: " + (", ".join(auth.providers()) or "(无)")
-                           + "\n用法: /logout <provider>")
-            elif auth.remove(arg):
-                self._note(f"已删除 {arg} 的凭证")
-            else:
-                self._note(f"{arg} 没有已存凭证", "warning")
+            self.run_worker(self._logout_flow(arg), exclusive=False, exit_on_error=False)
+            self._scroll_end()
+            return
         elif cmd == "/changelog":
             self._note(self._changelog())
 
@@ -3005,6 +3455,15 @@ class QiTui(App):
             self._reasoning_warned = True
             self._flash("该 provider 不接受 reasoning_effort,已按不思考运行", 4.0)
 
+    def _default_thinking_level(self) -> str:
+        """生效的默认档(`settings.defaultThinkingLevel` → `DEFAULT_THINKING_LEVEL`)。
+
+        `/thinking` 的选择器用它标 ` · default`(pi 的 `ThinkingSelectorComponent` 同形)。
+        """
+        settings = getattr(self._rt, "settings", None)
+        raw = str(getattr(settings, "defaultThinkingLevel", None) or "").strip().lower()
+        return raw if raw in THINKING_LEVELS else DEFAULT_THINKING_LEVEL
+
     def _set_thinking_level(self, level: str, source: str = "set") -> None:
         """设置级别:交给 runtime(它才是唯一入口,`thinking_level_select` 从那里发)。"""
         rt = self._rt
@@ -3106,18 +3565,42 @@ class QiTui(App):
 
     # -- 模型(ctrl+l / ctrl+p;对齐 pi 的 app.model.*)----------------
     def _model_options(self) -> list[tuple[str, str, bool]]:
+        """可选模型(`/model` / ctrl+l / ctrl+p / `/scoped-models` 共用)。
+
+        **预置兜底那批只有“能解析出凭证”时才列出来** —— 用户只登录了 deepseek,就不该在
+        `/model` 里看到 moonshot / glm / …(他们的原话:“我还没登录,怎么就能选”)。
+        没登录又想用哪个,就去 `/login`(那里的选择器列全部预置)。
+
+        `models.json` 里**显式写过**的 provider 不受这条限制 —— 那是用户自己的配置,
+        可能正在配(缺密钥会在请求时报清楚)。
+        """
         rt = self._rt
         if rt is None:
             return []
         current = self._model
+        cfg = getattr(rt, "cfg", None)
+        preset_only = set(getattr(cfg, "presetProviders", None) or ())
+        store = self._auth_store()
         out: list[tuple[str, str, bool]] = []
-        providers = getattr(getattr(rt, "cfg", None), "providers", None) or {}
+        providers = getattr(cfg, "providers", None) or {}
         for provider, prov in sorted(providers.items()):
+            if provider in preset_only and not resolve_key(provider, prov.apiKey, store).ok:
+                continue
             for entry in prov.models:
                 is_current = bool(current and current.provider == provider
                                   and current.model == entry.id)
                 out.append((provider, entry.id, is_current))
         return out
+
+    def _auth_store(self) -> Any:
+        """凭证库:优先用 runtime 身上那个(它带着 `--api-key` 的覆盖);拿不到就用真的。"""
+        rt = self._rt
+        store = getattr(rt, "_auth", None) if rt is not None else None
+        if store is None:
+            from .auth import AuthStore
+
+            store = AuthStore()
+        return store
 
     def _switch_model(self, provider: str, model: str, source: str = "set") -> None:
         """运行期换模型:**交给 runtime**(它才是唯一入口,`model_select` 从那里发),
@@ -3136,7 +3619,7 @@ class QiTui(App):
         self._flash(f"模型: {resolved.label}")
 
     def action_select_model(self) -> None:
-        """ctrl+l:模型选择器(对齐 pi 的 app.model.select)。"""
+        """ctrl+l(以及 `/model` 无参):模型选择器(对齐 pi 的 `showModelSelector`)。"""
         options = self._model_options()
         if not options:
             self._flash("models.json 里没有可选模型")
@@ -3147,7 +3630,14 @@ class QiTui(App):
                 provider, _, model = value.partition("\x00")
                 self._switch_model(provider, model)
 
-        self.push_screen(ModelSelector(options), picked)
+        self.push_screen(ModelSelector(options, default=self._default_model_ref()), picked)
+
+    def _default_model_ref(self) -> tuple[str, str] | None:
+        """`settings` 里配的默认模型(选择器用它缀 ` · default`,pi 同形)。"""
+        settings = getattr(self._rt, "settings", None)
+        provider = str(getattr(settings, "defaultProvider", None) or "").strip()
+        model = str(getattr(settings, "defaultModel", None) or "").strip()
+        return (provider, model) if provider and model else None
 
     def action_cycle_model(self) -> None:
         self._cycle_model(1)
@@ -3427,6 +3917,121 @@ class QiTui(App):
             setattr(rt.settings, key, parse_value(value))
             self._note(f"已保存 {key} = {value}(用户级 settings)", "info")
         self._apply_ui_settings()
+
+    # -- 凭证(`/login` `/logout`)------------------------------------------
+    def _config_providers(self) -> list[str]:
+        """可登录的 provider:models.json 里的 + **预置兜底**那批(config.load_config 补的)。"""
+        cfg = getattr(self._rt, "cfg", None)
+        return sorted(getattr(cfg, "providers", None) or {})
+
+    def _preset_providers(self) -> set[str]:
+        """哪些 provider 来自预置表(models.json 里没写)—— 只用来做标记。"""
+        cfg = getattr(self._rt, "cfg", None)
+        return set(getattr(cfg, "presetProviders", None) or ())
+
+    async def _login_flow(self, arg: str) -> None:
+        """`/login [provider]`:选 provider → 输入 API key → 写 `auth.json`(对齐 pi)。
+
+        三处与 pi 同口径:
+          · 不给 provider 先弹选择器,给了就直奔输入(pi `handleLoginCommand`);
+          · 登录后重建客户端 —— 不然新 key 不生效(`LiteLLMClient` 构造时就解析好了);
+          · key 只进 auth store,**不进 transcript**(pi 那个对话框也是这个目的)。
+
+        与 pi 的差异(已落档,见 docs/tui.md):pi 的 `/login` 主要在做**订阅登录**
+        (provider 声明 `auth.oauth`,跑 device-code / PKCE),qi 的凭证层只有 api_key;
+        另外 key 输入在 qi 里是**遮罩**的(pi 的对话框明文回显)。
+        """
+        from .auth import AuthStore
+
+        store = AuthStore()
+        provider = (arg or "").strip().lower()
+        providers = self._config_providers()
+        if not provider:
+            if not providers:
+                self._note("models.json 里还没有 provider;先 `qi init --preset deepseek`"
+                           "(看全部:`qi init --list-presets`),或手写 models.json。", "warning")
+                return
+            saved = set(store.providers())
+            presets = self._preset_providers()
+
+            def label(name: str) -> str:
+                # `(预置)` = 来自 qi 的预置表(models.json 里没写);登录后就能直接用它
+                mark = "已存凭证" if name in saved else "无凭证"
+                return f"{name}    ({mark}{' · 预置' if name in presets else ''})"
+
+            options = [(name, label(name)) for name in providers]
+            provider = str(await self.await_screen(PickerScreen(
+                "登录哪个 provider(↑↓ 选择 · enter 确认 · escape 取消)", options)) or "")
+            provider = provider.strip().lower()
+            if not provider:
+                self._note("已取消登录。", "info")
+                return
+        known = provider in providers
+        title = f"{provider} API key" + ("" if known else "(该 provider 不在 models.json 里)")
+        key = str(await self.await_screen(PromptScreen(title, secret=True)) or "").strip()
+        if not key:
+            self._note("已取消登录(没输入 key)。", "info")
+            return
+        try:
+            store.set_key(provider, key)
+        except OSError as exc:                 # 读/写盘失败(权限、只读 home…)
+            self._note(f"写凭证失败: {exc}", "error")
+            return
+        self._note(f"已保存 {provider} 的 API key → {store.path}(0600)", "info")
+        if provider in self._preset_providers():
+            self._note(f"{provider} 来自**预置**(models.json 里没写,qi 的内置表兜底);"
+                       f"要改 baseUrl / 模型就 `qi init --preset {provider}` 物化出来再改。",
+                       "dim")
+        if not known:
+            self._note(f"注意:{provider} 不在 models.json 里 —— 补上 provider 段才能用它。",
+                       "warning")
+            return
+        self._after_credential_change(provider)
+
+    def _after_credential_change(self, provider: str) -> None:
+        """登录/登出后:重建客户端(新 key 马上生效);**当前没模型**时顺带选一个。
+
+        “当前没模型”才自动选 —— 不把用户正在用的模型洗掉(pi 也只在 previousModel
+        未知时才自动选)。
+        """
+        rt = self._rt
+        if rt is not None and hasattr(rt, "reload_credentials"):
+            rt.reload_credentials()             # 失败也只是保持旧客户端(不挡登录本身)
+        if self._model is not None:
+            self._note(f"{provider} 已就绪;当前模型不变(要换用 /model)。", "info")
+            return
+        models = [model for name, model, _ in self._model_options() if name == provider]
+        if not models:
+            self._note(f"{provider} 在 models.json 里没有模型;加一个再用 /model 选。", "warning")
+            return
+        self._switch_model(provider, models[0])
+
+    async def _logout_flow(self, arg: str) -> None:
+        """`/logout [provider]`:删 `auth.json` 里的凭证(无参先给选择器,对齐 pi)。"""
+        from .auth import AuthStore
+
+        store = AuthStore()
+        provider = (arg or "").strip().lower()
+        if not provider:
+            saved = store.providers()
+            if not saved:
+                self._note(f"auth store 为空({store.path});没有可退的登录。", "info")
+                return
+            provider = str(await self.await_screen(PickerScreen(
+                "退出哪个 provider(↑↓ 选择 · enter 确认 · escape 取消)",
+                [(name, name) for name in saved])) or "").strip().lower()
+            if not provider:
+                return
+        if store.remove(provider):
+            self._note(f"已删除 {provider} 的凭证;环境变量与 models.json 里的 apiKey 不受影响",
+                       "info")
+            # 下一回合重新解析:删掉 auth.json 那条后可能落到 env / models.json
+            rt = self._rt
+            if rt is not None and hasattr(rt, "reload_credentials"):
+                rt.reload_credentials()
+        else:
+            self._note(f"{provider} 没有已存凭证(环境变量与 models.json 里的 apiKey 不受影响)",
+                       "warning")
 
     def _set_trust(self, arg: str) -> None:
         """`/trust [yes|no|forget]`:把信任决定写进 `~/.qi/agent/trust.json`(对齐 pi)。
@@ -4034,7 +4639,7 @@ class QiTui(App):
     def _refresh_completions(self) -> None:
         """重算候选并同步面板显隐(不改文本,只负责菜单)。"""
         try:
-            panel = self.query_one("#completions", OptionList)
+            panel = self.query_one("#completions", CompletionPanel)
         except NoMatches:  # pragma: no cover
             return
         candidates, _, _ = self._completion_candidates()
@@ -4045,30 +4650,27 @@ class QiTui(App):
             panel.clear_options()
             self._sync_log_height()
             return
-        panel.clear_options()
-        for cand in candidates:
-            tag = f"[{cand.source}] " if cand.source else ""
-            text = f"{tag}{cand.label}" + (f"    {cand.detail}" if cand.detail else "")
-            panel.add_option(Option(text, id=cand.value))
-        panel.styles.max_height = self._completion_rows
+        # 面板自己按 pi 的 SelectList 版式画(箭头 + 列对齐 + muted 说明,
+        # 无底色);行数上限也由它拿(`autocompleteMaxVisible`)。
+        panel.set_items(candidates, self._completion_rows)
         panel.highlighted = 0
         panel.add_class("visible")
         self._completions_open = True
         self._sync_log_height()
 
     def _move_completion(self, step: int) -> None:
-        panel = self.query_one("#completions", OptionList)
+        panel = self.query_one("#completions", CompletionPanel)
         count = panel.option_count
         if not count:
             return
-        current = panel.highlighted if panel.highlighted is not None else 0
+        current = panel.highlighted
         panel.highlighted = (current + step) % count
 
     def _close_completions(self) -> None:
         self._completions_open = False
         self._completions = []
         try:
-            panel = self.query_one("#completions", OptionList)
+            panel = self.query_one("#completions", CompletionPanel)
         except NoMatches:  # pragma: no cover
             return
         panel.remove_class("visible")
@@ -4081,8 +4683,8 @@ class QiTui(App):
         if not candidates:
             self._close_completions()
             return
-        panel = self.query_one("#completions", OptionList)
-        index = panel.highlighted if panel.highlighted is not None else 0
+        panel = self.query_one("#completions", CompletionPanel)
+        index = panel.highlighted
         picked = candidates[min(index, len(candidates) - 1)]
         value, label = picked.value, picked.label
         editor = self.query_one("#editor", TextArea)
@@ -4749,7 +5351,10 @@ def skill_invocation(skill: Any, args: str) -> str:
 
 
 def run_settings_panel(rows: list[tuple[str, str]]) -> dict[str, str] | None:
-    """起偏好面板;返回**改过的** `{键: 新值}`(取消或无改动 → None)。"""
+    """起偏好面板;返回**改过的** `{键: 新值}`(取消或无改动 → None)。
+
+    inline 小 App(与资源面板同理,不跟随主界面的 tuiMode)。
+    """
     _reset_mouse_reporting()
     _harden_inline_input()
     return SettingsPanel(rows).run(inline=True, inline_no_clear=True, mouse=False)
@@ -4758,7 +5363,7 @@ def run_settings_panel(rows: list[tuple[str, str]]) -> dict[str, str] | None:
 def run_resource_panel(items: list[tuple[str, str, str, bool]]) -> set[int] | None:
     """起面板;返回**保持启用**的下标集合(取消返回 None)。
 
-    与 qi 的主 TUI 同一渲染方式(inline:不占全屏、不进备用屏)。
+    用 inline 小 App:它是从主 TUI 里弹出来的短暂覆盖层,不跟随主界面的 tuiMode。
     """
     _reset_mouse_reporting()
     _harden_inline_input()
@@ -4779,35 +5384,47 @@ def run_tui(initial_prompt: str | None = None, *, session_id: str | None = None,
             no_extensions: bool = False, no_context_files: bool = False,
             session_dir_path: str | None = None,
             model_override: str | None = None, api_key: str | None = None,
-            scoped_models: list[str] | None = None) -> None:
+            scoped_models: list[str] | None = None,
+            tui_mode: str | None = None) -> None:
     """启动 TUI;`initial_prompt` 非空时进界面即提交(来自 `qi "问题"`)。
 
     会话选择参数与 headless 路径同义:`qi -c` / `--session` / `--fork` / `-n` / `--no-session`。
+
+    渲染模式:`--tui-mode` 压过 `settings.tuiMode`,都没给就是 `fullscreen`(qi 的默认,
+    pi 的默认是 regular —— 取舍见 `docs/tui.md` §1)。
     """
-    setting = None
+    settings = None
     try:
         from .settings import load_settings
 
-        setting = load_settings()[0].theme
+        settings = load_settings()[0]
     except Exception:  # settings 坏了不该挡住进界面
-        setting = None
+        settings = None
+    setting = getattr(settings, "theme", None)
+    mode = tui_mode if tui_mode in TUI_MODES else resolve_tui_mode(settings)
     _reset_mouse_reporting()
     _harden_inline_input()
     palette = resolve_theme(setting, probe=True)
-    # mouse=False:qi 的 TUI 没有任何鼠标交互(不点、不拖、无滚动条),而上报鼠标会让
-    # 不支持 SGR(1006)的终端退回旧式 X10 报文 —— 正是 _harden_inline_input 里那类
-    # 崩溃的来源;关掉还顺带把原生文本选择/复制还给终端。
-    QiTui(initial_prompt=initial_prompt, palette=palette, session_id=session_id, cont=cont,
-          fork_id=fork_id, no_session=no_session, name=name,
-          approve_project=approve_project,
-          extension_flags=extension_flags,
-          extra_extension_paths=extra_extension_paths,
-          tools=tools, exclude_tools=exclude_tools,
-          no_tools=no_tools, no_builtin_tools=no_builtin_tools,
-          append_system_prompt=append_system_prompt,
-          resume=resume, exact_session_id=exact_session_id,
-          base_prompt_override=base_prompt_override,
-          no_extensions=no_extensions, no_context_files=no_context_files,
-          session_dir_path=session_dir_path, model_override=model_override,
-          api_key=api_key, scoped_models=scoped_models).run(
-              inline=True, inline_no_clear=True, mouse=False)
+    app = QiTui(initial_prompt=initial_prompt, palette=palette, session_id=session_id,
+                cont=cont, fork_id=fork_id, no_session=no_session, name=name,
+                approve_project=approve_project,
+                extension_flags=extension_flags,
+                extra_extension_paths=extra_extension_paths,
+                tools=tools, exclude_tools=exclude_tools,
+                no_tools=no_tools, no_builtin_tools=no_builtin_tools,
+                append_system_prompt=append_system_prompt,
+                resume=resume, exact_session_id=exact_session_id,
+                base_prompt_override=base_prompt_override,
+                no_extensions=no_extensions, no_context_files=no_context_files,
+                session_dir_path=session_dir_path, model_override=model_override,
+                api_key=api_key, scoped_models=scoped_models, tui_mode=mode)
+    if app._fullscreen:
+        # fullscreen:进备用屏(qi 拥有视口)。**鼠标开着**:滚轮/拖动喂给 qi 自己的
+        # transcript,而不是终端回滚缓冲 —— 这正是“滚动只在本界面内”的来源。
+        app.run()
+        return
+    # regular(inline):不占全屏、不进备用屏,把滚动交给终端。
+    # mouse=False:qi 的界面没有必须的鼠标交互,而上报鼠标会让不支持 SGR(1006) 的终端
+    # 退回旧式 X10 报文 —— 正是 `_harden_inline_input` 里那类崩溃的来源;关掉还顺带把
+    # 原生文本选择/复制还给终端。
+    app.run(inline=True, inline_no_clear=True, mouse=False)

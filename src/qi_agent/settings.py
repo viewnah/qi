@@ -84,6 +84,10 @@ class QiSettings(BaseModel):
     # 界面
     theme: str | None = None
     quietStartup: bool = False
+    #: TUI 模式(pi 同名键 `tuiMode`):`regular` = inline(不占全屏、终端自己管回滚缓冲);
+    #: `fullscreen` = 备用屏(qi 拥有视口,滚轮只滚 transcript)。
+    #: **qi 默认 fullscreen,与 pi 的默认(regular)相反** —— 取舍与理由见 `docs/tui.md` §1。
+    tuiMode: str | None = None
     defaultProjectTrust: str = "ask"
     doubleEscapeAction: str = "tree"
     hideThinkingBlock: bool = False
@@ -334,6 +338,23 @@ def next_choice(key: str, current: str) -> str:
     except ValueError:
         return values[0]          # 手写的怪值:按一下回到第一个合法值
     return values[(index + 1) % len(values)]
+
+
+#: TUI 模式取值(pi `tuiMode` 的两个值,语义同 pi)。
+TUI_MODES: tuple[str, ...] = ("regular", "fullscreen")
+#: **qi 的默认**是 fullscreen(pi 默认 regular)。为什么不同:pi 的 regular 把滚动权交给终端,
+#: 滚轮/PageUp 会翻到启动 qi 之前的 shell 输出;qi 要的是“滚动只在本界面内”(见 docs/tui.md §1)。
+DEFAULT_TUI_MODE = "fullscreen"
+
+
+def tui_mode(settings: QiSettings | None) -> str:
+    """`settings.tuiMode` 归一:认 `regular` / `fullscreen`;没写或写歪 → `DEFAULT_TUI_MODE`。
+
+    与 `normalize_thinking_level` 同理:写歪的值不报错也不生效,回落默认 —— 一个错字
+    不该让界面起不来。
+    """
+    raw = str(getattr(settings, "tuiMode", None) or "").strip().lower()
+    return raw if raw in TUI_MODES else DEFAULT_TUI_MODE
 
 
 def branch_summary_skip_prompt(settings: QiSettings) -> bool:

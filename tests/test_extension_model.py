@@ -256,3 +256,57 @@ async def test_auto_title_path_goes_through_the_same_door(tmp_path, monkeypatch)
     # 用户已经手动改过 → 自动命名不再覆盖(原有规则仍然生效)
     runtime._write_title(session, "又取了一个")
     assert session.title == "模型取的名字"
+
+
+# ── reload_credentials(登录 / 退出登录后让新 key 生效)─────────────
+
+
+def test_reload_credentials_rebuilds_client_with_the_new_key(tmp_path, monkeypatch):
+    """`LiteLLMClient` 构造时就解析好 key —— 写完 auth.json **必须重建**才生效。
+
+    不重建的症状最难查:界面上说"已登录",请求却拿旧(空)key 去 401。
+    """
+    from qi_agent.auth import AuthStore
+
+    runtime = _runtime(tmp_path, monkeypatch)
+    client = runtime.llm_exec
+    assert isinstance(client, LiteLLMClient)
+    assert "api_key" not in client._base_kwargs([], None, None)   # 还没有凭证
+
+    AuthStore().set_key("alpha", "sk-late")
+    assert runtime.reload_credentials() is True
+
+    assert runtime.llm_exec is not client                          # 真的换了客户端
+    fresh = runtime.llm_exec
+    assert isinstance(fresh, LiteLLMClient)
+    assert fresh._base_kwargs([], None, None)["api_key"] == "sk-late"
+
+
+def test_reload_credentials_honours_removal(tmp_path, monkeypatch):
+    """退出登录同样要重建:删掉 auth.json 那条后不再带 key(而不是继续用旧客户端)。
+
+    注意先建 runtime 再写凭证 —— `AuthStore()` 的路径来自 `QI_AGENT_HOME`,而它由
+    `_runtime` 指到临时目录(先写会落到**真的** `~/.qi/agent/auth.json`)。
+    """
+    runtime = _runtime(tmp_path, monkeypatch)
+    from qi_agent.auth import AuthStore
+
+    AuthStore().set_key("alpha", "sk-first")
+    assert runtime.reload_credentials() is True
+    with_key = runtime.llm_exec
+    assert isinstance(with_key, LiteLLMClient)
+    assert with_key._base_kwargs([], None, None)["api_key"] == "sk-first"
+
+    AuthStore().remove("alpha")
+    assert runtime.reload_credentials() is True
+    without_key = runtime.llm_exec
+    assert isinstance(without_key, LiteLLMClient)
+    assert without_key is not with_key
+    assert "api_key" not in without_key._base_kwargs([], None, None)
+
+
+def test_reload_credentials_without_a_client_is_a_noop(tmp_path, monkeypatch):
+    """没客户端(测试替身 / 未装配)时不炸,返回 False 让调用方自己决定要不要提示。"""
+    runtime = _runtime(tmp_path, monkeypatch)
+    runtime.llm_exec = None                                        # type: ignore[assignment]
+    assert runtime.reload_credentials() is False

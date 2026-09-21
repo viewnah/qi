@@ -824,6 +824,20 @@ class QiRuntime:
             "source": source})
         return resolved
 
+    def reload_credentials(self) -> bool:
+        """重新解析凭证并重建客户端(登录 / 退出登录 / 换了 key 之后调)。
+
+        为什么必须有:`LiteLLMClient` 在**构造时**就把 key 解析好了(`self._resolved`),
+        所以写完 `auth.json` 不重建,用户以为登上了、请求还是拿旧 key 去 401。
+
+        返回是否真重建了(没有客户端时 False)—— 调用方据此决定要不要提“下一回合生效”。
+        """
+        spec = getattr(getattr(self, "llm_exec", None), "spec", None)
+        if spec is None:
+            return False
+        self.llm_exec = self._make_client(spec)
+        return True
+
     def set_thinking_level(self, level: str, *, source: str = "set") -> str:
         """改思考级别(下一回合生效)。返回归一后的级别。
 

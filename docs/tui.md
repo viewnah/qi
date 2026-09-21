@@ -172,6 +172,7 @@ qi 与 pi 的差异(已落档):
 | `/trust [yes\|no\|forget]` | 按**目录**记住信任决定(`~/.qi/agent/trust.json`);连带记住上一层,写完要重启才生效 |
 | `/compact` | 压缩上下文(摘要旧消息);可跟 `<提示>` 追加 focus |
 | `/model` · `/scoped-models` · `/thinking` | 当前或切换模型 / 挑 Ctrl+P 轮换的模型 / 思考级别 |
+| `/settings` | 偏好面板:主题 / 思考级别 / 交互开关(enter 换值、ctrl+s 保存到**用户级** settings) |
 | `/export` · `/import` | 导出 / 导入会话 JSONL |
 | `/copy` | 复制最后一条回答 |
 | `/reload` | 重载扩展 / 技能 / 配置 |
@@ -185,9 +186,7 @@ qi 与 pi 的差异(已落档):
 
 | pi 命令 | 缺什么 |
 | --- | --- |
-| `/settings` | TUI 内设置面板 |
-| `/share` | GitHub gist 分享 |
-| `/trust` | TUI 内的信任切换(`settings.defaultProjectTrust` 与 `-a`/`-na` 已实现,缺的只是界面里的开关) |
+| `/share` | GitHub gist 分享(要 `gh` 或 git 凭据 + 网络) |
 
 ### 键位(已对齐 pi;`core/keybindings.js`)
 

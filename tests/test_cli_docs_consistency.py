@@ -76,3 +76,55 @@ def test_every_flag_is_documented_somewhere():
     documented = set(_FLAG.findall(text))
     undocumented = sorted(_cli_flags() - documented - BUILTIN)
     assert undocumented == [], f"这些旗标没有出现在 docs/ 里: {undocumented}"
+
+
+# ── TUI 斜杠命令:同一套双向守卫 ──────────────────────────────────────
+# CLI 旗标那两条抓过三次真漏(`--get`、`--self/--extensions/--all/--force`),而
+# **TUI 命令没被守** —— 删 `/help` 那次就漏网了(文档表里还列着它)。补上。
+
+def _tui_commands() -> set[str]:
+    from qi_agent.tui import PLANNED_COMMANDS, TUI_COMMANDS
+
+    return {*TUI_COMMANDS, *PLANNED_COMMANDS}
+
+
+def _documented_tui_commands(text: str) -> set[str]:
+    """**「命令」与「计划中」两张表**首列里写的命令(划掉的 `~~…~~` 不算 —— 那些是已删)。
+
+    只看这两张表是刻意的:文档别处的 `/xx` 之类是**示例**(比如「行首 `/xx` 触发命令补全」),
+    不是承诺 —— 把它们算进来会误报。
+    """
+    found: set[str] = set()
+    for marker in ("### 命令(", "### 计划中("):
+        start = text.index(marker)
+        rest = text[start + 1:]
+        end = start + 1 + (rest.index("\n### ") if "\n### " in rest else len(rest))
+        for line in text[start:end].splitlines():
+            if not line.startswith("|"):
+                continue
+            cells = line.split("|")
+            if len(cells) < 2 or "~~" in cells[1]:
+                continue
+            found |= set(re.findall(r"/[a-z][a-z:-]*", cells[1]))
+    return found
+
+
+def test_every_documented_tui_command_exists():
+    """方向 1:tui.md 承诺的命令必须真的存在。"""
+    from qi_agent import tui
+
+    text = (DOCS / "tui.md").read_text(encoding="utf-8")
+    documented = _documented_tui_commands(text)
+    missing = sorted(name for name in documented
+                     if name not in {*tui.TUI_COMMANDS, *tui.PLANNED_COMMANDS})
+    assert missing == [], f"docs/tui.md 承诺了这些命令,但代码里没有: {missing}"
+
+
+def test_every_tui_command_is_documented():
+    """方向 2:代码里的命令必须在 `docs/` 里出现过(否则用户无从知道)。"""
+    from qi_agent import tui
+
+    text = "\n".join(p.read_text(encoding="utf-8") for p in DOCS.glob("*.md"))
+    documented = set(re.findall(r"/[a-z][a-z:-]*", text))
+    undocumented = sorted(name for name in tui.TUI_COMMANDS if name not in documented)
+    assert undocumented == [], f"这些命令没有出现在 docs/ 里: {undocumented}"

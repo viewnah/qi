@@ -74,9 +74,9 @@ from rich.markdown import Heading as _RichHeading
 _RichHeading.LEVEL_ALIGN = {f"h{i}": "left" for i in range(1, 7)}
 
 
-PLANNED_COMMANDS = frozenset({
-    "/share",
-})
+#: 没有「计划中」的命令了 —— pi 的斜杠命令面已全部对齐(留空集合而不是删掉常量:
+#: `_command` 与补全都在读它,删了要改三处)。
+PLANNED_COMMANDS: frozenset[str] = frozenset()
 """pi 有、qi 暂未实现的命令 —— 单独提示“计划中”,不冒充“未知命令”。"""
 
 RESERVED_COMMANDS = frozenset({"/quit", "/hotkeys"})
@@ -95,6 +95,7 @@ TUI_COMMANDS: dict[str, str] = {
     "/name": "设置会话显示名",
     "/session": "会话信息",
     "/settings": "偏好面板(主题 / 思考级别 / 交互开关)",
+    "/share": "把会话传成**私有** GitHub gist(需 GITHUB_TOKEN)",
     "/trust": "记住这个目录的信任决定(可跟 yes|no|forget)",
     "/tree": "跳到本会话的任意节点",
     "/fork": "从某条用户消息 fork 出新会话",
@@ -2218,6 +2219,8 @@ class QiTui(App):
                 return
         elif cmd == "/settings":
             self._open_settings_panel()
+        elif cmd == "/share":
+            self._share_session()
         elif cmd == "/trust":
             self._set_trust(arg)
         elif cmd == "/tree":
@@ -2906,6 +2909,43 @@ class QiTui(App):
             return
         self._submit(payload)
         self._note(f"已加载技能 {match.name}({match.path})", "info")
+
+    def _share_session(self) -> None:
+        """`/share`:把当前会话传成**私有** GitHub gist,并把链接复制到剪贴板。
+
+        网络调用**走线程**(`asyncio.to_thread`),否则几百毫秒的 HTTP 会冻住界面 ——
+        pi 是全程异步的,这边用 worker + to_thread 达到同样的"不卡住"。
+        """
+        rt = self._rt
+        if rt is None or self._session is None:
+            self._note("当前没有会话可分享。", "warning")
+            return
+        self._note("正在上传成私有 gist…", "info")
+        self.run_worker(self._do_share(self._session), exclusive=False, exit_on_error=False)
+
+    async def _do_share(self, session: Any) -> None:
+        import asyncio
+
+        from .share import ShareError, resolve_token, share_session
+
+        if resolve_token() is None:
+            self._note("没有 GitHub token:设 `GITHUB_TOKEN`(需 gist 权限),"
+                       "或 `qi auth login github`", "error")
+            return
+        try:
+            url = await asyncio.to_thread(share_session, session)
+        except ShareError as exc:
+            self._note(str(exc), "error")
+            return
+        except Exception as exc:      # noqa: BLE001 兜底:别让一次分享把界面打崩
+            self._note(f"分享失败:{type(exc).__name__}: {exc}", "error")
+            return
+        try:
+            self.copy_to_clipboard(url)          # 顺手复制;失败不影响已成功的分享
+            copied = "(已复制到剪贴板)"
+        except Exception:      # noqa: BLE001 无剪贴板(远程终端等)
+            copied = ""
+        self._note(f"已分享(私有 gist):{url} {copied}", "info")
 
     def _open_settings_panel(self) -> None:
         """`/settings`:偏好面板。保存后写**用户级** settings,并把新值应用到当前界面。"""

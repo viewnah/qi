@@ -54,7 +54,8 @@ from .loader import LoadError
 from .registry import ToolCatalog
 from .runtime import MAX_TOOL_ENTRY_CHARS, QiRuntime
 from .session import Session, SessionStore
-from .settings import SettingsError, double_escape_action, set_value
+from .settings import (SettingsError, double_escape_action, next_choice,
+                       parse_value, set_value)
 from .theme import (
     Palette,
     format_cwd_line,
@@ -74,7 +75,7 @@ _RichHeading.LEVEL_ALIGN = {f"h{i}": "left" for i in range(1, 7)}
 
 
 PLANNED_COMMANDS = frozenset({
-    "/settings", "/share",
+    "/share",
 })
 """pi 有、qi 暂未实现的命令 —— 单独提示“计划中”,不冒充“未知命令”。"""
 
@@ -93,6 +94,7 @@ TUI_COMMANDS: dict[str, str] = {
     "/resume": "选/恢复历史会话",
     "/name": "设置会话显示名",
     "/session": "会话信息",
+    "/settings": "偏好面板(主题 / 思考级别 / 交互开关)",
     "/trust": "记住这个目录的信任决定(可跟 yes|no|forget)",
     "/tree": "跳到本会话的任意节点",
     "/fork": "从某条用户消息 fork 出新会话",
@@ -2214,6 +2216,8 @@ class QiTui(App):
                 self._show_session_selector()          # 模态选择器(对齐 pi)
                 self._scroll_end()
                 return
+        elif cmd == "/settings":
+            self._open_settings_panel()
         elif cmd == "/trust":
             self._set_trust(arg)
         elif cmd == "/tree":
@@ -2903,6 +2907,33 @@ class QiTui(App):
         self._submit(payload)
         self._note(f"已加载技能 {match.name}({match.path})", "info")
 
+    def _open_settings_panel(self) -> None:
+        """`/settings`:偏好面板。保存后写**用户级** settings,并把新值应用到当前界面。"""
+        from .settings import setting_choices, set_value
+
+        rt = self._rt
+        if rt is None:
+            self._note("运行时不可用。", "error")
+            return
+        try:
+            from .tui import run_settings_panel   # 同模块:留着是为了与其它面板同一写法
+        except Exception as exc:      # noqa: BLE001 textual 依赖问题 → 报清楚,不留死命令
+            self._note(f"面板不可用:{exc}", "error")
+            return
+        changed = run_settings_panel(setting_choices(rt.settings))
+        if not changed:
+            self._note("没有改动。", "info")
+            return
+        for key, value in changed.items():
+            try:
+                set_value("user", key, parse_value(value), rt.cwd)
+            except SettingsError as exc:
+                self._note(f"{key} 没写进去:{exc}", "error")
+                continue
+            setattr(rt.settings, key, parse_value(value))
+            self._note(f"已保存 {key} = {value}(用户级 settings)", "info")
+        self._apply_ui_settings()
+
     def _set_trust(self, arg: str) -> None:
         """`/trust [yes|no|forget]`:把信任决定写进 `~/.qi/agent/trust.json`(对齐 pi)。
 
@@ -3566,6 +3597,69 @@ def _open_session_ref(store: Any, ref: str) -> Any:
     return store.get(ref)
 
 
+class SettingsPanel(App[Any]):
+    """`/settings`:偏好面板(对齐 pi 的 `/settings`)。
+
+    只放**值域有限且已接线**的键(见 `settings.SETTING_CHOICES`)。数字/路径类不放 ——
+    在 TUI 里敲数字与路径的体验比 `qi config --set` 差,让人去那边改更诚实。
+
+    enter/space **循环到下一个候选值**,`ctrl+s` 保存(写**用户级** settings,与 pi 的
+    `/settings` 一致 —— 它管的是"以后的默认"),`escape` 取消。面板不碰盘:它只交回
+    `{键: 新值}`,写盘由调用方做,所以取消时没有副作用。
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "取消"),
+        Binding("ctrl+s", "save", "保存"),
+        Binding("enter", "pick", "下一个值", show=False),
+        Binding("space", "pick", "下一个值", show=False),
+    ]
+
+    CSS = "#settings-box { padding: 1 2; height: auto; }"
+
+    def __init__(self, rows: list[tuple[str, str]]) -> None:
+        super().__init__()
+        self._rows = rows                       # (键, 当前值)
+        self._original = list(rows)         # 只交回**改过的**
+        self._chosen = {key: value for key, value in rows}
+
+    def compose(self) -> ComposeResult:
+        from textual.widgets import SelectionList
+        from textual.widgets.selection_list import Selection
+
+        selections = [Selection(f"{key} = {value}", index, False)
+                      for index, (key, value) in enumerate(self._rows)]
+        with Vertical(id="settings-box"):
+            yield Static("设置:enter/space 换下一个值 · ctrl+s 保存(写用户级 settings) · "
+                         "escape 取消", id="settings-hint")
+            yield SelectionList[int](*selections, id="settings-list")
+
+    def on_selection_list_selected_changed(
+            self, event: "SelectionList.SelectedChanged[int]") -> None:
+        del event                                # 面板不用勾选:enter 是"换值"
+
+    def action_pick(self) -> None:
+        from textual.widgets import SelectionList
+
+        widget = self.query_one("#settings-list", SelectionList)
+        index = widget.highlighted
+        if index is None or index >= len(self._rows):
+            return
+        key, _current = self._rows[index]
+        self._chosen[key] = next_choice(key, self._chosen[key])
+        label = f"{key} = {self._chosen[key]}"
+        self._rows[index] = (key, self._chosen[key])
+        widget.replace_option_prompt_at_index(index, label)
+
+    def action_save(self) -> None:
+        changed = {key: value for key, value in self._chosen.items()
+                   if dict(self._original).get(key) != value}
+        self.exit(changed or None)
+
+    def action_cancel(self) -> None:
+        self.exit(None)
+
+
 class ResourcePanel(App[Any]):
     """`qi config` 的资源启停面板(对齐 pi 的 `pi config`:space 勾选 / ctrl+s 保存)。
 
@@ -3647,6 +3741,13 @@ def skill_invocation(skill: Any, args: str) -> str:
     """
     head = f"按技能 `{skill.name}` 执行" + (f":{args}" if args else "。")
     return f"{head}\n\n{skill.path.read_text(encoding='utf-8')}"
+
+
+def run_settings_panel(rows: list[tuple[str, str]]) -> dict[str, str] | None:
+    """起偏好面板;返回**改过的** `{键: 新值}`(取消或无改动 → None)。"""
+    _reset_mouse_reporting()
+    _harden_inline_input()
+    return SettingsPanel(rows).run(inline=True, inline_no_clear=True, mouse=False)
 
 
 def run_resource_panel(items: list[tuple[str, str, str, bool]]) -> set[int] | None:

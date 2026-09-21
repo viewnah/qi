@@ -880,7 +880,9 @@ async def test_tab_applies_completion(tmp_path, monkeypatch):
         await pilot.press("down")                        # 面板里下移
         await pilot.press("tab")                         # tab = 接受补全
         await pilot.pause(0.05)
-        assert editor.text == "/session "                # 候选只剩它一个;tab 后带尾随空格
+        # `/se` 的候选按名字排序是 /session、/settings(后者这轮从"计划中"升为真命令),
+        # 所以 down 之后 tab 接受的是第二个
+        assert editor.text == "/settings "
         assert app._completions_open is False
 
         editor = await _editor_with(app, pilot, "@al")

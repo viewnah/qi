@@ -282,6 +282,49 @@ def settings_exclude_paths(settings: QiSettings | None, scope: str, key: str,
     return removed
 
 
+#: `/settings` 面板能改的键 —— **只收值域有限且已接线**的偏好键。
+#: 数字/路径类(`editorPaddingX` / `outputPad` / `autocompleteMaxVisible` /
+#: `shellPath` / `sessionDir`)不放面板:在 TUI 里敲数字和路径的体验比 `qi config --set` 差。
+#: 字段未设时面板显示什么 —— 显示**生效值**而不是 "None"(那是内部表示,不是用户看到的语义)
+UNSET_DISPLAY: dict[str, str] = {"theme": "auto", "defaultThinkingLevel": "off"}
+
+SETTING_CHOICES: dict[str, tuple[str, ...]] = {
+    "theme": ("dark", "light", "auto"),
+    "defaultThinkingLevel": ("off", "minimal", "low", "medium", "high", "xhigh", "max"),
+    "doubleEscapeAction": ("tree", "fork", "none"),
+    "hideThinkingBlock": ("false", "true"),
+    "quietStartup": ("false", "true"),
+    "skillsEnabled": ("false", "true"),
+}
+
+
+def setting_choices(settings: QiSettings) -> list[tuple[str, str]]:
+    """`/settings` 面板的行:`(键, 当前值)` —— 值域来自 `SETTING_CHOICES`。
+
+    当前值不在候选里(比如手写了一个不认识的主题)时**原样显示** —— 面板不该假装它不存在,
+    也不该在用户没动它的时候把值改掉。
+    """
+    rows: list[tuple[str, str]] = []
+    for key in SETTING_CHOICES:
+        current = getattr(settings, key, None)
+        if current is None and key in UNSET_DISPLAY:
+            current = UNSET_DISPLAY[key]        # 未设 → 显示**生效值**,不显示 "None"
+        rows.append((key, str(current).lower() if isinstance(current, bool) else str(current)))
+    return rows
+
+
+def next_choice(key: str, current: str) -> str:
+    """循环到下一个候选值(面板里按一下走一格)。未知键/未知值都**原样返回**。"""
+    values = SETTING_CHOICES.get(key)
+    if not values:
+        return current
+    try:
+        index = list(values).index(current)
+    except ValueError:
+        return values[0]          # 手写的怪值:按一下回到第一个合法值
+    return values[(index + 1) % len(values)]
+
+
 def default_tools(settings: QiSettings) -> list[str] | None:
     """`defaultTools` 规范化(None = 用框架默认)。"""
     if settings.defaultTools is None:

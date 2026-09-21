@@ -48,6 +48,13 @@ ExtensionHandler = Callable[[dict, "ExtensionContext"], Any | Awaitable[Any]]
 #: 返回 `str` 即视为成功;需要上报 status/exit_code 的工具返回 `ToolOutcome`。
 ToolExecutor = Callable[[dict, Any], Awaitable[str | ToolOutcome]]
 
+#: `deliver_as` 的两种写法归一:qi 的 snake_case 与 pi 的驼峰(值本身也是 pi 的约定)。
+_DELIVER_AS = {
+    "steer": "steer",
+    "follow_up": "follow_up", "followUp": "follow_up", "followup": "follow_up",
+    "next_turn": "next_turn", "nextTurn": "next_turn", "nextturn": "next_turn",
+}
+
 
 class ToolError(Exception):
     """工具执行错误:以结果文本返回给模型,**不中断会话**(runner 会包成 error 结果)。"""
@@ -77,11 +84,27 @@ class Tool:
     #: 谁装的(由 `register_tool` 盖):`{source, path, scope, origin}`。
     #: `getAllTools()` 按它过滤/诊断 —— 扩展工具与内置工具靠这个区分。
     source_info: dict | None = None
+    #: pi 的 `ToolDefinition.label` —— 界面上显示的名字(TUI 工具卡片标题)。
+    #: 空 = 回落到 `name`(不是所有工具都需要一个好看的名字)。
+    label: str = ""
+    #: pi 的 `prepareArguments`:拿到**原始**工具调用参数后、执行前的整理钩子。
+    #: 返回的 dict 才是真正执行用的那一份(也进 `tool_call` 事件的 `input`)。
+    #: qi **不做** schema 校验,所以它的位置就是“执行前最后一次整理”。
+    prepare_arguments: Callable[[Any], Any] | None = None
+    #: pi 的 `renderCall` / `renderResult` —— 扩展自己画工具卡片(TUI-only,见 §5.1)。
+    #: 签名 `(args|outcome, ctx) -> 组件`;不认识的返回值由前端退回默认渲染。
+    render_call: Callable[..., Any] | None = None
+    render_result: Callable[..., Any] | None = None
 
     @property
     def prompt_line(self) -> str:
         """系统提示词「可用工具」里那一行。回落规则只此一处。"""
         return self.prompt_snippet or self.description
+
+    @property
+    def display_label(self) -> str:
+        """界面显示名(`label` 缺省回落到 `name`)。"""
+        return self.label or self.name
 
     def to_llm_schema(self) -> dict:
         return {
@@ -109,17 +132,83 @@ def register_tool(catalog: Any, tool: Tool, *, source: str = "", path: str = "",
     catalog.register(tool)
 
 
+def _coerce_int(value: Any, default: int = 0) -> int:
+    """把配置里可能写成字符串/None 的数字收成 int(不因一个坏字段把 ctx 构造搞崩)。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _adapt_execute(fn: Any) -> ToolExecutor:
+    """pi 的 execute 是 `(toolCallId, params, signal, onUpdate, ctx)`,qi 是 `(args, ctx)`。
+
+    按**形参个数**判:pi 形状的包一层(第 1 个参数给 `ctx.tool_call_id`,第 4 个给
+    `ctx.on_update`)。拿不到签名就原样用 —— 猜错比不猜更糟。
+    """
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return fn
+    if len(params) < 4:
+        return fn
+
+    async def wrapper(args: dict, ctx: Any) -> Any:
+        result = fn(getattr(ctx, "tool_call_id", "") or "", args,
+                    getattr(ctx, "abort", None), getattr(ctx, "on_update", None), ctx)
+        return await result if inspect.isawaitable(result) else result
+
+    return wrapper  # type: ignore[return-value]
+
+
+def _coerce_tool(tool: Any) -> Tool:
+    """把 pi 形状的 dict 工具定义收成 `Tool`(已经是 `Tool` 的原样返回)。"""
+    if isinstance(tool, Tool):
+        return tool
+    if not isinstance(tool, dict):
+        raise TypeError(f"register_tool 需要 Tool 或 dict,收到 {type(tool).__name__}")
+
+    def pick(*names: str) -> Any:
+        for key in names:
+            if tool.get(key) is not None:
+                return tool[key]
+        return None
+
+    name = pick("name")
+    execute = pick("execute")
+    if not name or not callable(execute):
+        raise TypeError("register_tool 的 dict 必须带 name 与 execute")
+    return Tool(
+        name=str(name),
+        description=str(pick("description") or ""),
+        parameters=pick("parameters") or {"type": "object", "properties": {}},
+        execute=_adapt_execute(execute),
+        prompt_snippet=str(pick("promptSnippet", "prompt_snippet") or ""),
+        prompt_guidelines=list(pick("promptGuidelines", "prompt_guidelines") or []),
+        label=str(pick("label") or ""),
+        prepare_arguments=pick("prepareArguments", "prepare_arguments"),
+        render_call=pick("renderCall", "render_call"),
+        render_result=pick("renderResult", "render_result"),
+    )
+
+
 def tool_info(tool: Tool) -> dict:
     """工具的公开元数据(`getAllTools()` 的元素)。
 
     字段用 snake_case(qi 自己的 Python 数据);方法的**名字**照 pi 保留 camelCase,
     因为那是扩展作者要背的那部分。
     """
-    return {"name": tool.name, "description": tool.description,
+    info = {"name": tool.name, "label": tool.display_label,
+            "description": tool.description,
             "prompt_snippet": tool.prompt_snippet,
             "prompt_guidelines": list(tool.prompt_guidelines),
             "parameters": tool.parameters,
             "source_info": dict(tool.source_info or {})}
+    # pi 的键名(驼峰)也放一份:qi 自己的数据用 snake_case,但照 pi 写的扩展
+    # (`t.promptGuidelines` / `t.sourceInfo`)也要能直接跑 —— 两套键指同一个值。
+    info["promptGuidelines"] = info["prompt_guidelines"]
+    info["sourceInfo"] = info["source_info"]
+    return info
 
 
 def _note(host: Any, text: str) -> None:
@@ -197,6 +286,9 @@ class ExtensionCommand:
     description: str
     handler: CommandHandler
     source: str            # 哪个扩展注册的(诊断/展示)
+    #: pi 的 `getArgumentCompletions(prefix) -> list | None`(参数补全)。qi 暂未消费,
+    #: 但**收下来** —— 注册了不生效比报错难查,所以 `get_commands()` 会把它带出去。
+    get_argument_completions: Any = None
 
 
 @dataclass
@@ -331,10 +423,12 @@ class CommandRegistry:
 
     # ── 注册 ──
     def add_command(self, name: str, handler: CommandHandler, *,
-                    description: str = "", source: str = "") -> None:
+                    description: str = "", source: str = "",
+                    get_argument_completions: Any = None) -> None:
         self._commands.setdefault(name, []).append(ExtensionCommand(
             name=name, invocable=name, description=description,
-            handler=handler, source=source))
+            handler=handler, source=source,
+            get_argument_completions=get_argument_completions))
         self._renumber(name)
 
     def add_shortcut(self, key: str, handler: ShortcutHandler, *,
@@ -369,6 +463,56 @@ class CommandRegistry:
     @property
     def is_empty(self) -> bool:
         return not self._commands and not self._shortcuts
+
+
+class RendererRegistry:
+    """渲染回调的登记处(pi 的 `registerMessageRenderer` / `registerEntryRenderer` /
+    `registerMarkdownTransformer`)。
+
+    **TUI-only**:回调返回的是前端组件,所以非 TUI 前端退回默认渲染(与 pi 的
+    `ctx.mode` 门控同一口径)。这里只负责**登记** —— 什么时候调由前端决定。
+
+    同名后注册者胜(pi 的行为):一个扩展重注册自己的渲染器是常见写法。
+    """
+
+    def __init__(self) -> None:
+        self._messages: dict[str, Any] = {}
+        self._entries: dict[str, Any] = {}
+        self._markdown: list[Any] = []
+
+    def add_message(self, custom_type: str, renderer: Any, *, source: str = "") -> None:
+        self._messages[str(custom_type)] = (renderer, source)
+
+    def add_entry(self, custom_type: str, renderer: Any, *, source: str = "") -> None:
+        self._entries[str(custom_type)] = (renderer, source)
+
+    def add_markdown(self, transformer: Any, *, source: str = "") -> None:
+        self._markdown.append((transformer, source))
+
+    def message_renderer(self, custom_type: str) -> Any | None:
+        found = self._messages.get(str(custom_type))
+        return found[0] if found else None
+
+    def entry_renderer(self, custom_type: str) -> Any | None:
+        found = self._entries.get(str(custom_type))
+        return found[0] if found else None
+
+    def transformers(self) -> list[Any]:
+        return [fn for fn, _ in self._markdown]
+
+    def apply_markdown(self, markdown: str, ctx: Any = None) -> str:
+        """按注册顺序链式跑 markdown transformer(单个抛错只跳过它)。"""
+        text = markdown
+        for fn, source in self._markdown:
+            try:
+                text = str(fn(text, ctx) if ctx is not None else fn(text))
+            except Exception:  # noqa: BLE001 渲染器坏不该把消息弄丢
+                continue
+        return text
+
+    @property
+    def is_empty(self) -> bool:
+        return not self._messages and not self._entries and not self._markdown
 
 
 #: 单个子进程 stdout/stderr 的捕获上限(与工具输出同档)
@@ -471,22 +615,51 @@ def _is_verdict(returned: dict, stop_keys: tuple[str, ...] | None,
 class ExtensionUi:
     """`ctx.ui` —— 扩展向前端要交互的唯一入口(docs/extensions.md §5.1)。
 
-    前端(TUI / web)提供一个鸭子类型的 backend,四个方法:`confirm` / `select` /
-    `input`(异步,有返回值)与 `notify`(同步)。**backend 可选** —— 拿不到就走下面两条硬规则。
+    分两层(与 pi 一致):
 
-    1. **没有 backend 时必须有确定结果**:每个方法返回调用方给的 `default`。
-       `confirm` 的 `default` 默认 **False**(拒绝是安全边),`select`/`input` 默认 None(取消)。
-       “默认值由调用方给”是刻意的 —— 只有它知道“这里是拒绝安全还是继续安全”;
-       而一个确定的结果就是 `-p` 永远不会卡在这里的原因。
-    2. `notify` 在没有 backend 时**不丢弃**,落进宿主 `notes`。否则“扩展说了一句话”
-       就凭空消失 —— 事情发生了但没人看见,是最难诊断的一类。
+    * **数据层** —— 问答(`confirm`/`select`/`input`/`editor`)与状态(`notify`/
+      `set_status`/`set_title`/`set_working_*`/`set_hidden_thinking_label`/
+      `get_set_tools_expanded`/主题)。跨前端:TUI 与 web 都该实现;没前端时退回确定值。
+    * **组件层** —— `set_widget` / `set_footer` / `set_header` / `custom` /
+      `set_editor_component` / `add_autocomplete_provider` / `on_terminal_input`。
+      **TUI-only**(pi 同样只在 `ctx.mode === "tui"` 下有意义):其他前端下 `custom()`
+      返回 None、注册类调用记一条 note 后 no-op —— 不静默。
 
-    backend 抛异常也走 `default`(记一条 note):交互是辅助手段,不该成为新的失败点。
+    两条硬规则(§4 同级的契约,有测试钉住):
+
+    1. **没有后端时每个问答方法返回调用方给的 `default`**,于是“交互”退化成“按事先
+       声明好的策略走”,而**永远不会挂住**。`confirm` 的 `default` 默认 **False**
+       (拒绝是安全边);`select`/`input`/`editor` 默认 None(取消)。默认值由**调用方**
+       给 —— 只有它知道“这里是拒绝安全还是继续安全”。
+    2. `notify` 没有后端时**落进 `notes`**,不丢弃(否则“扩展说了一句话”就凭空消失)。
+
+    后端自己抛异常也走 `default`(记一条 note):交互是辅助手段,不该成为新的失败点。
     """
 
-    def __init__(self, frontend: Any = None, notes: list[str] | None = None) -> None:
+    def __init__(self, frontend: Any = None, notes: list[str] | None = None,
+                 mode: str = "print", bus: Any = None, ctx_factory: Any = None) -> None:
         self._frontend = frontend
         self._notes = notes if notes is not None else []
+        self.mode = mode
+        #: `ui_prompt_start` / `ui_prompt_end` 的派发面(pi 用来观察“有人在等交互”)。
+        #: 没给总线就只有交互,不发事件。
+        self._bus = bus
+        self._ctx_factory = ctx_factory
+
+    async def _emit_prompt(self, phase: str, kind: str, title: str | None) -> None:
+        """发 `ui_prompt_start` / `ui_prompt_end`(失败不影响交互本身)。"""
+        event = f"ui_prompt_{phase}"
+        if self._bus is None or not self._bus.has(event):
+            return
+        ctx = self._ctx_factory() if callable(self._ctx_factory) else None
+        if ctx is None:
+            return
+        try:
+            await self._bus.emit(event,
+                                 {"reason": "ui_prompt", "kind": kind, "title": title},
+                                 ctx=ctx)
+        except Exception:  # noqa: BLE001 通知失败不该影响交互
+            return
 
     @property
     def frontend(self) -> Any:
@@ -504,16 +677,51 @@ class ExtensionUi:
     def _report(self, method: str, exc: Exception) -> None:
         self._notes.append(f"扩展的 ui.{method} 前端处理失败: {type(exc).__name__}: {exc}")
 
+    def _forward(self, method: str, *args: Any, **kwargs: Any) -> tuple[bool, Any]:
+        """转给前端。返回 `(拿到值了吗, 值)` —— 前端没有这个方法就是 `(False, None)`。"""
+        fn = getattr(self._frontend, method, None)
+        if not callable(fn):
+            return False, None
+        try:
+            return True, fn(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 界面坏不等于回合该失败
+            self._report(method, exc)
+            return True, None
+
+    def _component_unavailable(self, method: str) -> None:
+        """组件层在当前前端上不可用时的统一处理:**不静默**(组件被丢了是功能损失)。"""
+        self._notes.append(
+            f"ui.{method} 需要 TUI 前端且该前端实现了它(ctx.mode={self.mode!r});已忽略")
+
+    def _forward_component(self, method: str, *args: Any) -> bool:
+        """组件层转发:前端没实现这个方法时**记一条 note**并返回 False。"""
+        if self._frontend is None or self.mode != "tui":
+            self._component_unavailable(method)
+            return False
+        found, _ = self._forward(method, *args)
+        if not found:
+            self._component_unavailable(method)
+            return False
+        return True
+
+    # ── 数据层:问答 ──
     async def confirm(self, message: str, *, title: str | None = None,
                       default: bool = False) -> bool:
-        """问一个是/否。**默认 False** —— “拿不准就不做”是安全边。"""
+        """问一个是/否。**默认 False** —— “拿不准就不做”是安全边。
+
+        `title` 与 `message` 的顺序照 qi 的写法(message 必填);pi 是
+        `confirm(title, message)` —— 两个都收(见下 `confirm_title_first` 说明)。
+        """
         if self._frontend is None:
             return default
+        await self._emit_prompt("start", "confirm", title)
         try:
             value = await self._frontend.confirm(message, title=title, default=default)
         except Exception as exc:  # noqa: BLE001 界面坏不等于回合该失败
             self._report("confirm", exc)
             return default
+        finally:
+            await self._emit_prompt("end", "confirm", title)
         return default if value is None else bool(value)
 
     async def select(self, message: str, options: Sequence[str], *,
@@ -521,12 +729,15 @@ class ExtensionUi:
         """让用户从 `options` 里选一个。取消 → None。"""
         if self._frontend is None:
             return default
+        await self._emit_prompt("start", "select", title)
         try:
             value = await self._frontend.select(message, list(options),
-                                                title=title, default=default)
+                                               title=title, default=default)
         except Exception as exc:  # noqa: BLE001
             self._report("select", exc)
             return default
+        finally:
+            await self._emit_prompt("end", "select", title)
         return default if value is None else str(value)
 
     async def input(self, message: str, *, title: str | None = None,
@@ -534,13 +745,29 @@ class ExtensionUi:
         """要一行文本。取消 → None(注意:空字符串是“用户按了回车”,不是取消)。"""
         if self._frontend is None:
             return default
+        await self._emit_prompt("start", "input", title)
         try:
             value = await self._frontend.input(message, title=title, default=default,
-                                               secret=secret)
+                                              secret=secret)
         except Exception as exc:  # noqa: BLE001
             self._report("input", exc)
             return default
+        finally:
+            await self._emit_prompt("end", "input", title)
         return default if value is None else str(value)
+
+    async def editor(self, prefill: str = "", *, title: str | None = None) -> str | None:
+        """多行编辑(pi 的 `ui.editor(title, prefill)`)。无前端 → None。"""
+        if self._frontend is None:
+            return None
+        await self._emit_prompt("start", "editor", title)
+        try:
+            found, value = self._forward("editor", prefill, title=title)
+            if not found:                       # 前端没实现多行 → 退回单行 input
+                return await self.input(title or "编辑", default=prefill)
+            return None if value is None else str(value)
+        finally:
+            await self._emit_prompt("end", "editor", title)
 
     def notify(self, message: str, *, level: str = "info") -> None:
         """说一句不需要回答的话。无界面时进 `notes`,**不丢弃**。"""
@@ -553,17 +780,293 @@ class ExtensionUi:
             self._report("notify", exc)
             self._notes.append(message)
 
+    # ── 数据层:状态与外观 ──
+    def set_status(self, key: str, text: str | None) -> None:
+        """footer/状态栏里的一条常驻状态(`text=None` 清除)。"""
+        if self._frontend is None:
+            return
+        self._forward("set_status", key, text)
+
+    def set_title(self, title: str) -> None:
+        """终端窗口/标签页标题。"""
+        if self._frontend is None:
+            return
+        self._forward("set_title", title)
+
+    def set_working_message(self, message: str | None = None) -> None:
+        """流式过程中那一行“正在做事”的文案(不传 = 恢复默认)。"""
+        if self._frontend is None:
+            return
+        self._forward("set_working_message", message)
+
+    def set_working_visible(self, visible: bool) -> None:
+        if self._frontend is None:
+            return
+        self._forward("set_working_visible", visible)
+
+    def set_working_indicator(self, options: dict | None = None) -> None:
+        """动画帧/间隔配置(`{"frames": [...], "intervalMs": int}`)。"""
+        if self._frontend is None:
+            return
+        self._forward("set_working_indicator", options)
+
+    def set_hidden_thinking_label(self, label: str | None = None) -> None:
+        """折叠思考块显示的那个短标签。"""
+        if self._frontend is None:
+            return
+        self._forward("set_hidden_thinking_label", label)
+
+    def get_tools_expanded(self) -> bool:
+        return bool(self._forward("get_tools_expanded")[1]) if self._frontend else False
+
+    def set_tools_expanded(self, expanded: bool) -> None:
+        if self._frontend is None:
+            return
+        self._forward("set_tools_expanded", expanded)
+
+    @property
+    def theme(self) -> Any:
+        """当前主题(无前端 / 无该能力 → None)。
+
+        注意走 `getattr` 而不是 `_forward`:pi 的 `ui.theme` 是**属性**,前端的也是属性
+        (取到的是 Palette,不可调用) —— 拿 `_forward` 会被 `callable` 判掉而永远返回 None。
+        """
+        if self._frontend is None:
+            return None
+        return getattr(self._frontend, "theme", None)
+
+    def get_all_themes(self) -> list[dict]:
+        value = self._forward("get_all_themes")[1] if self._frontend else None
+        return list(value) if isinstance(value, list) else []
+
+    def get_theme(self, name: str) -> Any:
+        return self._forward("get_theme", name)[1] if self._frontend else None
+
+    def set_theme(self, theme: Any) -> dict:
+        """切主题。返回 `{success, error?}`(pi 同形)。"""
+        if self._frontend is None:
+            return {"success": False, "error": "没有前端"}
+        found, value = self._forward("set_theme", theme)
+        if not found:
+            return {"success": False, "error": "前端不支持切主题"}
+        return dict(value) if isinstance(value, dict) else {"success": bool(value)}
+
+    # ── 数据层:编辑器内容 ──
+    def paste_to_editor(self, text: str) -> None:
+        if self._frontend is None:
+            return
+        self._forward("paste_to_editor", text)
+
+    def set_editor_text(self, text: str) -> None:
+        if self._frontend is None:
+            return
+        self._forward("set_editor_text", text)
+
+    def get_editor_text(self) -> str:
+        value = self._forward("get_editor_text")[1] if self._frontend else None
+        return "" if value is None else str(value)
+
+    # ── 组件层(TUI-only)──
+    def set_widget(self, key: str, content: Any,
+                   options: dict | None = None) -> None:
+        """在编辑器上/下方挂一个常驻 widget(pi 的 `setWidget`;`content=None` 移除)。
+
+        `content` 是字符串行列表,或一个 `(ctx) -> 组件` 的工厂。
+        """
+        self._forward_component("set_widget", key, content, options)
+
+    def set_footer(self, factory: Any) -> None:
+        """整个替换 footer(`None` = 恢复内置)。"""
+        self._forward_component("set_footer", factory)
+
+    def set_header(self, factory: Any) -> None:
+        """整个替换启动 header(`None` = 恢复内置)。"""
+        self._forward_component("set_header", factory)
+
+    async def custom(self, factory: Any, options: dict | None = None) -> Any:
+        """弹一个扩展自己的组件(可带键盘焦点 / overlay)。无 TUI → None(pi 同形)。"""
+        if self._frontend is None or self.mode != "tui":
+            return None
+        found, value = self._forward("custom", factory, options)
+        if not found:
+            self._component_unavailable("custom")
+            return None
+        await self._emit_prompt("start", "custom", None)
+        try:
+            return await value if inspect.isawaitable(value) else value
+        finally:
+            await self._emit_prompt("end", "custom", None)
+
+    def set_editor_component(self, factory: Any) -> None:
+        self._forward_component("set_editor_component", factory)
+
+    def get_editor_component(self) -> Any:
+        return self._forward("get_editor_component")[1] if self._frontend else None
+
+    def add_autocomplete_provider(self, factory: Any) -> None:
+        self._forward_component("add_autocomplete_provider", factory)
+
+    def on_terminal_input(self, handler: Any) -> Any:
+        """听原始终端输入。返回**退订函数**(pi 同形);不可用时返回 no-op 函数。
+
+        不可用不是静默的 —— 读键盘是功能性的(不是装饰),丢了该看得见。
+        """
+        if self._frontend is None or self.mode != "tui":
+            self._component_unavailable("on_terminal_input")
+            return lambda: None
+        found, value = self._forward("on_terminal_input", handler)
+        if not found:
+            self._component_unavailable("on_terminal_input")
+            return lambda: None
+        return value if callable(value) else (lambda: None)
+
+    # ── pi 的驼峰别名 ──
+    def setStatus(self, key: str, text: str | None) -> None:            # noqa: N802
+        self.set_status(key, text)
+
+    def setTitle(self, title: str) -> None:                             # noqa: N802
+        self.set_title(title)
+
+    def setWorkingMessage(self, message: str | None = None) -> None:    # noqa: N802
+        self.set_working_message(message)
+
+    def setWorkingVisible(self, visible: bool) -> None:                 # noqa: N802
+        self.set_working_visible(visible)
+
+    def setWorkingIndicator(self, options: dict | None = None) -> None:  # noqa: N802
+        self.set_working_indicator(options)
+
+    def setHiddenThinkingLabel(self, label: str | None = None) -> None:  # noqa: N802
+        self.set_hidden_thinking_label(label)
+
+    def getToolsExpanded(self) -> bool:                                 # noqa: N802
+        return self.get_tools_expanded()
+
+    def setToolsExpanded(self, expanded: bool) -> None:                 # noqa: N802
+        self.set_tools_expanded(expanded)
+
+    def getAllThemes(self) -> list[dict]:                               # noqa: N802
+        return self.get_all_themes()
+
+    def getTheme(self, name: str) -> Any:                               # noqa: N802
+        return self.get_theme(name)
+
+    def setTheme(self, theme: Any) -> dict:                             # noqa: N802
+        return self.set_theme(theme)
+
+    def pasteToEditor(self, text: str) -> None:                         # noqa: N802
+        self.paste_to_editor(text)
+
+    def setEditorText(self, text: str) -> None:                         # noqa: N802
+        self.set_editor_text(text)
+
+    def getEditorText(self) -> str:                                     # noqa: N802
+        return self.get_editor_text()
+
+    def setWidget(self, key: str, content: Any, options: dict | None = None) -> None:  # noqa: N802
+        self.set_widget(key, content, options)
+
+    def setFooter(self, factory: Any) -> None:                          # noqa: N802
+        self.set_footer(factory)
+
+    def setHeader(self, factory: Any) -> None:                          # noqa: N802
+        self.set_header(factory)
+
+    def setEditorComponent(self, factory: Any) -> None:                 # noqa: N802
+        self.set_editor_component(factory)
+
+    def getEditorComponent(self) -> Any:                                # noqa: N802
+        return self.get_editor_component()
+
+    def addAutocompleteProvider(self, factory: Any) -> None:            # noqa: N802
+        self.add_autocomplete_provider(factory)
+
+    def onTerminalInput(self, handler: Any) -> Any:                     # noqa: N802
+        return self.on_terminal_input(handler)
+
+
+class ModelView(str):
+    """`ctx.model` —— pi 那边是一个 `Model` 对象(qi 内部是 `ResolvedModel`)。
+
+    做成 `str` 的子类是刻意的:qi 既有用法(`ctx.model == "provider/model"`、直接
+    进 JSON / 进提示词)一字不变,而 pi 的字段访问(`ctx.model.id` /
+    `ctx.model.contextWindow`)也成立 —— 两边的语义同时满足,而不是二选一。
+    """
+
+    # 类级注解:str 子类不能用 `__slots__`,所以用注解把动态属性告诉类型检查器
+    provider: str
+    id: str
+    name: str
+    api: str
+    base_url: str | None
+    reasoning: bool
+    context_window: int
+    max_tokens: int
+
+    def __new__(cls, provider: str, model_id: str, *, api: str = "",
+                base_url: str | None = None, reasoning: bool = False,
+                context_window: int = 0, max_tokens: int = 0, name: str = "") -> "ModelView":
+        obj = super().__new__(cls, f"{provider}/{model_id}")
+        obj.provider = provider
+        obj.id = model_id                       # pi 的 `model.id`
+        obj.name = name or model_id
+        obj.api = api
+        obj.base_url = base_url
+        obj.reasoning = reasoning
+        obj.context_window = context_window
+        obj.max_tokens = max_tokens
+        return obj
+
+    @classmethod
+    def from_resolved(cls, resolved: Any) -> "ModelView":
+        """从内部的 `ResolvedModel` 造一个(str 子类,所以 `== "p/m"` 也真)。"""
+        if resolved is None:
+            raise ValueError("from_resolved 需要 ResolvedModel,收到 None")
+        entry = getattr(resolved, "entry", None)
+        return cls(getattr(resolved, "provider", "") or "",
+                   getattr(resolved, "model", "") or "",
+                   api=getattr(resolved, "api", "") or "",
+                   base_url=getattr(resolved, "base_url", None),
+                   reasoning=bool(getattr(resolved, "reasoning", False)),
+                   context_window=_coerce_int(getattr(resolved, "context_window", 0)),
+                   max_tokens=_coerce_int(getattr(resolved, "max_tokens", 0)),
+                   name=str(getattr(entry, "name", "") or ""))
+
+    # ── pi 的字段名(驼峰)──
+    @property
+    def model(self) -> str:
+        return self.id
+
+    @property
+    def contextWindow(self) -> int:              # noqa: N802
+        return self.context_window
+
+    @property
+    def maxTokens(self) -> int:                  # noqa: N802
+        return self.max_tokens
+
+    @property
+    def baseUrl(self) -> str | None:             # noqa: N802
+        return self.base_url
+
+    @property
+    def label(self) -> str:
+        return str(self)
+
 
 class SessionView:
     """`ctx.session_manager` —— 当前会话的**只读**视图。
 
     为什么不让扩展直接拿 `Session` / `SessionStore`:
     * 读——扩展要的只是“我说过什么、会话叫什么、分到哪个文件”,不需要知道 entry 形状;
-    * 写——写口只有 `api.appendEntry` **一个**(章由宿主盖:agent 归属、source、落盘时机)。
+    * 写——写口只有 `api.append_entry` **一个**(章由宿主盖:agent 归属、source、落盘时机)。
       两个写口迟早写出两种 entry 形状。
 
     `entries()` 返回**当前分支**(不是整个文件):会话是树,扩展没理由看到别的分支。
-    没有活动会话时读返回空 —— 写由 `api.appendEntry` 报错(不静默丢弃)。
+    没有活动会话时读返回空/None —— 写由 `api.append_entry` 报错(不静默丢弃)。
+
+    方法名两面都有:qi 的 snake_case 是正式名,pi 的驼峰是别名(`getEntry` /
+    `getBranch` / …),所以照 pi 写的扩展能直接跑。
     """
 
     def __init__(self, session: Any = None) -> None:
@@ -600,20 +1103,214 @@ class SessionView:
             out = [e for e in out if e.get("custom_type") == custom_type]
         return out
 
+    # ── pi ReadonlySessionManager 对应面 ──
+    def get_entries(self) -> list[dict]:
+        return self.entries()
+
+    def get_entry(self, entry_id: str) -> dict | None:
+        for entry in getattr(self._session, "entries", []) or []:
+            if str(entry.get("id")) == str(entry_id):
+                return dict(entry)
+        return None
+
+    def get_leaf_id(self) -> str | None:
+        return getattr(self._session, "leaf", None)
+
+    def get_leaf_entry(self) -> dict | None:
+        leaf = self.get_leaf_id()
+        return self.get_entry(leaf) if leaf else None
+
+    def get_branch(self, leaf: str | None = None) -> list[dict]:
+        if self._session is None:
+            return []
+        try:
+            return [dict(e) for e in self._session.branch(leaf)]
+        except TypeError:            # 测试替身可能不收参数
+            return self.entries()
+
+    def build_context_entries(self) -> list[dict]:
+        """进 LLM 上下文的那一串(= 当前分支)。"""
+        return self.entries()
+
+    def get_header(self) -> dict | None:
+        entries = getattr(self._session, "entries", []) or []
+        if entries and entries[0].get("type") == "session":
+            return dict(entries[0])
+        return None
+
+    def get_cwd(self) -> str | None:
+        cwd = getattr(self._session, "cwd", None)
+        return str(cwd) if cwd is not None else None
+
+    def get_session_dir(self) -> str | None:
+        p = getattr(self._session, "path", None)
+        return str(Path(p).parent) if p is not None else None
+
+    def get_session_file(self) -> str | None:
+        return self.path
+
+    def get_session_name(self) -> str | None:
+        return self.title or None
+
+    def get_label(self, entry_id: str) -> str | None:
+        """某条 entry 的 label(label entry 盖在 targetId 上,后写者胜)。"""
+        found: str | None = None
+        for entry in getattr(self._session, "entries", []) or []:
+            if entry.get("type") == "label" and str(entry.get("targetId")) == str(entry_id):
+                found = entry.get("label")
+        return found
+
+    def get_tree(self) -> list[dict]:
+        """嵌套树(`[{entry, children, label}]`),给 `/tree` 那类渲染用。"""
+        session = self._session
+        if session is None:
+            return []
+        nodes = list(getattr(session, "tree_entries", []))
+        children: dict[str | None, list[dict]] = {}
+        for entry in nodes:
+            children.setdefault(entry.get("parentId") or None, []).append(entry)
+
+        def build(entry: dict) -> dict:
+            node = {"entry": dict(entry), "children": []}
+            label = self.get_label(str(entry.get("id")))
+            if label is not None:
+                node["label"] = label
+            node["children"] = [build(c) for c in children.get(str(entry.get("id")), [])]
+            return node
+
+        return [build(e) for e in children.get(None, [])]
+
+    # ── pi 的驼峰别名 ──
+    def getSessionId(self) -> str | None:        # noqa: N802
+        return self.session_id
+
+    def getSessionFile(self) -> str | None:      # noqa: N802
+        return self.path
+
+    def getSessionName(self) -> str | None:      # noqa: N802
+        return self.get_session_name()
+
+    def getCwd(self) -> str | None:              # noqa: N802
+        return self.get_cwd()
+
+    def getEntries(self) -> list[dict]:          # noqa: N802
+        return self.entries()
+
+    def getEntry(self, entry_id: str) -> dict | None:      # noqa: N802
+        return self.get_entry(entry_id)
+
+    def getLeafId(self) -> str | None:           # noqa: N802
+        return self.get_leaf_id()
+
+    def getLeafEntry(self) -> dict | None:       # noqa: N802
+        return self.get_leaf_entry()
+
+    def getBranch(self, leaf: str | None = None) -> list[dict]:   # noqa: N802
+        return self.get_branch(leaf)
+
+    def buildContextEntries(self) -> list[dict]:  # noqa: N802
+        return self.build_context_entries()
+
+    def getHeader(self) -> dict | None:          # noqa: N802
+        return self.get_header()
+
+    def getLabel(self, entry_id: str) -> str | None:      # noqa: N802
+        return self.get_label(entry_id)
+
+    def getTree(self) -> list[dict]:             # noqa: N802
+        return self.get_tree()
+
+    def getSessionDir(self) -> str | None:       # noqa: N802
+        return self.get_session_dir()
+
+
+class ModelRegistryView:
+    """`ctx.model_registry` —— 模型目录的只读面 + provider 注册(pi 的 `ModelRegistry`)。
+
+    只做扩展真正会用的那几个(列全部/可用、按 provider+id 查、鉴权状态、注册/注销
+    provider),不做完整的解析与补全 —— 那属于宿主内部。
+    """
+
+    def __init__(self, host: Any = None) -> None:
+        self._host = host
+
+    def _call(self, name: str, default: Any, *args: Any, **kwargs: Any) -> Any:
+        if self._host is None:
+            return default
+        fn = getattr(self._host, name, None)
+        if not callable(fn):
+            return default
+        return fn(*args, **kwargs)
+
+    def get_all(self) -> list[Any]:
+        return list(self._call("model_catalog", []))
+
+    def get_available(self) -> list[Any]:
+        return list(self._call("available_models", []) or self.get_all())
+
+    def find(self, provider: str, model_id: str) -> Any | None:
+        for model in self.get_all():
+            if model.provider == provider and model.id == model_id:
+                return model
+        return None
+
+    def has_configured_auth(self, model: Any) -> bool:
+        return bool(self._call("has_configured_auth", False, model))
+
+    def get_provider_display_name(self, provider: str) -> str:
+        return str(self._call("provider_display_name", provider, provider))
+
+    def register_provider(self, name: str, config: dict | None = None) -> None:
+        if self._host is None:
+            raise RuntimeError("宿主没有提供 provider 注册接口:register_provider / registerProvider 不可用")
+        self._host.register_provider(name, dict(config or {}), "extension")
+
+    def unregister_provider(self, name: str) -> None:
+        if self._host is None:
+            raise RuntimeError("宿主没有提供 provider 注销接口:unregister_provider / unregisterProvider 不可用")
+        self._host.unregister_provider(name)
+
+    # ── pi 的驼峰别名 ──
+    def getAll(self) -> list[Any]:               # noqa: N802
+        return self.get_all()
+
+    def getAvailable(self) -> list[Any]:         # noqa: N802
+        return self.get_available()
+
+    def hasConfiguredAuth(self, model: Any) -> bool:      # noqa: N802
+        return self.has_configured_auth(model)
+
+    def getProviderDisplayName(self, provider: str) -> str:   # noqa: N802
+        return self.get_provider_display_name(provider)
+
+    def registerProvider(self, name: str, config: dict | None = None) -> None:   # noqa: N802
+        self.register_provider(name, config)
+
+    def unregisterProvider(self, name: str) -> None:      # noqa: N802
+        self.unregister_provider(name)
+
+
 
 @dataclass(frozen=True)
 class ExtensionContext:
-    """`ctx` —— 传给每个 handler 的只读上下文(P-E1d 是最小集,见 §3.3)。
+    """`ctx` —— 传给每个 handler 的上下文(见 docs/extensions.md §3.3)。
 
-    P-E3/P-E4 会往上加 `ui` / `sessionManager` / `compact` / `model` 对象等;
-    现在先只放"任何 handler 都可能要用"的那几个。
+    字段是**只读值**(frozen),但方法(`abort()` / `compact()` / `getContextUsage()` /
+    命令上下文的那几个)要回宿主去问 —— 所以带一个 `host` 后向引用(鸭子类型;
+    `extensions` 不能 import `runtime`,会成环)。没给 host 时读方法退回确定值、
+    写方法报错(与 `ctx.ui` 没前端时的口径一致:**不静默**)。
 
     `notes` 是**故意可变**的:扩展也能往启动提示里加话(它是宿主给前端的唯一提示通道,
     runtime 自己不打印)。frozen 只管字段重绑定,不管列表内容。
+
+    命名:qi 的 snake_case 是正式名,pi 的驼峰 (`isProjectTrusted` / `getSystemPrompt` /
+    `thinkingLevel` / `sessionManager` / …) 是别名。
     """
 
     cwd: Path
-    model: str | None = None            # "provider/model"(与 pi 的 ctx.model 同形)
+    #: 当前模型。`ModelView` 是 `str` 子类:既有的 `== "provider/model"` 用法不变,
+    #: pi 的 `ctx.model.id` / `ctx.model.contextWindow` 也成立。
+    model: ModelView | None = None
     thinking_level: str = "off"
     signal: AbortSignal | None = None   # 协作式中断:扩展做异步**必须**传它,否则 Esc 取消不掉
     has_ui: bool = False
@@ -624,10 +1321,162 @@ class ExtensionContext:
     ui: ExtensionUi = field(default_factory=ExtensionUi)
     #: `ctx.session_manager` —— 当前会话的只读视图(见 `SessionView`)。回合外 `available` 为 False。
     session_manager: SessionView = field(default_factory=SessionView)
+    #: 运行模式:`tui` | `rpc` | `json` | `print`(pi 的 `ExtensionMode`)。
+    #: 组件层 UI(`ctx.ui.custom` / widget / footer)只在 `tui` 里有意义 ——
+    #: 扩展该用 `ctx.mode == "tui"` 做门控(pi 的写法)。
+    mode: str = "print"
+    #: 本回合绑定的会话对象(命令上下文要它来切会话)。**不是**公开面 —— 扩展读用
+    #: `ctx.session_manager`。
+    session: Any = field(default=None, repr=False, compare=False)
+    #: `--models` / `enabledModels` 圈定的模型(空 = 不限制)。
+    scoped_models: tuple[str, ...] = ()
+    #: 宿主后向引用(runtime)。读方法缺它时给确定值,写方法报错。
+    host: Any = field(default=None, repr=False, compare=False)
+    #: `ctx.model_registry`(pi 的 `ModelRegistry` 只读面)。
+    model_registry: ModelRegistryView = field(default_factory=ModelRegistryView)
 
+    # ── pi 的驼峰属性别名 ──
+    @property
+    def hasUI(self) -> bool:                     # noqa: N802
+        return self.has_ui
+
+    @property
+    def thinkingLevel(self) -> str:              # noqa: N802
+        return self.thinking_level
+
+    @property
+    def sessionManager(self) -> SessionView:     # noqa: N802
+        return self.session_manager
+
+    @property
+    def scopedModels(self) -> tuple[str, ...]:   # noqa: N802
+        return self.scoped_models
+
+    @property
+    def modelRegistry(self) -> ModelRegistryView:   # noqa: N802
+        return self.model_registry
+
+    # ── 信任 ──
     def is_project_trusted(self) -> bool:
-        """pi 是 `ctx.isProjectTrusted()`;保持方法形状,方便 qi-agents 直接照搬。"""
+        """pi 的 `ctx.isProjectTrusted()`。"""
         return self.project_trusted
+
+    def isProjectTrusted(self) -> bool:          # noqa: N802
+        return self.project_trusted
+
+    # ── 运行控制(pi 的 ExtensionContext 同名方法)──
+    def abort(self) -> None:
+        """中断当前回合(pi 的 `ctx.abort()`)。没有回合在跑时是 no-op。"""
+        if self.signal is not None:
+            self.signal.abort()
+        host_abort = getattr(self.host, "abort", None)
+        if callable(host_abort) and self.signal is None:
+            host_abort()
+
+    def is_idle(self) -> bool:
+        """agent 空闲吗(没在流式)(pi 的 `ctx.isIdle()`)。"""
+        fn = getattr(self.host, "is_idle", None)
+        return bool(fn()) if callable(fn) else True
+
+    def isIdle(self) -> bool:                    # noqa: N802
+        return self.is_idle()
+
+    def has_pending_messages(self) -> bool:
+        """有没有排队等送达的扩展消息(pi 的 `ctx.hasPendingMessages()`)。"""
+        fn = getattr(self.host, "has_pending_messages", None)
+        return bool(fn()) if callable(fn) else False
+
+    def hasPendingMessages(self) -> bool:        # noqa: N802
+        return self.has_pending_messages()
+
+    def shutdown(self) -> None:
+        """优雅退出 qi(pi 的 `ctx.shutdown()`;只在 TUI/CLI 下有意义)。"""
+        fn = getattr(self.host, "shutdown", None)
+        if callable(fn):
+            fn()
+
+    def get_context_usage(self) -> Any:
+        """当前上下文占用(pi 的 `ContextUsage`:`{tokens, contextWindow, percent}`)。"""
+        fn = getattr(self.host, "context_usage", None)
+        return fn() if callable(fn) else None
+
+    def getContextUsage(self) -> Any:            # noqa: N802
+        return self.get_context_usage()
+
+    def compact(self, options: dict | None = None) -> None:
+        """触发一次压缩,**不等**它完成(pi 的 `ctx.compact()` 同语义)。"""
+        fn = getattr(self.host, "compact", None)
+        if callable(fn):
+            fn(options)
+
+    def get_system_prompt(self) -> str:
+        """当前生效的 system prompt 全文(pi 的 `ctx.getSystemPrompt()`)。"""
+        fn = getattr(self.host, "current_system_prompt", None)
+        return str(fn()) if callable(fn) else ""
+
+    def getSystemPrompt(self) -> str:            # noqa: N802
+        return self.get_system_prompt()
+
+    def get_system_prompt_options(self) -> dict:
+        """造 system prompt 用的结构化选项(pi 的 `ctx.getSystemPromptOptions()`)。"""
+        fn: Any = getattr(self.host, "system_prompt_options", None)
+        if not callable(fn):
+            return {}
+        value = fn()
+        return dict(value) if isinstance(value, dict) else {}
+
+    def getSystemPromptOptions(self) -> dict:    # noqa: N802
+        return self.get_system_prompt_options()
+
+    # ── 会话操作(pi 的 ExtensionCommandContext:只在命令/事件处理器里安全)──
+    async def wait_for_idle(self) -> None:
+        fn: Any = getattr(self.host, "wait_for_idle", None)
+        if callable(fn):
+            result: Any = fn()
+            if inspect.isawaitable(result):
+                await result
+
+    async def waitForIdle(self) -> None:         # noqa: N802
+        await self.wait_for_idle()
+
+    async def new_session(self, options: dict | None = None) -> dict:
+        """开一个新会话。返回 `{cancelled: bool}`(pi 同形)。"""
+        return await self._session_op("extension_new_session", options)
+
+    async def newSession(self, options: dict | None = None) -> dict:   # noqa: N802
+        return await self.new_session(options)
+
+    async def fork(self, entry_id: str, options: dict | None = None) -> dict:
+        return await self._session_op("extension_fork", entry_id, options)
+
+    async def navigate_tree(self, target_id: str, options: dict | None = None) -> dict:
+        return await self._session_op("extension_navigate_tree", target_id, options)
+
+    async def navigateTree(self, target_id: str, options: dict | None = None) -> dict:   # noqa: N802
+        return await self.navigate_tree(target_id, options)
+
+    async def switch_session(self, session_path: str, options: dict | None = None) -> dict:
+        return await self._session_op("extension_switch_session", session_path, options)
+
+    async def switchSession(self, session_path: str, options: dict | None = None) -> dict:   # noqa: N802
+        return await self.switch_session(session_path, options)
+
+    async def reload(self) -> None:
+        """重载扩展与资源(pi 的 `ctx.reload()`)。"""
+        fn = getattr(self.host, "reload", None)
+        if callable(fn):
+            result = fn()
+            if inspect.isawaitable(result):
+                await result
+
+    async def _session_op(self, name: str, *args: Any) -> dict:
+        fn: Any = getattr(self.host, name, None)
+        if not callable(fn):
+            raise RuntimeError(f"宿主没有提供会话操作:{name} 不可用(要宿主拥有会话控制权)")
+        result = fn(self, *args)
+        if inspect.isawaitable(result):
+            return await result
+        return dict(result) if isinstance(result, dict) else {}
 
 
 @dataclass
@@ -666,8 +1515,14 @@ class ExtensionEvents:
         self._bus = bus
         self._source = source
 
-    def on(self, name: str, handler: Callable[[Any], Any]) -> None:
+    def on(self, name: str, handler: Callable[[Any], Any]) -> Callable[[], None]:
+        """订阅一条 peer 消息。**返回退订函数**(pi 的 `EventBus.on` 同形)。"""
         self._bus.on_message(name, handler, source=self._source)
+
+        def _unsubscribe() -> None:
+            self._bus.remove_message(name, handler)
+
+        return _unsubscribe
 
     def emit(self, name: str, data: Any = None) -> None:
         self._bus.send_message(name, data, source=self._source)
@@ -706,6 +1561,17 @@ class ExtensionBus:
         """订阅一条 peer 消息。handler 只收 `data`(没有 ctx —— peer 消息不该需要宿主上下文)。"""
         self._messages.setdefault(name, []).append(
             (source or _handler_name(handler), handler))
+
+    def remove_message(self, name: str, handler: Callable[[Any], Any]) -> bool:
+        """退订一条 peer 消息(按 handler 身份匹配)。返回是否真的移除了。"""
+        listeners = self._messages.get(name)
+        if not listeners:
+            return False
+        for index, (_, existing) in enumerate(listeners):
+            if existing is handler:
+                listeners.pop(index)
+                return True
+        return False
 
     def send_message(self, name: str, data: Any = None, *, source: str = "") -> None:
         """发一条 peer 消息:同步 handler 立即调,async handler 排成后台任务。
@@ -863,22 +1729,28 @@ class ExtensionApi:
     #: 住在 registry.py,而它反过来 import 本模块,写成具体类型会成环)。
     #: 与 `_host` / `catalog` 一样是鸭子类型:只需要 `add_resolver` / `resolve_tools`。
     _capabilities: Any = None
+    #: 渲染回调的登记处(pi 的 `registerMessageRenderer` / `registerEntryRenderer` /
+    #: `registerMarkdownTransformer`)。没给则那三个方法记一条 note(不静默)。
+    _renderers: Any = None
 
     # ── 工具 ──
-    def registerTool(self, tool: Tool) -> None:      # noqa: N802 pi 的方法名,保持同形
+    def register_tool(self, tool: Tool | dict) -> None:
         """注册工具(进 ToolCatalog),并盖上本扩展的来源。
 
         **装载后也能调**(事件里、命令里):catalog 是活的对象,而 `tools: ["*"]` 的
         agent 每回合**当场重算**工具集,所以新工具下一轮就能调,不需要 `/reload`。
+
+        收 `Tool`,也收 pi 形状的 dict(`{name, label, description, promptSnippet,
+        promptGuidelines, parameters, execute}`;snake_case 键也认)。
         """
-        register_tool(self.catalog, tool, source=self._name, path=self._path,
-                      scope=self._scope, origin=self._origin)
+        register_tool(self.catalog, _coerce_tool(tool), source=self._name,
+                      path=self._path, scope=self._scope, origin=self._origin)
 
     def add_tool(self, tool: Tool) -> None:
         """v1 旧名;`registerTool` 是正式名(对齐 pi)。"""
-        self.registerTool(tool)
+        self.register_tool(tool)
 
-    def getAllTools(self) -> list[dict]:             # noqa: N802
+    def get_all_tools(self) -> list[dict]:             # noqa: N802
         """所有**已注册**工具的元数据(含 `source_info`)。
 
         纯 catalog 查询,不需要宿主 —— 所以装载阶段就能用(例如扩展想知道
@@ -886,13 +1758,13 @@ class ExtensionApi:
         """
         return [tool_info(t) for t in self.catalog.all()]
 
-    def getActiveTools(self) -> list[str]:           # noqa: N802
+    def get_active_tools(self) -> list[str]:           # noqa: N802
         """本回合实际启用的工具名。宿主没给工具面时退回“catalog 里的全部”。"""
         if self._host is None:
             return sorted(self.catalog.names)
         return list(self._host.tool_names())
 
-    def setActiveTools(self, names: Sequence[str]) -> None:   # noqa: N802
+    def set_active_tools(self, names: Sequence[str]) -> None:   # noqa: N802
         """改运行时的工具集(plan-mode / 只读角色那种需求)。
 
         **未知名字被过滤**而不是报错:pi 允许先把名字放进集合、工具随后才动态注册。
@@ -900,7 +1772,7 @@ class ExtensionApi:
         `notes` —— 看得见。
         """
         if self._host is None:
-            raise RuntimeError("宿主没有提供工具集接口:setActiveTools 不可用")
+            raise RuntimeError("宿主没有提供工具集接口:set_active_tools / setActiveTools 不可用")
         wanted = [str(n) for n in names]
         unknown = sorted({n for n in wanted if n not in self.catalog.names})
         if unknown:
@@ -917,33 +1789,65 @@ class ExtensionApi:
         return await exec_command(command, args, cwd=cwd, timeout=timeout, signal=signal)
 
     # ── 命令与快捷键 ──
-    def registerCommand(self, name: str, handler: CommandHandler, *,
-                        description: str = "") -> None:      # noqa: N802
+    def register_command(self, name: str, handler: CommandHandler | dict | None = None, *,
+                         description: str = "",
+                         get_argument_completions: Any = None) -> None:
         """注册一条斜杠命令(pi 的 `registerCommand`)。handler 收 `(args, ctx)`。
+
+        两种写法都收:
+        * qi 形状:`register_command("deploy", handler, description="…")`
+        * pi 形状:`register_command("deploy", {"handler": h, "description": "…",
+          "getArgumentCompletions": fn})`
 
         重名不覆盖:两条都留着并变成 `name:1` / `name:2`(见 `CommandRegistry`)。
         """
+        options = handler if isinstance(handler, dict) else None
+        if options is not None:
+            handler = options.get("handler")
+            description = description or str(options.get("description") or "")
+            get_argument_completions = (get_argument_completions
+                                        or options.get("getArgumentCompletions")
+                                        or options.get("get_argument_completions"))
+        if not callable(handler):
+            raise TypeError("register_command 需要 handler(位置参数或 options 里的 'handler')")
         if self._commands is None:
-            raise RuntimeError("宿主没有提供命令登记处:registerCommand 不可用")
+            raise RuntimeError("宿主没有提供命令登记处:register_command / registerCommand 不可用")
         self._commands.add_command(name.strip().lstrip("/"), handler,
-                                   description=description, source=self._name)
+                                   description=description, source=self._name,
+                                   get_argument_completions=get_argument_completions)
 
-    def registerShortcut(self, key: str, handler: ShortcutHandler, *,
-                         description: str = "") -> None:     # noqa: N802
-        """注册一个快捷键(pi 的 `registerShortcut`)。key 用 textual 的写法。"""
+    def register_shortcut(self, key: str, handler: ShortcutHandler | dict | None = None, *,
+                          description: str = "") -> None:
+        """注册一个快捷键(pi 的 `registerShortcut`)。key 用 textual 的写法。
+
+        兼容 pi 的 options 对象写法(`{"handler": h, "description": "…"}`)。
+        """
+        options = handler if isinstance(handler, dict) else None
+        if options is not None:
+            handler = options.get("handler")
+            description = description or str(options.get("description") or "")
+        if not callable(handler):
+            raise TypeError("register_shortcut 需要 handler(位置参数或 options 里的 'handler')")
         if self._commands is None:
-            raise RuntimeError("宿主没有提供命令登记处:registerShortcut 不可用")
+            raise RuntimeError("宿主没有提供命令登记处:register_shortcut / registerShortcut 不可用")
         self._commands.add_shortcut(key, handler, description=description,
                                     source=self._name)
 
-    def getCommands(self) -> list[dict]:                     # noqa: N802
-        """当前可输入的命令清单(给自动补全 / 帮助用)。"""
+    def get_commands(self) -> list[dict]:
+        """当前可输入的命令清单(给自动补全 / 帮助用)。
+
+        元素形状照 pi 的 `SlashCommandInfo`(name/description/source/sourceInfo),
+        另带 `has_argument_completions`(qi 自己的诊断字段)。
+        """
         if self._commands is None:
             return []
-        return [{"name": c.invocable, "description": c.description, "source": c.source}
+        return [{"name": c.invocable, "description": c.description, "source": c.source,
+                 "source_info": {"source": c.source},
+                 "sourceInfo": {"source": c.source},
+                 "has_argument_completions": callable(c.get_argument_completions)}
                 for c in self._commands.all()]
 
-    async def runAgent(self, spec: Any, task: str, *, abort: AbortSignal | None = None,
+    async def run_agent(self, spec: Any, task: str, *, abort: AbortSignal | None = None,
                        on_event: Any = None) -> str:      # noqa: N802
         """在宿主内起一个**受管的子运行**:独立上下文、自己的工具集与模型。
 
@@ -957,31 +1861,38 @@ class ExtensionApi:
         `on_event` 给进度用(子运行的工具调用能实时上报给父界面)。
         """
         if self._host is None or not callable(getattr(self._host, "run_agent", None)):
-            raise RuntimeError("宿主没有提供子运行接口:runAgent 不可用")
+            raise RuntimeError("宿主没有提供子运行接口:run_agent / runAgent 不可用")
         return await self._host.run_agent(spec, task, abort=abort, on_event=on_event)
 
     # ── CLI 旗标 ──
-    def registerFlag(self, name: str, *, type: str = "boolean", default: Any = False,
-                     description: str = "") -> None:        # noqa: N802
+    def register_flag(self, name: str, options: dict | None = None, *,
+                      type: str = "boolean", default: Any = False,
+                      description: str = "") -> None:
         """声明一个 CLI 旗标(pi 的 `registerFlag`)。
 
         **值不走 `--plan` 这种短形式**,而是 `qi --ext plan=true` —— 原因见 §11.8:
         typer 的选项表是静态的,为动态旗标放宽 `ignore_unknown_options` 会把用户
         打错的选项变成一句 prompt。`--ext` 显式、可 grep、不可能和笔误混淆。
+
+        兼容 pi 的 options 对象写法(`register_flag("plan", {"type": "boolean"})`)。
         """
+        if isinstance(options, dict):
+            type = str(options.get("type") or type)
+            default = options.get("default", default)
+            description = description or str(options.get("description") or "")
         if self._flags is None:
-            raise RuntimeError("宿主没有提供旗标登记处:registerFlag 不可用")
+            raise RuntimeError("宿主没有提供旗标登记处:register_flag / registerFlag 不可用")
         self._flags.add(name, type=type, default=default,
                         description=description, source=self._name)
 
-    def getFlag(self, name: str) -> Any:                     # noqa: N802
+    def get_flag(self, name: str) -> Any:                     # noqa: N802
         """读旗标当前值(`--ext` 给的优先,否则声明的 default)。"""
         if self._flags is None:
             return None
         return self._flags.value(name)
 
     # ── CLI 子命令 ──
-    def registerCliCommand(self, name: str, handler: CliHandler, *,    # noqa: N802
+    def register_cli_command(self, name: str, handler: CliHandler, *,    # noqa: N802
                            description: str = "") -> None:
         """注册一个 CLI 子命令:`qi <name> [参数…]`。
 
@@ -1010,7 +1921,7 @@ class ExtensionApi:
         return ExtensionEvents(self.bus, source=self._name)
 
     # ── provider ──
-    def registerProvider(self, name: str, config: dict | None = None) -> None:   # noqa: N802
+    def register_provider(self, name: str, config: dict | None = None) -> None:   # noqa: N802
         """动态注册/覆盖一个 provider(代理、自定义端点、团队模型配置)。
 
         **只改内存,不写 `models.json`** —— 注册的 provider 活在这个进程里。
@@ -1020,11 +1931,22 @@ class ExtensionApi:
         “我明明配了 models.json,却被别人改了” 很难查。
         """
         if self._host is None or not callable(getattr(self._host, "register_provider", None)):
-            raise RuntimeError("宿主没有提供 provider 注册接口:registerProvider 不可用")
+            raise RuntimeError("宿主没有提供 provider 注册接口:register_provider / registerProvider 不可用")
         self._host.register_provider(name, dict(config or {}), self._name)
 
+    def unregister_provider(self, name: str) -> None:
+        """注销一个先前注册的 provider(pi 的 `unregisterProvider`)。
+
+        找不到就无操作(pi 同义)—— “本来就没了”与“刚被删了”在调用点无法区分,
+        报错只会让清理逻辑多一层无谓的异常处理。
+        """
+        host = getattr(self._host, "unregister_provider", None)
+        if not callable(host):
+            raise RuntimeError("宿主没有提供 provider 注销接口:unregister_provider / unregisterProvider 不可用")
+        host(name)
+
     # ── 会话 ──
-    def appendEntry(self, custom_type: str, data: dict | None = None) -> None:   # noqa: N802
+    def append_entry(self, custom_type: str, data: dict | None = None) -> None:   # noqa: N802
         """落一条扩展自定义 entry(进会话文件,**不进 LLM 上下文**)。
 
         这才是持久化扩展状态的正确位置:它不会污染对话上下文,但刷新/重开后还在
@@ -1034,44 +1956,135 @@ class ExtensionApi:
         """
         if self._host is None or not callable(
                 getattr(self._host, "append_extension_entry", None)):
-            raise RuntimeError("宿主没有提供会话写口:appendEntry 不可用")
+            raise RuntimeError("宿主没有提供会话写口:append_entry / appendEntry 不可用")
         self._host.append_extension_entry(custom_type, dict(data or {}), self._name)
 
-    def sendMessage(self, message: str | dict, *, deliver_as: str = "steer") -> None:  # noqa: N802
-        """往当前对话插一条消息(**进** LLM 上下文;与 `appendEntry` 相反)。
+    # ── 会话名与 label(pi 的 setSessionName / getSessionName / setLabel)──
+    def set_session_name(self, name: str) -> None:
+        host = getattr(self._host, "set_session_name", None)
+        if not callable(host):
+            raise RuntimeError("宿主没有提供会话改名接口:set_session_name / setSessionName 不可用")
+        host(name)
 
-        `deliver_as` 决定**什么时候**送达(照搬 pi 的三档):
+    def get_session_name(self) -> str | None:
+        host = getattr(self._host, "get_session_name", None)
+        if not callable(host):
+            return None
+        value = host()
+        return None if value is None else str(value)
+
+    def set_label(self, entry_id: str, label: str | None) -> None:
+        """给某条 entry 打/清 label(label 是用户可见的书签,pi 同义)。"""
+        host = getattr(self._host, "set_entry_label", None)
+        if not callable(host):
+            raise RuntimeError("宿主没有提供 label 写口:set_label / setLabel 不可用")
+        host(entry_id, label)
+
+    # ── 模型与思考级别(pi 的 setModel / get-setThinkingLevel)──
+    def set_model(self, model: Any) -> bool:
+        """切本会话的模型(不动配置默认值)。接受 `"provider/model"` / `ModelView` /
+        `{"provider": …, "id"/"model": …}`。返回是否成功(pi 同形)。"""
+        host = getattr(self._host, "set_extension_model", None)
+        if not callable(host):
+            raise RuntimeError("宿主没有提供模型切换接口:set_model / setModel 不可用")
+        return bool(host(model))
+
+    def get_thinking_level(self) -> str:
+        value = getattr(self._host, "thinking_level", None)
+        return str(value) if value else "off"
+
+    def set_thinking_level(self, level: str) -> None:
+        host = getattr(self._host, "set_thinking_level", None)
+        if not callable(host):
+            raise RuntimeError("宿主没有提供思考级别接口:set_thinking_level / setThinkingLevel 不可用")
+        host(level, source="extension")
+
+    def send_message(self, message: str | dict, *, deliver_as: str | None = None,
+                     trigger_turn: bool = False) -> None:
+        """往当前对话插一条消息(**进** LLM 上下文;与 `append_entry` 相反)。
+
+        `deliver_as` 决定**什么时候**送达(照搬 pi 的三档,pi 的驼峰写法也认):
 
         * `steer`(默认)—— 本轮的**下一次 LLM 调用**之前(即当前这轮工具跑完之后)。
-          适合“工具结果里发现了个事,先告诉模型”。
-        * `follow_up` —— 等 agent **本该收工**时才送:有排队消息就不收工,继续跑一轮。
-          适合“顺手再做一件事”。
-        * `next_turn` —— 不打断本轮,留到**下一次用户输入**。
+        * `follow_up`(`followUp`)—— 等 agent **本该收工**时才送:有排队消息就不收工。
+        * `next_turn`(`nextTurn`)—— 不打断本轮,留到**下一次用户输入**。
 
-        收字符串或 `{"content": …}`(与 `before_agent_start` 的 `message` 同形)。
+        收字符串,也收 pi 形状的字典(`{customType, content, display, details}`)。
+        `trigger_turn=True` = 空闲时也开一轮(由前端在命令处理完后领取)。
         """
-        text = message if isinstance(message, str) else str(message.get("content") or "")
-        self._queue_message(text, deliver_as, "sendMessage")
+        custom_type = display = details = None
+        if isinstance(message, str):
+            text = message
+        else:
+            text = str(message.get("content") or "")
+            custom_type = message.get("customType") or message.get("custom_type")
+            display = message.get("display")
+            details = message.get("details")
+        self._queue_message(text, deliver_as or "steer", "sendMessage",
+                            custom_type=custom_type, display=display, details=details,
+                            trigger_turn=trigger_turn)
 
-    def sendUserMessage(self, content: str, *, deliver_as: str = "steer") -> None:   # noqa: N802
-        """插一条**用户**消息(送达时机与 `sendMessage` 相同,只是语义上是“用户说的”)。
+    def send_user_message(self, content: str, *, deliver_as: str | None = None,
+                          trigger_turn: bool = True,
+                          expand_prompt_templates: bool = False) -> None:
+        """插一条**用户**消息(pi 的 `sendUserMessage`)。
 
-        **qi 不自动开一轮**:pi 的 `sendUserMessage` 在 agent 空闲时会`triggerTurn`,
-        而那需要“在处理器里嵌套跑一轮”的能力(嵌套流式)。qi 现在的做法是**排队**,
-        由前端决定要不要因此开一轮 —— 这条差别写在 §11.9。
+        `trigger_turn` 缺省 **True**(pi 同义:空闲时会开一轮)。qi 的做法是把“要开一轮”
+        记在宿主身上,由前端在本轮/命令处理完后领取(`take_turn_request()`)——
+        因为“在 handler 里嵌套跑一轮”在流式架构里是另一件事(§11.9)。
+
+        `expand_prompt_templates=True` 时交给宿主的展开器(命令 / 技能 / 提示词模板);
+        宿主不支持则记一条 note 后**原样**入队(不静默假装展开了)。
         """
-        self._queue_message(content, deliver_as, "sendUserMessage")
+        text = content
+        if expand_prompt_templates:
+            expand = getattr(self._host, "expand_prompt_text", None)
+            if callable(expand):
+                text = str(expand(text))
+            else:
+                _note(self._host, "宿主不支持 expand_prompt_templates(...):原样入队")
+        self._queue_message(text, deliver_as or "steer", "sendUserMessage",
+                            trigger_turn=trigger_turn)
 
-    def _queue_message(self, text: str, deliver_as: str, kind: str) -> None:
+    def _queue_message(self, text: str, deliver_as: str, kind: str, *, custom_type: Any = None,
+                       display: Any = None, details: Any = None,
+                       trigger_turn: bool = False) -> None:
         body = (text or "").strip()
         if not body:
             return                                   # 空白不入队(与 message 注入一致)
-        if deliver_as not in ("steer", "follow_up", "next_turn"):
-            raise ValueError(f"deliver_as 只能是 steer / follow_up / next_turn,收到 {deliver_as!r}")
+        normalized = _DELIVER_AS.get(str(deliver_as))
+        if normalized is None:
+            raise ValueError(
+                f"deliver_as 只能是 steer / follow_up / next_turn(pi 写法 followUp / "
+                f"nextTurn 也认),收到 {deliver_as!r}")
         if self._host is None or not callable(
                 getattr(self._host, "queue_extension_message", None)):
-            raise RuntimeError("宿主没有提供消息队列:sendMessage 不可用")
-        self._host.queue_extension_message(body, deliver_as, self._name, kind)
+            raise RuntimeError("宿主没有提供消息队列:send_message / sendMessage 不可用")
+        self._host.queue_extension_message(body, normalized, self._name, kind,
+                                          custom_type=custom_type, display=display,
+                                          details=details, trigger_turn=bool(trigger_turn))
+
+    # ── 渲染(TUI-only,见 §5.1)──
+    def register_message_renderer(self, custom_type: str, renderer: Any) -> None:
+        """给某个 custom 消息类型注册渲染器(pi 的 `registerMessageRenderer`)。"""
+        if self._renderers is None:
+            _note(self._host, "宿主没有渲染登记处:register_message_renderer / registerMessageRenderer 未生效")
+            return
+        self._renderers.add_message(custom_type, renderer, source=self._name)
+
+    def register_entry_renderer(self, custom_type: str, renderer: Any) -> None:
+        """给某个 custom entry 类型注册渲染器(pi 的 `registerEntryRenderer`)。"""
+        if self._renderers is None:
+            _note(self._host, "宿主没有渲染登记处:register_entry_renderer / registerEntryRenderer 未生效")
+            return
+        self._renderers.add_entry(custom_type, renderer, source=self._name)
+
+    def register_markdown_transformer(self, transformer: Any) -> None:
+        """注册一个 markdown 渲染前的改写器(pi 的 `registerMarkdownTransformer`)。"""
+        if self._renderers is None:
+            _note(self._host, "宿主没有渲染登记处:register_markdown_transformer / registerMarkdownTransformer 未生效")
+            return
+        self._renderers.add_markdown(transformer, source=self._name)
 
     # ── 事件 ──
     def on(self, event: str, handler: ExtensionHandler) -> None:
@@ -1090,7 +2103,7 @@ class ExtensionApi:
         return self._config_kinds
 
     # ── 能力交接(提供方声明 + 消费方取用,P-E5 ② / E20)──
-    def registerResolver(self, kind: str, resolver: ResolverFn) -> None:      # noqa: N802
+    def register_resolver(self, kind: str, resolver: ResolverFn) -> None:      # noqa: N802
         """登记“这个种类的配置怎么变成能用的东西”。
 
         `resolver(scope=…)` 返回 `list[Tool]`(或 awaitable);`scope` 是**作用域**(§7.4:
@@ -1101,11 +2114,11 @@ class ExtensionApi:
         消费方(qi-agents / qi-web)只调 `resolveTools`,**不知道 MCP 存在**。
         """
         if self._capabilities is None:
-            raise RuntimeError("宿主没有提供能力汇合点:registerResolver 不可用")
+            raise RuntimeError("宿主没有提供能力汇合点:register_resolver / registerResolver 不可用")
         self._capabilities.add_resolver(kind, self._name, resolver)
         self._config_kinds.add(kind)
 
-    async def resolveTools(self, kind: str, *, scope: Any = None) -> list[Any]:   # noqa: N802
+    async def resolve_tools(self, kind: str, *, scope: Any = None) -> list[Any]:   # noqa: N802
         """问所有提供者要 `kind` 的工具,合并返回。
 
         **没人提供 → 返回 `[]`(优雅降级)** —— 这是 E20 选“能力交接”而不是直接 import 的
@@ -1114,6 +2127,35 @@ class ExtensionApi:
         if self._capabilities is None:
             return []
         return await self._capabilities.resolve_tools(kind, scope=scope)
+
+    # ── pi 的驼峰别名(qi 的正式名是 snake_case)──
+    registerTool = register_tool
+    getAllTools = get_all_tools
+    getActiveTools = get_active_tools
+    setActiveTools = set_active_tools
+    registerCommand = register_command
+    registerShortcut = register_shortcut
+    getCommands = get_commands
+    runAgent = run_agent
+    registerFlag = register_flag
+    getFlag = get_flag
+    registerCliCommand = register_cli_command
+    registerProvider = register_provider
+    unregisterProvider = unregister_provider
+    appendEntry = append_entry
+    sendMessage = send_message
+    sendUserMessage = send_user_message
+    registerMessageRenderer = register_message_renderer
+    registerEntryRenderer = register_entry_renderer
+    registerMarkdownTransformer = register_markdown_transformer
+    setSessionName = set_session_name
+    getSessionName = get_session_name
+    setLabel = set_label
+    setModel = set_model
+    getThinkingLevel = get_thinking_level
+    setThinkingLevel = set_thinking_level
+    registerResolver = register_resolver
+    resolveTools = resolve_tools
 
 
 __all__ = [
@@ -1130,6 +2172,9 @@ __all__ = [
     "ExtensionUi",
     "FlagRegistry",
     "FlagSpec",
+    "ModelRegistryView",
+    "ModelView",
+    "RendererRegistry",
     "SessionView",
     "Tool",
     "ToolError",

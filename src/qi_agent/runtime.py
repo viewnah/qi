@@ -35,6 +35,9 @@ from .extensions import (
     ExtensionContext,
     ExtensionUi,
     FlagRegistry,
+    ModelRegistryView,
+    ModelView,
+    RendererRegistry,
     SessionView,
     CliCommandRegistry,
 )
@@ -63,6 +66,14 @@ from .tools import ToolContext, register_builtin_tools
 #: 角色概念整体交给 qi-agents(E1.1/E15),所以 core 只需要一个固定名字。
 #: 选 "qi" 而不是 "general":基座提示词的身份就是 qi,而且它不再是“兼底角色”。
 CORE_AGENT_NAME = "qi"
+
+
+def _as_int(value: Any, default: int = 0) -> int:
+    """配置里的数字可能是字符串/None —— 收成 int,坏值回落默认(不抛)。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 @dataclass
@@ -136,6 +147,7 @@ class QiRuntime:
                  approve_project: bool | None = None,
                  has_ui: bool = False,
                  ui_frontend: Any = None,
+                 mode: str | None = None,
                  extension_flags: Iterable[str] | None = None,
                  tools: str | None = None,
                  exclude_tools: str | None = None,
@@ -175,6 +187,8 @@ class QiRuntime:
         self._approve_flag = approve_project
         #: 第二趟装载要用(`-e` 显式给的路径)。
         self._extra_extension_paths = list(extra_extension_paths or ())
+        #: `ctx.reload()` 重扫技能时要用(同一次运行里 CLI 给的额外技能路径)。
+        self._extra_skill_paths = list(extra_skill_paths or ())
         # `--models <patterns>`:本次运行 Ctrl+P 的轮换清单。**不回写 settings** ——
         # 命令行给的东西不该静默落盘(要持久化走 TUI 的 `/scoped-models`)。
         self.scoped_models: list[str] | None = (
@@ -215,7 +229,7 @@ class QiRuntime:
         #: 扩展主动发的消息(`api.sendMessage` / `sendUserMessage`),按**送达时机**分桶。
         #: 元素是 `(文本, 来源扩展, 调用方式)`。steer / follow_up 由 runner 在回合内排空;
         #: next_turn 留到下一次用户输入(见 `_drain_messages` 与 `_stream_inner` 开头)。
-        self._pending_messages: dict[str, list[tuple[str, str, str]]] = {
+        self._pending_messages: dict[str, list[dict[str, Any]]] = {
             "steer": [], "follow_up": [], "next_turn": []}
         # 信任决定**只从用户级 settings 读**(`defaultProjectTrust`)。项目级那份不能自己声明
         # “我可信”:否则仓库只要提交一行 `"defaultProjectTrust": "always"` 就能让自己的
@@ -253,7 +267,32 @@ class QiRuntime:
         # 为什么走构造参数而不是一个 `set_ui_frontend()`:后者多一个“别忘了调”的次序隐患,
         # 而且每次给假运行时加方法都会撞一遍。
         # (web 不行 —— 每个浏览器连接是一个不同的前端,那边要按回合解析,见 §5.1。)
-        self.ui = ExtensionUi(frontend=ui_frontend, notes=self.notes)
+        #
+        # `mode` 是 pi 的 `ExtensionMode`(tui / rpc / json / print):组件层 ctx.ui
+        # 只在 tui 下有意义,扩展用 `ctx.mode` 做门控。不显式给就按 has_ui 推。
+        self.mode = mode or ("tui" if has_ui else "print")
+        self.ui = ExtensionUi(frontend=ui_frontend, notes=self.notes, mode=self.mode,
+                              bus=self.bus,
+                              ctx_factory=lambda signal=None: self.extension_ctx(signal))
+        #: 渲染回调登记处(`registerMessageRenderer` / `registerEntryRenderer` /
+        #: `registerMarkdownTransformer`)。前端按它决定怎么画 —— TUI-only。
+        self.renderers = RendererRegistry()
+        #: `resources_discover` 带给我们的提示词/主题路径(前端从这儿取)
+        self.extra_resource_paths: list[Path] = []
+        #: 正在跑回合吗(`ctx.isIdle()`)。由 `stream()` 的 wrapper 维护。
+        self._idle = True
+        #: 空闲等待用的信号(`ctx.waitForIdle()`)
+        self._idle_event = asyncio.Event()
+        self._idle_event.set()
+        #: 当前回合的中断信号(`ctx.abort()` 的回退路径)
+        self._abort_signal: AbortSignal | None = None
+        #: 最近一次建好的 system prompt(`ctx.getSystemPrompt()` 优先返回它)
+        self._last_system_prompt: str | None = None
+        #: 扩展请求“空闲时开一轮”的队列(`sendUserMessage(trigger_turn=True)`)。
+        #: 前端在本轮/命令处理完后用 `take_turn_request()` 领取。
+        self._turn_requests: list[str] = []
+        #: 前端注入的退出实现(`ctx.shutdown()`);没注入时是 no-op。
+        self._shutdown: Any = None
         # 扩展命令/快捷键的汇合点(TUI 按它分发 `/cmd` 与按键)
         self.commands = CommandRegistry()
         # CLI 旗标(扩展用 `registerFlag` 声明;值走 core 的 `--ext name=value`)
@@ -273,6 +312,7 @@ class QiRuntime:
         self.extensions = discover_extensions(
             self.catalog, self.capabilities, self.cwd,
             cli_commands=CliCommandRegistry(),
+            renderers=self.renderers,
             bus=self.bus,
             host=self,
             commands=self.commands,
@@ -317,9 +357,7 @@ class QiRuntime:
                  else model_thinking_level(self.settings, default)
                  or self.settings.defaultThinkingLevel)
         self.thinking_level = normalize_thinking_level(level)
-        self.llm_exec = llm or LiteLLMClient(default, auth, thinking_level=self.thinking_level,
-                                            retry=self.settings.retry,
-                                            thinking_budgets=self.settings.thinkingBudgets)
+        self.llm_exec = llm or self._make_client(default)
         # CLI 的工具收窄(pi 的 `--tools` / `-xt` / `-nt` / `-nbt`)。
         # 必须等扩展注册完(B)才能算 —— `--no-builtin-tools` 要知道每个工具的来源。
         self._apply_tool_flags(tools=tools, exclude_tools=exclude_tools,
@@ -423,6 +461,19 @@ class QiRuntime:
                            ui=self.ui)
 
     # ── 受管子运行(扩展的 `runAgent` / E12)──
+    def _make_client(self, resolved: ResolvedModel) -> LiteLLMClient:
+        """建 provider 客户端并接上**三件套事件**(唯一入口)。
+
+        三个调用点(默认客户端 / 换模型 / 子运行)共用同一份接线 —— 否则“某个路径上的
+        扩展看不到请求”会变成一种只在特定入口复现的鬼故事。
+        """
+        return LiteLLMClient(resolved, self._auth,
+                             thinking_level=self.thinking_level,
+                             retry=self.settings.retry,
+                             thinking_budgets=self.settings.thinkingBudgets,
+                             bus=self.bus,
+                             extension_ctx=lambda signal: self.extension_ctx(signal))
+
     def _client_for(self, model_ref: str | None) -> Any:
         """子运行用的客户端:给了 `"provider/model"` 就**另建一个**,不给就用当前的。
 
@@ -433,9 +484,7 @@ class QiRuntime:
         provider, _, model = str(model_ref).partition("/")
         if not model:
             raise ValueError(f'模型要写成 "provider/model",收到 {model_ref!r}')
-        return LiteLLMClient(resolve_model(self.cfg, provider, model), self._auth,
-                            thinking_level=self.thinking_level, retry=self.settings.retry,
-                            thinking_budgets=self.settings.thinkingBudgets)
+        return self._make_client(resolve_model(self.cfg, provider, model))
 
     async def run_agent(self, spec: Any, task: str, *, abort: AbortSignal | None = None,
                         on_event: Any = None) -> str:
@@ -494,10 +543,19 @@ class QiRuntime:
 
     # ── 扩展上下文与事件 ──
     def _model_label(self) -> str | None:
-        """`"provider/model"`(与 pi 的 `ctx.model` 同形);拿不到 spec 就 None。"""
+        """`"provider/model"`;拿不到 spec 就 None。"""
+        view = self._model_view()
+        return str(view) if view is not None else None
+
+    def _model_view(self) -> ModelView | None:
+        """当前模型的 `ModelView`(pi 的 `ctx.model` 形状;`str` 子类所以旧用法不变)。"""
         spec = getattr(self.llm_exec, "spec", None)
-        provider, model = getattr(spec, "provider", None), getattr(spec, "model", None)
-        return f"{provider}/{model}" if provider and model else None
+        if spec is None:
+            return None
+        try:
+            return ModelView.from_resolved(spec)
+        except Exception:  # noqa: BLE001 第三方/测试替身可能不是 ResolvedModel
+            return None
 
     def extension_ctx(self, signal: AbortSignal | None = None,
                       session: Session | None = None) -> ExtensionContext:
@@ -511,13 +569,18 @@ class QiRuntime:
         """
         return ExtensionContext(
             cwd=self.cwd,
-            model=self._model_label(),
+            model=self._model_view(),
             thinking_level=self.thinking_level,
             signal=signal,
             has_ui=self._has_ui,
             project_trusted=self.project_trusted,
             notes=self.notes,
             ui=self.ui,
+            mode=self.mode,
+            session=session if session is not None else self._active_session,
+            scoped_models=tuple(self.scoped_models or ()),
+            host=self,
+            model_registry=ModelRegistryView(self),
             session_manager=SessionView(session if session is not None
                                         else self._active_session),
         )
@@ -554,17 +617,31 @@ class QiRuntime:
             "data": data})
 
     def queue_extension_message(self, text: str, deliver_as: str, source: str,
-                                kind: str = "sendMessage") -> None:
-        """扩展消息的唯一入队口(`api.sendMessage` / `sendUserMessage` 走这里)。
+                                kind: str = "sendMessage", *, custom_type: Any = None,
+                                display: Any = None, details: Any = None,
+                                trigger_turn: bool = False) -> None:
+        """扩展消息的唯一入队口(`api.send_message` / `send_user_message` 走这里)。
 
         **不在这里落盘**:送达时机在 runner 手里(每次 LLM 调用前 / 本该收工时 / 下次输入),
         而“什么时候进对话”与“什么时候进文件”必须是同一个时刻 —— 先落盘会让历史里出现一条
         还没送达的消息。落盘在 `_drain_messages` 里做,与排空同时。
+
+        `trigger_turn` 且此刻**空闲**时走另一条路:不当成排队消息,而是记一条“该开一轮了”
+        的请求(`take_turn_request()`),由前续流程开一轮 —— pi 的 `triggerTurn` 就是这个语义。
         """
+        if trigger_turn and self._idle:
+            self._turn_requests.append(text)
+            return
         bucket = self._pending_messages.get(deliver_as)
         if bucket is None:                       # `api` 侧已经挡过,这里只是双保险
             raise ValueError(f"未知的 deliver_as: {deliver_as!r}")
-        bucket.append((text, source, kind))
+        bucket.append({"text": text, "source": source, "kind": kind,
+                       "custom_type": custom_type, "display": display,
+                       "details": details})
+
+    def take_turn_request(self) -> str | None:
+        """取一条“扩展要求开一轮”的请求(没有则 None)。前端在空闲时调用。"""
+        return self._turn_requests.pop(0) if self._turn_requests else None
 
     def _drain_messages(self, deliver_as: str) -> list[str]:
         """排空某一档的待发消息,**同时落盘**。
@@ -578,14 +655,24 @@ class QiRuntime:
         bucket = self._pending_messages.get(deliver_as) or []
         if not bucket:
             return []
-        texts = [text for text, _source, _kind in bucket]
+        texts = [str(item.get("text") or "") for item in bucket]
         session = self._active_session
         if session is not None:
-            for text, source, kind in bucket:
-                self.sessions.append(session, {
-                    "type": "message", "role": "user", "content": text,
-                    "agent_id": CORE_AGENT_NAME,
-                    "injected_by": kind, "deliver_as": deliver_as, "source": source})
+            for item in bucket:
+                entry: dict = {"type": "message", "role": "user",
+                               "content": item.get("text") or "",
+                               "agent_id": CORE_AGENT_NAME,
+                               "injected_by": item.get("kind"),
+                               "deliver_as": deliver_as, "source": item.get("source")}
+                # pi 的 `sendMessage({customType, display, details})`:进上下文的同时
+                # 带上由前端决定怎么画的元数据(customType 进 custom_type,同 qi 既有键名)
+                if item.get("custom_type"):
+                    entry["custom_type"] = item["custom_type"]
+                if item.get("display") is not None:
+                    entry["display"] = item["display"]
+                if item.get("details") is not None:
+                    entry["details"] = item["details"]
+                self.sessions.append(session, entry)
         bucket.clear()
         return texts
 
@@ -652,6 +739,7 @@ class QiRuntime:
         loaded = discover_extensions(
             self.catalog, self.capabilities, self.cwd,
             cli_commands=CliCommandRegistry(),
+            renderers=self.renderers,
             bus=self.bus, host=self, commands=self.commands, flags=self.flags,
             on_warning=self.notes.append,
             extra_dirs=extra, project_trusted=True, only_project=True)
@@ -681,6 +769,10 @@ class QiRuntime:
             ctx=self.extension_ctx())
         for source, exc in event.errors:
             self.notes.append(f"扩展 {source} 的 session_start 处理失败: {exc}")
+        # pi 在 `session_start` **之后**再发 `resources_discover`:扩展这时可以补技能/
+        # 提示词/主题路径。reason 只有 startup / reload 两个取值(pi 同形)。
+        await self._emit_resources_discover(
+            reason="reload" if reason == "reload" else "startup")
 
     # ── 工具集(扩展 `setActiveTools` / `getActiveTools` 的后端)──
     def tool_names(self) -> list[str]:
@@ -723,10 +815,7 @@ class QiRuntime:
                 self._emit_notice("thinking_level_select", {
                     "level": adopted, "previous_level": None, "source": "auto"})
         previous = getattr(getattr(self, "llm_exec", None), "spec", None)
-        self.llm_exec = LiteLLMClient(resolved, self._auth,
-                                     thinking_level=self.thinking_level,
-                                     retry=self.settings.retry,
-                                     thinking_budgets=self.settings.thinkingBudgets)
+        self.llm_exec = self._make_client(resolved)
         self._emit_notice("model_select", {
             "model": f"{resolved.provider}/{resolved.model}",
             "previous": (f"{previous.provider}/{previous.model}" if previous else None),
@@ -764,6 +853,339 @@ class QiRuntime:
             # 落盘失败不该把这一轮搞垮(与本仓其它“不因此中断主流程”的 except 同形)
             return
         self._emit_notice("session_info_changed", {"name": cleaned, "source": source})
+
+    # ── 扩展宿主面(ctx 上的方法回向这里)────────────────────────────
+    #
+    # 这一整块是 pi 的 `ExtensionContext` / `ExtensionCommandContext` 对应物的后端。
+    # `ctx` 是 frozen 的只读值,要问运行时的事就走这些方法。
+    def is_idle(self) -> bool:
+        """agent 空闲吗(没在流式)。"""
+        return self._idle
+
+    def abort(self) -> None:
+        """中断当前回合(`ctx.abort()`);没有回合在跑时 no-op。"""
+        if self._abort_signal is not None:
+            self._abort_signal.abort()
+
+    def has_pending_messages(self) -> bool:
+        """有没有排队等送达的扩展消息 / 待开一轮的请求。"""
+        return (any(self._pending_messages.values())
+                or bool(self._turn_requests))
+
+    def set_shutdown_hook(self, fn: Any) -> None:
+        """前端注入退出实现(`ctx.shutdown()` 走它)。"""
+        self._shutdown = fn
+
+    def shutdown(self) -> None:
+        """优雅退出(pi 的 `ctx.shutdown()`)。没注入实现时记一条 note。"""
+        if callable(self._shutdown):
+            self._shutdown()
+            return
+        self.notes.append("ctx.shutdown():没有前端注入退出实现,已忽略")
+
+    def context_usage(self) -> dict | None:
+        """当前上下文占用(pi 的 `ContextUsage`:`{tokens, contextWindow, percent}`)。"""
+        window = self._context_window()
+        if window <= 0:
+            return None
+        session = self._active_session
+        tokens = messages_tokens(self._history(session)) if session is not None else 0
+        return {"tokens": tokens, "contextWindow": window, "context_window": window,
+                "percent": (round(tokens / window * 100, 1) if window else None)}
+
+    def compact(self, options: dict | None = None) -> None:
+        """触发一次压缩,**不等**它跑完(pi 的 `ctx.compact()` 同语义)。"""
+        session = self._active_session
+        if session is None:
+            self.notes.append("ctx.compact():回合外没有会话,已忽略")
+            return
+        options = options or {}
+        instructions = str(options.get("customInstructions")
+                           or options.get("custom_instructions") or "") or None
+
+        async def _run() -> None:
+            try:
+                await self.compact_session(session, instructions)
+            except Exception as exc:  # noqa: BLE001 后台任务里的失败要看得见
+                self.notes.append(f"扩展触发的压缩失败: {exc}")
+
+        try:
+            asyncio.get_running_loop().create_task(_run())
+        except RuntimeError:
+            return
+
+    def current_system_prompt(self) -> str:
+        """当前生效的 system prompt(TUI 的 `/sysprompt`、扩展的 `ctx.getSystemPrompt()`)。
+
+        优先给**本回合实际建好的那一份**(扩展的 `before_agent_start` 改过),没跑过回合时
+        现算一份 —— 否则“读系统提示词”会得到一个与模型看到的不一样的东西。
+        """
+        if self._last_system_prompt is not None:
+            return self._last_system_prompt
+        return build_system_prompt(self.base_prompt, cwd=self.workdir,
+                                   tools=self.catalog.resolve(self.tool_names()),
+                                   skills=self.top_skills,
+                                   append=self.append_system_prompt,
+                                   context_files=[] if self._no_context_files else None)
+
+    def system_prompt_options(self) -> dict:
+        """造 system prompt 用的结构化选项(pi 的 `BuildSystemPromptOptions` 对应物)。"""
+        return {"cwd": str(self.workdir),
+                "tools": self.tool_names(),
+                "skills": [getattr(s, "name", str(s)) for s in self.top_skills],
+                "append_system_prompt": self.append_system_prompt,
+                "context_files": [] if self._no_context_files else None,
+                "base_prompt_source": self.base_prompt_source,
+                "agent": CORE_AGENT_NAME}
+
+    async def wait_for_idle(self) -> None:
+        """等当前回合跑完(pi 的 `ctx.waitForIdle()`)。"""
+        await self._idle_event.wait()
+
+    # ── 会话名与 label ──
+    def set_session_name(self, name: str) -> None:
+        """改当前会话名(`api.set_session_name` 走这里)。"""
+        session = self._active_session
+        if session is None:
+            raise RuntimeError("没有活动会话:set_session_name 只能在绑定会话后调用")
+        self.set_session_title(session, name, source="extension")
+
+    def get_session_name(self) -> str | None:
+        session = self._active_session
+        return (session.title or None) if session is not None else None
+
+    def set_entry_label(self, entry_id: str, label: str | None) -> None:
+        """给某条 entry 打/清 label(label entry 盖在 `targetId` 上,pi 同形)。"""
+        session = self._active_session
+        if session is None:
+            raise RuntimeError("没有活动会话:set_label 只能在回合内调用")
+        self.sessions.append(session, {"type": "label", "targetId": entry_id,
+                                       "label": label})
+
+    # ── 模型与 provider ──
+    def set_extension_model(self, model: Any) -> bool:
+        """扩展切模型(`api.set_model` 走这里)。接受 `"provider/model"` / `ModelView` /
+        `{provider, id}`。解析/鉴权失败只记 note 并返回 False(不把扩展的回合打断)。"""
+        provider = model_id = None
+        if isinstance(model, str):
+            provider, _, model_id = model.partition("/")
+        elif isinstance(model, dict):
+            provider = model.get("provider")
+            model_id = model.get("id") or model.get("model")
+        else:
+            provider = getattr(model, "provider", None)
+            model_id = getattr(model, "id", None)
+        if not provider or not model_id:
+            raise ValueError("set_model 需要 'provider/model'、ModelView 或 {provider, id}")
+        try:
+            self.set_model(str(provider), str(model_id), source="extension")
+        except Exception as exc:  # noqa: BLE001 未登记的模型 / 配置错
+            self.notes.append(f"扩展切模型失败({provider}/{model_id}): {exc}")
+            return False
+        return True
+
+    def unregister_provider(self, name: str) -> None:
+        """注销先前注册的 provider(pi 的 `unregisterProvider`)。找不到则 no-op。"""
+        if self.cfg.providers.pop(name, None) is None:
+            return
+        self.notes.append(f"扩展注销了 provider {name}")
+
+    def model_catalog(self) -> list[ModelView]:
+        """配置里**全部**模型(`ctx.model_registry.get_all()`)。"""
+        out: list[ModelView] = []
+        for provider, prov in (self.cfg.providers or {}).items():
+            for entry in (prov.models or []):
+                out.append(ModelView(provider, entry.id,
+                                     api=entry.api or prov.api or "",
+                                     base_url=prov.baseUrl,
+                                     reasoning=bool(entry.reasoning),
+                                     context_window=_as_int(entry.contextWindow),
+                                     max_tokens=_as_int(entry.maxTokens),
+                                     name=entry.name or entry.id))
+        return out
+
+    def available_models(self) -> list[ModelView]:
+        """能用的模型(当前口径与 `model_catalog()` 一致 —— qi 不做逐模型鉴权过滤)。"""
+        return self.model_catalog()
+
+    def has_configured_auth(self, model: Any) -> bool:
+        """这个模型的 provider 有凭据吗(配置里的 apiKey 或凭证库)。"""
+        provider = getattr(model, "provider", None) or (
+            model.get("provider") if isinstance(model, dict) else None)
+        if not provider:
+            return False
+        prov = (self.cfg.providers or {}).get(str(provider))
+        if prov is not None and prov.apiKey:
+            return True
+        try:
+            return self._auth.get(str(provider)) is not None
+        except Exception:  # noqa: BLE001 凭证库读失败不该把只读查询搞崩
+            return False
+
+    def provider_display_name(self, provider: str) -> str:
+        """provider 的展示名(没配就回落到名字本身,pi 同义)。"""
+        prov = (self.cfg.providers or {}).get(str(provider))
+        name = getattr(prov, "name", None) if prov is not None else None
+        return str(name) if name else str(provider)
+
+    # ── 会话操作(pi 的 ExtensionCommandContext)────────────────────────
+    async def _session_gate(self, event: str, payload: dict, ctx: Any) -> dict | None:
+        """发一个**可取消**的会话事件。返回那个裁决 dict(None = 没人拦)。"""
+        if not self.bus.has(event):
+            return None
+        result = await self.bus.emit_until(event, payload,
+                                           ctx=ctx or self.extension_ctx(),
+                                           stop_keys=("cancel",))
+        for src, exc in result.errors:
+            self.notes.append(f"扩展 {src} 的 {event} 处理失败: {exc}")
+        return result.result
+
+    async def extension_new_session(self, ctx: Any = None,
+                                    options: dict | None = None) -> dict:
+        """开一个新会话(`ctx.new_session()` 走这里)。"""
+        verdict = await self._session_gate("session_before_switch", {"reason": "new"}, ctx)
+        if verdict and verdict.get("cancel"):
+            return {"cancelled": True}
+        previous = self._active_session
+        if previous is not None:
+            await self.emit_session_shutdown("new")
+        session = self.sessions.create("", cwd=self.cwd)
+        self._active_session = session
+        await self.start_session(session, reason="new")
+        return {"cancelled": False, "session": session}
+
+    async def extension_fork(self, ctx: Any, entry_id: str,
+                             options: dict | None = None) -> dict:
+        """从某条 entry fork 出新会话(`ctx.fork()` 走这里;不传 entry_id 则空历史)。"""
+        source = self._active_session
+        if source is None:
+            raise RuntimeError("没有活动会话:fork 需要先绑定会话")
+        verdict = await self._session_gate(
+            "session_before_fork", {"entryId": entry_id}, ctx)
+        if verdict and verdict.get("cancel"):
+            return {"cancelled": True}
+        new = self.sessions.fork_at(source, entry_id)
+        self._active_session = new
+        await self.start_session(new, reason="fork")
+        return {"cancelled": False, "session": new}
+
+    async def extension_navigate_tree(self, ctx: Any, target_id: str,
+                                      options: dict | None = None) -> dict:
+        """把当前节点移到会话树里的另一处(`ctx.navigate_tree()`)。"""
+        session = self._active_session
+        if session is None:
+            raise RuntimeError("没有活动会话:navigate_tree 需要先绑定会话")
+        verdict = await self._session_gate(
+            "session_before_tree", {"targetId": target_id}, ctx)
+        if verdict and verdict.get("cancel"):
+            return {"cancelled": True}
+        if not self.sessions.set_position(session, target_id):
+            return {"cancelled": True, "error": f"未知的 entry: {target_id}"}
+        self._emit_notice("session_tree", {"newLeafId": target_id})
+        return {"cancelled": False, "session": session}
+
+    async def extension_switch_session(self, ctx: Any, session_path: str,
+                                       options: dict | None = None) -> dict:
+        """切到另一个会话文件(`ctx.switch_session()`)。"""
+        verdict = await self._session_gate(
+            "session_before_switch", {"reason": "resume", "targetSessionFile": session_path},
+            ctx)
+        if verdict and verdict.get("cancel"):
+            return {"cancelled": True}
+        session = self.sessions.open_file(session_path)
+        if session is None:
+            return {"cancelled": True, "error": f"打不开会话文件: {session_path}"}
+        await self.emit_session_shutdown("resume")
+        self._active_session = session
+        await self.start_session(session, reason="resume")
+        return {"cancelled": False, "session": session}
+
+    async def reload(self) -> None:
+        """重载资源与提示词(pi 的 `ctx.reload()` 的 qi 版)。
+
+        **不重新 import 扩展模块**(Python 不保证能安全重载:模块级状态、已注册的
+        工具/命令都可能重复)—— 重扫的是技能/基座提示词这类**资源**,并重发
+        `resources_discover` 与 `session_start(reason="reload")` 让扩展自己刷新。
+        """
+        self.base_prompt, self.base_prompt_source = resolve_base_prompt(self.cwd)
+        self.top_skills = load_top_level_skills(
+            self.cwd, self.settings, list(self._extra_skill_paths),
+            enabled=self.settings.skillsEnabled)
+        await self._emit_resources_discover(reason="reload")
+        session = self._active_session
+        if session is not None:
+            self._started_sessions.discard(session.id)
+            await self.start_session(session, reason="reload")
+        else:
+            self.notes.append("ctx.reload():扩展模块不会重新 import(要重启进程);"
+                              "技能与提示词已重扫")
+
+    async def emit_session_shutdown(self, reason: str,
+                                    target_session_file: str | None = None) -> None:
+        """发 `session_shutdown`(退出 / 重载 / 换会话之前)。
+
+        幂等由调用方保证(同一会话只发一次) —— 这里只负责派发与错误隔离。
+        """
+        if not self.bus.has("session_shutdown"):
+            return
+        payload: dict = {"reason": reason}
+        if target_session_file:
+            payload["targetSessionFile"] = target_session_file
+        result = await self.bus.emit("session_shutdown", payload,
+                                     ctx=self.extension_ctx())
+        for src, exc in result.errors:
+            self.notes.append(f"扩展 {src} 的 session_shutdown 处理失败: {exc}")
+
+    async def _emit_resources_discover(self, reason: str = "startup") -> None:
+        """发 `resources_discover`:扩展可以再补技能/提示词/主题路径。
+
+        pi 的形状是返回 `{skillPaths, promptPaths, themePaths}` 三个绝对路径列表。
+        qi 收到后**真加载**:技能进 `top_skills`,提示词/主题路径进 `self.extra_resource_paths`
+        (前端/TUI 从那里取),所以「扩展提供资源」不是只收返回值。
+        """
+        if not self.bus.has("resources_discover"):
+            return
+        result = await self.bus.emit(
+            "resources_discover", {"cwd": str(self.cwd), "reason": reason},
+            ctx=self.extension_ctx())
+        for src, exc in result.errors:
+            self.notes.append(f"扩展 {src} 的 resources_discover 处理失败: {exc}")
+        for key in ("skillPaths", "skill_paths"):
+            for raw in result.payload.get(key) or ():
+                path = Path(str(raw)).expanduser()
+                if not path.exists():
+                    self.notes.append(f"resources_discover 给的技能路径不存在: {path}")
+                    continue
+                # 给的是「技能根」还是「某个技能目录」?两种都认 —— pi 传根,而扩展作者
+                # 很容易直接指向自己的 `skills/mine/`。
+                root = path.parent if (path / "SKILL.md").is_file() else path
+                try:
+                    found = load_top_level_skills(self.cwd, self.settings, [root],
+                                                  enabled=self.settings.skillsEnabled)
+                except Exception as exc:  # noqa: BLE001 坏技能目录不该弄崩启动
+                    self.notes.append(f"resources_discover 的技能路径加载失败({path}): {exc}")
+                    continue
+                self.top_skills = [*self.top_skills, *found]
+        for key in ("promptPaths", "prompt_paths", "themePaths", "theme_paths"):
+            for raw in result.payload.get(key) or ():
+                path = Path(str(raw)).expanduser()
+                if path.exists():
+                    self.extra_resource_paths.append(path)
+                else:
+                    self.notes.append(f"resources_discover 给的路径不存在: {path}")
+
+    async def before_session_op(self, event: str, payload: dict) -> dict | None:
+        """`session_before_switch` / `_fork` / `_tree` 的**公开**入口。
+
+        前端在**用户发起**的会话操作(`/new` `/resume` `/fork` `/tree`)前调它。
+        让用户按键与扩展调 `ctx.fork()` 走**同一道闸门** —— 否则“扩展能拦扩展发起的
+        操作,却拦不住用户按的键”,闸门就名不副实。返回 `{cancel: true}` 即拦下。
+        """
+        return await self._session_gate(event, payload, self.extension_ctx())
+
+    def notify_session_tree(self, new_leaf_id: str | None) -> None:
+        """前端完成一次树跳转后通知扩展(`session_tree`)。"""
+        self._emit_notice("session_tree", {"newLeafId": new_leaf_id})
 
     def _emit_notice(self, event: str, payload: dict) -> None:
         """发一个**通知型**扩展事件(同步入口,不阻塞调用方)。
@@ -1017,7 +1439,10 @@ class QiRuntime:
             injected = raw.strip() or None
         elif isinstance(raw, dict):
             injected = str(raw.get("content") or "").strip() or None
-        return (str(changed) if changed else built), injected
+        final = str(changed) if changed else built
+        # 让 `ctx.getSystemPrompt()` 看到的是**模型真正收到的那一份**(含扩展改写)
+        self._last_system_prompt = final
+        return final, injected
 
     async def stream(self, text: str, session: Session, agent_override: str | None = None,
                      abort: AbortSignal | None = None, source: str = "interactive"):
@@ -1035,11 +1460,20 @@ class QiRuntime:
         # (handled 提前结束、无 agent、错误返回…),逐个清一定会漏 —— 而漏掉的后果是
         # “回合外的写落到上一个会话里”,那是很难查的一类串状态。
         self._active_session = session
+        # `ctx.isIdle()` / `ctx.waitForIdle()` / `ctx.abort()` 靠这三个字段。
+        # 与 `_active_session` 同一个 wrapper:`finally` 里恢复,否则硬取消会把它们永远
+        # 留在“忙”的状态(下一次 `waitForIdle` 就死等)。
+        self._idle = False
+        self._idle_event.clear()
+        self._abort_signal = abort
         try:
             async for event in self._stream_inner(text, session, agent_override, abort, source):
                 yield event
         finally:
+            self._abort_signal = None
             self._active_session = None
+            self._idle = True
+            self._idle_event.set()
 
     async def _stream_inner(self, text: str, session: Session,
                             agent_override: str | None, abort: AbortSignal | None,
@@ -1140,6 +1574,14 @@ class QiRuntime:
         self._persist_final(session, CORE_AGENT_NAME, final_text, usage=end_usage)
         if title_task is not None:
             await self._apply_title(session, title_task)
+        # `agent_settled`(pi):回合**真的**结束了 —— 没有重试、没有压缩残留、没有排队消息。
+        # qi 的 provider 级重试在客户端内部(那时本方法还没跑完),所以到这里就是终点;唯一要
+        # 排掉的是“还有排队消息会让它再跑一轮”的情形。
+        if self.bus.has("agent_settled") and not self.has_pending_messages():
+            settled = await self.bus.emit("agent_settled", {},
+                                         ctx=self.extension_ctx(session=session))
+            for src, exc in settled.errors:
+                self.notes.append(f"扩展 {src} 的 agent_settled 处理失败: {exc}")
 
     def _persist_final(self, session: Session, agent: str, text: str,
                        usage: dict | None = None) -> None:

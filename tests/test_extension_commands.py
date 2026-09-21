@@ -205,7 +205,13 @@ def test_get_commands_reports_source_and_description():
     api.registerCommand("stats", lambda a, c: None, description="统计")
     api.registerShortcut("ctrl+shift+p", lambda c: None, description="计划模式")
 
-    assert api.getCommands() == [{"name": "stats", "description": "统计", "source": "probe"}]
+    assert [c["name"] for c in api.getCommands()] == ["stats"]
+    command = api.getCommands()[0]
+    assert command["description"] == "统计"
+    assert command["source"] == "probe"
+    # pi 的 `SlashCommandInfo.sourceInfo` 也带上(形状对齐),另带 qi 自己的诊断字段
+    assert command["sourceInfo"] == {"source": "probe"}
+    assert command["has_argument_completions"] is False
     assert [s.source for s in registry.shortcuts()] == ["probe"]
 
 

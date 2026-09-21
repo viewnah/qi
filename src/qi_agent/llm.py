@@ -282,13 +282,42 @@ def provider_retry_params(retry: dict | None) -> dict:
     return out
 
 
+def _response_status_headers(resp: Any) -> tuple[int, dict[str, str]]:
+    """从 litellm 的返回里尽最大努力取 HTTP 状态与响应头。
+
+    litellm 与底层 httpx 响应的接缝各版本不同(`_response` / `response`),所以逐层
+    `getattr` —— 取不到就给 `(0, {})`:通知型事件不该因拿不到元数据而报错。
+    """
+    raw = getattr(resp, "_response", None) or getattr(resp, "response", None)
+    status = getattr(raw, "status_code", 0)
+    try:
+        headers = {str(k): str(v) for k, v in dict(getattr(raw, "headers", {}) or {}).items()}
+    except Exception:  # noqa: BLE001 第三方对象的 headers 形状不定
+        headers = {}
+    return _as_int(status), headers
+
+
+def _as_int(value: Any, default: int = 0) -> int:
+    """把可能不是数字的值收成 int(取不到 HTTP 状态不该让事件派发抛错)。"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class LiteLLMClient:
     """基于 litellm 的实现。spec 来自 resolve_model()(经 resolve_key 取 key)。"""
 
     def __init__(self, spec: ResolvedModel, auth_store: AuthStore | None = None,
                  thinking_level: str = "off", retry: dict | None = None,
-                 thinking_budgets: dict[str, int] | None = None):
+                 thinking_budgets: dict[str, int] | None = None,
+                 bus: Any = None, extension_ctx: Any = None):
         self.spec = spec
+        #: 扩展事件总线 + ctx 工厂:provider 三件套事件(`before_provider_request` /
+        #: `before_provider_headers` / `after_provider_response`)靠它们派发。
+        #: 没给就是**完全不派发**(测试里的假客户端不需要)。
+        self._bus = bus
+        self._extension_ctx = extension_ctx
         # 请求级超时/重试:归 provider SDK,不归 agent loop(见 provider_retry_params)
         self._provider_retry = provider_retry_params(retry)
         self._resolved = resolve_key(spec.provider, spec.api_key_ref, auth_store or AuthStore())
@@ -309,6 +338,43 @@ class LiteLLMClient:
     @property
     def ready(self) -> bool:
         return self._resolved.ok
+
+    # ── provider 事件的三个接线点 ──
+    def _ctx(self) -> Any:
+        return self._extension_ctx(None) if callable(self._extension_ctx) else None
+
+    def _wants(self, event: str) -> bool:
+        return self._bus is not None and self._ctx() is not None and self._bus.has(event)
+
+    async def _prepare_request(self, kwargs: dict) -> dict:
+        """`before_provider_request`:可**替换整个 payload**(pi 同义)。"""
+        if not self._wants("before_provider_request"):
+            return kwargs
+        result = await self._bus.emit("before_provider_request",
+                                      {"payload": kwargs}, ctx=self._ctx())
+        replaced = result.payload.get("payload")
+        return replaced if isinstance(replaced, dict) else kwargs
+
+    async def _prepare_headers(self, kwargs: dict) -> dict:
+        """`before_provider_headers`:handler **原地改** `headers`(值是 None 则删掉)。"""
+        headers = dict(kwargs.get("extra_headers") or {})
+        if self._wants("before_provider_headers"):
+            result = await self._bus.emit("before_provider_headers",
+                                          {"headers": headers}, ctx=self._ctx())
+            patched = result.payload.get("headers")
+            if isinstance(patched, dict):
+                headers = {k: v for k, v in patched.items() if v is not None}
+        if headers:
+            kwargs["extra_headers"] = headers
+        return kwargs
+
+    async def _after_response(self, resp: Any) -> None:
+        """`after_provider_response`:拿到响应但还没消费流时通知。"""
+        if not self._wants("after_provider_response"):
+            return
+        status, headers = _response_status_headers(resp)
+        await self._bus.emit("after_provider_response",
+                             {"status": status, "headers": headers}, ctx=self._ctx())
 
     def _base_kwargs(self, messages: list[ChatMessage], tools: list[dict] | None,
                      temperature: float | None) -> dict:
@@ -385,13 +451,18 @@ class LiteLLMClient:
                    temperature: float | None = None) -> ChatResponse:
         import litellm
 
+        kwargs = await self._prepare_headers(
+            await self._prepare_request(self._base_kwargs(messages, tools, temperature)))
         try:
-            resp = await litellm.acompletion(**self._base_kwargs(messages, tools, temperature))
+            resp = await litellm.acompletion(**kwargs)
         except Exception as exc:
             if not self._consider_reasoning_rejection(exc):
                 raise
             # 去掉 reasoning_effort 重试一次(用户只想调级别,不该因此整轮失败)
-            resp = await litellm.acompletion(**self._base_kwargs(messages, tools, temperature))
+            kwargs = await self._prepare_headers(
+                await self._prepare_request(self._base_kwargs(messages, tools, temperature)))
+            resp = await litellm.acompletion(**kwargs)
+        await self._after_response(resp)
         # litellm 的返回类型是 "流式包装器 | 补全对象" 的联合,
         # 这里只走非流式分支,按实际形状收窄。
         msg = cast(Any, resp).choices[0].message
@@ -417,13 +488,16 @@ class LiteLLMClient:
                            temperature: float | None, with_usage: bool) -> AsyncIterator[Any]:
         import litellm
 
-        kwargs = self._base_kwargs(messages, tools, temperature)
+        kwargs = await self._prepare_headers(
+            await self._prepare_request(self._base_kwargs(messages, tools, temperature)))
         kwargs["stream"] = True
         if with_usage:
             kwargs["stream_options"] = {"include_usage": True}
         # litellm 的返回类型是 "流式包装器 | 补全对象" 的联合:这里只走流式分支,
         # 按实际形状收窄(与 chat() 的处理对称)。
-        return cast(AsyncIterator[Any], await litellm.acompletion(**kwargs))
+        stream = cast(AsyncIterator[Any], await litellm.acompletion(**kwargs))
+        await self._after_response(stream)
+        return stream
 
     async def _open_stream_with_fallbacks(self, messages: list[ChatMessage],
                                           tools: list[dict] | None,

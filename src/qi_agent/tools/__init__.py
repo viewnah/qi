@@ -13,6 +13,7 @@ import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from ..abort import AbortSignal
 from ..extensions import ExtensionUi, Tool, ToolError, register_tool
@@ -49,6 +50,11 @@ class ToolContext:
     #: 扩展都会退化成相信自己写对了(而它无从知道)。写 qi-agents 时发现并加上:
     #: 项目级角色是仓库控制的提示词,`subagent` 工具得先问一句。
     project_trusted: bool = True
+    #: 本次调用的工具调用 id(pi 的 `execute(toolCallId, …)` 第 1 个参数)。
+    tool_call_id: str = ""
+    #: 流式进度回调(pi 的 `onUpdate`):`on_update(partial)` → 发 `tool_execution_update`
+    #: 事件。同步可调,工具不必 await。
+    on_update: Callable[[Any], None] | None = None
 
     def guard(self, p: str | Path) -> Path:
         """路径必须落在 workdir 内(防越界,对齐 hikqin validate_path 思想)。"""

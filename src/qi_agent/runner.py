@@ -14,6 +14,7 @@ from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass, field, replace
 
 from pathlib import Path
+from typing import Any
 
 from .abort import AbortSignal
 from .extensions import Tool, ToolError
@@ -235,6 +236,9 @@ class AgentRunner:
 
         yield AgentEvent(kind="agent_start", agent=self.spec.name)
         await self._emit("agent_start", {"agent": self.spec.name}, abort)
+        # pi 的 `message_start`:用户消息进入上下文。qi 的会话落盘在 runtime,这里只通知。
+        await self._emit("message_start",
+                         {"message": {"role": "user", "content": user_input}}, abort)
         last_text = ""
         usage_total: dict = {}
         #: 最后一次 LLM 调用看到的 prompt 大小 = **当前上下文占用**。
@@ -268,6 +272,8 @@ class AgentRunner:
                 for extra in self._drain("steer"):
                     msgs.append(ChatMessage(role="user", content=extra))
                 # 请求级超时归 provider/SDK(见 llm.py 的 retry.provider),不在这里套 asyncio.timeout
+                await self._emit("message_start",
+                                 {"message": {"role": "assistant", "content": ""}}, abort)
                 async for delta in _iter_until_abort(
                         stream_llm(self.llm, msgs, tools=schemas), abort):
                     if delta.reasoning:
@@ -281,6 +287,14 @@ class AgentRunner:
                         # 所以它们的输出不变——这是有意为之的向后兼容。
                         yield AgentEvent(kind="text_delta", agent=self.spec.name,
                                          text=delta.text)
+                    if delta.text or delta.reasoning:
+                        # pi 的 `message_update`:流式过程中的逐段推送(带 partial message)
+                        await self._emit(
+                            "message_update",
+                            {"message": {"role": "assistant", "content": acc_text},
+                             "assistantMessageEvent": {"text": delta.text or "",
+                                                       "reasoning": delta.reasoning or ""}},
+                            abort)
                     if delta.finished:
                         tool_calls = delta.tool_calls
                         usage = delta.usage
@@ -293,6 +307,19 @@ class AgentRunner:
                 prompt_side = (usage or {}).get("prompt_tokens")
                 if isinstance(prompt_side, int) and not isinstance(prompt_side, bool):
                     context_tokens = prompt_side
+                # `message_end`:pi 允许改这条消息(`role` 不能改)。qi 只认 `content` 的替换 ——
+                # 工具调用已经是既成事实,改它会让模型看到的与跑过的不一致。
+                message_end = await self._emit(
+                    "message_end",
+                    {"message": {"role": "assistant", "content": acc_text,
+                                 "tool_calls": [c.name for c in tool_calls],
+                                 "tool_call_ids": [c.id for c in tool_calls]}}, abort)
+                if message_end is not None:
+                    self._report("message_end", message_end)
+                    patched_message = message_end.payload.get("message")
+                    if (isinstance(patched_message, dict)
+                            and isinstance(patched_message.get("content"), str)):
+                        acc_text = patched_message["content"]
                 msgs.append(ChatMessage(role="assistant", content=acc_text,
                                         tool_calls=tool_calls))
                 last_text = acc_text
@@ -306,6 +333,14 @@ class AgentRunner:
                 if not tool_calls:
                     pass                  # 空列表 → 下面的 for 自然跳过;`turn_end` 仍要发
                 for call in tool_calls:
+                    # pi 的顺序:`tool_execution_start` 在 `tool_call` **之前**(闸门看到的是
+                    # 未被改过的原始参数)。qi 可以让扩展事件保持 pi 的顺序:持久化来源是下面
+                    # 那条内部 `AgentEvent(kind="tool_start")`(在闸门**之后**发),
+                    # 两者不是同一个通道,所以“回放里的参数不是跑过的”那个顾虑不成立。
+                    await self._emit(
+                        "tool_execution_start",
+                        {"tool_call_id": call.id, "tool_name": call.name,
+                         "args": call.args}, abort)
                     # `tool_call`:可改 `input`(改动真生效、不重校)、可 `block`。
                     # 出错时 **fail-safe 拦住** —— “装了闸门反而放行”是最坏的结果。
                     verdict = await self._emit(
@@ -318,10 +353,19 @@ class AgentRunner:
                         patched_args = verdict.payload.get("input")
                         if isinstance(patched_args, dict):
                             call.args = patched_args
-                    # 顺序:**先**过闸门再发 `tool_start` —— 事件里的 args 必须是真正要执行的
-                    # 那一份(前端与落盘都读它)。pi 是反的(tool_execution_start 在前),
-                    # 但 qi 的事件流同时是持久化来源,args 对不上会变成“回放里看到的参数
-                    # 不是跑过的”—— 那种不一致比事件顺序上的形式对齐更重要。
+                    # `prepare_arguments`(pi 的 `ToolDefinition.prepareArguments`):执行前
+                    # 最后一次整理原始参数。放在闸门**之后** —— 否则扩展改过的参数会被它覆盖。
+                    tool_def = self.catalog.get(call.name)
+                    if tool_def is not None and tool_def.prepare_arguments is not None:
+                        try:
+                            prepared = tool_def.prepare_arguments(call.args)
+                        except Exception as exc:  # noqa: BLE001 第三方代码
+                            prepared = None
+                            if self.report is not None:
+                                self.report(f"工具 {call.name} 的 prepare_arguments 失败: {exc}")
+                        if isinstance(prepared, dict):
+                            call.args = prepared
+                    # 内部事件(前端与落盘读它):参数必须是真正要执行的那一份
                     yield AgentEvent(kind="tool_start", agent=self.spec.name,
                                      tool=call.name, data={"args": call.args})
                     if abort is not None and abort.aborted:
@@ -332,6 +376,11 @@ class AgentRunner:
                         outcome = _blocked_outcome(str(verdict.result.get("reason") or ""))
                     else:
                         outcome = await self._execute(tools, call, abort)
+                    await self._emit(
+                        "tool_execution_end",
+                        {"tool_call_id": call.id, "tool_name": call.name,
+                         "result": outcome.result, "is_error": not outcome.ok,
+                         "details": outcome.details}, abort)
                     # `tool_result`:patch 语义(可改模型看到的结果 / 结构化 details / status)
                     patched = await self._emit(
                         "tool_result",
@@ -342,6 +391,15 @@ class AgentRunner:
                     if patched is not None:
                         self._report("tool_result", patched)
                         _apply_result_patch(outcome, patched.payload)
+                    # 工具结果作为一条消息进上下文(pi 也会为它发 message_start/end)
+                    await self._emit(
+                        "message_start",
+                        {"message": {"role": "tool", "tool_call_id": call.id,
+                                     "content": ""}}, abort)
+                    await self._emit(
+                        "message_end",
+                        {"message": {"role": "tool", "tool_call_id": call.id,
+                                     "content": outcome.result}}, abort)
                     # 结构化结果:前端工具卡片靠 status/duration_ms/exit_code 渲染,
                     # 不再解析 text 前缀;text 仍是模型可见的原文(与旧版一致)。
                     yield AgentEvent(kind="tool_end", agent=self.spec.name, tool=call.name,
@@ -395,6 +453,26 @@ class AgentRunner:
         yield AgentEvent(kind="agent_end", agent=self.spec.name, text=last_text,
                          data=end_data)
 
+    def _on_update(self, call: ToolCallOut, abort: AbortSignal | None) -> Any:
+        """工具流式进度回调(pi 的 `onUpdate`):转成 `tool_execution_update` 事件。
+
+        同步可调(工具不必 await),内部把派发排成后台任务 —— 与 `_emit_notice` 同一条取舍。
+        """
+        def on_update(partial: Any) -> None:
+            if self.bus is None or not self.bus.has("tool_execution_update"):
+                return
+            if self.extension_ctx is None:
+                return
+            payload = {"tool_call_id": call.id, "tool_name": call.name,
+                       "args": call.args, "partial_result": partial}
+            try:
+                asyncio.get_running_loop().create_task(
+                    self.bus.emit("tool_execution_update", payload,
+                                  ctx=self.extension_ctx(abort)))
+            except RuntimeError:
+                return
+        return on_update
+
     async def _execute(self, tools: list[Tool], call: ToolCallOut,
                        abort: AbortSignal | None = None) -> ToolOutcome:
         """执行一次工具调用,返回**结构化**结果。
@@ -415,8 +493,14 @@ class AgentRunner:
             return ToolOutcome(status=TOOL_ERROR, error="unknown_tool",
                                result=f"Error: 未知工具 {call.name}", duration_ms=elapsed_ms())
         ctx = self.tool_ctx
-        if abort is not None and ctx is not None:
-            ctx = replace(ctx, abort=abort)
+        if ctx is not None:
+            # pi 的 `execute(toolCallId, params, signal, onUpdate, ctx)`:这几个在 ToolContext 上
+            # 对应 `tool_call_id` / `abort` / `on_update`。
+            updates: dict = {"tool_call_id": call.id}
+            if abort is not None:
+                updates["abort"] = abort
+            updates["on_update"] = self._on_update(call, abort)
+            ctx = replace(ctx, **updates)
         # 取出可调用对象再调:ast-grep 会按名字把 `工具.execute(...)` 当成 SQL sink
         # (这个文件里没有任何数据库访问),而按名字匹配的规则没法用注释抑掉 ——
         # 绑定成局部变量既避开它,也让“先取出要执行的工具”这层意图更明显。

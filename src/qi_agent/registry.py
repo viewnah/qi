@@ -241,6 +241,7 @@ def discover_extensions(catalog: ToolCatalog, capabilities: CapabilityRegistry,
                         commands: CommandRegistry | None = None,
                         flags: FlagRegistry | None = None,
                         cli_commands: CliCommandRegistry | None = None,
+                        renderers: Any = None,
                         on_warning: Callable[[str], None] | None = None,
                         extra_dirs: Iterable[Path | tuple[Path, str]] | None = None,
                         project_trusted: bool = True,
@@ -289,6 +290,7 @@ def discover_extensions(catalog: ToolCatalog, capabilities: CapabilityRegistry,
                                _origin=origin["origin"], _host=host,
                                _capabilities=capabilities,
                                _commands=commands, _flags=flags,
+                               _renderers=renderers,
                                _cli_commands=cli_commands)
             module = load()
             register = getattr(module, "register", None)

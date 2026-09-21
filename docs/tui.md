@@ -178,7 +178,7 @@ qi 与 pi 的差异(已落档):
 | `/reload` | 重载扩展 / 技能 / 配置 |
 | `/login` · `/logout` | 登录指引(密钥不进会话)/ 删除已存凭证 |
 | `/changelog` | 显示 `CHANGELOG.md` |
-| `/share` | 把当前会话传成**私有** GitHub gist(一个自包含 `.html`),并把链接复制到剪贴板。直调 API,不依赖 `gh`;token 取 `GITHUB_TOKEN` / `GH_TOKEN` / `qi auth login github`,需要 `gist` 权限 |
+| `/share` | 把当前会话传成**私有** GitHub gist(一个自包含 `.html`),并把链接复制到剪贴板。直调 API,不依赖 `gh`;token 顺序照 qi 的凭证总原则(**auth store → 环境变量**):`qi auth login github` → `GITHUB_TOKEN` → `GH_TOKEN`,需要一个带 `gist` 权限的 token |
 
 扩展可以注册**自己的** `/命令`(`api.registerCommand`):重名时都留着并变成 `name:1` / `name:2`,
 一个都不丢;它们会出现在 **`/` 补全**里(带描述与来源,见 [extensions.md](extensions.md) §3.2)。

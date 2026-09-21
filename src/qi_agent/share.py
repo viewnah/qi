@@ -7,12 +7,13 @@
 * **`public: false`**(私有 gist),里面放一个 `.html` 文件 —— 内容就是
   `export_html.render_session_html()` 那份自包含 HTML。
 
-token 顺序:`GITHUB_TOKEN` → `GH_TOKEN` → qi 的 auth store(`qi auth login github`)。
-用 stdlib 的 `urllib.request`,不引新依赖。
+token **顺序照 qi 的凭证总原则**(`docs/security.md`:auth store → 约定环境变量)—— 这也正是
+pi 的做法:它从自己的凭证库取(`getAuthCredential`)。环境变量兜底,依次
+`GITHUB_TOKEN` → `GH_TOKEN`。用 stdlib 的 `urllib.request`,不引新依赖。
 
-**没核到的**:pi 那 183 行里我没逐行读完的部分(它似乎也把分享做成过工具、description 取自
-某处的描述)。所以这里只保证「产物 + 端点 + 私有」与 pi 一致,细节未逐行对照 —— 说清楚,
-免得后来者以为是对齐过的。
+**核过的 pi 流程**(`session-share.js`):导出 JSONL → 转 HTML → 读回 → 以
+`public: false` + 一个 `.html` 文件 POST 到 `api.github.com/gists`。qi 少了前两步:
+导出器直接吃 session 对象,产物同样是那份自包含 HTML(结果一致,少两个临时文件)。
 """
 
 from __future__ import annotations
@@ -34,11 +35,11 @@ class ShareError(Exception):
 
 
 def resolve_token(store: Any = None) -> tuple[str, str] | None:
-    """→ `(token, 来源)`;都没有则 None。来源要报出来(用户需要知道用的是哪一个)。"""
-    for name in _TOKEN_ENVS:
-        value = (os.environ.get(name) or "").strip()
-        if value:
-            return value, f"环境变量 {name}"
+    """→ `(token, 来源)`;都没有则 None。来源要报出来(用户需要知道用的是哪一个)。
+
+    **顺序照 qi 的凭证总原则**(`docs/security.md`):auth store → 约定环境变量。
+    (pi 也是从自己的凭证库取 —— 这一点是读它的实现确认的,不是猜的。)
+    """
     try:
         from .auth import AuthStore
 
@@ -47,6 +48,10 @@ def resolve_token(store: Any = None) -> tuple[str, str] | None:
         key = None
     if key:
         return str(key), "auth store(qi auth login github)"
+    for name in _TOKEN_ENVS:
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            return value, f"环境变量 {name}"
     return None
 
 

@@ -77,14 +77,36 @@ def test_payload_is_a_private_single_html_gist(monkeypatch):
     assert body["files"]["session.html"]["content"].startswith("<!doctype html>")
 
 
-def test_token_order_env_then_auth_store(monkeypatch):
+def _isolated_home(tmp_path, monkeypatch):
+    """把 `QI_AGENT_HOME` 指到临时目录 —— 否则 `AuthStore()` 会读用户真实的 auth.json。"""
+    from qi_agent import paths
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv(paths.QI_AGENT_HOME, str(home))
+    return home
+
+
+def test_token_order_is_auth_store_then_env(tmp_path, monkeypatch):
+    """顺序照 qi 的凭证总原则:auth store → 环境变量(pi 也是从自己的凭证库取)。"""
+    home = _isolated_home(tmp_path, monkeypatch)
     _no_env(monkeypatch)
-    assert resolve_token(store=None) is None
+    assert resolve_token() is None
+
     monkeypatch.setenv("GH_TOKEN", "from-gh")
     assert resolve_token() == ("from-gh", "环境变量 GH_TOKEN")
     monkeypatch.setenv("GITHUB_TOKEN", "from-github")
     preferred = resolve_token()
-    assert preferred is not None and preferred[0] == "from-github", "GITHUB_TOKEN 优先"
+    assert preferred is not None and preferred[0] == "from-github", "GITHUB_TOKEN 优先于 GH_TOKEN"
+
+    # auth store 存在时它赢(更具体的那一源)。用**真实写入接口** —— 第一版我手写
+    # `{"github": {"key": ...}}`,少了 `type` 字段,于是 store 没命中、环境变量赢了,
+    # 而那是我的 fixture 写错,不是实现的问题。
+    from qi_agent.auth import AuthStore
+
+    AuthStore().set_key("github", "from-store")
+    stored = resolve_token()
+    assert stored is not None and stored[0] == "from-store", stored
 
 
 # ── 失败的可见性 ───────────────────────────────────────────────────────

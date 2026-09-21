@@ -138,6 +138,24 @@ class Candidate(NamedTuple):
     source: str = ""    # 来源标签(空 = 内置)
 
 
+def _candidate_items(raw: Any) -> list[Candidate]:
+    """把补全回调的返回值归一成 `Candidate`(收 `str` 与 `{value|label, description}`)。
+
+    命令的 `getArgumentCompletions` 与 `add_autocomplete_provider` **共用这一处** ——
+    两种补全只学一次元素形状。
+    """
+    items: list[Candidate] = []
+    for entry in list(raw or []):
+        if isinstance(entry, str):
+            items.append(Candidate(entry, entry, ""))
+        elif isinstance(entry, dict):
+            value = str(entry.get("value") or entry.get("label") or "")
+            if value:
+                items.append(Candidate(value, value,
+                                       str(entry.get("description") or "")))
+    return items
+
+
 ARG_COMPLETION_COMMANDS = ("/model", "/thinking", "/login")
 """参数补全(对齐 pi 的 `getArgumentCompletions`):这些命令的第一个参数给候选。"""
 
@@ -581,12 +599,22 @@ class ExtensionToolBlock(Vertical):
     所以先用一个待挂槽位存着,`on_mount` 里再真挂(Textual 不允许给自己未挂载的 widget mount 子项)。
     """
 
-    def __init__(self, palette: Palette) -> None:
-        super().__init__(classes="msg tool-msg")
+    def __init__(self, palette: Palette, *, shell: bool = True) -> None:
+        """`shell=False` 对应 pi 的 `renderShell: "self"` —— 扩展的组件自己画框。
+
+        默认(`shell=True`)给扩展的组件套上**默认工具卡片外壳**(与内置 `ToolBlock` 同一套:
+        状态底色 + `(1,1)` 内边距)—— 否则“把渲染交给扩展”会让卡片突然没有底色,
+        变成与内置工具不一致的观感。`"self"` 就是让扩展自己负责这个壳。
+        """
+        super().__init__(classes="msg tool-msg" if shell else "")
         self._palette = palette
+        self._shell = shell
         self._widget: Any = None
         self._pending: Any = None
         self._state = "pending"
+        if shell:
+            self.styles.padding = (1, 1)
+            self._apply_shell_state()
 
     def show(self, widget: Any) -> None:
         """挂上(或替换成)扩展给的组件。"""
@@ -611,8 +639,16 @@ class ExtensionToolBlock(Vertical):
         if pending is not None:
             self.mount(pending)
 
+    def _apply_shell_state(self) -> None:
+        if not self._shell:
+            return
+        key = {"pending": "toolPendingBg", "ok": "toolSuccessBg",
+               "error": "toolErrorBg"}[self._state]
+        self.styles.background = self._palette.hex(key)
+
     def set_state(self, state: str) -> None:
         self._state = state
+        self._apply_shell_state()
         setter = getattr(self._widget, "set_state", None)
         if callable(setter):
             setter(state)
@@ -1865,7 +1901,8 @@ class QiTui(App):
         # (块, 工具名, 输出)。块可能是内置 `ToolBlock`,也可能是扩展渲染的
         # `ExtensionToolBlock` —— 两者都提供 set_state / set_output。
         self._tool_blocks: list[tuple[Any, str, str]] = []
-        self._current_tool: ToolBlock | None = None
+        #: 正在跑的工具块(**按 `tool_call_id` 配对** —— 并发执行时会有多条同时在途)
+        self._current_tools: dict[str, Any] = {}
         self._model: ResolvedModel | None = None
         self._usage = {"prompt_tokens": 0, "completion_tokens": 0}
         # 消息队列(pi 的 steer / follow-up):回合进行中提交的消息不并发跑,而是排队。
@@ -1911,6 +1948,8 @@ class QiTui(App):
         self._editor_component_factory: Any = None
         #: `ctx.ui.add_autocomplete_provider` 的补全提供者
         self._autocomplete_providers: list[Any] = []
+        #: async 补全的回填(`((当时的文本, 光标偏移), 候选)`)—— 文本变了就作废
+        self._async_completion: tuple[tuple[str, int], list[Candidate]] | None = None
         #: `ctx.ui.set_footer` / `set_header` 的工厂(挂出的组件带 `.ext-footer` / `.ext-header`)
         self._ext_footer: Any = None
         self._ext_header: Any = None
@@ -2051,7 +2090,8 @@ class QiTui(App):
         if render_call is not None:
             widget = self._extension_widget(render_call, args)
             if widget is not None:
-                block = ExtensionToolBlock(self._palette)
+                shell = str(getattr(tool, "render_shell", "") or "") != "self"
+                block = ExtensionToolBlock(self._palette, shell=shell)
                 block.set_state(state)
                 try:
                     block.show(widget)
@@ -2399,6 +2439,7 @@ class QiTui(App):
         except (NoMatches, ScreenStackError):
             return
         self._repaint_borders()
+        self._async_completion = None      # 文本变了:async 补全的回填作废
         if getattr(editor, "history_browsing", False):
             self._close_completions()      # 翻历史时不弹面板,否则 ↑/↓ 会被面板抢走
         else:
@@ -2472,10 +2513,15 @@ class QiTui(App):
                         self._last_answer = ev.text
                 elif ev.kind == "tool_start":
                     block = self._tool_block(ev.tool or "?", ev.data.get("args") or {})
-                    self._current_tool = block
+                    # 并发执行时会有多条工具同时在途 —— 按 `tool_call_id` 配对
+                    self._current_tools[str(ev.data.get("tool_call_id") or "")] = block
                     self._append(block)
                 elif ev.kind == "tool_end":
-                    block = self._current_tool
+                    call_id = str(ev.data.get("tool_call_id") or "")
+                    block = self._current_tools.pop(call_id, None)
+                    if block is None and len(self._current_tools) == 1:
+                        # 兼容不给 id 的来源:只有一条在途时能确定是哪一条
+                        _, block = self._current_tools.popitem()
                     if block is None:
                         block = self._tool_block(ev.tool or "?", {})
                         self._append(block)
@@ -2495,7 +2541,6 @@ class QiTui(App):
                     if status == "error" and ev.data.get("error"):
                         block.set_output(Text("\n" + str(ev.data["error"]),
                                               style=Style(color=self._palette.hex("error"))))
-                    self._current_tool = None
                     self._scroll_end()
                 elif ev.kind == "error":
                     self._append(Static(Text(ev.text, style=Style(color=self._palette.hex("error"))),
@@ -3760,6 +3805,11 @@ class QiTui(App):
             return [], 0, 0
         text, offset = self._editor_text_offset()
         extra = self._extension_completion_items(text, offset)
+        # async 补全的回填:只有文本与光标**都没动**时才采用(否则候选对不上现在的 token)
+        if self._async_completion is not None:
+            where, pending_items = self._async_completion
+            if where == (text, offset):
+                extra = [*extra, *pending_items]
         if not extra:
             return items, start, end
         if items:
@@ -3781,20 +3831,39 @@ class QiTui(App):
                 self._note(f"扩展补全提供者失败: {type(exc).__name__}: {exc}", "warning")
                 continue
             if inspect.isawaitable(raw):
-                close = getattr(raw, "close", None)
-                if callable(close):
-                    close()
-                self._note("扩展补全提供者返回了 async 结果 —— 补全路径是同步的,已忽略")
+                # **async 补全支持**:排一个 worker 等结果,回来后再刷一次面板。
+                # 不能直接 note 掉 —— pi 的 `getArgumentCompletions` 允许返回 Promise。
+                self._schedule_async_completion(raw)
                 continue
-            for entry in list(raw or []):
-                if isinstance(entry, str):
-                    items.append(Candidate(entry, entry, ""))
-                elif isinstance(entry, dict):
-                    value = str(entry.get("value") or entry.get("label") or "")
-                    if value:
-                        items.append(Candidate(value, value,
-                                               str(entry.get("description") or "")))
+            items.extend(_candidate_items(raw))
         return items[:MAX_COMPLETION_ITEMS]
+
+    def _schedule_async_completion(self, pending: Any) -> None:
+        """async 补全回调:排一个 worker 等结果,回来后重刷面板。
+
+        结果按“当时的光标位置”存下来(`_async_completion`),只有文本与光标都没变时
+        才被采用 —— 否则用户已经接着打字了,一堆旧候选会比没有还糟。文本一变就丢。
+        """
+        text, offset = self._editor_text_offset()
+
+        async def _run() -> None:
+            try:
+                raw = await pending
+            except Exception as exc:  # noqa: BLE001 扩展的补全坏不该把输入框弄挂
+                self._note(f"async 补全失败: {type(exc).__name__}: {exc}", "warning")
+                return
+            items = _candidate_items(raw)
+            if not items:
+                return
+            self._async_completion = ((text, offset), items)
+            self._refresh_completions()
+
+        try:
+            self.run_worker(_run(), exclusive=False, exit_on_error=False)
+        except Exception:  # noqa: BLE001 界面未在跑:丢掉这个 coroutine 免得 "never awaited"
+            close = getattr(pending, "close", None)
+            if callable(close):
+                close()
 
     def _editor_text_offset(self) -> tuple[str, int]:
         """编辑器全文 + 光标的字符偏移(提供者拿到的是这个,不是 (row, col))。"""
@@ -3891,23 +3960,10 @@ class QiTui(App):
             self._note(f"扩展参数补全失败({cmd}): {exc}", "warning")
             return []
         if inspect.isawaitable(raw):
-            # 不 await 就把 coroutine 关掉 —— 否则 Python 会报 "never awaited" 警告,
-            # 测试与日志里都是噪声。
-            close = getattr(raw, "close", None)
-            if callable(close):
-                close()
-            self._note(f"扩展参数补全({cmd})返回了 async 结果 —— 补全路径是同步的,已忽略")
+            # 同上:async 也能用,只是结果晚一拍到(worker 回来后重刷面板)
+            self._schedule_async_completion(raw)
             return []
-        items: list[Candidate] = []
-        for entry in list(raw or []):
-            if isinstance(entry, str):
-                items.append(Candidate(entry, entry, ""))
-            elif isinstance(entry, dict):
-                value = str(entry.get("value") or entry.get("label") or "")
-                if value:
-                    items.append(Candidate(value, value,
-                                           str(entry.get("description") or "")))
-        return items
+        return _candidate_items(raw)
 
     def _argument_candidates(self, cmd: str, prefix: str) -> list[Candidate]:
         """`/model` `/thinking` `/login` 的第一个参数候选。"""

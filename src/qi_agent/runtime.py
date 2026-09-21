@@ -1536,7 +1536,8 @@ class QiRuntime:
         partial = ""
         # 正常结束才有(RUN_FINISHED 的 usage);硬取消那条路径拿不到。
         end_usage: dict = {}
-        pending_tool: dict | None = None
+        #: 并发执行时会有多条工具同时在途 —— 靠 `tool_call_id` 配对(以前是单个槽位)
+        pending_tools: dict[str, dict] = {}
         try:
             async for event in runner.run(text, history, abort=abort):
                 if event.kind == "agent_end":
@@ -1558,10 +1559,19 @@ class QiRuntime:
                         # 不带工具调用那条由回合末尾的 message entry 代表,所以不会重复。
                         self._persist_narration(session, CORE_AGENT_NAME, event.text)
                 elif event.kind == "tool_start":
-                    pending_tool = {"tool": event.tool, "args": event.data.get("args") or {}}
+                    call_id = str((event.data or {}).get("tool_call_id") or "")
+                    pending_tools[call_id] = {
+                        "tool": event.tool,
+                        "args": (event.data or {}).get("args") or {}}
                 elif event.kind == "tool_end":
-                    self._persist_tool(session, CORE_AGENT_NAME, event, pending_tool)
-                    pending_tool = None
+                    call_id = str((event.data or {}).get("tool_call_id") or "")
+                    pending = pending_tools.pop(call_id, None)
+                    if pending is None and len(pending_tools) == 1:
+                        # 兼容不给 id 的来源(第三方 AgentEvent 生产者):只有一条在途时可确定
+                        _, pending = pending_tools.popitem()
+                    if pending is None:
+                        pending = {"tool": event.tool, "args": {}}
+                    self._persist_tool(session, CORE_AGENT_NAME, event, pending)
                 yield event
         except asyncio.CancelledError:
             # 硬取消:收尾不做任何 await(已在取消状态),只做同步落盘

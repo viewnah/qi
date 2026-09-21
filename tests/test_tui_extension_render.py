@@ -181,20 +181,48 @@ async def test_extension_argument_completions_are_used(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_async_argument_completions_are_reported_not_silent(tmp_path, monkeypatch):
+async def test_async_argument_completions_are_used(tmp_path, monkeypatch):
+    """pi 的 `getArgumentCompletions` 允许返回 Promise —— qi 也得能用(只是晚一拍)。"""
     async def completer(prefix):  # noqa: ANN001, ARG001
-        return ["x"]
+        return ["prod", "staging"]
 
     runtime = RenderFakeRuntime()
     runtime.commands.add_command("deploy", lambda a, c: None, get_argument_completions=completer)
     _boot(tmp_path, monkeypatch, runtime)
 
     app = QiTui(palette=PALETTE)
-    async with app.run_test(size=(100, 30)):
-        said: list[str] = []
-        app._note = lambda text, tone="dim": said.append(str(text))  # type: ignore[method-assign]
+    async with app.run_test(size=(100, 30)) as pilot:
+        app.set_editor_text("/deploy ")
+        app.query_one("#editor", TextArea).move_cursor((0, 8))
+        # 同步那一趟拿不到东西(async 返回值),但已经排了 worker
         assert app._extension_argument_candidates("/deploy", "") == []
-        assert any("async" in n for n in said)
+        await app.workers.wait_for_complete()
+        await pilot.pause(0.05)
+        # 回填之后候选里就出现了
+        items, _start, _end = app._completion_candidates()
+        assert {c.value for c in items} >= {"prod", "staging"}
+
+
+@pytest.mark.asyncio
+async def test_async_completion_is_dropped_when_text_moved_on(tmp_path, monkeypatch):
+    """async 结果回来时用户已经接着打字了 → **不能用**(旧候选对不上现在的 token)。"""
+    async def completer(prefix):  # noqa: ANN001, ARG001
+        return ["prod"]
+
+    runtime = RenderFakeRuntime()
+    runtime.commands.add_command("deploy", lambda a, c: None, get_argument_completions=completer)
+    _boot(tmp_path, monkeypatch, runtime)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        app.set_editor_text("/deploy ")
+        app.query_one("#editor", TextArea).move_cursor((0, 8))
+        app._extension_argument_candidates("/deploy", "")
+        app.set_editor_text("/deploy pr")          # 结果回来前又打了两个字符
+        await app.workers.wait_for_complete()
+        await pilot.pause(0.05)
+        items, _start, _end = app._completion_candidates()
+        assert not any(c.value == "prod" for c in items)
 
 
 # ── 组件层:footer / header / widget / 终端输入 ────────────────
@@ -401,3 +429,28 @@ async def test_autocomplete_provider_unsubscribe_and_failure(tmp_path, monkeypat
         good()
         assert app._completion_candidates()[0] == []
         unsubscribe()
+
+
+# ── renderShell:让扩展自己画框 ────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_render_shell_self_skips_the_default_tool_shell(tmp_path, monkeypatch):
+    """pi 的 `renderShell: "self"` —— 默认给扩展组件套工具卡片外壳,`self` 则不套。"""
+    runtime = RenderFakeRuntime()
+    runtime.catalog.register(_tool("framed", render_call=lambda args, ctx: Static("F")))
+    runtime.catalog.register(_tool("bare", render_call=lambda args, ctx: Static("B"),
+                                  render_shell="self"))
+    _boot(tmp_path, monkeypatch, runtime)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)):
+        framed = app._tool_block("framed", {})
+        bare = app._tool_block("bare", {})
+        assert isinstance(framed, ExtensionToolBlock) and isinstance(bare, ExtensionToolBlock)
+        assert framed._shell is True and bare._shell is False
+
+        framed.set_state("ok")
+        bare.set_state("ok")
+        # 默认外壳真的上了状态底色;`self` 完全不碰容器
+        assert framed.styles.background.hex == PALETTE.hex("toolSuccessBg")
+        assert bare.styles.background.hex != PALETTE.hex("toolSuccessBg")

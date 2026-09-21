@@ -66,6 +66,33 @@ class RunSpec:
     tools: list[str]     # 工具名(在 catalog 里解析)
 
 
+def plan_tool_batches(calls: list[ToolCallOut],
+                      catalog: ToolCatalog) -> list[list[ToolCallOut]]:
+    """把这一轮的工具调用切成“批”:连续的 parallel 工具并成一批,其余各自成批。
+
+    pi 的 `executionMode` 是**逐工具**的(默认 `sequential`):写 `"parallel"` 表示这个工具
+    可以与同批其它 parallel 工具并发。所以一个非 parallel 调用天然把批次打断 ——
+    顺序工具**永远不会**与并行工具重叠执行(否则“我声明了顺序”就没意义了)。
+
+    并发安全由**声明方**负责:写 `"parallel"` 等于说“我自己的实现是并发安全的”。
+    qi 不做文件变更队列 —— 那份复杂度只该在真有需要时加。
+    """
+    batches: list[list[ToolCallOut]] = []
+    current: list[ToolCallOut] = []
+    for call in calls:
+        tool = catalog.get(call.name)
+        if str(getattr(tool, "execution_mode", "") or "") == "parallel":
+            current.append(call)
+            continue
+        if current:
+            batches.append(current)
+            current = []
+        batches.append([call])
+    if current:
+        batches.append(current)
+    return batches
+
+
 def _accumulate_usage(total: dict, usage: dict | None) -> None:
     """把一次 LLM 调用的 usage 累加进总计。
 
@@ -331,89 +358,125 @@ class AgentRunner:
                                        "thinking": acc_thinking,
                                        "tool_calls": [c.name for c in tool_calls]})
                 if not tool_calls:
-                    pass                  # 空列表 → 下面的 for 自然跳过;`turn_end` 仍要发
-                for call in tool_calls:
-                    # pi 的顺序:`tool_execution_start` 在 `tool_call` **之前**(闸门看到的是
-                    # 未被改过的原始参数)。qi 可以让扩展事件保持 pi 的顺序:持久化来源是下面
-                    # 那条内部 `AgentEvent(kind="tool_start")`(在闸门**之后**发),
-                    # 两者不是同一个通道,所以“回放里的参数不是跑过的”那个顾虑不成立。
-                    await self._emit(
-                        "tool_execution_start",
-                        {"tool_call_id": call.id, "tool_name": call.name,
-                         "args": call.args}, abort)
-                    # `tool_call`:可改 `input`(改动真生效、不重校)、可 `block`。
-                    # 出错时 **fail-safe 拦住** —— “装了闸门反而放行”是最坏的结果。
-                    verdict = await self._emit(
-                        "tool_call",
-                        {"tool_name": call.name, "tool_call_id": call.id, "input": call.args},
-                        abort, stop_keys=("block",),
-                        on_error_result={"block": True, "reason": "扩展闸门异常"})
-                    if verdict is not None:
-                        self._report("tool_call", verdict)
-                        patched_args = verdict.payload.get("input")
-                        if isinstance(patched_args, dict):
-                            call.args = patched_args
-                    # `prepare_arguments`(pi 的 `ToolDefinition.prepareArguments`):执行前
-                    # 最后一次整理原始参数。放在闸门**之后** —— 否则扩展改过的参数会被它覆盖。
-                    tool_def = self.catalog.get(call.name)
-                    if tool_def is not None and tool_def.prepare_arguments is not None:
-                        try:
-                            prepared = tool_def.prepare_arguments(call.args)
-                        except Exception as exc:  # noqa: BLE001 第三方代码
-                            prepared = None
-                            if self.report is not None:
-                                self.report(f"工具 {call.name} 的 prepare_arguments 失败: {exc}")
-                        if isinstance(prepared, dict):
-                            call.args = prepared
-                    # 内部事件(前端与落盘读它):参数必须是真正要执行的那一份
-                    yield AgentEvent(kind="tool_start", agent=self.spec.name,
-                                     tool=call.name, data={"args": call.args})
-                    if abort is not None and abort.aborted:
-                        # 剩下的调用一律不跑:补结果而不是默默消失,否则两边记录不一致
-                        aborted = True
-                        outcome = _interrupted_outcome()
-                    elif verdict is not None and verdict.result is not None:
-                        outcome = _blocked_outcome(str(verdict.result.get("reason") or ""))
-                    else:
-                        outcome = await self._execute(tools, call, abort)
-                    await self._emit(
-                        "tool_execution_end",
-                        {"tool_call_id": call.id, "tool_name": call.name,
-                         "result": outcome.result, "is_error": not outcome.ok,
-                         "details": outcome.details}, abort)
-                    # `tool_result`:patch 语义(可改模型看到的结果 / 结构化 details / status)
-                    patched = await self._emit(
-                        "tool_result",
-                        {"tool_name": call.name, "tool_call_id": call.id, "input": call.args,
-                         "result": outcome.result, "details": outcome.details,
-                         "status": outcome.status, "exit_code": outcome.exit_code},
-                        abort)
-                    if patched is not None:
-                        self._report("tool_result", patched)
-                        _apply_result_patch(outcome, patched.payload)
-                    # 工具结果作为一条消息进上下文(pi 也会为它发 message_start/end)
-                    await self._emit(
-                        "message_start",
-                        {"message": {"role": "tool", "tool_call_id": call.id,
-                                     "content": ""}}, abort)
-                    await self._emit(
-                        "message_end",
-                        {"message": {"role": "tool", "tool_call_id": call.id,
-                                     "content": outcome.result}}, abort)
-                    # 结构化结果:前端工具卡片靠 status/duration_ms/exit_code 渲染,
-                    # 不再解析 text 前缀;text 仍是模型可见的原文(与旧版一致)。
-                    yield AgentEvent(kind="tool_end", agent=self.spec.name, tool=call.name,
-                                     text=outcome.result,
-                                     data={"status": outcome.status,
-                                           "duration_ms": outcome.duration_ms,
-                                           "exit_code": outcome.exit_code,
-                                           "error": outcome.error,
-                                           # 插件/工具给客户端看的自由结构。
-                                           # 这一行以前不存在 —— 于是插件就算自己造了
-                                           # details 也**到这一行就被扔掉**(见 design/web.md §16)。
-                                           "details": outcome.details})
-                    msgs.append(ChatMessage(role="tool", content=outcome.result,
-                                            tool_call_id=call.id))
+                    pass                  # 空列表 → 下面的批循环自然跳过;`turn_end` 仍要发
+                # 分三阶段跑一批工具(见 `plan_tool_batches`):
+                #   ① 闸门 + 参数整理 + start 事件(廉价,且**必须按序**)
+                #   ② 真正执行(parallel 批并发,其余逐个)
+                #   ③ 收尾事件 + 落盘消息(按序,与单条路径完全一致)
+                # 这样并发只发生在真正花时间的那一段,而事件与上下文顺序仍是确定的 ——
+                # 回放与工具卡片不需要额外的排序假设。
+                for batch in plan_tool_batches(tool_calls, self.catalog):
+                    # 每条:(调用, 处置, 拦截原因)。处置 ∈ run / interrupted / blocked ——
+                    # 用显式三元组而不是“把原因拼进字符串前缀”:字符串前缀容易拼错、
+                    # 也要靠 split 取回来(而且解析器的作用域分析在这一点上反复误报)。
+                    phase: list[tuple[ToolCallOut, str, str]] = []
+                    for call in batch:
+                        # pi 的顺序:`tool_execution_start` 在 `tool_call` **之前**(闸门看到的是
+                        # 未被改过的原始参数)。qi 可以让扩展事件保持 pi 的顺序:持久化来源是下面
+                        # 那条内部 `AgentEvent(kind="tool_start")`(在闸门**之后**发),
+                        # 两者不是同一个通道,所以“回放里的参数不是跑过的”那个顾虑不成立。
+                        await self._emit(
+                            "tool_execution_start",
+                            {"tool_call_id": call.id, "tool_name": call.name,
+                             "args": call.args}, abort)
+                        # `tool_call`:可改 `input`(改动真生效、不重校)、可 `block`。
+                        # 出错时 **fail-safe 拦住** —— “装了闸门反而放行”是最坏的结果。
+                        verdict = await self._emit(
+                            "tool_call",
+                            {"tool_name": call.name, "tool_call_id": call.id,
+                             "input": call.args},
+                            abort, stop_keys=("block",),
+                            on_error_result={"block": True, "reason": "扩展闸门异常"})
+                        if verdict is not None:
+                            self._report("tool_call", verdict)
+                            patched_args = verdict.payload.get("input")
+                            if isinstance(patched_args, dict):
+                                call.args = patched_args
+                        # `prepare_arguments`(pi 的 `ToolDefinition.prepareArguments`):执行前
+                        # 最后一次整理原始参数。放在闸门**之后** —— 否则扩展改过的参数会被它覆盖。
+                        tool_def = self.catalog.get(call.name)
+                        if tool_def is not None and tool_def.prepare_arguments is not None:
+                            try:
+                                prepared = tool_def.prepare_arguments(call.args)
+                            except Exception as exc:  # noqa: BLE001 第三方代码
+                                prepared = None
+                                if self.report is not None:
+                                    self.report(
+                                        f"工具 {call.name} 的 prepare_arguments 失败: {exc}")
+                            if isinstance(prepared, dict):
+                                call.args = prepared
+                        # 内部事件(前端与落盘读它):参数必须是真正要执行的那一份。
+                        # `tool_call_id` 是**必须**的:并发时前端与落盘都要靠它把 start/end 配对。
+                        yield AgentEvent(kind="tool_start", agent=self.spec.name,
+                                         tool=call.name,
+                                         data={"args": call.args, "tool_call_id": call.id})
+                        if abort is not None and abort.aborted:
+                            # 剩下的调用一律不跑:补结果而不是默默消失,否则两边记录不一致
+                            aborted = True
+                            phase.append((call, "interrupted", ""))
+                        elif verdict is not None and verdict.result is not None:
+                            phase.append((call, "blocked",
+                                          str(verdict.result.get("reason") or "")))
+                        else:
+                            phase.append((call, "run", ""))
+                    # ② 执行阶段:parallel 批用 gather,其余逐个(行为与旧版一致)
+                    runnable = [c for c, tag, _reason in phase if tag == "run"]
+                    outcomes: dict[str, ToolOutcome] = {}
+                    if len(runnable) > 1:
+                        gathered = await asyncio.gather(
+                            *(self._execute(tools, c, abort) for c in runnable))
+                        outcomes = {c.id: o for c, o in zip(runnable, gathered)}
+                    elif runnable:
+                        only = runnable[0]
+                        outcomes = {only.id: await self._execute(tools, only, abort)}
+                    # ③ 收尾阶段(按声明序)
+                    for call, tag, reason in phase:
+                        if tag == "interrupted":
+                            outcome = _interrupted_outcome()
+                        elif tag == "blocked":
+                            outcome = _blocked_outcome(reason)
+                        else:
+                            outcome = outcomes[call.id]
+                        await self._emit(
+                            "tool_execution_end",
+                            {"tool_call_id": call.id, "tool_name": call.name,
+                             "result": outcome.result, "is_error": not outcome.ok,
+                             "details": outcome.details}, abort)
+                        # `tool_result`:patch 语义(可改模型看到的结果 / 结构化 details / status)
+                        patched = await self._emit(
+                            "tool_result",
+                            {"tool_name": call.name, "tool_call_id": call.id,
+                             "input": call.args,
+                             "result": outcome.result, "details": outcome.details,
+                             "status": outcome.status, "exit_code": outcome.exit_code},
+                            abort)
+                        if patched is not None:
+                            self._report("tool_result", patched)
+                            _apply_result_patch(outcome, patched.payload)
+                        # 工具结果作为一条消息进上下文(pi 也会为它发 message_start/end)
+                        await self._emit(
+                            "message_start",
+                            {"message": {"role": "tool", "tool_call_id": call.id,
+                                         "content": ""}}, abort)
+                        await self._emit(
+                            "message_end",
+                            {"message": {"role": "tool", "tool_call_id": call.id,
+                                         "content": outcome.result}}, abort)
+                        # 结构化结果:前端工具卡片靠 status/duration_ms/exit_code 渲染,
+                        # 不再解析 text 前缀;text 仍是模型可见的原文(与旧版一致)。
+                        yield AgentEvent(kind="tool_end", agent=self.spec.name, tool=call.name,
+                                         text=outcome.result,
+                                         data={"tool_call_id": call.id,
+                                               "status": outcome.status,
+                                               "duration_ms": outcome.duration_ms,
+                                               "exit_code": outcome.exit_code,
+                                               "error": outcome.error,
+                                               # 插件/工具给客户端看的自由结构。
+                                               # 这一行以前不存在 —— 于是插件就算自己造了
+                                               # details 也**到这一行就被扔掉**(design/web.md §16)。
+                                               "details": outcome.details})
+                        msgs.append(ChatMessage(role="tool", content=outcome.result,
+                                                tool_call_id=call.id))
                 await self._emit("turn_end",
                                  {"turn_index": turn, "text": acc_text,
                                   "tool_calls": [c.name for c in tool_calls]}, abort)

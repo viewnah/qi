@@ -498,3 +498,65 @@ def test_abort_signal_used_by_ctx_abort():
     ctx = ExtensionContext(cwd=Path("/tmp"), signal=signal)
     ctx.abort()
     assert signal.aborted is True
+
+
+# ── pi 兼容层:payload 的 `type` 与驼峰键别名 ──────────────────
+
+@pytest.mark.asyncio
+async def test_payload_carries_pi_type_field_and_camel_aliases():
+    """pi 的 handler 读 `event.type` / `event.toolName`;qi 的键名仍独立存在。"""
+    bus = ExtensionBus()
+    seen: dict = {}
+    bus.on("tool_call", lambda payload, ctx: seen.update(payload))
+    await bus.emit("tool_call",
+                   {"tool_name": "read", "tool_call_id": "c1", "input": {"path": "a.py"}},
+                   ctx=ExtensionContext(cwd=Path("/tmp")))
+    assert seen["type"] == "tool_call"        # pi 的判别字段
+    assert seen["toolName"] == "read"         # pi 的驼峰别名
+    assert seen["toolCallId"] == "c1"
+    assert seen["input"] == {"path": "a.py"}
+    assert seen["tool_name"] == "read"        # qi 自己的键**一个不少**
+    assert seen["tool_call_id"] == "c1"
+
+
+@pytest.mark.asyncio
+async def test_handler_added_keys_also_get_aliases():
+    """handler 里新设的 `tool_name` 也要能被后面的 handler 以 `toolName` 读到。"""
+    bus = ExtensionBus()
+    seen: dict = {}
+
+    def first(payload, ctx):
+        return {"tool_name": "改写过的"}
+
+    def second(payload, ctx):
+        seen.update(payload)
+
+    bus.on("tool_call", first)
+    bus.on("tool_call", second)
+    await bus.emit("tool_call", {"input": {}}, ctx=ExtensionContext(cwd=Path("/tmp")))
+    assert seen["toolName"] == "改写过的"
+
+
+def test_constrained_sampling_is_accepted_but_reported():
+    """pi 的 `constrainedSampling`:qi 收下(pi 风格的工具定义不炸),但**说出来它被忽略**。"""
+    from types import SimpleNamespace
+
+    notes: list[str] = []
+    api = _api(_host=SimpleNamespace(notes=notes))
+
+    async def execute(args, ctx):  # noqa: ANN001, ARG001
+        return "ok"
+
+    api.register_tool({"name": "cs_tool", "execute": execute,
+                       "constrainedSampling": {"type": "json_schema", "strict": "require"}})
+    assert any("constrainedSampling" in n for n in notes)
+    assert api.get_all_tools()[0]["name"] == "cs_tool"      # 照常注册
+
+
+def test_tool_definition_accepts_pi_render_shell_and_execution_mode():
+    api = _api()
+    api.register_tool({"name": "t", "execute": lambda a, c: None,
+                       "renderShell": "self", "executionMode": "parallel"})
+    tool = api.catalog.get("t")
+    assert tool.render_shell == "self"
+    assert tool.execution_mode == "parallel"

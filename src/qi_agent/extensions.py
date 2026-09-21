@@ -55,6 +55,39 @@ _DELIVER_AS = {
     "next_turn": "next_turn", "nextTurn": "next_turn", "nextturn": "next_turn",
 }
 
+#: 事件 payload 的**客户端兼容层**:同一个概念在 pi 那里是驼峰时,qi 额外镜一份。
+#:
+#: qi 自己的键名仍是 snake_case(见 docs/extensions.md §3.1),这里**不改名、只加一个别名** ——
+#: 所以两边的读法都成立,而 qi 的既有消费者一字不改。
+#: 只列两边**同名同义**的键;pi 的 payload 结构不同处(如 `turn_end` 带 `message`/`toolResults`,
+#: qi 带 `text`/`tool_calls`)不在这里假造。
+_PI_KEY_ALIASES = {
+    "tool_name": "toolName",
+    "tool_call_id": "toolCallId",
+    "tool_calls": "toolCalls",
+    "system_prompt": "systemPrompt",
+    "turn_index": "turnIndex",
+    "previous_level": "previousLevel",
+    "partial_result": "partialResult",
+    "is_error": "isError",
+    "exit_code": "exitCode",
+    "target_session_file": "targetSessionFile",
+    "entry_id": "entryId",
+    "target_id": "targetId",
+    "new_leaf_id": "newLeafId",
+    "exclude_from_context": "excludeFromContext",
+    "tokens_before": "tokensBefore",
+    "first_kept_entry_id": "firstKeptEntryId",
+    "error_message": "errorMessage",
+}
+
+
+def _alias_pi_keys(payload: dict) -> None:
+    """给 payload 补上 pi 的驼峰键名(已在则不动)。**原地改**。"""
+    for snake, camel in _PI_KEY_ALIASES.items():
+        if snake in payload and camel not in payload:
+            payload[camel] = payload[snake]
+
 
 class ToolError(Exception):
     """工具执行错误:以结果文本返回给模型,**不中断会话**(runner 会包成 error 结果)。"""
@@ -91,10 +124,18 @@ class Tool:
     #: 返回的 dict 才是真正执行用的那一份(也进 `tool_call` 事件的 `input`)。
     #: qi **不做** schema 校验,所以它的位置就是“执行前最后一次整理”。
     prepare_arguments: Callable[[Any], Any] | None = None
-    #: pi 的 `renderCall` / `renderResult` —— 扩展自己画工具卡片(TUI-only,见 §5.1)。
-    #: 签名 `(args|outcome, ctx) -> 组件`;不认识的返回值由前端退回默认渲染。
+    #: pi 的 `renderCall` / `renderResult` —— 扩展自己画工具卡片(TUI-only,见 §3.5)。
+    #: 签名 `(args|result, ctx) -> 组件`;不认识的返回值由前端退回默认渲染。
     render_call: Callable[..., Any] | None = None
     render_result: Callable[..., Any] | None = None
+    #: pi 的 `renderShell`:`"self"` = 扩展的组件**自己画框**(qi 不再套默认工具卡片底色/内边距),
+    #: 缺省 / `"default"` = 把组件放进默认外壳里。只对带 `render_call` 的工具才有意义。
+    render_shell: str = ""
+    #: pi 的 `constrainedSampling`:**收下但 qi 不支持**(逐工具受限采样要 provider 配合,
+    #: litellm 没有可移植的对应物)。注册时记一条 note 说明它被忽略 —— 不静默。
+    constrained_sampling: Any = None
+    #: pi 的 `executionMode`:`"parallel"` 时这个工具可以与同批其它 parallel 工具**并发执行**。
+    execution_mode: str = ""
 
     @property
     def prompt_line(self) -> str:
@@ -189,6 +230,9 @@ def _coerce_tool(tool: Any) -> Tool:
         prepare_arguments=pick("prepareArguments", "prepare_arguments"),
         render_call=pick("renderCall", "render_call"),
         render_result=pick("renderResult", "render_result"),
+        render_shell=str(pick("renderShell", "render_shell") or ""),
+        constrained_sampling=pick("constrainedSampling", "constrained_sampling"),
+        execution_mode=str(pick("executionMode", "execution_mode") or ""),
     )
 
 
@@ -1688,6 +1732,10 @@ class ExtensionBus:
                         on_error_result: dict | None) -> EmitResult:
         # payload 始终是**同一个** dict:handler 原地改就对后续可见(patch 链规则 2)
         base: dict = dict(payload or {})
+        # pi 兼容层:每个事件都带 `type`(pi 的判别字段),并有驼峰键别名。
+        # 放在**派发之前**做一次,所以 handler 从第一个开始就两边都读得到。
+        base.setdefault("type", event)
+        _alias_pi_keys(base)
         out = EmitResult(payload=base)
         # 快照遍历(规则 1):handler 里再 on() 不影响本次派发
         for source, handler in list(self._handlers.get(event, ())):
@@ -1706,6 +1754,9 @@ class ExtensionBus:
             out.returns.append(returned)
             if isinstance(returned, dict):
                 base.update(returned)
+                # handler 新加/改过的键也要补别名(否则“我在 handler 里设了 tool_name,
+                # 后面的 handler 读 toolName 读不到”)
+                _alias_pi_keys(base)
                 if _is_verdict(returned, stop_keys, stop_values):
                     out.result = dict(returned)
                     out.stopped_by = source
@@ -1763,8 +1814,17 @@ class ExtensionApi:
 
         收 `Tool`,也收 pi 形状的 dict(`{name, label, description, promptSnippet,
         promptGuidelines, parameters, execute}`;snake_case 键也认)。
+
+        pi 的 `constrainedSampling` **收下但用不了**:逐工具受限采样要 provider 配合
+        (JSON schema / grammar),litellm 没有可移植的对应物 —— 所以这里记一条 note
+        说明它被忽略。收而不报最坏:扩展以为参数被约束住了。
         """
-        register_tool(self.catalog, _coerce_tool(tool), source=self._name,
+        tool_obj = _coerce_tool(tool)
+        if tool_obj.constrained_sampling:
+            _note(self._host,
+                  f"工具 {tool_obj.name} 声明了 constrainedSampling —— qi 不支持逐工具受限采样"
+                  "(litellm 无可移植对应物),已忽略")
+        register_tool(self.catalog, tool_obj, source=self._name,
                       path=self._path, scope=self._scope, origin=self._origin)
 
     def add_tool(self, tool: Tool) -> None:

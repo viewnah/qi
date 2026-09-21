@@ -235,7 +235,9 @@ async def test_empty_bus_is_cheap_and_safe():
 
     out = await bus.emit("anything", {"a": 1}, ctx=_ctx())
     assert isinstance(out, EmitResult)
-    assert out.payload == {"a": 1}
+    assert out.payload["a"] == 1
+    # pi 兼容层:任何事件都带 `type`(pi 的判别字段),原 payload 的键一个不少
+    assert out.payload["type"] == "anything"
     assert out.returns == [] and out.errors == []
 
     bus.on("x", lambda p, c: None)

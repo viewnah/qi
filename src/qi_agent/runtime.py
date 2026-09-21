@@ -53,7 +53,7 @@ from .registry import CapabilityRegistry, ToolCatalog, discover_extensions
 from .runner import AgentRunner, RunnerSettings, RunSpec
 from .session import Session, SessionStore
 from .titling import suggest_title
-from .settings import (extension_dirs, load_settings, load_settings_by_scope,
+from .settings import (default_tools, extension_dirs, load_settings, load_settings_by_scope,
                        resolve_project_trust, session_dir)
 from .tools import ToolContext, register_builtin_tools
 
@@ -313,16 +313,34 @@ class QiRuntime:
 
     def _apply_tool_flags(self, *, tools: str | None, exclude_tools: str | None,
                           no_tools: bool, no_builtin_tools: bool) -> None:
-        """把 CLI 的四个工具旗标落成一次"工具集覆盖"(对齐 pi 的口径)。
+        """把工具集来源落成一次"工具集覆盖"(对齐 pi 的口径)。
 
         优先级照 pi(`docs/usage.md` 的旗标表 + `docs/settings.md` 的 `defaultTools` 段):
         `--tools` 是**严格白名单**(替换默认集),`--no-tools` 全禁,`--no-builtin-tools`
         只去内置;`--exclude-tools` **最后**过滤结果。`--tools` 与后两者矛盾,已在 CLI 拦住。
 
+        **没给任何 CLI 旗标**时才看 `settings.defaultTools`(pi 同名段):它只挑**内置**那一档,
+        扩展装的工具照旧全留 —— pi 的原话是 "An empty array starts with no built-in tools
+        while preserving extension/custom tools",所以 `defaultTools: []` 是个**有意义**的配置
+        (不要内置、只留扩展),不能与"没配"混为一谈(那是 `None`)。
+
         未注册的工具名**不静默丢掉**:记一条 note(与 `api.setActiveTools` 同一口径)。
-        没有旗标时**不动**覆盖 —— `None` 与"空集"是两件事(`tool_names()` 靠它区分)。
         """
+        defaults = default_tools(self.settings)
         if not any((tools, exclude_tools, no_tools, no_builtin_tools)):
+            if defaults is None:                 # 没配 → 不动覆盖(None ≠ 空集)
+                return
+            builtin = {n for n in self.catalog.names
+                       if tool_source(self.catalog, n) == "builtin"}
+            keep = set(defaults)
+            weird = sorted(keep - builtin)
+            if weird:
+                self.notes.append("settings.defaultTools 里有未注册的内置工具:"
+                                  + "、".join(weird))
+            chosen = sorted((set(self.catalog.names) - builtin) | (keep & builtin))
+            self.set_tool_names(chosen)
+            self.notes.append("本次运行的工具集(defaultTools):"
+                              + ("、".join(chosen) if chosen else "(空)"))
             return
         known = set(self.catalog.names)
         unknown: list[str] = []

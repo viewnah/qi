@@ -182,9 +182,15 @@ def _env(tmp_path: Path, monkeypatch) -> None:
 
 
 def _runtime(tmp_path, monkeypatch, **kw):
+    """`kw` 里 `default_tools=` 是 **settings 字段**(写进 settings.json),其余给 QiRuntime。"""
     project = tmp_path / "proj"
     (project / ".git").mkdir(parents=True, exist_ok=True)
+    default_tools = kw.pop("default_tools", "缺席")
     _env(tmp_path, monkeypatch)
+    if default_tools != "缺席":
+        (tmp_path / "home" / "settings.json").write_text(
+            json.dumps({"defaultProvider": "ollama", "defaultModel": "x",
+                        "defaultTools": default_tools}), encoding="utf-8")
     from qi_agent.runtime import QiRuntime
 
     return QiRuntime(cwd=project, approve_project=True, **kw)
@@ -252,3 +258,39 @@ async def test_narrowed_set_reaches_the_model(tmp_path, monkeypatch):
     async for _ in rt.stream("hi", session):
         pass
     assert llm.tools == [["read"]], llm.tools
+
+
+# ── settings.defaultTools(pi 同名段:没给 CLI 旗标时才看它) ─────────────
+
+
+def test_default_tools_limits_the_builtin_set(tmp_path, monkeypatch):
+    """`defaultTools` 只挑**内置**那一档 —— 扩展工具照旧全留(pi 的原话)。"""
+    rt = _runtime(tmp_path, monkeypatch, default_tools=["read", "grep"])
+    names = rt.tool_names()
+    assert "read" in names and "grep" in names
+    assert "bash" not in names, "没列进 defaultTools 的内置工具该被关掉"
+    assert any("defaultTools" in note for note in rt.notes)
+
+
+def test_empty_default_tools_means_no_builtins_but_keeps_extensions(tmp_path, monkeypatch):
+    """`defaultTools: []` 是个**有意义**的配置(不要内置、只留扩展),不能与“没配”混为一谈。"""
+    _install_plugin(tmp_path)
+    rt = _runtime(tmp_path, monkeypatch, default_tools=[])
+    assert rt.tool_names() == ["plug"], rt.tool_names()
+
+
+def test_unset_default_tools_changes_nothing(tmp_path, monkeypatch):
+    rt = _runtime(tmp_path, monkeypatch)
+    assert rt.tool_names() == sorted(rt.catalog.names)
+
+
+def test_cli_tool_flags_win_over_default_tools(tmp_path, monkeypatch):
+    """pi 同口径:`--tools` 是**替换**默认集(它压过 `defaultTools`)。"""
+    rt = _runtime(tmp_path, monkeypatch, default_tools=["read"], tools="grep")
+    assert rt.tool_names() == ["grep"]
+
+
+def test_unknown_names_in_default_tools_are_reported(tmp_path, monkeypatch):
+    rt = _runtime(tmp_path, monkeypatch, default_tools=["read", "nope"])
+    assert rt.tool_names() == ["read"]
+    assert any("nope" in note for note in rt.notes), rt.notes

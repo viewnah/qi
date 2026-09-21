@@ -6,7 +6,7 @@
     ~/.qi/agent/settings.json      全局(对齐 pi 的 `~/.pi/agent/settings.json`)
 
 合并规则同 pi:键级深合并,项目覆盖全局;数组整体替换(不逐项合并)。
-路径类字段(extensions / skills / prompts / themes)相对**各自 settings.json 所在目录**
+路径类字段(extensions / skills)相对**各自 settings.json 所在目录**
 解析,绝对路径与 `~` 都支持;`!pat` / `-pat` 为排除项,`+path` 为强制纳入。
 
 本模块只负责"JSON 文件的装载/合并/写入"这一层,models.json 的语义在 config.py。
@@ -97,8 +97,10 @@ class QiSettings(BaseModel):
     packages: list[Any] = Field(default_factory=list)
     extensions: list[str] = Field(default_factory=list)
     skills: list[str] = Field(default_factory=list)
-    prompts: list[str] = Field(default_factory=list)
-    themes: list[str] = Field(default_factory=list)
+    # `prompts` / `themes` **删掉了**:qi 没有 prompt 模板、也不支持自定义主题文件 ——
+    # 留着字段却没人读,用户写进去毫无反应,而 `extra: allow` 又让人分不出
+    # "我拼错了"与"qi 没实现"。要做那两个功能就把字段一起加回来。
+    extensions: list[str] = Field(default_factory=list)
     enableSkillCommands: bool = True
     skillsEnabled: bool = True
 

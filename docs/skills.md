@@ -52,6 +52,19 @@ description: 审代码时按这份清单逐项检查;涉及并发、错误处理
 
 对每个来源目录:
 
+### 3.1 强制加载:`/skill:<名>`
+
+渐进披露的另一面是"模型不一定去读"(提示词里只有一行描述)。TUI 里可以自己把它叫起来:
+
+```text
+/skill:brave-search           # 加载并执行该技能
+/skill:pdf-tools extract      # 带参数(作为技能的入参)
+```
+
+它把 SKILL.md **全文**提交给模型,效果与用户手贴内容等价,只是不用手抄 —— pi 的同一句话是
+"use prompting or `/skill:name` to force it"。`settings.enableSkillCommands`(默认 `true`)关掉后
+这批命令不存在。
+
 - **含 `SKILL.md` 的目录即技能,不再向内递归** —— 也就是说技能目录里可以再放参考文件,不会
   被误当成子技能。
 - **没有 `SKILL.md` 的子目录继续向内找** —— 支持分组目录(如 `skills/lang/python/SKILL.md`)。

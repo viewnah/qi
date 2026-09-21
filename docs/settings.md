@@ -43,6 +43,7 @@
 | `defaultProjectTrust` | string | `ask` | 项目信任:`ask`(默认,现保守判**不信任**)/ `always` / `never`。**只从用户级读** —— 项目级写了会被忽略并提示(仓库不能自称可信) |
 | `skills` | string[] | `[]` | 追加技能路径;支持 glob、`~`、相对路径与排除项(见 §4) |
 | `skillsEnabled` | boolean | `true` | qi 扩展:关闭技能自动发现(等价 pi 的 `--no-skills` CLI 开关) |
+| `enableSkillCommands` | boolean | `true` | 把技能注册成 `/skill:<名>` 命令(pi 同名) —— 技能平时只进描述,这条是**强制加载全文**的入口。关掉则这批命令不存在 |
 | `doubleEscapeAction` | string | `tree` | 空编辑器连按两次 `escape`:`tree`(默认)/`fork`/`none`;非法值按 `tree`。见 [tui.md](tui.md) §2 |
 | `hideThinkingBlock` | boolean | `false` | 启动时不展示思考块(`ctrl+t` 仍可切换) |
 | `editorPaddingX` | number | `1` | 编辑器左右内边距(pi 默认 `0`,qi 视觉基线用 `1`) |

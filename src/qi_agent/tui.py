@@ -2166,7 +2166,8 @@ class QiTui(App):
 
     def _command(self, text: str) -> None:
         parts = text.split(maxsplit=1)
-        cmd = parts[0].lower()
+        raw = parts[0]                      # 保留原大小写:技能名是大小写敏感的
+        cmd = raw.lower()
         arg = parts[1].strip() if len(parts) > 1 else ""
         # /quit 与 /hotkeys /help 不依赖 runtime;其余需要一个可用的运行期
         if self._rt is None and cmd not in ("/quit", "/hotkeys"):
@@ -2175,6 +2176,12 @@ class QiTui(App):
             return
         rt = self._rt
         store = self._session_store()
+
+        # `/skill:<名> [参数]`:强制加载并执行一个技能(pi 的 skills register as `/skill:name`)。
+        # 放在扩展命令**之前**:技能名不会被扩展命令抢占(前缀不会撞)。
+        if raw.startswith("/skill:"):
+            self._run_skill_command(raw[len("/skill:"):], arg)
+            return
 
         # 扩展命令**优先于内置**(pi 的顺序:扩展先认领,认领了就跳过内置分发),但
         # 保留 `RESERVED_COMMANDS` —— 顶掉 `/quit` 等于把用户锁在界面里,
@@ -2872,6 +2879,30 @@ class QiTui(App):
         self._session_store().save(session)
         self._flash(f"标签: {label}" if label else f"已清除标签 {entry_id}")
 
+    def _run_skill_command(self, name: str, args: str) -> None:
+        """`/skill:<名> [参数]`:读全文 SKILL.md 并**执行**(pi 的 "Load and execute the skill")。"""
+        rt = self._rt
+        if rt is None:
+            self._note("运行时不可用。", "error")
+            return
+        known = {label[len("/skill:"):]: label
+                 for label, _detail in skill_command_candidates(rt)}
+        if not known:
+            self._note("未知命令(技能命令被 settings.enableSkillCommands 关了)。", "warning")
+            return
+        match = next((s for s in getattr(rt, "top_skills", None) or []
+                      if s.name.lower() == name.lower()), None)
+        if match is None:
+            self._note(f"没有技能 {name};输入 `/skill:` 看补全", "warning")
+            return
+        try:
+            payload = skill_invocation(match, args)
+        except OSError as exc:
+            self._note(f"技能读不了:{exc}", "error")
+            return
+        self._submit(payload)
+        self._note(f"已加载技能 {match.name}({match.path})", "info")
+
     def _set_trust(self, arg: str) -> None:
         """`/trust [yes|no|forget]`:把信任决定写进 `~/.qi/agent/trust.json`(对齐 pi)。
 
@@ -3209,6 +3240,8 @@ class QiTui(App):
             # 扩展命令就彻底不可见了(只能去读那个扩展的 README)。
             extra = [(f"/{c.invocable}", c.description or "")
                      for c in (self._rt.commands.all() if self._rt is not None else [])]
+            # 技能也注册成命令(pi 的 `enableSkillCommands`):`/skill:<名>`
+            extra += skill_command_candidates(self._rt)
             items = [Candidate(name, name, detail)
                      for name, detail in sorted([*TUI_COMMANDS.items(), *extra])
                      if name.startswith(before)]
@@ -3591,6 +3624,29 @@ class ResourcePanel(App[Any]):
         from textual.widgets import SelectionList
 
         self.query_one("#resource-list", SelectionList).deselect_all()
+
+
+def skill_command_candidates(rt: Any) -> list[tuple[str, str]]:
+    """`/skill:<名>` 那批命令(空列表 = 关掉了或没有技能)。
+
+    纯函数便于测:技能平时**渐进披露**(提示词里只有描述),而 `/skill:<名>` 是**强制加载**
+    的入口 —— pi 的 `docs/skills.md` 原话:"use prompting or `/skill:name` to force it"。
+    `settings.enableSkillCommands`(默认 true,pi 同名)关掉时这批命令不存在。
+    """
+    if rt is None or not getattr(getattr(rt, "settings", None), "enableSkillCommands", True):
+        return []
+    return [(f"/skill:{skill.name}", skill.description or "")
+            for skill in (getattr(rt, "top_skills", None) or [])]
+
+
+def skill_invocation(skill: Any, args: str) -> str:
+    """`/skill:<名> [参数]` 要提交给模型的那段文本 —— 技能全文 + 一句“按它执行”。
+
+    pi 的语义是 "Load and execute the skill",而参数是技能的入参
+    (`/skill:pdf-tools extract`)。效果与用户手贴 SKILL.md 等价,只是不用手抄。
+    """
+    head = f"按技能 `{skill.name}` 执行" + (f":{args}" if args else "。")
+    return f"{head}\n\n{skill.path.read_text(encoding='utf-8')}"
 
 
 def run_resource_panel(items: list[tuple[str, str, str, bool]]) -> set[int] | None:

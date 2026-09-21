@@ -112,7 +112,7 @@ def _clear_built():
 class _SpyClient(LiteLLMClient):
     """记账 + 委托真类:换模型时到底把哪些参数传下去了,一看就知道。"""
 
-    def __init__(self, spec, auth_store=None, thinking_level="off", retry=None):
+    def __init__(self, spec, auth_store=None, thinking_level="off", retry=None, **_ignored: object):
         BUILT.append({"model": spec.model, "thinking_level": thinking_level, "retry": retry})
         super().__init__(spec, auth_store, thinking_level=thinking_level, retry=retry)
 

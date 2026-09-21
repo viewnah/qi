@@ -286,13 +286,16 @@ class LiteLLMClient:
     """基于 litellm 的实现。spec 来自 resolve_model()(经 resolve_key 取 key)。"""
 
     def __init__(self, spec: ResolvedModel, auth_store: AuthStore | None = None,
-                 thinking_level: str = "off", retry: dict | None = None):
+                 thinking_level: str = "off", retry: dict | None = None,
+                 thinking_budgets: dict[str, int] | None = None):
         self.spec = spec
         # 请求级超时/重试:归 provider SDK,不归 agent loop(见 provider_retry_params)
         self._provider_retry = provider_retry_params(retry)
         self._resolved = resolve_key(spec.provider, spec.api_key_ref, auth_store or AuthStore())
         self.model_name = litellm_model_name(spec)
         self.thinking_level = normalize_thinking_level(thinking_level)
+        #: `settings.thinkingBudgets`(按级别的 token 预算)—— 只对 Anthropic 形态生效
+        self._thinking_budgets = dict(thinking_budgets or {})
         """思考级别(可在运行期改:TUI 的 shift+tab / `/thinking`)。"""
         # provider 明确拒过 reasoning_effort 后粘住这个事实,后续不再带(与 _no_usage_opt 同模式)
         self._no_reasoning_effort = False
@@ -329,11 +332,42 @@ class LiteLLMClient:
         return kwargs
 
     def _reasoning_params(self) -> dict:
-        """思考参数:只有模型声明 reasoning、级别非 off、且 provider 没拒过时才带。"""
+        """思考参数:只有模型声明 reasoning、级别非 off、且 provider 没拒过时才带。
+
+        **Anthropic 形态**额外带 `thinking: {type, budget_tokens}`(pi 的 `thinkingBudgets`)。
+        pi 对它分三路:Anthropic / Google / Bedrock **原生**用,OpenAI 兼容形态**只在**模型配了
+        `compat.thinkingTokenBudgetField`(指定"预算写进哪个请求字段")时才用。qi 只做**原生那一路**
+        (litellm 在 Anthropic 形态上有对应参数);OpenAI 兼容那半不做 —— qi 没有 compat 层,
+        而加那层是独立的一件事(见 docs/cli.md §10)。
+        """
         effort = _EFFORT_MAP.get(self.thinking_level)
-        if effort and self.spec.reasoning and not self._no_reasoning_effort:
-            return {"reasoning_effort": effort}
-        return {}
+        if not (effort and self.spec.reasoning and not self._no_reasoning_effort):
+            return {}
+        params: dict = {"reasoning_effort": effort}
+        budget = self._thinking_budget()
+        if budget is not None:
+            params["thinking"] = {"type": "enabled", "budget_tokens": budget}
+        return params
+
+    def _thinking_budget(self) -> int | None:
+        """`settings.thinkingBudgets[当前级别]` → 要带的预算;不带则 None。
+
+        三条规矩:
+
+        * **只对 Anthropic 形态**(其余形态 litellm 没有统一参数);
+        * **没配就不带** —— 不改变默认行为(pi 另有内置默认表,qi 刻不抄:那会让每个
+          Anthropic 请求都凭空带上预算);
+        * **钳制:至少留 1024 token 给答案** —— pi 的原话是 "clamped so at least 1024 tokens
+          remain for the answer"。
+        """
+        if self.spec.api != "anthropic-messages":
+            return None
+        raw = self._thinking_budgets.get(self.thinking_level)
+        if not isinstance(raw, int) or raw <= 0:
+            return None
+        if self.spec.max_tokens:
+            return max(1024, min(raw, self.spec.max_tokens - 1024))
+        return raw
 
     def _consider_reasoning_rejection(self, exc: BaseException) -> bool:
         """看这次失败是不是「provider 不接受 reasoning_effort」;是则降级并返回 True。

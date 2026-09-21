@@ -73,6 +73,9 @@ class QiSettings(BaseModel):
     #: 按模型的思考级别(pi 同名段):`{"provider/模型": "high"}`。
     #: 优先级见 `QiRuntime.__init__`:`--thinking` > `--model :级别` > 这里 > 全局默认。
     modelThinkingLevels: dict[str, str] = Field(default_factory=dict)
+    #: 每个思考级别的 token 预算(pi 同名段)。**只对 Anthropic 形态生效**(litellm 只在那里
+    #: 有对应参数);不配就不带(pi 另有内置默认表,qi 没有 —— 差异见 docs/cli.md §10)。
+    thinkingBudgets: dict[str, int] = Field(default_factory=dict)
     #: 分支摘要(`/tree` 跳转时):`{"skipPrompt": true}` —— 不问也不摘要(pi 同名段)。
     #: pi 的 `reserveTokens` **未接**:qi 的摘要预算固定,加一个不生效的旋钮不如不加。
     branchSummary: dict[str, Any] = Field(default_factory=dict)

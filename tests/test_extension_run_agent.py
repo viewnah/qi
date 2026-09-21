@@ -242,7 +242,7 @@ async def test_spec_model_builds_another_client_without_touching_the_parent(
     built: list[str] = []
 
     class _Spy(LiteLLMClient):
-        def __init__(self, spec, auth_store=None, thinking_level="off", retry=None):
+        def __init__(self, spec, auth_store=None, thinking_level="off", retry=None, **_ignored: object):
             built.append(spec.model)
             super().__init__(spec, auth_store, thinking_level=thinking_level, retry=retry)
 

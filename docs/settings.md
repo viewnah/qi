@@ -58,6 +58,7 @@
 | --- | --- | --- |
 | `theme` | 主题名(dark/light/auto) | TUI 已接:自动探测终端背景(OSC 11),失败落 dark;`QI_THEME` 可覆盖。见 [tui.md](tui.md) §1 |
 | `branchSummary` | 分支摘要:/tree 跳转时被放弃那段要不要压成摘要;`skipPrompt: true` = **不问也不摘要** | **已接**(`skipPrompt`):默认**先问一句**,默认答案「不摘要」;无前端时同样不摘要(pi 的 defaults to no summary)。`reserveTokens` **未接** —— qi 的摘要预算固定,不加不生效的旋钮 |
+| `thinkingBudgets` | 每个思考级别的 token 预算;Anthropic/Google/Bedrock 原生用,OpenAI 兼容形态要靠每模型的 `compat.thinkingTokenBudgetField` | **部分已接**:**只对 Anthropic 形态**生效(litellm 只在那里有对应参数),且**不配就不带**(pi 另有内置默认表,qi 不抄);钳制到至少留 1024 token 给答案。OpenAI 兼容那半不做 —— qi 没有 compat 层 |
 | `modelThinkingLevels` | `{}` | 按模型的思考级别:`{"provider/模型": "high"}`(也认裸模型 id)。四级优先:`--thinking` > `--model provider/id:<级别>` > 这里 > `defaultThinkingLevel`;换模型时自动采纳,但本会话显式设过(`/thinking`)就不覆盖 |
 | `defaultThinkingLevel` | 默认思考级别 | 已接:`off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`;TUI `shift+tab` 可运行时切换(`--thinking` 可覆盖)。见 [tui.md](tui.md) §2 |
 | `enabledModels` | 模型轮换(Ctrl+P) | 已接:`/scoped-models` 勾选后写回（全局设置）；空 = 轮换 models.json 里全部 |

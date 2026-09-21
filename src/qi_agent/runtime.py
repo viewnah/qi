@@ -318,7 +318,8 @@ class QiRuntime:
                  or self.settings.defaultThinkingLevel)
         self.thinking_level = normalize_thinking_level(level)
         self.llm_exec = llm or LiteLLMClient(default, auth, thinking_level=self.thinking_level,
-                                            retry=self.settings.retry)
+                                            retry=self.settings.retry,
+                                            thinking_budgets=self.settings.thinkingBudgets)
         # CLI 的工具收窄(pi 的 `--tools` / `-xt` / `-nt` / `-nbt`)。
         # 必须等扩展注册完(B)才能算 —— `--no-builtin-tools` 要知道每个工具的来源。
         self._apply_tool_flags(tools=tools, exclude_tools=exclude_tools,
@@ -433,7 +434,8 @@ class QiRuntime:
         if not model:
             raise ValueError(f'模型要写成 "provider/model",收到 {model_ref!r}')
         return LiteLLMClient(resolve_model(self.cfg, provider, model), self._auth,
-                            thinking_level=self.thinking_level, retry=self.settings.retry)
+                            thinking_level=self.thinking_level, retry=self.settings.retry,
+                            thinking_budgets=self.settings.thinkingBudgets)
 
     async def run_agent(self, spec: Any, task: str, *, abort: AbortSignal | None = None,
                         on_event: Any = None) -> str:
@@ -723,7 +725,8 @@ class QiRuntime:
         previous = getattr(getattr(self, "llm_exec", None), "spec", None)
         self.llm_exec = LiteLLMClient(resolved, self._auth,
                                      thinking_level=self.thinking_level,
-                                     retry=self.settings.retry)
+                                     retry=self.settings.retry,
+                                     thinking_budgets=self.settings.thinkingBudgets)
         self._emit_notice("model_select", {
             "model": f"{resolved.provider}/{resolved.model}",
             "previous": (f"{previous.provider}/{previous.model}" if previous else None),

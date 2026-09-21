@@ -295,17 +295,25 @@ def project_trust_default(settings: QiSettings) -> str:
 
 def resolve_project_trust(settings: QiSettings | None, *,
                           approve: bool | None = None,
-                          has_ui: bool = False) -> tuple[bool, str]:
+                          has_ui: bool = False,
+                          stored: tuple[bool, str] | None = None) -> tuple[bool, str]:
     """项目信任判定 → `(trusted, reason)`(docs/extensions.md §5.3 / E16)。
 
-    优先级:CLI 显式(`-a` / `-na`) > `settings.defaultProjectTrust`。
+    优先级(对齐 pi 的 "saved decisions ... apply before the global default"):
 
-    `ask` 表示"问用户",但交互式询问要等 `ctx.ui` 通道(P-E3),所以现在**保守判
-    不信任** —— 扩展是仓库控制的任意代码,fail-safe 只能是"不执行";用户用 `-a`
-    显式放行,或在 settings 里写 `always`。
+    1. CLI 显式(`-a` / `-na`);
+    2. `trust.json` 里**当前目录或父目录上最近的**决定(`stored`,由 `trust.TrustStore` 查);
+    3. `settings.defaultProjectTrust`(**只从用户级读** —— 项目级那份不能自称可信)。
+
+    `ask` 表示"问用户",而 qi 的交互询问尚未实现,所以那样时**保守判不信任** ——
+    扩展是仓库控制的任意代码,fail-safe 只能是"不执行"。
     """
     if approve is not None:                 # 三态:None = 没在 CLI 上表态
         return approve, ("CLI -a" if approve else "CLI -na")
+    if stored is not None:
+        trusted, where = stored
+        kind = "已信任" if trusted else "已拒绝"
+        return trusted, f"trust.json 记住了这个{kind}({where})"
     if settings is None:
         return False, "无 settings"
     default = project_trust_default(settings)

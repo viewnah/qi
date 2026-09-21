@@ -68,7 +68,7 @@ qi 要拆的三样(MCP / 多 agent / web)**正好落在这份清单上**。
 
 | 事件 | 时机 | 契约 | 批次 |
 | --- | --- | --- | --- |
-| `project_trust` | 决定是否信任项目前 | `{trusted}` | P-E1 |
+| `project_trust` | 决定是否信任项目前 | `{trusted}` | ❌ **未实现** —— 现在由 `trust.json`(按目录)→ `defaultProjectTrust`(用户级)决定;这个事件留给将来『扩展介入信任判定』 |
 | `session_start` / `session_shutdown` | 会话建立 / 拆除 | 通知 | P-E1 |
 | `resources_discover` | `session_start` 后 | `{skillPaths, promptPaths, themePaths}` | P-E1 |
 | `input` | 收到用户输入(自动压缩之前) | `continue` / `transform`(改 **`text`** = 改写后的用户输入)/ `handled`(**首胜**,链停,`reply` = 给用户的答复) | ✅ P-E2c-1 |
@@ -229,7 +229,7 @@ def notify(message, *, level="info") -> None
 | 提示走 `QiRuntime.notes`(runtime 不做 IO;TUI 逐条显示、CLI 走 stderr) | ✅ |
 | `ask` 的**交互式询问** | ❌ 未做 —— 现在一律保守判不信任 + 提示 `-a`(询问要等 `ctx.ui` 通道,P-E3) |
 | `.qi/agents/` 与 `.agents/skills` 的门控 | ❌ 未做 —— 它们现在仍无条件加载。留给各自迁移的阶段(P-E4/P-E5),因为 `P-E1` 只动扩展这一处,避免“headless 里项目 agent 突然消失”这种中途回归 |
-| `qi web` 的信任入口 | ❌ 未做 —— `qi web` 没有 `-a`,它的 runtime 也不把 `notes` 显示到界面上。当前只能用 `settings.defaultProjectTrust=always`;随 qi-web 扩展(P-E5)一起收口 |
+| `qi web` 的信任入口 | 🟡 部分 —— `qi web` 没有 `-a`,也不把 `notes` 显示到界面上;但**按目录记住的决定(`/trust` / `trust.json`)对它也生效**,所以可以先用 TUI 的 `/trust` 记一次。界面内的提示仍未做 |
 
 > `notes` 是**启动提示的统一出口**:runtime 只攒字符串(不做 IO/不打印),前端自己决定
 > 怎么展示。测试里的 `FakeRuntime` 也需要带 `notes: list[str]`(已同步)。

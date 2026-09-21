@@ -216,8 +216,11 @@ class QiRuntime:
         # 任意代码跑起来 —— 而这正是这道门控要防的事(实测过:确实能跑)。
         # pi 同模型:它的信任决定也存在用户 home 里(`trust.json`),不在仓库里。
         scopes = load_settings_by_scope(self.cwd)
+        from .trust import TrustStore          # 局部导入:信任库只在构造时用一次
+
         self.project_trusted, self.trust_reason = resolve_project_trust(
-            scopes.get("user"), approve=approve_project, has_ui=has_ui)
+            scopes.get("user"), approve=approve_project, has_ui=has_ui,
+            stored=TrustStore().get(self.cwd))
         declared_by_repo = (getattr(scopes.get("project"), "defaultProjectTrust", None)
                             or "").strip()
         if declared_by_repo:

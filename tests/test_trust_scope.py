@@ -97,3 +97,105 @@ def test_cli_flag_still_wins(tmp_path, monkeypatch):
     project = _env(tmp_path, monkeypatch, user={}, project={"defaultProjectTrust": "always"})
     assert QiRuntime(cwd=project, approve_project=True).project_trusted is True
     assert QiRuntime(cwd=project, approve_project=False).project_trusted is False
+
+
+# ── 按目录记住决定(`~/.qi/agent/trust.json`,对齐 pi) ────────────────
+
+
+def test_store_remembers_and_forgets(tmp_path):
+    from qi_agent.trust import TrustStore
+
+    store = TrustStore(tmp_path / "trust.json")
+    assert store.get(tmp_path) is None
+
+    store.set(tmp_path, True)
+    assert store.get(tmp_path) == (True, str(tmp_path.resolve()))
+    assert store.forget(tmp_path) is True
+    assert store.get(tmp_path) is None
+    assert store.forget(tmp_path) is False
+
+
+def test_store_inherits_from_parent_and_closest_wins(tmp_path):
+    """pi 的 "closest saved decision on the current or parent path applies"。"""
+    from qi_agent.trust import TrustStore
+
+    store = TrustStore(tmp_path / "trust.json")
+    parent, child = tmp_path / "repo", tmp_path / "repo" / "sub" / "deep"
+    child.mkdir(parents=True)
+
+    store.set(parent, True)
+    assert store.get(child) == (True, str(parent.resolve())), "父目录的决定该对子目录生效"
+
+    store.set(child, False)
+    assert store.get(child) == (False, str(child.resolve())), "最近的那条赢"
+
+
+def test_store_set_parent_also_remembers_the_parent(tmp_path):
+    """pi 的 `/trust` 连带记住上一层 —— 同一条路径下的平级项目一起生效。"""
+    from qi_agent.trust import TrustStore
+
+    store = TrustStore(tmp_path / "trust.json")
+    child = tmp_path / "a" / "b" / "proj"
+    child.mkdir(parents=True)
+
+    store.set(child, True, parent=True)
+
+    nested = store.get(child / "nested")            # 自己那条 → 对子目录生效
+    assert nested is not None and nested[0] is True
+    sibling = store.get(tmp_path / "a" / "b" / "sibling")   # 上一层那条 → 对平级生效
+    assert sibling is not None and sibling[0] is True
+    assert str((tmp_path / "a" / "b").resolve()) in store.decisions(), store.decisions()
+
+
+def test_store_file_is_private_and_tolerates_junk(tmp_path):
+    import stat
+
+    from qi_agent.trust import TrustStore
+
+    path = tmp_path / "trust.json"
+    store = TrustStore(path)
+    store.set(tmp_path, True)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600, "信任库该是 0600"
+
+    path.write_text("{ 坏的 json", encoding="utf-8")
+    assert store.load() == {}, "坏文件当“没有决定”,不能因此崩启动"
+
+
+def test_resolver_precedence(tmp_path):
+    """`-a`/`-na` > trust.json > defaultProjectTrust(只用户级)。"""
+    from qi_agent.settings import QiSettings, resolve_project_trust
+
+    user_always = QiSettings(defaultProjectTrust="always")
+    assert resolve_project_trust(user_always, stored=(False, "/x"))[0] is False
+    assert resolve_project_trust(user_always, stored=(True, "/x"))[0] is True
+    # 已存决定之上还有 CLI
+    assert resolve_project_trust(user_always, approve=False, stored=(True, "/x"))[0] is False
+    assert resolve_project_trust(user_always, approve=True, stored=(False, "/x"))[0] is True
+    # 没有已存决定时,才轮到 default
+    assert resolve_project_trust(user_always)[0] is True
+    assert "trust.json" in resolve_project_trust(user_always, stored=(True, "/x"))[1]
+
+
+def test_runtime_honors_a_remembered_decision(tmp_path, monkeypatch):
+    """端到端:记住的 `true` 让项目被信任(不用 `-a`、用户级也没表态)。"""
+    from qi_agent.trust import TrustStore
+
+    project = _env(tmp_path, monkeypatch, user={})
+    TrustStore().set(project, True)
+
+    rt = _runtime(project)
+    assert rt.project_trusted is True, rt.trust_reason
+    assert "trust.json" in rt.trust_reason
+    assert "from-repo" in rt.extensions
+
+
+def test_runtime_honors_a_remembered_denial(tmp_path, monkeypatch):
+    """记住的 `false` 也照样赢过用户级的 `always`(最近的决定优先)。"""
+    from qi_agent.trust import TrustStore
+
+    project = _env(tmp_path, monkeypatch, user={"defaultProjectTrust": "always"})
+    TrustStore().set(project, False)
+
+    rt = _runtime(project)
+    assert rt.project_trusted is False, rt.trust_reason
+    assert "from-repo" not in rt.extensions

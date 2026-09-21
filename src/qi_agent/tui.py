@@ -74,7 +74,7 @@ _RichHeading.LEVEL_ALIGN = {f"h{i}": "left" for i in range(1, 7)}
 
 
 PLANNED_COMMANDS = frozenset({
-    "/settings", "/share", "/trust",
+    "/settings", "/share",
 })
 """pi 有、qi 暂未实现的命令 —— 单独提示“计划中”,不冒充“未知命令”。"""
 
@@ -93,6 +93,7 @@ TUI_COMMANDS: dict[str, str] = {
     "/resume": "选/恢复历史会话",
     "/name": "设置会话显示名",
     "/session": "会话信息",
+    "/trust": "记住这个目录的信任决定(可跟 yes|no|forget)",
     "/tree": "跳到本会话的任意节点",
     "/fork": "从某条用户消息 fork 出新会话",
     "/clone": "复制当前分支为新会话",
@@ -2206,6 +2207,8 @@ class QiTui(App):
                 self._show_session_selector()          # 模态选择器(对齐 pi)
                 self._scroll_end()
                 return
+        elif cmd == "/trust":
+            self._set_trust(arg)
         elif cmd == "/tree":
             self.action_show_tree()
             self._scroll_end()
@@ -2868,6 +2871,33 @@ class QiTui(App):
             entry.pop("labelTimestamp", None)
         self._session_store().save(session)
         self._flash(f"标签: {label}" if label else f"已清除标签 {entry_id}")
+
+    def _set_trust(self, arg: str) -> None:
+        """`/trust [yes|no|forget]`:把信任决定写进 `~/.qi/agent/trust.json`(对齐 pi)。
+
+        三条 pi 的行为照抄:
+
+        * **连带记住上一层目录** —— 同一条路径下的平级项目一起生效;
+        * **只写用户 home 的信任库**,不碰仓库里任何文件(仓库不能为自己背书);
+        * **当前会话不重载** —— 项目级资源已按旧决定加载/跳过,重启后才按新的来。
+        """
+        from .trust import TrustStore
+
+        store = TrustStore()
+        cwd = self._rt.cwd if self._rt is not None else Path.cwd()
+        choice = (arg or "yes").strip().lower()
+        if choice in ("forget", "clear", "none"):
+            removed = store.forget(cwd)
+            self._note(f"{cwd} 的信任决定{'已忘掉' if removed else '本来就没有'}"
+                       "(上层若还有决定,它照样生效)", "info")
+            return
+        if choice not in ("yes", "no"):
+            self._note("用法:/trust [yes|no|forget]", "warning")
+            return
+        path = store.set(cwd, choice == "yes", parent=True)
+        verdict = "信任" if choice == "yes" else "不信任"
+        self._note(f"已记住:{cwd}(及其上一层)以后都{verdict};写在 {path}。"
+                   "**当前会话不重载,重启 qi 后生效**", "info")
 
     def action_show_tree(self) -> None:
         """/tree:跳转当前会话的任意节点(同一文件内的分支导航 + pi 的过滤/标签键)。"""

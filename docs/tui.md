@@ -165,6 +165,7 @@ qi 与 pi 的差异(已落档):
 | `/new` · `/resume` · `/session` | 新会话 / 选或恢复(选择器里可改名、删除)/ 会话信息 |
 | `/name` | 设置会话显示名 |
 | `/tree` · `/fork` · `/clone` | 跳到本会话任意节点 / 从某条消息 fork / 复制当前分支 |
+| `/trust [yes\|no\|forget]` | 按**目录**记住信任决定(`~/.qi/agent/trust.json`);连带记住上一层,写完要重启才生效 |
 | `/compact` | 压缩上下文(摘要旧消息);可跟 `<提示>` 追加 focus |
 | `/model` · `/scoped-models` · `/thinking` | 当前或切换模型 / 挑 Ctrl+P 轮换的模型 / 思考级别 |
 | `/export` · `/import` | 导出 / 导入会话 JSONL |

@@ -179,7 +179,7 @@ export function isSafeCommand(command: string): boolean {
 | `python -c` | 无 bash 过滤;靠 `--tools` 摘除 bash | 无过滤;靠 `disallowed_tools` 摘除 bash | 裸放行;"禁止"分支是死代码 |
 | 路径边界 | **无**:绝对路径随便读 | `guard()` 限会话目录(**仅 6 个文件工具**) | 同左 |
 | 工具收窄 | `defaultTools` / `--tools` / `--exclude-tools` / `--no-builtin-tools` | `tools` 三态 + `disallowed_tools` | 同左 |
-| 配置信任 | Project trust(`trust.json`,`-a` / `-na`) | 未见对应机制 | 同左 |
+| 配置信任 | Project trust(`trust.json`,`-a` / `-na`) | `-a` / `-na` + 按目录记住(TUI `/trust`,`~/.qi/agent/trust.json`) | 同左 |
 | 兜底隔离 | 容器 / VM / Gondolin,文档成体系 | 未做(路线一致) | 同左 |
 | 设计定位 | "不是沙箱",不做假边界 | 与 pi 同 | 轻量只读白名单,但**看起来像边界** |
 

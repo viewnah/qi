@@ -5,8 +5,8 @@
 * **功能已存在、只是缺旗标** —— `--system-prompt` / `--no-extensions` /
   `--no-context-files` / `--models` / `--list-models` / `--session-dir` /
   `--session-id` / `--session <path>` / `--provider|--model|--api-key` /
-  `--append-system-prompt <文件>`;
-* **功能根本不存在** —— `--prompt-template` / `--theme` / `--tui-mode` / `--mode rpc`:
+  `--append-system-prompt <文件>` / `--tui-mode`(fullscreen 也落地了);
+* **功能根本不存在** —— `--prompt-template` / `--theme` / `--mode rpc`:
   接受,但 exit 2 说清缺什么(不假装支持,也不让它掉进扩展旗标的报错里)。
 """
 
@@ -281,7 +281,6 @@ def fake_runtime(tmp_path: Path, monkeypatch):
     (["--theme", "a.json"], "自定义主题文件"),
     (["--use-theme", "dark"], "自定义主题文件"),
     (["--no-themes"], "自定义主题文件"),
-    (["--tui-mode", "fullscreen"], "--tui-mode"),
     (["--mode", "rpc", "-p"], "rpc"),
 ])
 def test_unimplemented_flags_are_reported_not_swallowed(fake_runtime, flags, needle):
@@ -296,6 +295,31 @@ def test_supported_flags_do_not_trip_that_check(fake_runtime):
                               "--no-context-files", "hi"])
     assert res.exit_code == 0, res.output
     assert CREATED, "这批旗标都是支持,不该被那道闸门拦住"
+
+
+def test_tui_mode_is_wired_and_validated(fake_runtime, monkeypatch):
+    """`--tui-mode` 不再是「未实现」:值域当着报错,合法值一路传到 `run_tui`。"""
+    from qi_agent import cli as cli_mod
+    from qi_agent import tui as tui_mod
+
+    seen: dict[str, object] = {}
+
+    def fake_run_tui(prompt=None, **kwargs):
+        seen["prompt"] = prompt
+        seen.update(kwargs)
+
+    monkeypatch.setattr(tui_mod, "run_tui", fake_run_tui)
+    # 直接调 `_launch_tui`:走完整 CLI 会被“非 TTY 退化为提示”拦住(CliRunner 不是 TTY),
+    # 而旗标 → `_launch_tui` 这一段由上面那条 `--tui-mode bogus` 与本次调用共同覆盖。
+    cli_mod._launch_tui("hi", tui_mode="regular")
+    assert seen["tui_mode"] == "regular" and seen["prompt"] == "hi"
+
+    cli_mod._launch_tui("hi", tui_mode="fullscreen")
+    assert seen["tui_mode"] == "fullscreen"
+
+    res = runner.invoke(app, ["--tui-mode", "bogus", "hi"])
+    assert res.exit_code == 2, res.output
+    assert "未知 TUI 模式" in res.output and "regular/fullscreen" in res.output
 
 
 def test_resume_without_tty_is_a_clear_error(fake_runtime):

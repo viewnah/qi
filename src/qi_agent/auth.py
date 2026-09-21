@@ -41,6 +41,7 @@ from .paths import global_home
 AUTH_FILE_NAME = "auth.json"
 
 # provider → 约定环境变量名(与 auth store 键一一对应)
+# 国产 provider 那批与 `presets.py` 的 `api_key_env` 一一对应(有测试锁住两边一致)。
 DEFAULT_API_KEY_ENV = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
@@ -51,6 +52,17 @@ DEFAULT_API_KEY_ENV = {
     "groq": "GROQ_API_KEY",
     "mistral": "MISTRAL_API_KEY",
     "xai": "XAI_API_KEY",
+    # 预置的国产 provider(见 presets.py)
+    "dashscope": "DASHSCOPE_API_KEY",
+    "moonshot": "MOONSHOT_API_KEY",
+    "zhipu": "ZHIPUAI_API_KEY",
+    "minimax": "MINIMAX_API_KEY",
+    "siliconflow": "SILICONFLOW_API_KEY",
+    "stepfun": "STEP_API_KEY",
+    "hunyuan": "HUNYUAN_API_KEY",
+    "volcengine": "ARK_API_KEY",
+    "mimo": "MIMO_API_KEY",
+    "qianfan": "QIANFAN_API_KEY",
 }
 
 KEYLESS_PROVIDERS = ("ollama",)

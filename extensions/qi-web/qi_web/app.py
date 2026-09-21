@@ -20,7 +20,12 @@ from fastapi.staticfiles import StaticFiles
 
 from qi_agent import __version__
 from qi_agent.auth import AuthStore, resolve_key
-from qi_agent.config import ConfigError, load_config, resolve_default_model, resolve_router_model
+from qi_agent.config import (
+    ConfigError,
+    load_config,
+    resolve_default_model,
+    resolve_router_model,
+)
 from qi_agent.loader import LoadError
 from qi_agent.session import usage_summary
 from qi_agent.workspaces import WorkspaceStore, normalize
@@ -570,7 +575,18 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
             ))
         default = resolve_default_model(cfg, web.default_cwd)
         router = resolve_router_model(cfg, web.default_cwd)
-        missing = [p.name for p in providers if not p.credential_ok]
+        # 只管“在用”的 provider:models.json 里写过的 + 默认/路由模型那个。
+        # 预置兜底那批只是目录(见 qi_agent.presets),没配也不算缺。
+        #
+        # 用 getattr 而不是模块级 import:qi-web 是**独立安装**的扩展(`qi install`),
+        # 用户的 qi-agent 可能还是没有这个符号的旧版本 —— 那种情况下不能把整个扩展顶崩,
+        # 退回旧口径(全部 provider 都算在用)即可。
+        from qi_agent import config as qi_config
+
+        hook = getattr(qi_config, "in_play_providers", None)
+        in_play = (hook(cfg, default_provider=default.provider, router_provider=router.provider)
+                   if callable(hook) else set(cfg.providers))
+        missing = [p.name for p in providers if p.name in in_play and not p.credential_ok]
         checks = [
             {"name": "models.json", "ok": bool(runtime.config_files),
              "detail": ", ".join(str(p) for p in runtime.config_files) or "未找到"},

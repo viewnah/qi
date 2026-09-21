@@ -28,6 +28,7 @@ from . import __version__, paths, prompt
 from .auth import AuthStore, DEFAULT_API_KEY_ENV, resolve_key
 from .config import (
     DEFAULT_API,
+    models_file_for_provider,
     DEFAULT_CONTEXT_WINDOW,
     DEFAULT_MAX_TOKENS,
     SUPPORTED_APIS,
@@ -53,6 +54,7 @@ from .packages import install_hints, package_report
 from .session import SessionStore
 from .settings import (
     SCOPES,
+    TUI_MODES,
     QiSettings,
     SettingsError,
     extension_dirs,
@@ -249,7 +251,8 @@ def root_callback(
     theme_file: list[str] = typer.Option(None, "--theme", help="[未实现] 自定义主题文件"),
     use_theme: str | None = typer.Option(None, "--use-theme", help="[未实现] 指定初始主题"),
     no_themes: bool = typer.Option(False, "--no-themes", help="[未实现] 关掉主题发现"),
-    tui_mode: str | None = typer.Option(None, "--tui-mode", help="[未实现] TUI 模式(pi 有 regular|fullscreen)"),
+    tui_mode: str | None = typer.Option(None, "--tui-mode",
+                                        help="TUI 模式(regular|fullscreen;默认 fullscreen)"),
     append_prompt: list[str] = typer.Option(None, "--append-system-prompt",
                                             help="追加到 system prompt 末尾(可重复;值是文件路径时读文件内容)"),
 ) -> None:
@@ -258,8 +261,13 @@ def root_callback(
         raise typer.Exit()
     _reject_unimplemented_flags(
         prompt_template=prompt_template, no_prompt_templates=no_prompt_templates,
-        theme_file=theme_file, use_theme=use_theme, no_themes=no_themes,
-        tui_mode=tui_mode, mode=mode)
+        theme_file=theme_file, use_theme=use_theme, no_themes=no_themes, mode=mode)
+    # `--tui-mode` 的值域很窄:打错就当场报(否则会静默回落默认,用户以为切过去了)
+    if tui_mode is not None and tui_mode.strip().lower() not in TUI_MODES:
+        err_console.print(f"[red]未知 TUI 模式: {escape(tui_mode)}"
+                          f"(可选 {'/'.join(TUI_MODES)}）[/red]")
+        raise typer.Exit(code=2)
+    tui_mode = tui_mode.strip().lower() if tui_mode else None
     # `--tools`(严格白名单)与另外两个整集选择互相矛盾 —— 报出来,不替用户选一个赢。
     if tools and (no_tools or no_builtin_tools):
         err_console.print("[red]--tools 与 --no-tools/--no-builtin-tools 冲突:"
@@ -350,7 +358,7 @@ def root_callback(
                     base_prompt_override=system_prompt,
                     no_extensions=no_extensions, no_context_files=no_context_files,
                     session_dir_path=session_dir, model_override=model_spec,
-                    api_key=api_key, scoped_models=scoped)
+                    api_key=api_key, scoped_models=scoped, tui_mode=tui_mode)
         return
     if not prompt:
         usage = (
@@ -560,6 +568,97 @@ def _cmd_export(session_id: str, out: Path) -> None:
     console.print(f"[green]已导出 {session.path} → {out}[/green]")
 
 
+def _refresh_models(names: str, *, all_providers: bool, local: bool,
+                    timeout: float = 20.0) -> None:
+    """从 provider 的 `/models` 接口拉模型列表,并进 `models.json`(**只加不删**)。
+
+    为什么要这条:预置表是**离线种子**,而模型 id 会漂(如 DeepSeek 从
+    `deepseek-v4-flash` 换成 `deepseek-flash`)—— 以厂商接口为准最省事。
+    接口不返回 `contextWindow` / `maxTokens`,新加的条目先用 qi 的默认值,
+    要精确就照厂商文档在 `models.json` 里补。
+    """
+    from .model_catalog import CatalogError, fetch_model_ids, merge_model_ids
+
+    try:
+        cfg, _files = load_config()
+    except ConfigError as exc:
+        console.print(f"[red]配置错误:[/red] {escape(str(exc))}")
+        raise typer.Exit(code=2) from exc
+    store = AuthStore()
+
+    wanted = [item.strip() for item in (names or "").split(",") if item.strip()]
+    if all_providers:
+        # “已配置”= models.json 里写过的 + 预置里**有凭证**的(与 `/model` 的口径一致)
+        wanted += [name for name, prov in cfg.providers.items()
+                   if name not in cfg.presetProviders or resolve_key(name, prov.apiKey, store).ok]
+    wanted = list(dict.fromkeys(name.strip() for name in wanted if name.strip()))
+    if not wanted:
+        console.print("[red]要刷新哪个 provider?[/red] `qi init --refresh deepseek`"
+                      " 或 `qi init --refresh-all`")
+        raise typer.Exit(code=2)
+    unknown = [name for name in wanted if name not in cfg.providers]
+    if unknown:
+        console.print(f"[red]未知 provider: {', '.join(unknown)}[/red]")
+        console.print("[dim]看看有哪些:`qi doctor`(预置的见 `qi init --list-presets`)[/dim]")
+        raise typer.Exit(code=2)
+
+    # 写回**定义它的那个文件**(见 models_file_for_provider)—— 没定义的(预置兜底来的)
+    # 才回落到用户级;`--local` 强制写项目级。
+    if local:
+        target_file = project_home() / MODELS_FILE_NAME
+    else:
+        target_file = models_file_for_provider(wanted[0]) or (global_home() / MODELS_FILE_NAME)
+    target_dir = target_file.parent
+    data = load_models_file(target_file)
+    failures: list[str] = []
+
+    for name in wanted:
+        prov = cfg.providers[name]
+        rk = resolve_key(name, prov.apiKey, store)
+        if not rk.ok:
+            console.print(f"[red]{name}: 拿不到 API key[/red] {rk.describe()} —— "
+                          f"`qi auth login {name}` 或设约定环境变量")
+            failures.append(name)
+            continue
+        try:
+            ids = fetch_model_ids(prov.baseUrl or "", rk.key, timeout=timeout)
+        except CatalogError as exc:
+            console.print(f"[red]{name}: 拉取失败[/red] {escape(str(exc))}")
+            failures.append(name)
+            continue
+
+        raw = (data.setdefault("providers", {})).get(name)
+        if isinstance(raw, dict):
+            entry = raw
+        else:
+            # 预置兜底来的 provider:物化时把预置**整段**写下来 —— 包括那些
+            # **带核过 ctx/max 的种子模型**。只写接口返回的 id 会把这两个数丢掉
+            # (接口不返回 ctx/max),而一旦写进 models.json,预置兜底就不再插手这个 provider。
+            from .presets import apply_presets, get_preset
+
+            if get_preset(name) is not None:
+                apply_presets(data, [name])
+            entry = data["providers"].setdefault(name, {})
+            for key, value in (("baseUrl", prov.baseUrl), ("api", prov.api or DEFAULT_API),
+                               ("apiKey", prov.apiKey)):
+                if value and not entry.get(key):
+                    entry[key] = value
+        added, stale = merge_model_ids(entry, ids)
+        console.print(f"[green]{name}[/green]: 接口返回 {len(ids)} 个模型;"
+                      f"新增 {len(added)}"
+                      + (":" + ", ".join(added) if added else ""))
+        if stale:
+            console.print(f"  [dim]本地有但接口没返回(保留,不替你删):"
+                          f"{', '.join(stale)}[/dim]")
+
+    if not failures:
+        _strip_legacy_defaults(data)
+        _write_models(target_dir, target_file, data)
+    else:
+        console.print("[yellow]有 provider 没刷新成功,这次不写文件。[/yellow]")
+        raise typer.Exit(code=1)
+
+
 # ── doctor ──────────────────────────────────────────────
 
 @app.command("doctor")
@@ -617,10 +716,14 @@ def doctor() -> None:
         table.add_column("api"); table.add_column("模型"); table.add_column("凭证")
         for name_, prov in cfg.providers.items():
             rk = resolve_key(name_, prov.apiKey, store)
-            table.add_row(name_, prov.baseUrl or "(内置)", prov.api or DEFAULT_API,
+            label = name_ + ("  [dim](预置)[/dim]" if name_ in cfg.presetProviders else "")
+            table.add_row(label, prov.baseUrl or "(内置)", prov.api or DEFAULT_API,
                           str(len(prov.models)),
                           f"{'[green]OK[/green]' if rk.ok else '[red]缺密钥[/red]'}  {rk.describe()}")
         console.print(table)
+        if cfg.presetProviders:
+            console.print("[dim]带 (预置) 的来自 qi 的预置表(`qi init --list-presets`);"
+                          "models.json 里写了同名 provider 就以你的为准[/dim]")
 
     try:
         default = resolve_default_model(cfg)
@@ -705,7 +808,7 @@ def list_extensions() -> None:
 
 
 def _cmd_list_models(search: str | None = None) -> None:
-    """`--list-models [搜索词]` 与 `qi models list` 共用:列 models.json 里的模型与默认模型。
+    """`--list-models [搜索词]`:列可用模型与默认模型。
 
     搜索词按**子串**过滤 `provider/模型`(pi 是模糊匹配;qi 先做最直白的那种)。
     """
@@ -719,23 +822,33 @@ def _cmd_list_models(search: str | None = None) -> None:
     default_label = f"{provider}/{model}" if provider and model else None
     table = Table(title="模型")
     table.add_column("默认"); table.add_column("provider"); table.add_column("模型")
-    table.add_column("api"); table.add_column("ctx"); table.add_column("credential")
+    table.add_column("api"); table.add_column("ctx"); table.add_column("max")
+    table.add_column("credential")
     shown: set[str] = set()
     for name_, prov in cfg.providers.items():
         rk = resolve_key(name_, prov.apiKey, store)
+        # 预置兜底那批只列**能用的**(有凭证的)—— 没登录的 provider 列出来也没用,
+        # 想知道有哪些可登录的看 `qi init --list-presets` 或直接 `qi auth login <名>`。
+        # `models.json` 里显式写过的照列(那是用户自己的配置)。
+        if name_ in cfg.presetProviders and not rk.ok and name_ != provider:
+            continue
         for m in prov.models:
             label = f"{name_}/{m.id}"
             if search and search.strip().lower() not in label.lower():
                 continue
             shown.add(label)
-            table.add_row("*" if label == default_label else "", name_, m.id,
-                          m.api or prov.api or DEFAULT_API, str(m.contextWindow), rk.describe())
+            provider_label = name_ + ("  [dim](预置)[/dim]"
+                                      if name_ in cfg.presetProviders else "")
+            table.add_row("*" if label == default_label else "", provider_label, m.id,
+                          m.api or prov.api or DEFAULT_API, str(m.contextWindow),
+                          str(m.maxTokens), rk.describe())
     if (default_label and default_label not in shown and provider and model
             # 搜索词对**每一行**都生效 —— 默认模型那行也不例外(它是循环外补的)
             and (not search or search.strip().lower() in default_label.lower())):
         spec = resolve_model(cfg, provider, model)
         rk = resolve_key(spec.provider, spec.api_key_ref, store)
-        table.add_row("*", spec.provider, spec.model, spec.api, str(spec.context_window), rk.describe())
+        table.add_row("*", spec.provider, spec.model, spec.api, str(spec.context_window),
+                      str(spec.max_tokens), rk.describe())
     console.print(table)
 
 
@@ -957,7 +1070,7 @@ def _auth_target(provider: str | None, model: str | None) -> tuple[str, str | No
     if len(matches) == 1:
         return matches[0], name
     if not matches:
-        raise _AuthError(f"未知模型 {name!r}(用 `qi models list` 看已配置的模型)")
+        raise _AuthError(f"未知模型 {name!r}(用 `qi --list-models` 看已配置的模型)")
     raise _AuthError(
         f"模型 {name!r} 在多个 provider 中出现({', '.join(matches)});请加 --provider"
     )
@@ -1535,14 +1648,88 @@ def init(
     max_tokens: int | None = typer.Option(None, "--max-tokens", help="最大输出 token"),
     local: bool = typer.Option(False, "--local", "-l", help="写入项目 .qi/models.json"),
     yes: bool = typer.Option(False, "--yes", "-y", help="非交互:需配合 --provider/--model"),
+    preset: str | None = typer.Option(None, "--preset",
+                                      help="用预置 provider(逗号分隔,如 deepseek,moonshot)"),
+    list_presets: bool = typer.Option(False, "--list-presets", help="列出所有预置 provider 后退出"),
+    refresh: str | None = typer.Option(None, "--refresh",
+                                       help="从 provider 的 /models 接口拉模型列表写回(逗号分隔)"),
+    refresh_all: bool = typer.Option(False, "--refresh-all",
+                                     help="刷新所有已配置(有凭证)的 provider"),
 ) -> None:
-    """引导默认模型:Provider Config → Add Models → Activate LLM,写 models.json + auth.json。"""
+    """引导默认模型:Provider Config → Add Models → Activate LLM,写 models.json + auth.json。
+
+    `--preset` 是一条显式捷径:把预置的国产 provider(baseUrl/api/模型)直接写进
+    `models.json`(已有的值不动),并把它的第一个模型设为默认。
+
+    `--refresh` 走**另一条路**:预置表是离线种子,而模型 id 会漂(实例:DeepSeek 从
+    `deepseek-v4-flash` 换成 `deepseek-flash`)—— 直接问厂商的 `/models` 接口最省事。
+    """
+    if list_presets:
+        _print_presets()
+        return
+    if refresh or refresh_all:
+        _refresh_models(refresh or "", all_providers=refresh_all, local=local)
+        return
+    if preset:
+        _init_from_presets(preset, local=local, default_model=model)
+        return
     if yes:
         _init_noninteractive(provider=provider, model=model, base_url=base_url, api=api,
                              api_key=api_key, api_key_env=api_key_env, reasoning=reasoning,
                              context_window=context_window, max_tokens=max_tokens, local=local)
     else:
         _init_interactive(local)
+
+
+def _print_presets() -> None:
+    """`qi init --list-presets`:把预置表打印成人能看的样子。"""
+    from .presets import PRESETS
+
+    for name in sorted(PRESETS):
+        preset = PRESETS[name]
+        console.print(f"[bold]{name}[/bold]  [dim]{preset.label}[/dim]")
+        console.print(f"  baseUrl  {preset.base_url}")
+        console.print(f"  apiKey   ${preset.api_key_env}(或 `qi auth login {preset.provider}`)")
+        console.print("  模型     " + ", ".join(
+            f"{m.id}(ctx {m.context_window:,} / max {m.max_output:,})"
+            for m in preset.models))
+        if preset.note:
+            console.print(f"  [yellow]注意[/yellow]  {preset.note}")
+    console.print("\n用法:[bold]qi init --preset <名字>[,<名字>][/bold]")
+    console.print("[dim]预置是离线种子;要跟厂商接口对齐用 `qi init --refresh <名字>`"
+                  "(只加不删)。[/dim]")
+
+
+def _init_from_presets(preset: str, *, local: bool, default_model: str | None) -> None:
+    """`qi init --preset …`:把预置写进 models.json(不覆盖已有值),再设默认模型。"""
+    from .presets import apply_presets, get_preset
+
+    names = [item.strip() for item in preset.split(",") if item.strip()]
+    missing = [name for name in names if get_preset(name) is None]
+    if missing:
+        console.print(f"[red]未知预置: {', '.join(missing)}[/red]")
+        console.print("[dim]可用预置:`qi init --list-presets`[/dim]")
+        raise typer.Exit(code=2)
+    # 解析一次(下面多处要用;`get_preset` 已保证这里都不是 None)
+    chosen_list = [item for item in (get_preset(name) for name in names) if item is not None]
+
+    target_dir = project_home() if local else global_home()
+    target_file = target_dir / MODELS_FILE_NAME
+    data = load_models_file(target_file)
+    _data, changed = apply_presets(data, names)
+    _strip_legacy_defaults(data)
+    _write_models(target_dir, target_file, data)
+    console.print(f"已写入 {len(changed)} 项:" + (", ".join(changed) if changed else "(都已存在,无改动)"))
+
+    # 默认模型:显式 `--model` 优先,否则取**第一个预置**的第一个模型
+    first = chosen_list[0] if chosen_list else None
+    chosen_model = default_model or (first.default_model if first else None)
+    if first is not None and chosen_model:
+        _write_default_model(first.provider, chosen_model, local)
+
+    providers = ", ".join(item.provider for item in chosen_list)
+    console.print(f"[dim]下一步:给 {providers} 配 key —— 环境变量(见上表)或 "
+                  f"`qi auth login <provider>`;然后 `qi doctor` 校验。[/dim]")
 
 
 def _session_reason(*, no_session: bool, fork_id: str | None,
@@ -1589,7 +1776,8 @@ def _launch_tui(initial_prompt: str | None = None, *, session_id: str | None = N
                 no_extensions: bool = False, no_context_files: bool = False,
                 session_dir_path: str | None = None,
                 model_override: str | None = None, api_key: str | None = None,
-                scoped_models: list[str] | None = None) -> None:
+                scoped_models: list[str] | None = None,
+                tui_mode: str | None = None) -> None:
     """启动 TUI(顶层 `qi` 的默认去向)。
 
     刻意不做成子命令:`pi` 也没有 `pi tui` —— 裸 `qi` 就是交互界面。
@@ -1612,7 +1800,7 @@ def _launch_tui(initial_prompt: str | None = None, *, session_id: str | None = N
             base_prompt_override=base_prompt_override,
             no_extensions=no_extensions, no_context_files=no_context_files,
             session_dir_path=session_dir_path, model_override=model_override,
-            api_key=api_key, scoped_models=scoped_models)
+            api_key=api_key, scoped_models=scoped_models, tui_mode=tui_mode)
 
 
 
@@ -1661,7 +1849,7 @@ _OFFICIAL_EXTENSION_COMMANDS = {"web": "qi-web"}
 
 
 def _reject_unimplemented_flags(*, prompt_template, no_prompt_templates, theme_file,
-                                use_theme, no_themes, tui_mode, mode) -> None:
+                                use_theme, no_themes, mode) -> None:
     """接受 pi 有、qi **还没有对应功能**的旗标,但明确报出来(退出码 2)。
 
     为什么接受:pi 的命令行迁过来时,"未知选项"看不出问题在哪 —— 用户会以为是拼写错。
@@ -1675,9 +1863,6 @@ def _reject_unimplemented_flags(*, prompt_template, no_prompt_templates, theme_f
     if theme_file or use_theme or no_themes:
         missing.append("自定义主题文件 -- qi 只有内置 dark / light / auto; "
                        "选主题用 `QI_THEME=light` 或 `qi config --set theme=`")
-    if tui_mode:
-        missing.append("`--tui-mode` -- qi 的 TUI 是 inline 渲染(不占全屏、不进备用屏), "
-                       "没有 fullscreen 这一态")
     if str(mode or "").strip().lower() == "rpc":
         missing.append("`--mode rpc` -- qi 的输出模式只有 text | json; "
                        "stdio JSON-RPC 还没实现(见 docs/cli.md §9)")

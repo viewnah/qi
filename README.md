@@ -26,6 +26,8 @@ qi doctor                            # 「声明了但没装」「装了但没�
 
 ```bash
 qi init                              # 引导配置:选 provider/模型 → 写 models.json + settings.json + auth.json
+qi init --list-presets               # 内置的预置 provider(国产为主:deepseek / qwen / kimi / glm / minimax …)
+qi init --preset deepseek            # 一条命令写进 models.json 并设为默认模型
 qi doctor                            # 校验配置与凭证
 qi                                   # 进 TUI(单 agent)
 qi -p "分析这个仓库"                  # 无头一次执行
@@ -35,8 +37,9 @@ qi "分析这个仓库"                     # 进 TUI 并把这句话作为首�
 CI / 脚本里跳过交互:
 
 ```bash
-qi init -y --provider deepseek --model deepseek-chat \
-    --base-url https://api.deepseek.com/v1 --api openai-completions --api-key sk-xxx
+qi init --preset deepseek            # 预置:baseUrl + 约定环境变量 + 几个模型(只补缺、幂等)
+qi init -y --provider my-proxy --model my-model \
+    --base-url https://my-proxy.internal/v1 --api openai-completions --api-key sk-xxx
 ```
 
 **零配置也能跑**:core 带一份**代码内默认基座提示词**。想定制基座就写 `.qi/SYSTEM.md`(整体替换,

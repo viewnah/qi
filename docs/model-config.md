@@ -117,6 +117,15 @@ models.json:  $QI_AGENT_CONFIG(env 指定文件,最高)
 
 `qi init` 引导配置默认模型,流程与样式复刻 QwenPaw 的 `qwenpaw init`。
 
+**两条捷径**(不想手写 `models.json` 时):
+
+```bash
+qi init --list-presets            # 看内置的预置 provider(国产为主,见 providers.md §2.1)
+qi init --preset deepseek         # 直接写进 models.json + 设默认模型(可逗号写多个)
+```
+
+`--preset` 只补缺、不覆盖你写过的值,所以重复跑是安全的(幂等)。
+
 ### 交互流程
 
 ```text

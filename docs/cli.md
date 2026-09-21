@@ -28,6 +28,9 @@ qi doctor                        # 诊断(含「声明了没装」的安装命�
 
 ── 初始化 / 凭证 ──────────────────────
 qi init                         # 引导默认模型(复刻 QwenPaw):Provider Config → Add Models → Activate LLM
+qi init --list-presets          # 内置的预置 provider(国产为主)
+qi init --preset deepseek       # 直接用预置写 models.json + 设默认模型(可逗号写多个)
+qi init --refresh deepseek      # 从厂商 /models 接口拉模型列表写回 models.json(只加不删)
 qi auth login|logout|list       # 管理 ~/.qi/agent/auth.json(0600);qi init 交互默认保留已存凭证
 
 ── 模型 / 诊断 ─────────────────────────
@@ -62,6 +65,7 @@ qi -ne | -nc                                  # 关扩展发现 / 关 AGENTS.md 
 | `--mode <text\|json>` | 输出格式。`json` = **事件流(一行一个 JSON 对象,隐含无头**、不进 TUI;stdout 只有事件,提示走 stderr) → 见 [json.md](json.md)。`rpc` 是二期 | ✅ |
 | `--tools <tools>`(=`-t`) | 工具**严格白名单**(逗号/空格分隔):最终工具集就是这些(不再叠加默认集)。与 `--no-tools`/`--no-builtin-tools` **互斥**(同给报错退出码 2)。未注册的名字**会报一条提示**,不静默丢掉 | ✅ `pi --tools` |
 | `--thinking <级别>` | 思考级别(off/minimal/low/medium/high/xhigh/max;非法值退出码 2)。不传则用 settings.json 的 defaultThinkingLevel,没配就用 `medium`(pi 的默认档)。provider 拒收 `reasoning_effort` 时自动去掉参数重试,并在 stderr 提示一次 | ✅ `pi --thinking` |
+| `--tui-mode <regular\|fullscreen>` | TUI 渲染模式(非法值退出码 2),压过 settings.json 的 `tuiMode`。`fullscreen`(qi 默认)= 进备用屏、qi 拥有视口,滚轮只滚 transcript;**`regular` = inline**(不占全屏、不进备用屏,滚动交给终端,滚轮/PageUp 会翻到启动前的 shell 输出)。详见 [tui.md](tui.md) §1 | ✅ `pi --tui-mode`(默认值不同:pi 默认 regular) |
 | `--exclude-tools <tools>`(=`-xt`) | 从**最终**工具集里排除这些工具(在 `--tools` / `--no-tools` / `--no-builtin-tools` 之后过滤) | ✅ `pi -xt` |
 | `--no-builtin-tools`(=`-nbt`) | 禁用内置工具,**保留扩展装的工具** | ✅ `pi -nbt` |
 | `--no-tools`(=`-nt`) | 禁用**全部**工具 | ✅ `pi -nt` |
@@ -71,7 +75,7 @@ qi -ne | -nc                                  # 关扩展发现 / 关 AGENTS.md 
 | `--provider <名>` / `--model <模式>` | 按次覆盖模型。`--model` 写 `provider/模型`,可带 `:<思考级别>` 后缀(**只认已知级别**,所以 `openrouter/x:free` 不会被误切);只给 `--provider` 时用它 models.json 里的第一个模型 | ✅ pi 同名 |
 | `--api-key <键>` | 按次覆盖密钥,**不落盘**(优先于 auth store / 环境变量 / `models.json` 的引用) | ✅ pi `--api-key` |
 | `--models <清单>` | 本次运行 Ctrl+P 的轮换清单(逗号分隔)。**不回写** settings —— 要持久化用 TUI 的 `/scoped-models` | ✅ pi `--models` |
-| `--list-models [搜索词]` | 列出 `models.json` 里的模型后退出。搜索词写成**位置参数**:`qi --list-models sonnet`(pi 的可选值形态 click 表达不了) | ✅ 形态同 pi |
+| `--list-models [搜索词]` | 列出可用模型后退出(ctx / max 两列来自模型条目)。搜索词写成**位置参数**:`qi --list-models sonnet`(pi 的可选值形态 click 表达不了)。**没登录的预置 provider 不列** —— 那是登录入口的事(`/login`) | ✅ 形态同 pi |
 | `--no-extensions`(=`-ne`) | 关掉扩展**发现**(entry point / `~/.qi/agent/extensions/` / `settings.extensions[]`);`-e` 显式给的仍生效 | ✅ pi `-ne` |
 | `--no-context-files`(=`-nc`) | 不注入 `AGENTS.md` / `CLAUDE.md` | ✅ pi `-nc` |
 
@@ -93,12 +97,10 @@ qi -ne | -nc                                  # 关扩展发现 / 关 AGENTS.md 
 
 ## 3. Agent 与分派
 
-| 命令 | 说明 |
-| --- | --- |
+| 命令 | 说明 | pi 对齐 |
+| --- | --- | --- |
 | ~~`--agent <name>`~~ | **已删(P-E4c)**;改用 `--ext agent=<名>`(qi-agents) | — |
-| ~~`qi agents list\|show\|import\|export`~~ | **四条都已删(P-E4c)**:角色归 qi-agents。
-装角色 = 把 `agent.md` 放进 `~/.qi/agent/agents/<名>/`;用它跑 = `qi --ext agent=<名>`;
-列角色 = TUI 里 `/agents`。详见 qi-agents 的 README |
+| ~~`qi agents list\|show\|import\|export`~~ | **四条都已删(P-E4c)**:角色归 qi-agents。装角色 = 把 `agent.md` 放进 `~/.qi/agent/agents/<名>/`;用它跑 = `qi --ext agent=<名>`;列角色 = TUI 里 `/agents`。详见 qi-agents 的 README | — |
 
 ## 4. 扩展的安装与声明
 
@@ -142,6 +144,7 @@ qi -ne | -nc                                  # 关扩展发现 / 关 AGENTS.md 
 | --- | --- | --- |
 | `qi config [-l] [--get K] [--set K=V] [--unset K] [--json]` | 不带旗标:**TTY 下开资源启停面板**(space 勾选 · ctrl+s 保存 · escape 取消;`-l` 切作用域),非 TTY 打一张资源表 + 设置总览;`--get` 读键、`--set` / `--unset` 写删键 | ✅ `pi config` |
 | `qi init [-y] [-l] [--provider … --model …]` | 引导默认模型(写 `settings.json`);凭证写 `auth.json` | qi 新增(生态惯例) |
+| `qi init --list-presets` / `--preset <名>[,<名>]` / `--refresh <名>[,<名>]` / `--refresh-all` | 列出 / 物化**预置 provider**(国产为主:baseUrl + 约定环境变量 + 模型,每个模型带核过的 `contextWindow` / `maxTokens`;只补缺不覆盖,幂等)。见 [providers.md §2.1](providers.md#21-预置-providerqi-init---preset) | qi 新增 |
 | `qi auth login\|logout <provider>` | 存/删该 provider 凭证 | ✅ pi `/login` `/logout` |
 | `qi auth list` | 只列已存 provider 名(不回显 key) | ✅ |
 | `qi auth print-api-key [--provider P] [--model M]` | 解析出的 key 打到 stdout(可管道) | ✅ `pi auth print-api-key` |
@@ -165,6 +168,8 @@ qi -ne | -nc                                  # 关扩展发现 / 关 AGENTS.md 
 直接写 `auth.json`)→ `Add Models`(`Add a model?` 循环)→ `Activate LLM Model`(选 provider →
 选 model,写默认模型)。上下键选择 + 可见输入;已有凭证回车保留。
 完整用法与示例见 [model-config.md §7](model-config.md#7-qi-init-用法)。
+不想手写时用 `--list-presets` / `--preset <名>` 走预置(见
+[providers.md §2.1](providers.md#21-预置-providerqi-init---preset))。
 
 **`qi auth`** —— 解析顺序一律为 **auth store(`~/.qi/agent/auth.json`,0600) → 约定环境变量 →
 `models.json` 的 `apiKey` 引用**(与 pi 一致)。三个只读子命令的细节:
@@ -228,7 +233,7 @@ qi -ne | -nc                                  # 关扩展发现 / 关 AGENTS.md 
 ## 9. 二期
 
 - `--mode rpc`:headless JSONL-RPC,给外部客户端(IDE)—— 现在传它会**明确报未实现**(§10)
-- TUI 全屏模式(`--tui-mode fullscreen`):当前是 inline 渲染(不占全屏、不进备用屏)
+- TUI 的 `/settings` 里改 `tuiMode` 立即切换模式(pi 能当场换渲染器;qi 现在要重启)
 
 ## 10. 与 pi 的差异(逐条落档)
 
@@ -238,7 +243,6 @@ qi -ne | -nc                                  # 关扩展发现 / 关 AGENTS.md 
 | --- | --- |
 | `--prompt-template` / `--no-prompt-templates` | qi 没有 prompt 模板的发现 / 注入机制。要固定前缀就写进 `.qi/SYSTEM.md`,或做成技能 |
 | `--theme` / `--use-theme` / `--no-themes` | 不支持自定义主题文件(内置只有 `dark` / `light` / `auto`)。选主题用 `QI_THEME=light` 或 `qi config --set theme=` |
-| `--tui-mode regular\|fullscreen` | qi 的 TUI 是 inline 渲染,没有 fullscreen 这一态 |
 | `--mode rpc` | 输出模式只有 `text` / `json`;stdio JSON-RPC 见 §9 |
 
 **第二类:明确不保留**(理由落档):

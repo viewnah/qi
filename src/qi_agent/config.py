@@ -102,6 +102,9 @@ class QiConfig(BaseModel):
     routerProvider: str | None = None
     routerModel: str | None = None
     providers: dict[str, ProviderConfig] = Field(default_factory=dict)
+    #: 哪些 provider 来自 **qi 的预置表**(`presets.py`)而不是用户的 models.json。
+    #: 由 `load_config` 填充,只给 UI / 诊断做标记用 —— models.json 里写了就以它为准。
+    presetProviders: set[str] = Field(default_factory=set)
 
 
 @dataclass
@@ -221,8 +224,34 @@ def _legacy_hint(cwd: Path | None) -> str:
     return body
 
 
+def with_preset_providers(raw: dict[str, Any]) -> set[str]:
+    """把**预置 provider** 补给 `models.json` 里没写到的那些(原地修改 `raw`)。
+
+    规矩一条:**models.json 里写了的以它为准**,预置只当兜底。
+
+    为什么要兜底:预置的意义就是“`qi auth login deepseek` 之后立刻能用”,而不是先要求用户去
+    跑一次 `qi init --preset`。所以 `deepseek` / `moonshot` 这些只要没在 models.json 里出现,
+    就按 `presets.py` 的定义补上(baseUrl / api / 约定环境变量的 apiKey 引用 / 模型清单)。
+    想改它们就 `qi init --preset <名>` 物化到 models.json 里再改(那时预置就不再插手)。
+
+    返回补进去的 provider 名(给 `QiConfig.presetProviders` 做标记)。
+    """
+    from .presets import PRESETS, model_entry, provider_entry
+
+    providers: dict[str, Any] = raw.setdefault("providers", {})
+    added: set[str] = set()
+    for name, preset in PRESETS.items():
+        if isinstance(providers.get(name), dict):
+            continue                       # 用户写了这个 provider —— 以他为准
+        entry = provider_entry(preset)
+        entry["models"] = [model_entry(model) for model in preset.models]
+        providers[name] = entry
+        added.add(name)
+    return added
+
+
 def load_config(cwd: Path | None = None) -> tuple[QiConfig, list[Path]]:
-    """装载 models.json。
+    """装载 models.json(用户写的 + **预置兜底**,见 `with_preset_providers`)。
 
     注:默认模型**不在**这里 —— 它属于 settings.json,
     由 `resolve_default_model()` / `default_model_spec()` 单独解析。
@@ -231,11 +260,44 @@ def load_config(cwd: Path | None = None) -> tuple[QiConfig, list[Path]]:
     # models.json 里的 default* 不再是有效字段:剔掉,避免被 pydantic 当成未知键静默收下
     raw.pop("defaultProvider", None)
     raw.pop("defaultModel", None)
+    preset_providers = with_preset_providers(raw)
     try:
         cfg = QiConfig.model_validate(raw)
     except Exception as exc:  # pydantic.ValidationError
         raise ConfigError(f"配置校验失败: {exc}") from exc
+    cfg.presetProviders = preset_providers
     return cfg, loaded
+
+
+def models_file_for_provider(provider: str, cwd: Path | None = None) -> Path | None:
+    """哪个 `models.json` 文件定义了这个 provider(**优先级最高**的那个)。
+
+    给 `qi init --refresh` 用:刷新要写回**定义它的那个文件**,而不是无脑写用户级 ——
+    否则会在另一个文件里长出一份同名的新定义,而合并取高优先级的那个,于是
+    “刷新了却看不到效果”。哪个文件都没定义(预置兜底来的)才回落到用户级。
+    """
+    for path in models_file_candidates(cwd):
+        if not path.is_file():
+            continue
+        try:
+            providers = read_json(path).get("providers")
+        except SettingsError:
+            continue
+        if isinstance(providers, dict) and provider in providers:
+            return path
+    return None
+
+
+def in_play_providers(cfg: QiConfig, *, default_provider: str | None = None,
+                      router_provider: str | None = None) -> set[str]:
+    """“在用”的 provider:`models.json` 里显式写过的 + 默认 / 路由模型指向的那个。
+
+    用来做**“缺凭证”的告警口径**:预置兜底那批只是目录(没配、也没被选为默认),
+    不该算“缺凭证” —— 否则预置有十家、“凭证全部就绪”永远不可能成立。
+    但被选为默认模型的预置 provider **必须算** —— 不然用户看不出自己缺哪把钥匙。
+    """
+    explicit = set(cfg.providers) - set(cfg.presetProviders)
+    return explicit | {name for name in (default_provider, router_provider) if name}
 
 
 def resolve_model(cfg: QiConfig, provider: str, model: str) -> ResolvedModel:
@@ -271,7 +333,8 @@ def resolve_default_model(cfg: QiConfig, cwd: Path | None = None) -> ResolvedMod
         raise ConfigError(
             f"缺少默认模型:{SETTINGS_FILE_NAME} 里需要 defaultProvider + defaultModel。\n"
             "    qi config --set defaultProvider=<name> --set defaultModel=<id>\n"
-            "    （或 `qi init` 引导写入）\n"
+            "    （或 `qi init` 引导写入;`qi init --preset deepseek` 一条命令连 provider + 默认模型都写好）\n"
+            "    （预置 provider:deepseek / dashscope / moonshot / zhipu … 见 `qi init --list-presets`）\n"
             f"    ~/.qi/agent/{SETTINGS_FILE_NAME}    ← 默认模型(对齐 pi)\n"
             f"    ~/.qi/agent/{MODELS_FILE_NAME}      ← 只放 provider / 模型定义\n"
             "示例:\n"

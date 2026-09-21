@@ -43,9 +43,141 @@ provider 名 → 自动识别的环境变量(`DEFAULT_API_KEY_ENV`):
 | `groq` | `GROQ_API_KEY` |
 | `mistral` | `MISTRAL_API_KEY` |
 | `xai` | `XAI_API_KEY` |
+| `dashscope`(阿里云百炼) | `DASHSCOPE_API_KEY` |
+| `moonshot`(月之暗面 Kimi) | `MOONSHOT_API_KEY` |
+| `zhipu`(智谱 GLM) | `ZHIPUAI_API_KEY` |
+| `minimax` | `MINIMAX_API_KEY` |
+| `siliconflow`(硅基流动) | `SILICONFLOW_API_KEY` |
+| `stepfun`(阶跃星辰) | `STEP_API_KEY` |
+| `hunyuan`(腾讯混元) | `HUNYUAN_API_KEY` |
+| `volcengine`(火山方舟) | `ARK_API_KEY` |
+| `qianfan`(百度千帆) | `QIANFAN_API_KEY` |
+
+下面那批是**预置 provider**(见 §2.1);表里的名字与 `presets.py` 一一对应,有测试锁住。
 
 **这张表只对"名字对得上"的 provider 生效。** 你自己起的 provider 名(如 `my-proxy`)不在表里,要么在
 `models.json` 里写 `apiKey`,要么用 `qi auth login my-proxy` —— 不会去猜你的变量名。
+
+### 2.1 预置 provider(国产为主)
+
+qi 自带一份预置表(`src/qi_agent/presets.py`),**两种用法、一套数据**:
+
+**① 兜底(默认行为)** —— `models.json` 里**没写**的预置 provider,`load_config` 会自动补上。
+所以零配置也能直接用:
+
+```bash
+export DEEPSEEK_API_KEY=sk-…          # 或 qi auth login deepseek
+qi config --set defaultProvider=deepseek --set defaultModel=deepseek-v4-pro
+qi                                    # 直接跑
+```
+
+TUI 里 `/login` 的 provider 选择器列出**全部**预置(带 `(无凭证 · 预置)` 标记)—— 那是登录入口。
+
+**但 `/model`、`ctrl+l/p` 轮换、`/scoped-models`、`qi --list-models` 只列你能用的**:
+预置 provider 要**解析得出凭证**(auth store / 约定环境变量 / `apiKey` 引用)才会出现 ——
+没登录就不该在切换列表里看到它(想登录就去 `/login`)。`models.json` 里**显式写过**的
+provider 不受这条限制:那是你自己的配置,可能正在配。`qi doctor` 列全量并标 `(预置)`。
+
+**`models.json` 里写了同名 provider 就以你写的为准** —— 预置从不覆盖用户的定义(baseUrl /
+apiKey / 模型清单全是)。
+
+**② 物化(想改的时候)** —— 把预置**写进** `models.json`,之后这个 provider 就归你说了算:
+
+```bash
+qi init --list-presets          # 看有哪些(名字 / baseUrl / 约定环境变量 / 模型 / 注意项)
+qi init --preset deepseek       # 写进 models.json,并把它的第一个模型设为默认
+qi init --preset deepseek,moonshot --local   # 多个 / 写进项目 .qi/models.json
+```
+
+“缺凭证”的告警口径只算**在用**的 provider(`models.json` 里写过的 + 默认/路由模型那个)——
+预置那十家只是目录,不会让“凭证全部就绪”永远不成立。
+
+预置了什么:**baseUrl + api + 约定环境变量名 + 模型清单**,每个模型都带两个数 ——
+
+- `contextWindow` = 上下文窗口(最大**输入**);
+- `maxTokens` = 该模型的最大**输出** tokens(pi `docs/models.md` 里这个字段就是这个语义,
+  qi 会把它作为请求的 `max_tokens` 上限发出去)。
+
+**两个数都从厂商自己的文档/模型页核过**(表中括号里就是),核不到的模型**干脆不收** ——
+猜一个 `maxTokens` 会让请求要么被拒要么悄悄截断,比没有这一条更糟。想补别的模型:
+`qi init --preset <名>` 先物化,再按厂商文档往 `models.json` 里加一条。
+
+`reasoning` **故意不预置**:这些模型多数**默认就带思考**,而 `reasoning_effort` 是否被各家
+OpenAI 兼容端点接受并不一致。默认不带参最不容易 400;想开就给该模型加 `"reasoning": true`
+(provider 拒收时 qi 会自动去掉并提示一次,见 [tui.md](tui.md) §2)。
+
+覆盖规矩(**不静默改用户写过的东西**):provider 段缺什么补什么(`api` / `baseUrl` / `apiKey`),
+已有值不动;模型按 id 追加缺的,同 id 已存在则原样保留(你手调过的 `reasoning` / `contextWindow`
+以你为准)。所以再跑一次是幂等的 —— 想拉新模型时更新 qi 后再跑一次即可。
+
+| 预置 | baseUrl | 预置模型(id · ctx / max;**第一个 = 物化后的默认**) |
+| --- | --- | --- |
+| `deepseek` | `https://api.deepseek.com` | **`deepseek-flash`**(= V4.1 Flash)、`deepseek-v4-pro`(均 1M / 384K) |
+| `dashscope` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | **`qwen3.7-plus`**(官方推荐:均衡 + 完整工具调用)、`qwen3.8-max`、`qwen3.8-flash`(均 1M / 128K) |
+| `mimo` | `https://api.xiaomimimo.com/v1` | **`mimo-v2.5-pro`**、`mimo-v2.5`(均 1M / 128K) |
+| `moonshot` | `https://api.moonshot.cn/v1` | **`kimi-k3`**(1M / 128K)、`kimi-k2.7-code`(256K / 32K) |
+| `zhipu` | `https://open.bigmodel.cn/api/paas/v4` | **`glm-5.2`**(1M / 128K)、`glm-4.7`(200K / 128K) |
+| `minimax` | `https://api.minimax.cn/v1` | **`MiniMax-M3`**(1M / 128K) |
+| `siliconflow` | `https://api.siliconflow.cn/v1` | **`deepseek-ai/DeepSeek-V4-Flash`**(1M / 384K) |
+| `stepfun` | `https://api.stepfun.com/v1` | **`step-3.7-flash`**(256K / 256K) |
+| `hunyuan` | `https://tokenhub.tencentmaas.com/v1` | **`hy4-preview`**(1M / 64K)、`hy3`(256K / 128K) |
+| `volcengine` | `https://ark.cn-beijing.volces.com/api/v3` | **`doubao-seed-evolving`**(统一 id,周更自动迭代)、`doubao-seed-2-1-pro-260628`(均 256K / 128K) |
+| `qianfan` | `https://qianfan.baidubce.com/v2` | **`ernie-5.1`**、`ernie-5.0`(均 128K / 64K) |
+
+这张表是 **2026-09 逐个厂商模型页核过的快照**(各条注释里写了出处)。换世代时它会过时 ——
+`qi init --refresh <名>` 就是为此准备的;`tests/test_presets.py` 里有一条快照测试,
+厂商换线时会红,提醒去核对而不是把断言改宽。
+
+**③ 刷新(以厂商接口为准)** —— 种子会过时,接口不会:
+
+```bash
+qi init --refresh deepseek           # GET {baseUrl}/models → 并进 models.json
+qi init --refresh deepseek,moonshot
+qi init --refresh-all                # 所有已配置(有凭证)的 provider
+qi init --refresh deepseek --local   # 写项目 .qi/models.json
+```
+
+> 为什么挂在 `qi init` 下:`qi models` 子命令在本仓是**故意删掉的**(对齐 pi —— 列清单用
+> `--list-models`),所以“刷新模型清单”跟 `--preset` 一样留在 `qi init` 这个“把 provider / 模型
+> 写进 `models.json`”的家族里。`qi doctor` 与 `--list-presets` 的输出里都会提示这条。
+
+为什么需要它(实测):DeepSeek 把当前模型名从 `deepseek-v4-flash` 换成了 **`deepseek-flash`**
+(V4.1 Flash,旧名仍存在但请求被路由到新模型),而 `deepseek-v4-pro` 官方计划下线 ——
+这种变更只能靠公告或接口,写死的表迟早落后一拍。
+
+刷新规矩:
+
+- **只加不删**:接口回来的新 id 追加进去;本地有、接口没返回的**保留并打印出来**
+  (厂商的 `/models` 有可能只列有权限的模型、或者列不全,不该替用户删配置);
+- **新加的条目只写 `id`** —— `/models` 不返回 `contextWindow` / `maxTokens`,先用 qi 的默认值,
+  要精确就照厂商文档在 `models.json` 里补(种子里的那两个数在刷新时**不会被覆盖**);
+- **写回「定义它的那个文件」**:provider 写在项目 `.qi/models.json` 就刷到那儿、写在用户级就刷到
+  用户级;只有“预置兜底来的”(哪个文件都没定义)才物化到用户级 —— 否则会在别处长出一份同名定义,
+  而合并取高优先级的那个,于是“刷新了却看不到效果”;
+- 鉴权用**同一个 API key**(auth store / 约定环境变量 / `apiKey` 引用);拿不到 key 就报错、**不写文件**;
+- 只认 `http(s)` 的 `baseUrl`(自建代理照常),网络失败/HTTP 错误都报清楚并且**不落盘**。
+
+数过时的注意项(与 `--list-presets` 里打印的一致):
+
+- `dashscope`:北京新账号可能要换成工作空间专属域名
+  `https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`;
+- `volcengine`:方舟的模型 id 带日期后缀(会变),自定义部署还得用 Endpoint ID ——
+  以控制台“模型列表”里的调用名为准;
+- `hunyuan`:腾讯正把混元迁到 TokenHub(新 id 形如 `hy3` / `hy4-preview`),表里是旧平台的
+  兼容端点;
+- `siliconflow` 是聚合平台,模型 id 带组织前缀(`zai-org/GLM-5.2`、`Qwen/…`、`Pro/…`),
+  与各家的官方 id 不同;
+- `mimo`:按量付费用 `api.xiaomimimo.com`,订阅套餐(Token Plan)是
+  `https://token-plan-cn.xiaomimimo.com/v1` 且 Key 前缀不同 —— 两家 token 不能混用;
+- `zhipu`:`GLM-5.3` 官方页面写着「API 即将上线」(Bailian 已可调),所以种子里是线上可用的
+  `GLM-5.2`;上线后 `qi init --refresh zhipu` 拉一下就有;
+- `hunyuan`:腾讯已把混元迁到 **TokenHub**(`https://tokenhub.tencentmaas.com/v1`,Key 也从
+  TokenHub 控制台拿);旧平台 `https://api.hunyuan.cloud.tencent.com/v1` + `hunyuan-turbos-latest`
+  仍可用但**Key 不通用**,且腾讯说旧平台不再新增模型;
+- `volcengine`:普通模型 id 带日期后缀(会变),`doubao-seed-evolving` 是**版本无关**的统一 id
+  (官方周更自动迭代、不用改配置),所以排第一。
+
+**模型 id 会漂** —— 所以还有第三条路:**从接口拉**(见下)。表里的清单是核过厂商文档的快照。
 
 ## 3. `models.json` 里的 `apiKey` 写法
 
@@ -91,7 +223,7 @@ shell 注入面。代价是**不能直接写 `!cat a | jq -r .key`**(管道会�
 
 | 命令 | 作用 |
 | --- | --- |
-| `qi auth login <provider>` | **输入可见**地写入 API key(auth store) |
+| `qi auth login <provider>` | **输入可见**地写入 API key(auth store);TUI 里的 `/login` 是**遮罩**输入(见 [tui.md](tui.md) §2) |
 | `qi auth logout <provider>` | 删除该 provider 的凭证 |
 | `qi auth list` | 列出 auth store 里**有凭证**的 provider |
 | `qi auth print-api-key <provider>` | 打印解析到的 key(用于喂给别的工具) |

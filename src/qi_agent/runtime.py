@@ -169,6 +169,11 @@ class QiRuntime:
             self.base_prompt, self.base_prompt_source = base_prompt_override.strip(), "cli"
         # `--no-context-files/-nc`:关掉 AGENTS.md / CLAUDE.md 的注入
         self._no_context_files = no_context_files
+        #: `-a` / `-na` 的原始三态(None = 没表态)。有表态时**不问** `project_trust` 事件
+        #: —— 用户当场的直接指令优先于程序化策略。
+        self._approve_flag = approve_project
+        #: 第二趟装载要用(`-e` 显式给的路径)。
+        self._extra_extension_paths = list(extra_extension_paths or ())
         # `--models <patterns>`:本次运行 Ctrl+P 的轮换清单。**不回写 settings** ——
         # 命令行给的东西不该静默落盘(要持久化走 TUI 的 `/scoped-models`)。
         self.scoped_models: list[str] | None = (
@@ -221,6 +226,8 @@ class QiRuntime:
         self.project_trusted, self.trust_reason = resolve_project_trust(
             scopes.get("user"), approve=approve_project, has_ui=has_ui,
             stored=TrustStore().get(self.cwd))
+        #: 信任是否已被**最终**定下(见 `_bind_project_trust`)。构造期那份可能是临时的。
+        self._trust_bound = False
         declared_by_repo = (getattr(scopes.get("project"), "defaultProjectTrust", None)
                             or "").strip()
         if declared_by_repo:
@@ -574,6 +581,76 @@ class QiRuntime:
         bucket.clear()
         return texts
 
+    async def _bind_project_trust(self) -> None:
+        """定信任(可被 `project_trust` 事件改),并按最终决定补装**项目级**扩展。
+
+        为什么信任判定要推迟到这里:pi 的 `project_trust` 事件是 **async** 的(扩展可以投票),
+        而构造期没有事件循环 —— TUI 在 `on_mount` 里构造 runtime(`tui.py`),那里已经在 loop 中,
+        `asyncio.run` 会直接抛 "cannot be called from a running event loop"(实测)。
+
+        所以构造期先按 **fail-closed** 装完:用户级目录与 entry point 与项目信任无关,先装好正好
+        让它们能在事件里投票 —— pi 的语义正是"只有用户级/CLI 扩展拥有投票权"。项目级那一半等
+        决定下来再补(见 `_load_project_extensions`)。
+
+        幂等;`-a` / `-na` 给过就**不发事件**(用户当场的指令优先)。
+        """
+        if self._trust_bound:
+            return
+        self._trust_bound = True
+        if self._approve_flag is not None or not self.bus.has("project_trust"):
+            return
+        result = await self.bus.emit_until(
+            "project_trust",
+            {"cwd": str(self.cwd), "has_ui": self._has_ui},
+            ctx=self.extension_ctx(),
+            # pi 的契约:`{trusted: "yes" | "no" | "undecided"}`,**首个 yes/no 拥有决定权**,
+            # `undecided` 继续往下走(所以 stop_values 按"键 → 取值集合"给)。
+            stop_values={"trusted": ("yes", "no")})
+        for source, exc in result.errors:
+            self.notes.append(f"扩展 {source} 的 project_trust 处理失败: {exc}")
+        verdict = str(result.payload.get("trusted") or "").strip().lower()
+        if verdict not in ("yes", "no"):
+            return                      # 没人下结论 → 构造期那份就是最终决定
+        decided = verdict == "yes"
+        if bool(result.payload.get("remember")):
+            # pi 的 `remember: true` → 落盘(下次启动直接用它,不再问)
+            try:
+                from .trust import TrustStore
+
+                TrustStore().set(self.cwd, decided)
+                self.notes.append("信任决定已记住(trust.json)")
+            except OSError as exc:
+                self.notes.append(f"信任决定没能记住: {exc}")
+        if decided == self.project_trusted:
+            self.trust_reason = f"扩展决定了{'信任' if decided else '不信任'}"
+            return
+        self.project_trusted = decided
+        self.trust_reason = f"扩展决定了{'信任' if decided else '不信任'}"
+        if decided:
+            # 只有"不信任 → 信任"需要动作;反方向不用做事 —— 构造期本来就是 fail-closed
+            # (一个项目级的扩展、配置都没装)。
+            self._load_project_extensions()
+
+    def _load_project_extensions(self) -> None:
+        """第二趟:只装**项目级**(构造期按 fail-closed 跳过的那半)。
+
+        为什么只装项目级:用户目录与 entry point 第一趟已经装过,再来一遍会撞 catalog 的
+        "工具重复注册"。`extension_dirs(trusted=True)` 里筛出 project 作用域的那些即可 ——
+        它们正是第一趟因为不信任而没拿到的。
+        """
+        extra = [item for item in extension_dirs(
+            self.cwd, trusted=True, extra=self._extra_extension_paths)
+            if item[1] == "project"]
+        loaded = discover_extensions(
+            self.catalog, self.capabilities, self.cwd,
+            cli_commands=CliCommandRegistry(),
+            bus=self.bus, host=self, commands=self.commands, flags=self.flags,
+            on_warning=self.notes.append,
+            extra_dirs=extra, project_trusted=True, only_project=True)
+        self.extensions.extend(loaded)
+        self.notes.append("信任由扩展决定:已加载项目级扩展"
+                          + (f"({len(loaded)} 个)" if loaded else ""))
+
     async def start_session(self, session: Session, reason: str = "startup") -> None:
         """告知扩展"会话已绑定"(pi 的 `session_start { reason }`)。
 
@@ -583,6 +660,8 @@ class QiRuntime:
         handler 抛异常不往外传(§4 规则 3):记进 `notes`,会话照跑。扩展坏在启动时,
         用户至少能在界面上看到一行字,而不是"啥都没发生"。
         """
+        # 信任必须在**任何**项目级资源被用到之前定下(零扩展时也照样要做)。
+        await self._bind_project_trust()
         if session.id in self._started_sessions:
             return
         self._started_sessions.add(session.id)

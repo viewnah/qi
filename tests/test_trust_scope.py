@@ -199,3 +199,92 @@ def test_runtime_honors_a_remembered_denial(tmp_path, monkeypatch):
     rt = _runtime(project)
     assert rt.project_trusted is False, rt.trust_reason
     assert "from-repo" not in rt.extensions
+
+
+# ── `project_trust` 事件:扩展也能参与判定(pi 的 async 事件) ──────────
+
+
+def _tui_session(rt):
+    return rt.sessions.create("t", cwd=rt.cwd)
+
+
+async def test_event_decision_loads_project_extensions(tmp_path, monkeypatch):
+    """核心路径:构造期 fail-closed,**事件说信任之后**才补装项目级。"""
+    project = _env(tmp_path, monkeypatch, user={})
+    rt = _runtime(project)
+
+    # 构造期:决定是"不信任"(默认 ask),项目级的扩展**没装**
+    assert rt.project_trusted is False
+    assert "from-repo" not in rt.extensions
+    rt.bus.on("project_trust", lambda payload, ctx: {"trusted": "yes"}, source="probe")
+
+    await rt.start_session(_tui_session(rt))
+    assert rt.project_trusted is True, rt.trust_reason
+    assert "from-repo" in rt.extensions, "项目级扩展该在事件下结论之后补装"
+    assert any("信任由扩展决定" in note for note in rt.notes), rt.notes
+
+
+async def test_undecided_falls_through(tmp_path, monkeypatch):
+    """`undecided` = 让后面的机制接手(pi 的契约),这里后面没有别的 → 保持不信任。"""
+    project = _env(tmp_path, monkeypatch, user={})
+    rt = _runtime(project)
+    rt.bus.on("project_trust", lambda payload, ctx: {"trusted": "undecided"}, source="probe")
+
+    await rt.start_session(_tui_session(rt))
+    assert rt.project_trusted is False
+    assert "from-repo" not in rt.extensions
+
+
+async def test_event_remember_persists(tmp_path, monkeypatch):
+    """pi 的 `remember: true` → 落盘(下次启动直接用,不再问)。"""
+    from qi_agent.trust import TrustStore
+
+    project = _env(tmp_path, monkeypatch, user={})
+    rt = _runtime(project)
+    rt.bus.on("project_trust",
+              lambda payload, ctx: {"trusted": "yes", "remember": True}, source="probe")
+
+    await rt.start_session(_tui_session(rt))
+    stored = TrustStore().get(project)
+    assert stored is not None and stored[0] is True, stored
+
+
+async def test_cli_flag_suppresses_the_event(tmp_path, monkeypatch):
+    """`-a` / `-na` 给过就不问事件 —— 用户当场的指令优先于程序化策略。"""
+    from qi_agent.runtime import QiRuntime
+
+    project = _env(tmp_path, monkeypatch, user={})
+    calls: list = []
+    rt = QiRuntime(cwd=project, approve_project=False)
+    rt.bus.on("project_trust", lambda payload, ctx: calls.append(1) or {"trusted": "yes"},
+              source="probe")
+
+    await rt.start_session(_tui_session(rt))
+    assert calls == [], "给了 -na 就不该再问"
+    assert rt.project_trusted is False
+
+
+async def test_event_handler_crash_is_a_note(tmp_path, monkeypatch):
+    """handler 抛异常不影响判定(记一条 note,继续走常规解析)。"""
+    project = _env(tmp_path, monkeypatch, user={})
+    rt = _runtime(project)
+
+    def broken(payload, ctx):
+        raise RuntimeError("我坏了")
+
+    rt.bus.on("project_trust", broken, source="probe")
+    await rt.start_session(_tui_session(rt))
+    assert rt.project_trusted is False
+    assert any("project_trust" in note for note in rt.notes), rt.notes
+
+
+async def test_no_handler_is_zero_overhead(tmp_path, monkeypatch):
+    """没有订阅者时:一行都不动(幂等、不发事件、不补装)。"""
+    project = _env(tmp_path, monkeypatch, user={"defaultProjectTrust": "always"})
+    rt = _runtime(project)
+    before = list(rt.extensions)
+
+    await rt.start_session(_tui_session(rt))
+    assert rt.project_trusted is True
+    assert rt.extensions == before
+    assert not any("信任由扩展决定" in note for note in rt.notes)

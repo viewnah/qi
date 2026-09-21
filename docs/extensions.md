@@ -68,7 +68,7 @@ qi 要拆的三样(MCP / 多 agent / web)**正好落在这份清单上**。
 
 | 事件 | 时机 | 契约 | 批次 |
 | --- | --- | --- | --- |
-| `project_trust` | 决定是否信任项目前 | `{trusted}` | ❌ **未实现** —— 现在由 `trust.json`(按目录)→ `defaultProjectTrust`(用户级)决定;这个事件留给将来『扩展介入信任判定』 |
+| `project_trust` | 首次会话绑定时(信任判定之前) | 返回 `{trusted: "yes"\|"no"\|"undecided"}` —— **首个 yes/no 拥有决定权**;`remember: true` 会写进 `trust.json`(以后不再问);`undecided` 继续走 `trust.json` → `defaultProjectTrust`。**只有用户级/CLI 扩展参与**(项目扩展无权为自己的信任投票),给了 `-a`/`-na` 时不发 | ✅ |
 | `session_start` / `session_shutdown` | 会话建立 / 拆除 | 通知 | P-E1 |
 | `resources_discover` | `session_start` 后 | `{skillPaths, promptPaths, themePaths}` | P-E1 |
 | `input` | 收到用户输入(自动压缩之前) | `continue` / `transform`(改 **`text`** = 改写后的用户输入)/ `handled`(**首胜**,链停,`reply` = 给用户的答复) | ✅ P-E2c-1 |

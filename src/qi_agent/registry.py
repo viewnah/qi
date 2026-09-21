@@ -244,7 +244,8 @@ def discover_extensions(catalog: ToolCatalog, capabilities: CapabilityRegistry,
                         on_warning: Callable[[str], None] | None = None,
                         extra_dirs: Iterable[Path | tuple[Path, str]] | None = None,
                         project_trusted: bool = True,
-                        no_discovery: bool = False) -> list[str]:
+                        no_discovery: bool = False,
+                        only_project: bool = False) -> list[str]:
     """发现并装载扩展:目录通道 + entry points(`qi.extensions`)。返回扩展名列表。
 
     `bus` **必填**:扩展能力的一半是订阅事件,没总线的装载等于装了个哑巴
@@ -280,7 +281,8 @@ def discover_extensions(catalog: ToolCatalog, capabilities: CapabilityRegistry,
     """
     loaded: list[str] = []
     for name, load, origin in _iter_extension_loaders(cwd, extra_dirs, project_trusted,
-                                                     discovered=not no_discovery):
+                                                     discovered=not no_discovery,
+                                                     only_project=only_project):
         try:
             api = ExtensionApi(catalog=catalog, bus=bus, _name=name,
                                _path=origin["path"], _scope=origin["scope"],
@@ -385,7 +387,8 @@ def _excluded_extension_paths(cwd: Path | None, project_trusted: bool) -> set[Pa
 def _iter_extension_loaders(cwd: Path | None,
                             extra_dirs: Iterable[Path | tuple[Path, str]] | None = None,
                             project_trusted: bool = True, *,
-                            discovered: bool = True):
+                            discovered: bool = True,
+                            only_project: bool = False):
     """`(name, loader, origin)` 生成器:项目目录 + 全局目录 + 附加目录 + entry point。
 
     `origin` = `{path, scope, origin}`,直接进工具的 `source_info` —— 所以
@@ -409,7 +412,8 @@ def _iter_extension_loaders(cwd: Path | None,
         if project_trusted:
             roots.append((paths.project_home(cwd) / paths.EXTENSIONS_DIR_NAME, False,
                           "project", False))
-        roots.append((paths.global_home() / paths.EXTENSIONS_DIR_NAME, False, "user", False))
+        if not only_project:
+            roots.append((paths.global_home() / paths.EXTENSIONS_DIR_NAME, False, "user", False))
     # 附加路径两种都行(见下):可以是父目录,也可以直接是一个扩展目录。
     # 它们是**显式**给的(`-e` / CLI),所以排除项**不管**它们 —— 显式意图胜过配置。
     roots += [(path, True, scope, True) for path, scope in _normalize_extra(extra_dirs)]
@@ -436,7 +440,8 @@ def _iter_extension_loaders(cwd: Path | None,
             seen.add(name)
             yield name, _make_file_loader(name, entry), {
                 "path": str(entry), "scope": scope, "origin": "top-level"}    # entry point 通道(pip 包)
-    for ep in (metadata.entry_points(group=EXTENSION_ENTRY_POINT_GROUP) if discovered else ()):
+    for ep in (metadata.entry_points(group=EXTENSION_ENTRY_POINT_GROUP)
+               if discovered and not only_project else ()):
         name = ep.name
         if name in seen:
             continue

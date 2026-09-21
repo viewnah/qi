@@ -29,7 +29,12 @@ qi 能执行任意命令、读写任意文件、并且**装进来的扩展就是
 | `always` | 直接信任 |
 | `never` | 直接不信任 |
 
-优先级:**CLI 显式表态(`-a` / `-na`)> `settings.defaultProjectTrust`**(**只从用户级 settings 读**)。
+优先级:**CLI 显式表态(`-a` / `-na`)> `project_trust` 事件(用户级/CLI 扩展可投票)> `trust.json` 的按目录决定 > `settings.defaultProjectTrust`**(**只从用户级 settings 读**)。
+
+> `project_trust` 是 **async** 事件,所以信任判定发生在**首次会话绑定时**而不是构造期:
+> 构造期按 fail-closed 先装用户级与 entry point 那半(它们与项目信任无关,而且正好是「有
+> 投票权」的那些),决定下来后再补装项目级。扩展抛异常只记 note,不影响常规解析;
+> 给了 `-a`/`-na` 时不发(用户当场的指令优先于程序化策略)。
 
 > **项目级写 `defaultProjectTrust` 会被忽略,并打一条提示。** 信任决定不能由仓库自己声明 ——
 > 否则仓库只要提交一行 `"defaultProjectTrust": "always"` 就能让自己的任意代码跑起来,

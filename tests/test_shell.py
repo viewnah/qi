@@ -32,8 +32,10 @@ from qi_agent.tools.shell import (
     ShellResult,
     _bash_config,
     _is_legacy_wsl_bash,
+    merged_env,
     resolve_powershell_config,
     resolve_shell_config,
+    session_env,
 )
 
 WINDOWS = sys.platform == "win32"
@@ -254,3 +256,50 @@ def test_powershell_utf8_prefix_matches_pi():
     """UTF-8 前缀照搬 pi:少了它,中文/emoji 经管道回来会变问号。"""
     assert POWERSHELL_UTF8_PREFIX.startswith("try { [Console]::OutputEncoding=")
     assert POWERSHELL_UTF8_PREFIX.endswith("\n")
+
+
+# ── 6. 会话环境变量(对齐 pi 的 `exposeSessionEnvironment`) ──
+
+def test_session_env_skips_empty_values():
+    """取不到的值**不设**,而不是设成空串 —— 空串会被读成"设过了,值是空的"。"""
+    env = session_env("sid", "", "alpha", "m1", None)
+    assert env == {"QI_SESSION_ID": "sid", "QI_PROVIDER": "alpha", "QI_MODEL": "m1"}
+    assert session_env(None, None, None, None, None) == {}
+
+
+def test_merged_env_removes_inherited_session_keys(monkeypatch):
+    """继承来的 `QI_*` **先摘掉再叠**:否则子进程里跑的子 agent 会读到父的值。"""
+    monkeypatch.setenv("QI_MODEL", "父的模型")
+    monkeypatch.setenv("QI_SESSION_ID", "父的会话")
+    monkeypatch.setenv("QI_KEEP_ME", "yes")
+
+    env = merged_env({"QI_MODEL": "自己的"})
+
+    assert env["QI_MODEL"] == "自己的"
+    assert "QI_SESSION_ID" not in env            # 父的没继承下来
+    assert env["QI_KEEP_ME"] == "yes"            # 其余照旧
+
+
+@pytest.mark.skipif(WINDOWS, reason="bash 语义")
+@pytest.mark.asyncio
+async def test_bash_sees_the_session_environment(tmp_path):
+    """agent 靠这个**自证**当前模型:换模型是界面状态、不进对话上下文,
+    所以 `env | grep QI_` 是唯一能看出"现在跑的是什么"的通道(pi 同款)。"""
+    ctx = _ctx(tmp_path)
+    ctx.session_env = session_env("sid-1", "/tmp/s.jsonl", "commandcode",
+                                 "z-ai/glm-5.3-flash", "medium")
+
+    out = await _bash({"command": 'echo "$QI_MODEL|$QI_PROVIDER|$QI_REASONING_LEVEL|$QI_SESSION_ID"'},
+                      ctx)
+
+    assert out.exit_code == 0
+    assert out.result.strip() == "z-ai/glm-5.3-flash|commandcode|medium|sid-1"
+
+
+@pytest.mark.skipif(WINDOWS, reason="bash 语义")
+@pytest.mark.asyncio
+async def test_bash_without_a_session_env_inherits_nothing_stale(tmp_path, monkeypatch):
+    """没给会话环境(工具被单独调用)时,也不能把进程环境里的 `QI_MODEL` 漏进去。"""
+    monkeypatch.setenv("QI_MODEL", "不该被看到")
+    out = await _bash({"command": 'echo "[${QI_MODEL:-none}]"'}, _ctx(tmp_path))
+    assert out.result.strip() == "[none]"        # `_ctx` 没给 session_env → 空

@@ -132,6 +132,44 @@ def resolve_powershell_config() -> ShellConfig:
     return ShellConfig(shell=shell, args=POWERSHELL_ARGS)
 
 
+# 会话环境变量(对齐 pi 的 `resolveSpawnContext`):被**删掉再填**,不是简单覆盖 ——
+# 免得嵌在里面的子进程(子 agent 再跑 bash)继承上一层的值,那是很难查的一类串味。
+SESSION_ENV_KEYS = ("QI_SESSION_ID", "QI_SESSION_FILE", "QI_PROVIDER", "QI_MODEL",
+                    "QI_REASONING_LEVEL")
+
+
+def session_env(session_id: str | None, session_file: str | None,
+                provider: str | None, model: str | None,
+                reasoning_level: str | None) -> dict[str, str]:
+    """构造这一回合的会话环境变量(pi 的 `exposeSessionEnvironment`)。
+
+    给 bash / powershell 的运行时环境:`env | grep QI_` 就能自查"当前是哪个模型、
+    哪个会话"。**为什么必须走环境变量**:换模型是界面状态,不进对话上下文,
+    所以工具是 agent 唯一能**自证**"现在跑的是什么"的通道(见 docs/tools.md §3)。
+
+    取不到的值**不设**(而不是设成空串):空串会被读成"设过了,值是空的"。
+    """
+    pairs = {
+        "QI_SESSION_ID": session_id,
+        "QI_SESSION_FILE": session_file,
+        "QI_PROVIDER": provider,
+        "QI_MODEL": model,
+        "QI_REASONING_LEVEL": reasoning_level,
+    }
+    return {key: str(value) for key, value in pairs.items()
+            if value is not None and str(value) != ""}
+
+
+def merged_env(extra: dict[str, str] | None) -> dict[str, str]:
+    """当前进程环境,先把 `SESSION_ENV_KEYS` 摘掉再叠 `extra`(pi 同款顺序)。"""
+    env = dict(os.environ)
+    for key in SESSION_ENV_KEYS:
+        env.pop(key, None)
+    if extra:
+        env.update(extra)
+    return env
+
+
 def _kill_tree(proc: asyncio.subprocess.Process) -> None:
     """超时要连子进程一起杀,否则 `sleep 100 &` 之类会逃逸成孤儿。"""
     if not is_windows():
@@ -170,7 +208,8 @@ async def _teardown(proc: asyncio.subprocess.Process, comm: asyncio.Future) -> N
 
 
 async def run_shell(config: ShellConfig, command: str, *, cwd: Path,
-                    timeout: float, abort: AbortSignal | None = None) -> ShellResult:
+                    timeout: float, abort: AbortSignal | None = None,
+                    env: dict[str, str] | None = None) -> ShellResult:
     """执行一条命令,返回 `(输出文本, 退出码)`。
 
     命令以**参数**或 **stdin** 交给解析出的 shell 二进制,不走 `shell=True`,
@@ -178,6 +217,9 @@ async def run_shell(config: ShellConfig, command: str, *, cwd: Path,
 
     `abort` 置位时不等命令自己退出:立即按**进程组**回收并返回 `aborted=True`。
     没有这一步,一个 `sleep 300` 就会把 escape 拖成好几分钟的“没反应”。
+
+    `env` 是这一回合的**会话环境变量**(`QI_MODEL` 等,见 `session_env`);不给就照旧
+    继承进程环境(但会把 `SESSION_ENV_KEYS` 摘掉 —— 不许串味)。
 
     异常/被取消时也**不会留孤儿**:收尾在 `finally` 里做(tools 的调用者被
     `Task.cancel()`、SIGINT 让 asyncio 取消主任务,都会走到这里)。
@@ -189,7 +231,7 @@ async def run_shell(config: ShellConfig, command: str, *, cwd: Path,
         argv = [config.shell, *config.args, command]
         stdin = asyncio.subprocess.DEVNULL
 
-    popen_kwargs: dict = {}
+    popen_kwargs: dict = {"env": merged_env(env)}
     if not is_windows():
         popen_kwargs["start_new_session"] = True   # 独立进程组,便于整组回收
 

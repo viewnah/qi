@@ -83,6 +83,23 @@ TUI 里回放会话、以及网页端显示的用量,都来自 `session.py` 的 
 - **`qi --fork <id>`** 把「源会话当前分支」**复制成一个新文件**,不是在同一文件里再开分支。
   复制过去的 entry 保留原 `id`/`parentId`,链在新文件里自洽。
 
+## 6.1 模型与思考级别跟着会话走
+
+会话文件里记着**模型是什么时候被换掉的**(`model_change` / `thinking_level_change`,
+见 [session-format.md](session-format.md) §6.1),所以:
+
+- **续接会话(`-c` / `--session` / `/resume`)会恢复那次切换** —— 上次切到 glm,再打开还是 glm,
+  而不是回 `settings.json` 的默认模型。这来自 pi 的 `restoredModel` / `getSessionContextSettings`。
+- **还原前先看凭证**:记的那个 provider 已经没密钥(退出登录 / 环境变量没了)时,退回默认并
+  在启动提示里说明 —— 不会拿着一个注定 401 的模型继续跑。
+- **CLI 显式给的赢**:`--model` / `--thinking`(含 `--model provider/id:级别`)是当次覆盖,
+  不会被会话里的旧值顶掉。
+- **换模型与换级别在界面上照旧是即时生效的**(下一回合用到请求里);落 entry 是为了"下次打开"
+  与"回放里看得出切换点",不影响本回合行为。
+- **界面显示的与发出去的一致**:TUI 的 footer 缓存(`_model` / `_thinking_level`)在选会话后
+  会跟 runtime 真在用的那一份**同步**;启动路径尤其要注意 —— 绑定必须是同步的,不能只依赖
+  `session_start` 那个 async worker(见 [session-format.md](session-format.md) §6.1)。
+
 ## 7. 自动命名
 
 会话默认叫「未命名」。左栏一列「未命名」等于没有左栏 —— 分不清哪条是哪条。所以 qi 会用
@@ -109,6 +126,7 @@ TUI 里回放会话、以及网页端显示的用量,都来自 `session.py` 的 
 | 会话格式 | JSONL + 树(`id`/`parentId`) | 同构,见 [session-format.md](session-format.md) |
 | 续接 / 指定 / 分叉 | `-c` / `--session` / `--fork` | 同名同义 |
 | 分支交互 | `/tree` | `/tree` + 跳分支自动写 `branch_summary` |
+| 模型/级别随会话 | `model_change` / `thinking_level_change` entry,续接时还原 | 同构(键名 `model_id`,见 [session-format.md](session-format.md) §6.1);还原前多一道凭证检查 |
 
 qi 在这一层**刻意与 pi 保持一致**:字段名、命令名、`/tree` 语义都对齐,便于两边共享同一套认知。
 差异集中在 qi 多出来的部分(扩展自定义 entry、`branch_summary` 的自动生成)。

@@ -55,6 +55,10 @@ class ToolContext:
     #: 流式进度回调(pi 的 `onUpdate`):`on_update(partial)` → 发 `tool_execution_update`
     #: 事件。同步可调,工具不必 await。
     on_update: Callable[[Any], None] | None = None
+    #: 这一回合的**会话环境变量**(`QI_MODEL` / `QI_SESSION_ID` …):bash / powershell
+    #: 会把它并进子进程环境(pi 的 `exposeSessionEnvironment`)。它同时是 agent
+    #: **自查当前模型**的唯一通道 —— 换模型是界面状态,不进对话上下文(见 docs/tools.md §3)。
+    session_env: dict[str, str] = field(default_factory=dict)
 
     def guard(self, p: str | Path) -> Path:
         """路径必须落在 workdir 内(防越界,对齐 hikqin validate_path 思想)。"""
@@ -248,7 +252,7 @@ async def _bash(args: dict, ctx: ToolContext) -> ToolOutcome:
     except ShellError as exc:
         raise ToolError(str(exc)) from None
     result = await run_shell(config, command, cwd=ctx.workdir, timeout=timeout,
-                             abort=ctx.abort)
+                             abort=ctx.abort, env=ctx.session_env)
     return _shell_outcome(result, timeout)
 
 
@@ -267,7 +271,8 @@ async def _powershell(args: dict, ctx: ToolContext) -> ToolOutcome:
     except ShellError as exc:
         raise ToolError(str(exc)) from None
     result = await run_shell(config, POWERSHELL_UTF8_PREFIX + command,
-                             cwd=ctx.workdir, timeout=timeout, abort=ctx.abort)
+                             cwd=ctx.workdir, timeout=timeout, abort=ctx.abort,
+                             env=ctx.session_env)
     return _shell_outcome(result, timeout)
 
 
@@ -329,10 +334,16 @@ def register_builtin_tools(catalog) -> None:
         prompt_guidelines=["改已有文件优先用 edit(精确替换),不要用 write 整写覆盖。"]))
     add(Tool("bash", "执行 bash 命令(工作目录=会话目录);输出截断 + timeout。", _schema(
         {"command": {"type": "string"}, "timeout": {"type": "number"}}, ["command"]), _bash,
-        prompt_snippet="执行 bash 命令"))
+        prompt_snippet="执行 bash 命令",
+        # pi 的 bash 也带这条:换模型是界面状态、不进上下文,所以环境变量是 agent
+        # **自查当前模型/会话**的唯一通道(见 docs/tools.md §3)
+        prompt_guidelines=["你想确认当前模型/会话时,可以读 QI_* 环境变量"
+                           "(QI_PROVIDER / QI_MODEL / QI_REASONING_LEVEL / QI_SESSION_ID)。"]))
     add(Tool("powershell", "执行 PowerShell 命令(仅 Windows;输出走 UTF-8)。", _schema(
         {"command": {"type": "string"}, "timeout": {"type": "number"}}, ["command"]), _powershell,
-        prompt_snippet="执行 PowerShell 命令(仅 Windows)"))
+        prompt_snippet="执行 PowerShell 命令(仅 Windows)",
+        prompt_guidelines=["你想确认当前模型/会话时,可以读 QI_* 环境变量"
+                           "(QI_PROVIDER / QI_MODEL / QI_REASONING_LEVEL / QI_SESSION_ID)。"]))
     add(Tool("clarify", "向用户提出澄清问题,等待回答。拿不准需求时使用。", _schema(
         {"question": {"type": "string"}}, ["question"]), _clarify,
         prompt_snippet="向用户澄清"))

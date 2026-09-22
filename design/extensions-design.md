@@ -30,13 +30,18 @@
 | **P-E5 三件套迁移** | qi-mcp → qi-agents → qi-web(按依赖从少到多);**qi-agents 落地后把仓库 agents 搬回 `.qi/agents/`(E15)**;`ctx.ui` 的 web 侧 + `add_route`/`add_static` | 三个包各自可装可卸;不装时启动提示与 `qi doctor` 正确;`qi web` 由扩展提供;`qi --agent <name>` 由 qi-agents 提供。**子命令分派的前提**:轻量发现宿主必须给齐 `commands` / `flags` / `cli_commands` 三个登记处 —— 装载器对"扩展装载失败"是**整体中断**,少给一个不是"少注册一样东西",而是**所有兄弟扩展的命令一起消失**(`qi web` 曾因此从未注册,见 docs/extensions.md §8.2) |
 | **P-E6 收尾** | 参考扩展样例(至少一个 `examples/extensions/` 下的完整例子)+ 目录通道的 PEP 723 声明解析 + 冲突报告 + 文档重写(agent-config.md / [web.md](web.md) / [dispatcher.md](dispatcher.md) 归档)+ 迁移提示打磨 | 新用户按 extensions.md 能写出并装上第一个扩展;声明与实装不一致时 `qi doctor` 报得出来 |
 
-**依赖关系**:P-E1 ✅ → **P-E2 ✅** → **P-E3 ✅**(a/b/c/d-1) → **P-E4a ✅** → **P-E4b ✅** → P-E4c → P-E5 → **P-E7 ✅**(接口面) → **P-E8 ✅**(前端消费) → **P-E9 ✅**(剩余差异收尾) → P-E6。
+**依赖关系**:P-E1 ✅ → **P-E2 ✅** → **P-E3 ✅**(a/b/c/d-1) → **P-E4a ✅** → **P-E4b ✅** → P-E4c → P-E5 → **P-E7 ✅**(接口面) → **P-E8 ✅**(前端消费) → **P-E9 ✅**(剩余差异收尾) → **P-E10 ✅**(模型/级别的可观测性) → P-E6。
 
 | 阶段 | 内容 | 验收 |
 | --- | --- | --- |
 | **P-E7 与 pi 的接口对齐** ✅ | ① 事件面补完(36/36):`message_*`/`tool_execution_*`/`before_provider_*`/`after_provider_response`/`user_bash`/`ui_prompt_*`/`resources_discover`/`session_shutdown`/`agent_settled`/`session_before_*`/`session_tree`;② `api.*` 补完(renderer 三件套 / `setSessionName` / `setLabel` / `setModel` / 思考级别 / `unregisterProvider` / `exec` 形状 / `sendMessage` 的 pi 形状与 `triggerTurn`);③ `ctx` 补完(`mode` / `abort` / `isIdle` / `hasPendingMessages` / `shutdown` / `compact` / `getContextUsage` / `getSystemPrompt*` / `waitForIdle` / 四个会话操作 / `ModelView` / `ModelRegistryView`);④ `ctx.ui` 数据层全集 + 组件层的 `setWidget`/`custom`;⑤ 命名与参数形状双收(E26) | `tests/test_extension_alignment.py` 21 项 + 全量 963 项;docs/extensions.md §3 按代码重写,并逐条记下 §3.4 的剩余差异 |
 | **P-E8 前端真的消费这些接口** ✅ | ① 工具 `renderCall`/`renderResult` → `ExtensionToolBlock` 整个替换默认卡片(含 `renderShell: "self"` 跳过默认外壳);② `register_entry_renderer`/`register_message_renderer` → 回放里按 `custom_type` 接管;③ `register_markdown_transformer` → user/assistant 最终文本;④ `set_footer`/`set_header`/`set_editor_component`/`add_autocomplete_provider`/`on_terminal_input` 全部实现;⑤ 命令参数补全接进补全面板(含 **async** 回调);⑥ `/new` `/resume` `/fork` `/tree` + 交互式选择器全部过 `session_before_*` 闸门 | `tests/test_tui_extension_render.py` 20 项 + 全量 996 项;docs/extensions.md 新增 §3.5(渲染回调契约) |
 | **P-E9 剩余差异的收尾** ✅ | ① `executionMode` → **逐工具并发**(相邻成批、顺序工具打断、顺序不变,见 E27);② `renderShell`;③ payload 的 `type` 字段 + 驼峰键别名(总线一处补,qi 自己的键不少);④ async 参数补全与 async 补全提供者;⑤ `constrainedSampling` **收下但报出被忽略**(litellm 无可移植对应物) | `tests/test_tool_execution_mode.py` 9 项 + align 4 项 + 全量 996 项 |
+| **P-E10 模型/级别的可观测性**(见 E28) | ① `model_change` / `thinking_level_change` 两个设置类 entry(`SessionStore.set_context_setting`,同值不重写);② bash/powershell 注入 `QI_SESSION_ID` / `QI_SESSION_FILE` / `QI_PROVIDER` / `QI_MODEL` / `QI_REASONING_LEVEL`(**先删后填**,子运行按自己的模型填);③ `Runtime.bind_session()` 按 entry 还原模型与级别(还原前查凭证,拿不到就回落默认 + note);④ TUI 三条会话切换路径(`/resume` `/fork` `/import` + 启动)都 bind,且**绑定时机是同步的** | `tests/test_session_model_entries.py` 20 项 + `test_shell.py` 4 项 + `test_tui_model_restore.py` 2 项 + 全量 1110 项 |
+
+> **P-E10 的来由**:它不是照表逐条比对发现的,而是**从一次真实的对话缺陷倒推出来的** —— agent
+> 被问"你现在是什么模型"时凭记忆答错,因为换模型是界面状态、不作为消息进上下文,而 qi 既没
+> 落盘、也不注入环境变量、更不还原。三个洞是一条链,只补一个都还是半对齐,所以合并成一个阶段。
 
 > **P-E3 剩下的两块与三件套无关**:P-E3d-2(压缩事件,**已落地**)与 P-E3d-3(renderer + 会话操作事件)。
 > 三件套扩展真正依赖的扩展面已全部就位 —— 除了 `ctx.runAgent`,那是 **P-E4** 的事。

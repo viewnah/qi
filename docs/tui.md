@@ -127,7 +127,7 @@ fullscreen 退出时**不重放 transcript**(pi 有 `fullscreenExitOutput: trans
 | `/fork [序号\|id]` | 从某条用户消息**之前**分叉出新会话,并把那条消息放回编辑器(对齐 pi) |
 | `/clone [名字]` | 把当前分支复制成新会话 |
 | `/compact [提示]` | 压缩上下文:把旧消息压成结构化摘要(可给一句关注点) |
-| `/model [p/m]` | 不给参数 = **开选择器**(与 ctrl+l 同一个,pi 的 `showModelSelector`;`✓` 标当前、`[provider] · default` 徽标)；给 `p/m` 或唯一模型名 = 直接切 |
+| `/model [p/m]` | 不给参数 = **开选择器**(与 ctrl+l 同一个,pi 的 `showModelSelector`;`✓` 标当前、`[provider] · default` 徽标)；给 `p/m` 或唯一模型名 = 直接切。切换会往会话里落一条 `model_change`,**下次打开这条会话仍用它**([sessions.md](sessions.md) §6.1) |
 | `/scoped-models` | 挑 Ctrl+P 轮换哪些模型(面板里勾选;空 = 全部,写回 `settings.enabledModels`) |
 | `/export [file]` | 导出会话 JSONL(默认 `./qi-<id>.jsonl`;**pi 默认导出 HTML** —— qi 无 HTML 导出器) |
 | `/import <file>` | 从 JSONL 导入并切换会话(重名给提示,不静默覆盖) |
@@ -215,7 +215,7 @@ qi 与 pi 的差异(已落档):
 | `/tree` · `/fork` · `/clone` | 跳到本会话任意节点(跳前先问「要把被放弃的那段压成摘要吗」,默认不摘要;`settings.branchSummary.skipPrompt` 可关掉这一问)/ 从某条消息 fork / 复制当前分支 |
 | `/trust [yes\|no\|forget]` | 按**目录**记住信任决定(`~/.qi/agent/trust.json`);连带记住上一层,写完要重启才生效 |
 | `/compact` | 压缩上下文(摘要旧消息);可跟 `<提示>` 追加 focus |
-| `/model` · `/scoped-models` · `/thinking` | 不给参数 = **开选择器**(占编辑器那一格,与 ctrl+l / shift+tab 同源)/ 挑 Ctrl+P 轮换的模型 / 挑思考级别(`✓` 标当前、带说明、`· default`) |
+| `/model` · `/scoped-models` · `/thinking` | 不给参数 = **开选择器**(占编辑器那一格,与 ctrl+l / shift+tab 同源)/ 挑 Ctrl+P 轮换的模型 / 挑思考级别(`✓` 标当前、带说明、`· default`)。两者的切换都会落 `model_change` / `thinking_level_change` entry,下次打开这条会话按它还原([sessions.md](sessions.md) §6.1) |
 | `/settings` | 偏好面板:主题 / 思考级别 / 交互开关(enter 换值、ctrl+s 保存到**用户级** settings) |
 | `/export` · `/import` | 导出(按扩展名:`x.html` → 自包含 HTML(当前分支),其余 → JSONL)/ 导入会话 JSONL |
 | `/copy` | 复制最后一条回答 |

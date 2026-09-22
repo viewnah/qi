@@ -1873,7 +1873,12 @@ class TreeRow(NamedTuple):
 
 
 def entry_passes_tree_filter(entry: dict, mode: str) -> bool:
-    """pi 的 tree filter 语义(对齐 applyFilter 的 switch)。"""
+    """pi 的 tree filter 语义(对齐 applyFilter 的 switch)。
+
+    默认视图隐藏「设置类」entry(`model_change` / `thinking_level_change`):它们是
+    时间线上的事实(供还原与诊断),但在树里每一行都显示一遍"模型: x/y"只会淹没对话。
+    `all` 视图仍能看到它们 —— pi 的 `isSettingsEntry` 也是这个口径。
+    """
     kind = entry.get("type")
     if mode == "user-only":
         return kind == "message" and entry.get("role") == "user"
@@ -1883,7 +1888,7 @@ def entry_passes_tree_filter(entry: dict, mode: str) -> bool:
         return kind not in ("state", "tool")
     if mode == "all":
         return True
-    return kind != "state"           # default:隐藏状态类(pi 的 settings 类 entry)
+    return kind not in ("state", "model_change", "thinking_level_change")
 
 
 class TreeSelector(EditorSlotPanel):
@@ -2439,12 +2444,15 @@ class QiTui(App):
                 # `-r/--resume`:起来就开选择器(与 `/resume` 同一条路)。放到 on_mount
                 # 之后一拍再弹 —— 挂载中途 push_screen 会让内联布局还没量完尺寸。
                 self.call_after_refresh(self._show_session_selector)
-            try:
-                self._model = resolve_default_model(self._rt.cfg, self._rt.cwd)
-            except ConfigError:
-                self._model = None
-            self._thinking_level = normalize_thinking_level(
-                getattr(self._rt, "thinking_level", None))
+            # 模型/级别**先取 runtime 当前的那一份**:`_select_session()` 已经 bind 过会话,
+            # 所以这里拿到的可能是会话里记的旧值,而不是 settings 默认(pi 的 restoredModel)。
+            # 命令行显式给了 `--model` 时 runtime 不会还原,两边自然一致。
+            self._sync_model_from_runtime()
+            if self._model is None:
+                try:
+                    self._model = resolve_default_model(self._rt.cfg, self._rt.cwd)
+                except ConfigError:
+                    self._model = None
             self._apply_ui_settings()
             # P-E4c:技能是 core 的能力(顶层六层来源),不再从 agent 汇总;
             # agent 列表那一段 banner 里不再有(core 没有角色概念了)。
@@ -2947,6 +2955,11 @@ class QiTui(App):
         self._append(UserMessage(self._transform_markdown(text), self._renderer, self._palette))
         if self._session is None:
             self._session = self._session_store().create("tui", cwd=rt.cwd)
+            # 会话是这一刻才建出来的 → 通知 runtime 绑定它,否则这一轮里的 `/model`
+            # 找不到"该往哪个文件记"(设置类 entry 见 docs/session-format.md §6.1)
+            bind = getattr(rt, "bind_session", None)
+            if callable(bind):
+                bind(self._session)
         self.run_worker(self._run(text), exclusive=False, exit_on_error=False)
 
     # -- 事件循环 -------------------------------------------------------
@@ -3328,6 +3341,11 @@ class QiTui(App):
             self._note("导入后读取失败", "error")
             return
         self._session = session
+        # 与 `_switch_session` 同一条约定:换了当前会话就要通知 runtime(设置类 entry 写哪)
+        bind = getattr(self._rt, "bind_session", None) if self._rt is not None else None
+        if callable(bind):
+            bind(session)
+        self._sync_model_from_runtime()
         self._refresh_footer()
         self._note(f"已导入并切换到 {sid}(消息 {session.message_count} 条)")
 
@@ -3397,10 +3415,17 @@ class QiTui(App):
             self.run_worker(runtime.start_session(self._session, reason="reload"),
                             exclusive=False, exit_on_error=False)
         self._branch = git_branch(str(runtime.cwd))
-        try:
-            self._model = resolve_default_model(runtime.cfg, runtime.cwd)
-        except ConfigError:
-            self._model = None
+        # 重载换了 runtime 对象 → 重新绑定会话并同步模型/级别(否则 footer 会退回默认值,
+        # 而请求用的是会话里记的那个)
+        bind = getattr(runtime, "bind_session", None)
+        if self._session is not None and callable(bind):
+            bind(self._session)
+        self._sync_model_from_runtime()
+        if self._model is None:
+            try:
+                self._model = resolve_default_model(runtime.cfg, runtime.cwd)
+            except ConfigError:
+                self._model = None
         self._refresh_footer()
         self._note(f"已重载:{len(runtime.extensions)} 个扩展。"
                    "主题改动需重开 qi。")
@@ -3759,6 +3784,10 @@ class QiTui(App):
             return
         if self._session is not None and self._session.id == session_id:
             self._session = None          # 删的是当前会话:下一条消息会自动新建
+            # 解绑:否则"下一条消息"新建会话前的 `/model` 会把设置写进一个已删掉的文件
+            bind = getattr(self._rt, "bind_session", None) if self._rt is not None else None
+            if callable(bind):
+                bind(None)
         self._flash(f"已删除会话 {session_id}")
 
     def _entry_label(self, entry: dict) -> str:
@@ -3779,6 +3808,10 @@ class QiTui(App):
             if entry.get("custom_type") == "assistant_narration":
                 return f"叙述: {clip(entry.get('content'))}"
             return f"自定义: {entry.get('custom_type')}"
+        if kind == "model_change":
+            return f"模型: {entry.get('provider')}/{entry.get('model_id')}"
+        if kind == "thinking_level_change":
+            return f"思考级别: {entry.get('thinking_level')}"
         if kind == "state":
             return f"状态: {entry.get('key')} = {entry.get('value')}"
         return str(kind)
@@ -4204,6 +4237,14 @@ class QiTui(App):
     def _switch_session(self, session, note: str = "") -> None:
         """切到另一个会话:重放它的当前分支,清掉属于上一个会话的临时状态。"""
         self._session = session
+        # 通知 runtime 把「当前会话」换掉:换模型/换级别要记进**这个**文件,
+        # 而且会话里记的模型/级别要在这个时机恢复(pi 的 `getSessionContextSettings`)。
+        # 防御式取用:与 `notify_session_tree` 同一条约定 —— 测试替身不必实现每个可选方法。
+        rt = self._rt
+        bind = getattr(rt, "bind_session", None) if rt is not None else None
+        if callable(bind):
+            bind(session)
+        self._sync_model_from_runtime()
         self._usage = {"prompt_tokens": 0, "completion_tokens": 0}
         self._last_answer = ""
         self._pending_steer.clear()
@@ -4214,6 +4255,22 @@ class QiTui(App):
         if note:
             self._note(note)
         self._scroll_end()
+
+    def _sync_model_from_runtime(self) -> None:
+        """把界面缓存的模型/思考级别对齐到 runtime 当前真正在用的那一份。
+
+        为什么必须显式同步:两处都存了同一件事 —— `bind_session` 会按会话里记的
+        `model_change` **还原模型**(可能不是 settings 的默认值),而 `self._model` /
+        `self._thinking_level` 是界面自己的一份缓存。不同步就会出现"footer 说 deepseek、
+        请求发的是 glm"(footer 是用户唯一能看见的真相,它错了最难查)。
+        """
+        rt = self._rt
+        spec = getattr(getattr(rt, "llm_exec", None), "spec", None) if rt is not None else None
+        if spec is not None:
+            self._model = spec
+        if rt is not None:
+            self._thinking_level = normalize_thinking_level(
+                getattr(rt, "thinking_level", None))
 
     async def await_screen(self, screen: ModalScreen[Any]) -> Any:
         """弹一个模态并**等**它的结果。
@@ -4242,7 +4299,23 @@ class QiTui(App):
         但进 TUI 就失效了。现在与 headless 路径用同一套规则。
         """
         self._pick_session()
+        self._bind_current_session()
         self._notify_session_start()
+
+    def _bind_current_session(self) -> None:
+        """把刚选定的会话**同步**告诉 runtime(换模型/换级别要记进这个文件)。
+
+        必须与 `_notify_session_start()` 分开、且**先于**它:`start_session` 走
+        `run_worker`(异步),而紧随 `_select_session()` 的 `_sync_model_from_runtime()`
+        是同步的 —— 若只靠 `start_session` 里的 bind,续会话时 footer 会读到 restore
+        **之前**的旧模型(于是 footer 显示 settings 默认、请求却发会话里记的那个,
+        这类"看得见的与发出去的不一致"最难查)。`/resume` / `/fork` / `/import` 走的是
+        `_switch_session` / `_import_session`,它们各自 bind —— 这里补的是**启动路径**。
+        """
+        rt = self._rt
+        bind = getattr(rt, "bind_session", None) if rt is not None else None
+        if self._session is not None and callable(bind):
+            bind(self._session)
 
     def _notify_session_start(self) -> None:
         """派发 `session_start`(扩展的会话级初始化)。

@@ -146,6 +146,42 @@ def _as_int(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
+#: 「设置类」entry:记录**模型 / 思考级别**是什么时候被换掉的(pi 同款两类)。
+#:
+#: 为什么落盘:切换动作本身是**界面状态**,不会作为消息进 LLM 上下文 —— 于是 agent
+#: 看不出中途换过模型(它只知道「当前是什么」),回放里也没有切换点。落一条 entry 就有了
+#: 时间线上的事实,而**续会话时按它还原**才让「上次切到的模型」跟着回来(pi 的
+#: `getSessionContextSettings`)。
+#:
+#: 它们**不进上下文**(`Runtime._history()` 只读 `message`),也不在 `/tree` 的默认视图里
+#: 显示(`tui.entry_passes_tree_filter`)—— 与 `custom` 同一条取舍:看得见的归界面,
+#: 进模型的归 message。
+MODEL_CHANGE = "model_change"
+THINKING_LEVEL_CHANGE = "thinking_level_change"
+
+
+def context_settings(branch: list[dict]) -> dict:
+    """从一条分支上读出**生效的**设置:`{"model": (provider, id) | None, "thinking_level": str | None}`。
+
+    取**最后一条**(后者胜)—— 与 pi 的 `getSessionContextSettings` 同一口径。
+    坏值/缺键当没有:一行脏数据不该让会话打不开。
+    """
+    model: tuple[str, str] | None = None
+    level: str | None = None
+    for entry in branch:
+        kind = entry.get("type")
+        if kind == MODEL_CHANGE:
+            provider = str(entry.get("provider") or "").strip()
+            model_id = str(entry.get("model_id") or "").strip()
+            if provider and model_id:
+                model = (provider, model_id)
+        elif kind == THINKING_LEVEL_CHANGE:
+            raw = str(entry.get("thinking_level") or "").strip()
+            if raw:
+                level = raw
+    return {"model": model, "thinking_level": level}
+
+
 def usage_summary(branch: list[dict]) -> dict:
     """当前分支的用量汇总(**会话级**,读落盘的 entries)。
 
@@ -366,6 +402,39 @@ class SessionStore:
             return
         with session.path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    def set_context_setting(self, session: Session, kind: str, payload: dict) -> bool:
+        """落一条设置类 entry(model / 思考级别)。返回是否真写了。
+
+        **同值不重写**:级别已经在文件末尾记过就不必再记一条 —— 否则每次启动都会给
+        每个会话加一行(pi 也只在 `isChanging` 时才写)。判据只看**当前分支的最后一条**
+        同类 entry:分支回退后再换回来,本来就是一次真实的切换。
+
+        `kind` 只认 `MODEL_CHANGE` / `THINKING_LEVEL_CHANGE`;其它值当写错,不落盘
+        (静默写一个客户端不认识的类型,比报错更难查)。
+        """
+        if kind not in (MODEL_CHANGE, THINKING_LEVEL_CHANGE):
+            return False
+        if kind == MODEL_CHANGE:
+            entry: dict = {"type": MODEL_CHANGE,
+                           "provider": str(payload.get("provider") or ""),
+                           "model_id": str(payload.get("model_id") or "")}
+            previous = next((e for e in reversed(session.branch())
+                             if e.get("type") == MODEL_CHANGE), None)
+            unchanged = (previous is not None
+                         and previous.get("provider") == entry["provider"]
+                         and previous.get("model_id") == entry["model_id"])
+        else:
+            entry = {"type": THINKING_LEVEL_CHANGE,
+                     "thinking_level": str(payload.get("thinking_level") or "")}
+            previous = next((e for e in reversed(session.branch())
+                             if e.get("type") == THINKING_LEVEL_CHANGE), None)
+            unchanged = (previous is not None
+                         and previous.get("thinking_level") == entry["thinking_level"])
+        if unchanged:
+            return False
+        self.append(session, entry)
+        return True
 
     def save(self, session: Session) -> None:
         """整文件重写(改名/标题/迁移/分叉等)。"""

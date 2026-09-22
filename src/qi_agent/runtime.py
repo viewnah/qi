@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from . import paths
-from .auth import AuthOverride, AuthStore
+from .auth import AuthOverride, AuthStore, resolve_key
 from .compaction import (
     DEFAULT_KEEP_RECENT_TOKENS,
     DEFAULT_RESERVE_TOKENS,
@@ -55,12 +55,14 @@ from .system_prompt import build_system_prompt, default_base_prompt
 from .models import AgentEvent
 from .registry import CapabilityRegistry, ToolCatalog, discover_extensions
 from .runner import AgentRunner, RunnerSettings, RunSpec
-from .session import Session, SessionStore
+from .session import (MODEL_CHANGE, THINKING_LEVEL_CHANGE, Session, SessionStore,
+                      context_settings)
 from .titling import suggest_title
 from .settings import (default_tools, extension_dirs, load_settings, load_settings_by_scope,
                        branch_summary_skip_prompt, model_thinking_level,
                        resolve_project_trust, session_dir)
 from .tools import ToolContext, register_builtin_tools
+from .tools.shell import session_env
 
 
 #: core 里那个**唯一**的运行单元的标签(事件归属 + 会话 entry 的 `agent_id`)。
@@ -227,6 +229,16 @@ class QiRuntime:
         #: 当前回合绑定的会话(`api.appendEntry` / `ctx.session_manager` 靠它读/写)。
         #: 由 `stream()` 的 wrapper 设置并在 `finally` 里清掉。
         self._active_session: Session | None = None
+        #: **选会话时就绑定的**那个会话(前端调 `bind_session()`)。与 `_active_session` 分开:
+        #: 后者只管一个回合,而换模型 / 换思考级别是**回合外**发生的(扩展在 handler 里
+        #: `api.setModel`、TUI 的 `/model`),那时也必须知道该往哪个文件里记一笔。
+        self._bound_session: Session | None = None
+        #: 已从会话里**还原过设置**的会话 id。同一会话反复绑定时不该重复还原 ——
+        #: 否则用户切到 glm 后重新绑一次,又会被会话里记的旧值顶回默认。
+        self._restored_sessions: set[str] = set()
+        #: `--model` / `--thinking`(或 `--model p/m:级别`)在命令行上给过 —— 命令行优先级
+        #: **高于**会话里记的旧值,所以这类运行不从会话恢复(见 `_restore_context_settings`)。
+        self._model_pinned = model_override is not None
         #: 扩展主动发的消息(`api.sendMessage` / `sendUserMessage`),按**送达时机**分桶。
         #: 元素是 `(文本, 来源扩展, 调用方式)`。steer / follow_up 由 runner 在回合内排空;
         #: next_turn 留到下一次用户输入(见 `_drain_messages` 与 `_stream_inner` 开头)。
@@ -460,7 +472,38 @@ class QiRuntime:
                            ask=self._ask,
                            shell_path=self.settings.shellPath,
                            project_trusted=self.project_trusted,
-                           ui=self.ui)
+                           ui=self.ui,
+                           session_env=self._session_env())
+
+    def _session_env(self) -> dict[str, str]:
+        """这一回合的会话环境变量(pi 的 `exposeSessionEnvironment`)。
+
+        取的是**绑定的会话 + 当前模型 + 当前级别** —— 与 `ctx.model` / `ctx.thinkingLevel`
+        同一份真实来源,所以 bash 里 `env | grep QI_` 得到的答案与 footer 显示的一致。
+        """
+        session = self.current_session()
+        view = self._model_view()
+        return session_env(
+            session_id=getattr(session, "id", None),
+            session_file=str(getattr(session, "path", "") or "") or None,
+            provider=getattr(view, "provider", None) if view is not None else None,
+            model=getattr(view, "id", None) if view is not None else None,
+            reasoning_level=self.thinking_level)
+
+    def _child_session_env(self, model_ref: Any) -> dict[str, str]:
+        """子运行的环境变量:模型按**子运行自己的**那个算,其余继承会话。
+
+        pi 的 `ctx.model` 在子运行里就是子运行的模型;若照抄父的 `QI_MODEL`,
+        子 agent 自查时会得到"我在用别的模型"这种假答案。
+        """
+        env = dict(self._session_env())
+        if not model_ref:
+            return env
+        provider, _, model_id = str(model_ref).partition("/")
+        if provider and model_id:
+            env["QI_PROVIDER"] = provider
+            env["QI_MODEL"] = model_id
+        return env
 
     # ── 受管子运行(扩展的 `runAgent` / E12)──
     def _make_client(self, resolved: ResolvedModel) -> LiteLLMClient:
@@ -518,6 +561,7 @@ class QiRuntime:
         ctx = ToolContext(agent_name=name, workdir=self.workdir, ask=self._ask,
                           shell_path=self.settings.shellPath, ui=self.ui,
                           project_trusted=self.project_trusted,
+                          session_env=self._child_session_env(data.get("model")),
                           abort=abort)
         runner = AgentRunner(run_spec, self.catalog, self._client_for(data.get("model")),
                             tool_ctx=ctx,
@@ -760,6 +804,9 @@ class QiRuntime:
         """
         # 信任必须在**任何**项目级资源被用到之前定下(零扩展时也照样要做)。
         await self._bind_project_trust()
+        # 会话设置(模型 / 思考级别)在**通知扩展之前**定下来:扩展在 `session_start`
+        # 里就会读 `ctx.model` / `ctx.thinkingLevel`,那时必须已经是这个会话的值。
+        self.bind_session(session)
         if session.id in self._started_sessions:
             return
         self._started_sessions.add(session.id)
@@ -794,6 +841,110 @@ class QiRuntime:
         """覆盖工具集(扩展走的入口是 `api.setActiveTools`),对**后续回合**生效。"""
         self._tool_override = set(names)
 
+    # ── 会话绑定(设置类 entry 要写进哪个文件)──
+    def bind_session(self, session: Session | None) -> None:
+        """把「当前会话」定下来(前端选完会话就调一次)。
+
+        为什么要有它:`_active_session` 只在**一个回合内**有效(`stream()` 里设、
+        `finally` 里清),而换模型 / 换思考级别是回合外发生的 —— TUI 的 `/model`
+        在两次提问之间、扩展在自己的 handler 里都可能调。那时若没有绑定会话,
+        `model_change` 就不知道该写进哪个文件(pi 的 `sessionManager` 是常驻的,
+        qi 这一层以前不存在,所以补一个**显式**的绑定,而不是去猜)。
+
+        传 `None` 解绑(会话被删掉时用)。绑定同时把会话里记的模型/级别恢复过来 ——
+        与 pi 一样:**先看会话记了什么**,没有再退回 settings 默认。
+        """
+        self._bound_session = session
+        if session is not None and session.id not in self._restored_sessions:
+            self._restored_sessions.add(session.id)
+            self._restore_context_settings(session)
+
+    def current_session(self) -> Session | None:
+        """当前会话:回合内用回合绑定的那个,否则用前端绑定的那个。"""
+        return self._active_session or self._bound_session
+
+    def _restore_context_settings(self, session: Session) -> None:
+        """按会话里记的设置类 entry 还原模型与思考级别(pi 的 `getSessionContextSettings`)。
+
+        命令行显式给过(`--model` / `--thinking`)就不还原 —— 那是有意的当次覆盖,
+        不该被历史里的旧值顶掉。
+
+        解析不出来的模型(provider 已删、凭证没了)**退回默认并记一条 note**:
+        静默用默认值会让人以为"切换没生效",而直接报错会让会话打不开 —— pi 的
+        `Could not restore model …` 也是这个取舍。
+        """
+        branch = session.branch()
+        if not branch:
+            # 新会话/空会话:没有历史可还原,把**当前**设置记成这个会话的起点
+            self._record_model_change(session)
+            self._record_thinking_change(session)
+            return
+        saved = context_settings(branch)
+        # **先看凭证**:provider 还在配置里、但密钥已经被删/没登录 —— 这时若照样还原,
+        # 用户会得到"一次注定 401 的请求",而按 pi 的口径(`hasConfiguredAuth`)应当
+        # 退回一个能用的模型。
+        #
+        # 判据用 `resolve_key(...).ok` 而不是 `has_configured_auth`:后者按 qi 的"预置
+        # 兜底"口径认**约定环境变量**(provider 名 → `DEFAULT_API_KEY_ENV`),比这里要的
+        # 严松度更宽 —— 沿用会话时"能不能真的拿到 key"才是那个问题。
+        resolved = None
+        if not self._model_pinned and saved["model"] is not None:
+            provider, model_id = saved["model"]
+            reason = ""
+            try:
+                candidate = resolve_model(self.cfg, provider, model_id)
+            except Exception as exc:  # noqa: BLE001 配置问题不该让会话打不开
+                reason = str(exc)
+            else:
+                key = resolve_key(candidate.provider, candidate.api_key_ref, self._auth)
+                if key.ok:
+                    resolved = candidate
+                else:
+                    reason = key.source or "没有可用密钥"
+            if resolved is not None:
+                self.llm_exec = self._make_client(resolved)
+            else:
+                self.notes.append(
+                    f"会话里记的模型 {provider}/{model_id} 没能恢复({reason});"
+                    "已用默认模型继续")
+        level = saved["thinking_level"]
+        if level is None:
+            # 老会话(这个字段上线前建的):补一条,避免它每次都被当"没记过"
+            self._record_thinking_change(session)
+        elif not self._thinking_pinned:
+            self.thinking_level = normalize_thinking_level(level)
+            client = getattr(self, "llm_exec", None)
+            if isinstance(client, ThinkingLLMClient):
+                client.thinking_level = self.thinking_level
+
+    def _record_model_change(self, session: Session | None = None) -> bool:
+        """落一条 `model_change`(pi 的 `appendModelChange`)。返回是否真写了。"""
+        target = session if session is not None else self.current_session()
+        spec = getattr(getattr(self, "llm_exec", None), "spec", None)
+        if target is None or spec is None:
+            return False
+        try:
+            return self.sessions.set_context_setting(
+                target, MODEL_CHANGE,
+                {"provider": str(spec.provider), "model_id": str(spec.model)})
+        except OSError as exc:      # 写盘失败不该把一次切换搞垮(与 `set_session_title` 同形)
+            self.notes.append(f"模型切换没能记进会话文件: {exc}")
+            return False
+
+    def _record_thinking_change(self, session: Session | None = None,
+                                level: str | None = None) -> bool:
+        """落一条 `thinking_level_change`(pi 的 `appendThinkingLevelChange`)。"""
+        target = session if session is not None else self.current_session()
+        if target is None:
+            return False
+        value = normalize_thinking_level(level if level is not None else self.thinking_level)
+        try:
+            return self.sessions.set_context_setting(
+                target, THINKING_LEVEL_CHANGE, {"thinking_level": value})
+        except OSError as exc:
+            self.notes.append(f"思考级别没能记进会话文件: {exc}")
+            return False
+
     # ── 模型与思考级别(扩展的 `setModel` / `setThinkingLevel` 走这里)──
     def set_model(self, provider: str, model: str, *, source: str = "set") -> ResolvedModel:
         """运行期换模型(**下一回合**生效)。返回解析后的模型(前端要拿它刷新显示)。
@@ -816,8 +967,13 @@ class QiRuntime:
                 self.thinking_level = adopted
                 self._emit_notice("thinking_level_select", {
                     "level": adopted, "previous_level": None, "source": "auto"})
+                # 换模型带来的级别变化也要落 entry(pi:它走的是同一个 `setThinkingLevel`)
+                self._record_thinking_change(level=adopted)
         previous = getattr(getattr(self, "llm_exec", None), "spec", None)
         self.llm_exec = self._make_client(resolved)
+        # 落一条 `model_change`:时间线上留下切换点,并且**续会话时按它还原**
+        # (pi 的 `appendModelChange` 就在这个位置)。回合外切换也能写 —— 靠 `bind_session`。
+        self._record_model_change()
         self._emit_notice("model_select", {
             "model": f"{resolved.provider}/{resolved.model}",
             "previous": (f"{previous.provider}/{previous.model}" if previous else None),
@@ -852,6 +1008,9 @@ class QiRuntime:
         self._emit_notice("thinking_level_select", {
             "level": self.thinking_level, "previous_level": previous, "source": source})
         self._thinking_pinned = True
+        # 与 `set_model` 对称:只在级别**真的变了**时才落 entry(pi 的 `isChanging`)
+        if previous != self.thinking_level:
+            self._record_thinking_change()
         return self.thinking_level
 
     def set_session_title(self, session: Session, title: str, *, source: str = "auto") -> None:

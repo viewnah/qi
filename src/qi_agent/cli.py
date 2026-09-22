@@ -408,6 +408,11 @@ def root_callback(
     store = runtime.sessions
     # 启动提示(未信任跳过项目级扩展、旧 plugins/ 目录残留…)走 stderr:
     # `-p` 的 stdout 是给脚本/管道用的,不能混入提示。
+    #
+    # 分两次打印:会话绑定**之后**还会产生提示(最典型的是"会话里记的模型没能恢复,
+    # 已用默认模型继续" —— 见 sessions.md §6.1)。只在这里打一次的话,那条提示
+    # 在无头模式下永远看不到,而它恰恰是"为什么不是我上次用的模型"的唯一解释。
+    printed_notes = len(runtime.notes)
     for note in runtime.notes:
         err_console.print(f"[yellow]{escape(note)}[/yellow]")
     session = None
@@ -439,6 +444,15 @@ def root_callback(
     else:
         session = store.create(name or prompt[:30], cwd=runtime.cwd)
     assert session is not None
+    # 绑定会话:设置类 entry 要写进这个文件,而且会话里记的模型/级别要在**这一轮之前**
+    # 恢复好(否则第一轮就用错了模型 —— 见 sessions.md §6.1)
+    # 防御式取用:与 TUI 的 `notify_session_tree` 同一条约定 —— 测试替身不必实现
+    # 每个可选方法(此处是「可选」是因为替身也可以什么都不记)。
+    bind = getattr(runtime, "bind_session", None)
+    if callable(bind):
+        bind(session)
+    for note in runtime.notes[printed_notes:]:
+        err_console.print(f"[yellow]{escape(note)}[/yellow]")
 
     async def _run() -> None:
         # 会话已绑定 → 通知扩展(pi 的 `session_start { reason }`);错误进 notes,不挡这一轮

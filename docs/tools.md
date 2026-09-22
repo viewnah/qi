@@ -42,6 +42,30 @@ class ToolResult:
 - 所有工具结果统一截断策略(超长只返回前 N 行 + 提示),对齐 pi 的 `output-accumulator`/hikqin `truncate_if_too_long`。
 - 错误以结果形式返回(不进异常),让模型可读、可重试。
 
+### 3.1 会话环境变量(bash / powershell)
+
+`bash` 与 `powershell` 的子进程会拿到一组**会话环境变量**(对齐 pi 的
+`exposeSessionEnvironment`,源码 `tools/shell.py`):
+
+| 变量 | 值 |
+| --- | --- |
+| `QI_SESSION_ID` | 当前会话 id |
+| `QI_SESSION_FILE` | 会话 JSONL 的绝对路径 |
+| `QI_PROVIDER` / `QI_MODEL` | 当前模型(子运行里是**子运行自己的**模型) |
+| `QI_REASONING_LEVEL` | 当前思考级别 |
+
+**为什么需要它**:换模型是**界面状态**,不作为消息进对话 —— 所以 agent 无从"感知"切换动作,
+`env | grep QI_` 是它唯一能**自证**"我现在跑的是什么"的通道。pi 同样把这条写进 bash 的
+prompt guidelines,qi 照做(见 `tools/__init__.py` 的 `prompt_guidelines`)。
+
+**实现约定**(两条都是防串味的,不是洁癖):
+
+- 注入前**先删掉**这五个键再填(`merged_env`):否则子 agent 里跑的 bash 会继承父的值。
+- 取不到的字段**不设**,而不是设成空串 —— 空串会被读成"设过了,值是空的"。
+
+写入点为 `Runtime._session_env()`(`_tool_ctx` 把它交给工具);子运行走
+`Runtime._child_session_env()`,模型换成子运行自己的那个。
+
 ## 4. bash 策略(已定 v1;审批细化在 v2)
 
 > **变更历史与设计取舍见 [bash-allowlist.md](../design/bash-allowlist.md)。**

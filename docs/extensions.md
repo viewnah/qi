@@ -183,12 +183,16 @@ qi 的 snake_case 是正式名,pi 的驼峰是属性/方法别名(`ctx.hasUI` / 
 | `agent_settled` | 保守近似 | qi 没有回合级重试/重压机制;provider 级重试在客户端内部,那时 `stream()` 还没返回 |
 | 事件 payload 的**结构** | 键名已双份(见下),但**结构**不同处不假造:如 `turn_end` qi 给 `{turn_index, text, tool_calls}`,pi 给 `{turnIndex, message, toolResults}`;`agent_end` 同理 | qi 的 payload 面向自己的前端词汇;加一个键是兼容,换一套结构就是另一回事了 |
 | `deliver_as` 取值 | `follow_up` / `next_turn`(pi `followUp` / `nextTurn`) | qi 的 snake_case 约定;**两套都收** |
+| 设置类 entry 的键名 | `model_id`(pi 是 `modelId`) | E28:语义对齐、命名守本地约定(本仓 entry 一律 snake_case:`custom_type` / `agent_id` / `duration_ms`) |
 | `register_flag` 的取值通道 | 只能 `--ext name=value` | E19:typer 的选项表静态,放宽未知长旗标会把用户的笔误变成一句 prompt |
 | 入口文件名 | 固定 `extension.py`(pi 是任意 `*.ts` / `index.ts`) | E9:qi 保持"1 目录 = 1 扩展" |
 | `add_route` / `add_static` | 未实现 | qi 增量(qi-web 的 HTTP 挂载),不属 pi 面 |
 
 **已对齐的几件(上一版还列在“剩余”里)**:`renderShell`(见 §3.5)、
-`executionMode`(见下)、payload 的 `type` 字段与驼峰键别名、async 参数/补全提供者。
+`executionMode`(见下)、payload 的 `type` 字段与驼峰键别名、async 参数/补全提供者、
+**模型/级别的落盘 + 环境变量 + 续会话还原**(见 E28 与
+[session-format.md §6.1](session-format.md) —— 换模型是界面状态,不进上下文,
+所以 agent 只能靠 `QI_*` 环境变量自查)。
 
 #### `executionMode` 的并发语义(E27)
 
@@ -540,6 +544,7 @@ server 由 `mcp.json` 决定、代理工具由 `tools:` 决定要不要),这条�
 | E25 | qi-mcp 的形状与依赖方向(取代 E20/E24) | **照搬 pi-mcp-adapter;qi-agents 直接依赖 qi-mcp;agent 层的 MCP 发现归 qi-agents**。理由:① agent 目录是 qi-agents 的**自包含包**,包主人认识包成员不是泄漏;② E24 的白名单顾虑在新形状下**前提消失**(角色的 server 集合本就按需注册);③ 照抄 pi 少一层自造协议。代价:`pip install qi-agents` 会拖上 MCP 栈;角色 `tools:` 对 MCP 的语义与内置工具不一致(要写进角色文档) |
 | E26 | 扩展 API 的命名与参数形状 | **snake_case 是正式名,pi 的驼峰是别名**(两者绑定同一个函数对象,`api.registerTool is api.register_tool`);**参数形状两边都收**(pi 的 options 对象与 qi 的关键字)。事件名、`ctx` 成员名、`ctx.ui` 方法名同样双名。事件 payload 的**键名仍用 snake_case**、不发 `type` 判别字段(见 §3.4)。理由:扩展作者照 pi 写的代码应当能跑,而 qi 自己的代码与文档用 pythonic 名;两全的代价只是多一层薄别名。**已知尾巴**:`deliver_as` 取值用 `follow_up`/`next_turn`,但 pi 的 `followUp`/`nextTurn` 也认 |
 | E27 | `executionMode` 的并发语义 | **逐工具声明,默认顺序(不声明 = 与以前逐字节一致)**;**相邻**的 `"parallel"` 工具并成一批并发跑,一个顺序工具把批次**打断**(顺序工具永不与并行工具重叠);**并发安全由声明方负责**(写 `"parallel"` 等于说“我的实现是并发安全的”,qi 不做文件变更队列);事件与上下文顺序**仍然确定**(先发完整批 `tool_execution_start`,再按声明序发 end / 结果 / 消息);**没有 session 级默认值**(不先提一个空旋钮)。配套:内部 `AgentEvent(kind="tool_start"/"tool_end")` 现在**必须带 `tool_call_id`** —— 并发时 TUI 工具卡片与 runtime 落盘靠它配对(以前都是单个槽位) |
+| E28 | 模型/思考级别切换的**可观测性与持久化** | **三条一起做,缺一条就是半对齐**(pi 的三处对应物:`appendModelChange` / `exposeSessionEnvironment` / `getSessionContextSettings`):① 落盘 `model_change` / `thinking_level_change` 两个**设置类** entry(`SessionStore.set_context_setting`,同值不重写、只在新会话写起点);② bash/powershell 注入 `QI_SESSION_ID` / `QI_SESSION_FILE` / `QI_PROVIDER` / `QI_MODEL` / `QI_REASONING_LEVEL`(**先删后填**,子运行按自己的模型填);③ `Runtime.bind_session()` 按 entry 还原模型与级别。**为什么必须有**:换模型是**界面状态**、不作为消息进上下文,所以在此之前 agent 既感知不到切换、重启后又丢回去(第一轮对话里 agent 凭记忆答错模型,就是这个洞的表现)。**两处 qi 自己的取舍**:键名用 snake_case `model_id`(本仓约定,pi 是 `modelId`);还原前多一道 `resolve_key(...).ok` 检查(pi 对应 `hasConfiguredAuth`),没凭证就回落默认 + 记 note,而不是发一次注定 401 的请求。**新增的接线**:`bind_session()` —— 换模型/换级别发生在**回合外**,而 `_active_session` 只在一个回合内有效。契约见 [session-format.md §6.1](../docs/session-format.md);测试 `tests/test_session_model_entries.py` 20 项 + `tests/test_shell.py` 4 项 + `tests/test_tui_model_restore.py` 2 项(**TUI 启动路径**:footer 的模型/级别必须与 runtime 真正在用的那个一致 —— `_select_session()` 走的是**同步** bind,不能只靠 `session_start` 那个 async worker) |
 
 > **阶段计划、未定清单、与 Claude Code 的三方对照**已移到 [extensions-design.md](../design/extensions-design.md)。
 > 本节(决策记录)**留在手册里**是有意的:代码注释里有 139 处引用 `E11` / `E25` / `P-E4c` 这类编号,

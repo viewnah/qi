@@ -238,7 +238,9 @@ shell 注入面。代价是**不能直接写 `!cat a | jq -r .key`**(管道会�
 
 ## 6. 环境变量总表
 
-qi 自己识别的变量只有 4 个:
+qi 自己识别的变量分两类。
+
+**配置类(4 个)**:
 
 | 变量 | 作用 |
 | --- | --- |
@@ -246,6 +248,18 @@ qi 自己识别的变量只有 4 个:
 | `QI_AGENT_HOME` | **agent 目录本身**(默认 `~/.qi/agent`)。全部用户级状态的挂载点:`settings.json` / `models.json` / `auth.json` / `sessions` / `skills` / `agents` / `extensions`。语义同 pi 的 `PI_CODING_AGENT_DIR` |
 | `QI_AGENT_CONFIG` | **直接指定 `models.json` 文件**(优先于项目 / 全局路径) |
 | `QI_THEME` | `dark` / `light` / `auto`,覆盖 `settings.theme`(见 [themes.md](themes.md)) |
+
+**会话类(5 个)—— 只出现在 bash / powershell 的**子进程**里,不是给用户设的**:
+
+| 变量 | 作用 |
+| --- | --- |
+| `QI_SESSION_ID` | 当前会话 id |
+| `QI_SESSION_FILE` | 会话 JSONL 的绝对路径 |
+| `QI_PROVIDER` / `QI_MODEL` | 当前模型 |
+| `QI_REASONING_LEVEL` | 当前思考级别 |
+
+它们由 `Runtime._session_env()` 生成、`merged_env()` 注入(对齐 pi 的
+`exposeSessionEnvironment`),**先删后填**所以不会从父进程继承。细节见 [tools.md](tools.md) §3.1。
 
 `models.json` 的完整查找顺序是 `QI_AGENT_CONFIG` → `<项目>/.qi/models.json` → `~/.qi/agent/models.json`,
 细节见 [model-config.md](model-config.md)。

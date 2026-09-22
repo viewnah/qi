@@ -26,8 +26,19 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+/**
+ * dsh 仓库的位置。**必须相对仓库根算**:本文件住在
+ * `extensions/qi-web/ui/scripts/`,所以从 `ROOT`(=`extensions/qi-web/ui`)往上**三级**
+ * 才是仓库根(`ui` → `qi-web` → `extensions` → 根)。
+ *
+ * 这里曾经写的是 `join(ROOT, "..", "data", …)` —— 那是前端还住在根目录 `web/` 时的
+ * 相对位置。切片 3b 把前端整包搬进 `extensions/qi-web/ui` 之后,这个路径就不再存在,
+ * 于是**这个门禁一直在"跳过"而不是在检查**(它还专门有一条"No DSH → 明确跳过"的
+ * 分支,所以谁也不会注意到)。“路径搬了、守卫静默失效”在本仓库是第二次了
+ * (另一次是 `contract.test.ts` 刮 python 源文件那条)。
+ */
 const DSH =
-  process.env.DSH_REPO ?? join(ROOT, "..", "data", "deepseek-harness");
+  process.env.DSH_REPO ?? join(ROOT, "..", "..", "..", "data", "deepseek-harness");
 const DSH_TOKENS = join(
   DSH,
   "packages/client/ui-theme/src/styles/design-platform.css",

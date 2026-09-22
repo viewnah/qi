@@ -462,3 +462,28 @@ export const QI_CUSTOM = {
    toolMeta: "qi.tool",
    usage: "qi.usage",
 } as const;
+
+// ── 模型面(`GET /api/models` / `POST /api/model`)──────────────
+//
+// "当前是哪个模型"是**会话级**的:同一个宿主进程服务同一 cwd 下的多条会话,每条都可能
+// 记着不同的模型(续会话会按会话里的 entry 还原)。所以清单请求带 `session`,而
+// `ConfigView.default_model` 说的是"settings 里的默认" —— 两件事,别混。
+
+/** 模型菜单里的一条。 */
+export interface ModelOption {
+   provider: string;
+   id: string;
+   /** 上下文窗口(tokens)。0 = 取不到 → 不画占用条。 */
+   context_window: number;
+   /** 这个 provider 现在解析得出凭证吗(界面据此标"未配置")。 */
+   credential_ok: boolean;
+}
+
+export interface ModelCatalog {
+   models: ModelOption[];
+   /** 当前生效的 `provider/id`;空 = 没有可用模型。 */
+   currently: string;
+   thinking_level: string;
+   /** 合法级别(照后端给的那份画,不在前端写死)。 */
+   thinking_levels: string[];
+}

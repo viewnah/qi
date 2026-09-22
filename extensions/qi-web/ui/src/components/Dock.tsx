@@ -42,9 +42,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AgentMenu } from "./AgentMenu";
 import { CommandMenu } from "./CommandMenu";
+import { ModelMenu } from "./ModelMenu";
 import { COMMANDS } from "../commands";
 import { contextShare, countsLabel, formatTokens } from "../state/stats";
-import type { AgentInfo, UsageSummary } from "../api/types";
+import type { AgentInfo, ModelCatalog, ModelOption, UsageSummary } from "../api/types";
 import {
   IconDatabaseOutline16,
   IconGaugeOutline16,
@@ -64,6 +65,10 @@ export function Dock({
   placeholder,
   model,
   modelFull,
+  modelCatalog,
+  modelBusy,
+  onPickModel,
+  onPickLevel,
   current,
   canFork,
   canCompact,
@@ -81,10 +86,16 @@ export function Dock({
   running: boolean;
   disabled: boolean;
   placeholder: string;
-  /** 右下的模型名(**不带 provider**,放不下)。只读回声:换模型在「设置」里。 */
+  /** 右下的模型名(**不带 provider**,放不下)。 */
   model: string;
   /** 鼠标悬停时显示的完整标签 `provider/model` —— 同 id 不同 provider 时靠它分辨。 */
   modelFull: string;
+  /** 模型清单 + 当前值(`GET /api/models`)。null = 取不到 → chip 只读(不画 chevron)。 */
+  modelCatalog: ModelCatalog | null;
+  /** 一次切换正在往返(禁用重复点)。 */
+  modelBusy: boolean;
+  onPickModel: (option: ModelOption) => void;
+  onPickLevel: (level: string) => void;
   /** 当前动作(由转录的最后一行推出)。idle 时为空串。 */
   current: string;
   /** 有会话才能分叉(命令菜单里那一条据此置灰)。 */
@@ -315,9 +326,16 @@ export function Dock({
             <div className="composer__trailing">
               {/* 智能体 chip:模型名左边,和模型一样是"这一轮会怎么走"的设置(见 AgentMenu)。 */}
               <AgentMenu agents={agents} value={agent} onPick={onPickAgent} />
-              <span className="composer__model" title={modelFull}>
-                {model || "未配置模型"}
-              </span>
+              {/* 模型 chip:与智能体 chip 同一形态(它以前是个只读 span,而"换模型在设置里"
+                  那句是空话 —— 设置页没有这个入口)。见 ModelMenu 的文件头。 */}
+              <ModelMenu
+                catalog={modelCatalog}
+                value={model}
+                full={modelFull}
+                busy={modelBusy}
+                onPick={onPickModel}
+                onPickLevel={onPickLevel}
+              />
               {running ? (
                 <button
                   type="button"

@@ -39,6 +39,54 @@ class SessionRename(BaseModel):
     title: str = Field(min_length=1)
 
 
+class ModelOption(BaseModel):
+    """模型菜单里的一条:`provider` + 模型 id。
+
+    **不给**"是否当前"这种状态:当前是**会话级**的(同一 runtime 服务多个会话),
+    `/api/config` 的 `default_model` 说的是"settings 里的默认",两者不是一件事。
+    界面上"现在是哪个"应当来自它自己刚刚设的那个值(见 `ModelView`)。
+    """
+
+    provider: str
+    id: str
+    #: 上下文窗口(tokens,来自 models.json)。0 = 取不到 → 界面不画占用条。
+    context_window: int = 0
+    #: 这个 provider 现在解析得出凭证吗(`/model` 用它标"未配置")。
+    credential_ok: bool = False
+
+
+class ModelCatalog(BaseModel):
+    """`GET /api/models` —— 可选模型清单(与 TUI 的 `/model` **同一份口径**)。
+
+    `currently` = 这次请求的会话**当前生效**的模型(可从会话里还原过,未必等于 settings
+    默认)。`session` 为 None 时它取自 runtime 的当前状态。
+    """
+
+    models: list[ModelOption] = Field(default_factory=list)
+    #: `provider/id`;空 = 没有可用模型(界面据此禁用菜单,而不是画一个空面板)。
+    currently: str = ""
+    #: 当前生效的思考级别。
+    thinking_level: str = ""
+    #: 思考级别的合法取值(界面照它画那一行,不自己写死一份)。
+    thinking_levels: list[str] = Field(default_factory=list)
+
+
+class ModelSelect(BaseModel):
+    """`POST /api/model` —— 换模型 / 换思考级别。
+
+    两个字段都是可选的、且**可以只给一个**:这让"只换级别"和"只换模型"各是一条请求,
+    不必为了改一个值而把另一个也传上来(那会覆盖掉会话里刚还原的值)。
+    `provider` + `model` 必须成对给(给一个会被 422 拒掉)。
+    """
+
+    provider: str | None = None
+    model: str | None = None
+    thinking_level: str | None = None
+    #: 作用在哪个会话上(会话级:换模型要落进**那个**文件,并改那个会话的还原点)。
+    #: 不给 = 只改 runtime 的当前状态(不落盘)。
+    session: str | None = None
+
+
 class SessionFork(BaseModel):
     """分叉。`at` = 从哪个 entry 分叉(默认 = 当前节点,即最后一个完整回合)。
 

@@ -20,6 +20,7 @@
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 from typing import Callable
 
@@ -85,3 +86,42 @@ class WebState:
     def end(self, session_id: str) -> None:
         """释放会话。必须放在 `finally`,否则一次异常就把会话永久卡住。"""
         self._busy.discard(session_id)
+
+    # ── 会话绑定 ──
+    def bind_session(self, runtime: QiRuntime, session: Session) -> None:
+        """**同步**把会话绑到 runtime 上(`bind_session`,不含事件)。
+
+        单独抽出来是因为有两个调用方:AG-UI 每一轮开跑前的 `bind()`(它还额外派发
+        `session_start`),以及 `/model` 这类**只改设置**的端点 —— 后者要做的事只有一件:
+        让 `model_change` / `thinking_level_change` 知道该写进哪个文件。
+        派发 `session_start` 是"这个扩展在这个会话上开工"的信号,换一次模型不该顺手发它。
+
+        用 getattr 取:测试替身(runtime_factory)不一定有 `bind_session`,
+        而缺一个不该让整个请求 500。
+        """
+        binder = getattr(runtime, "bind_session", None)
+        if callable(binder):
+            binder(session)
+
+    async def bind(self, runtime: QiRuntime, session: Session, reason: str = "startup") -> None:
+        """把会话绑到 runtime 上,**并**告知扩展"会话已绑定"(`session_start`)。
+
+        为什么 web 必须显式做这件事:一个 runtime 服务同一 cwd 下的**多个**会话
+        (`runtime_for` 按 cwd 缓存),而 `_active_session` 只在一个回合内有效 ——
+        于是"换模型/级别该写进哪个文件"与"续会话按 entry 还原"这两件事都没有落点。
+        CLI 与 TUI 各自在自己那一处调 `bind_session` + `start_session`,web 此前**一处都没有**,
+        所以:web 端的 `/model` 不落盘、续会话不还原、`session_start` 从不派发 ——
+        而 qi-mcp 的**直连工具**正挂在那个事件上(`directTools` 在 web 端从未注册过)。
+
+        两个方法都用 getattr 取:测试替身(runtime_factory)不一定两个都有,
+        而缺一个不该让整轮跑不起来。`bind_session` 先、`start_session` 后:
+        事件处理器在 `session_start` 里就会读 `ctx.model`,那时必须已经是这个会话的值。
+        """
+        self.bind_session(runtime, session)
+        starter = getattr(runtime, "start_session", None)
+        if not callable(starter):
+            return
+        # 同一 runtime 对同一会话本来就幂等(宿主自己记账),这里不必再记一遍。
+        result = starter(session, reason=reason)
+        if inspect.isawaitable(result):
+            await result                                   # 同步实现也认(替身常见)

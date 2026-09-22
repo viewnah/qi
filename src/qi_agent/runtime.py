@@ -233,9 +233,14 @@ class QiRuntime:
         #: 后者只管一个回合,而换模型 / 换思考级别是**回合外**发生的(扩展在 handler 里
         #: `api.setModel`、TUI 的 `/model`),那时也必须知道该往哪个文件里记一笔。
         self._bound_session: Session | None = None
-        #: 已从会话里**还原过设置**的会话 id。同一会话反复绑定时不该重复还原 ——
-        #: 否则用户切到 glm 后重新绑一次,又会被会话里记的旧值顶回默认。
-        self._restored_sessions: set[str] = set()
+        #: 上一轮**已还原过设置**的那个会话 id(见 `bind_session`)。
+        #:
+        #: 判据是"绑的会话换了没有",**不是**"这个 id 还原过没有":早先记的是一个
+        #: `set[str]`,于是同一 runtime 里 A → B → A 切回来时,A 不再还原 ——
+        #: 而一个 runtime 服务多个会话正是 web 的常态(`runtime_for` 按 cwd 缓存),
+        #: 表现是"切回会话 A,却还拿着 B 的模型"。同级重绑(每回合开跑前都会调一次)
+        #: 仍然不重复还原,那才是这个判据要防的事。
+        self._restored_session: str | None = None
         #: `--model` / `--thinking`(或 `--model p/m:级别`)在命令行上给过 —— 命令行优先级
         #: **高于**会话里记的旧值,所以这类运行不从会话恢复(见 `_restore_context_settings`)。
         self._model_pinned = model_override is not None
@@ -256,8 +261,15 @@ class QiRuntime:
             stored=TrustStore().get(self.cwd))
         #: 信任是否已被**最终**定下(见 `_bind_project_trust`)。构造期那份可能是临时的。
         self._trust_bound = False
-        #: 本会话里思考级别被**显式**设过吗(是 → 换模型不再按 `modelThinkingLevels` 覆盖)
-        self._thinking_pinned = False
+        #: 本会话里思考级别被**显式**设过吗(是 → 换模型不再按 `modelThinkingLevels` 覆盖)。
+        #: 记的是**会话 id** 而不是一个 bool:显式选择属于它被设的那个会话,否则 web 那种
+        #: "一个 runtime 服务多个会话"的场景里,在 A 上设一次之后切到 B 也还带着它
+        #: (A 的显式选择泄漏给了 B)。判断见 `_level_pinned()`。
+        self._level_pins: set[str] = set()
+        #: 思考级别被**命令行**钉住(`--thinking`,或 `--model p/m:级别`)—— 对所有会话生效。
+        #: 与 `_level_pins` 分开:那是会话级的,这个是**整场运行**的。
+        #: 命令行给的值是当次显式覆盖,不该被会话里记的旧值顶掉(与 `_model_pinned` 对称)。
+        self._level_pinned_cli = False
         declared_by_repo = (getattr(scopes.get("project"), "defaultProjectTrust", None)
                             or "").strip()
         if declared_by_repo:
@@ -371,7 +383,15 @@ class QiRuntime:
                  or self.settings.defaultThinkingLevel
                  or DEFAULT_THINKING_LEVEL)
         self.thinking_level = normalize_thinking_level(level)
+        # 命令行给过级别(任一形式)→ 整场运行都不再从会话里还原级别:
+        # 它是**当次**的显式覆盖,与 `--model` 同级(见 `_restore_context_settings`)。
+        self._level_pinned_cli = thinking_level is not None or _flag_thinking is not None
         self.llm_exec = llm or self._make_client(default)
+        #: 还原失败时的**退路**。`llm_exec` 是**可变**的(换模型会整个换掉它),
+        #: 而"会话里记的模型没能恢复"时不能只是记一句 note 就完事 —— 那会把它留在
+        #: **上一个会话**的模型上(web 那种一个 runtime 服务多个会话的场景里必然发生)。
+        #: 保留构造期这份,才谈得上"已用默认模型继续"。见 `_restore_context_settings`。
+        self._default_llm_exec = self.llm_exec
         # CLI 的工具收窄(pi 的 `--tools` / `-xt` / `-nt` / `-nbt`)。
         # 必须等扩展注册完(B)才能算 —— `--no-builtin-tools` 要知道每个工具的来源。
         self._apply_tool_flags(tools=tools, exclude_tools=exclude_tools,
@@ -853,11 +873,26 @@ class QiRuntime:
 
         传 `None` 解绑(会话被删掉时用)。绑定同时把会话里记的模型/级别恢复过来 ——
         与 pi 一样:**先看会话记了什么**,没有再退回 settings 默认。
+
+        **绑的会话换了才还原**(见 `_restored_session`):同级重绑(web 每回合开跑前
+        都会调一次)不重复还原,而 A → B → A 切回来会 —— 后者以前不还原,于是
+        "切回 A 却还拿着 B 的模型"。
         """
         self._bound_session = session
-        if session is not None and session.id not in self._restored_sessions:
-            self._restored_sessions.add(session.id)
+        if session is not None and session.id != self._restored_session:
+            self._restored_session = session.id
             self._restore_context_settings(session)
+
+    def _level_pinned(self) -> bool:
+        """本回合的思考级别是否被**显式**设过(命令行 / 本会话里的 `/thinking`)。
+
+        命令行那档对所有会话生效;会话那档只认**当前绑定的这个会话** ——
+        否则"在 A 上设过"会泄漏到 B(见 `_level_pins`)。
+        """
+        if self._level_pinned_cli:
+            return True
+        session = self.current_session()
+        return session is not None and session.id in self._level_pins
 
     def current_session(self) -> Session | None:
         """当前会话:回合内用回合绑定的那个,否则用前端绑定的那个。"""
@@ -904,6 +939,10 @@ class QiRuntime:
             if resolved is not None:
                 self.llm_exec = self._make_client(resolved)
             else:
+                # **真的退回默认**,而不是只记一句 note:此刻 `llm_exec` 可能还是
+                # **上一个会话**的模型(web:一个 runtime 服务多个会话),留在那里
+                # 就会拿别人的模型跑,而提示词里还写着"已用默认模型继续" —— 那是谎话。
+                self.llm_exec = self._default_llm_exec
                 self.notes.append(
                     f"会话里记的模型 {provider}/{model_id} 没能恢复({reason});"
                     "已用默认模型继续")
@@ -911,7 +950,12 @@ class QiRuntime:
         if level is None:
             # 老会话(这个字段上线前建的):补一条,避免它每次都被当"没记过"
             self._record_thinking_change(session)
-        elif not self._thinking_pinned:
+        elif not self._level_pinned_cli:
+            # **只尊重命令行那档**:会话里记的级别**就是**用户在这个会话上显式选的那个
+            # (`set_thinking_level` 落的就是这条 entry),所以还原它不是在"覆盖用户的选择",
+            # 而是在把它装回来。会话级的 `_level_pins` 只用在一处 —— `set_model` 的
+            # 自动联动(`modelThinkingLevels` 不该覆盖显式选择)—— 不要在这里也用它,
+            # 否则"A 上设过 high"会让之后切回 A 读到的还是 B 的 low。
             self.thinking_level = normalize_thinking_level(level)
             client = getattr(self, "llm_exec", None)
             if isinstance(client, ThinkingLLMClient):
@@ -961,7 +1005,7 @@ class QiRuntime:
         # 本会话里被显式设过(`/thinking` / shift+tab / `api.setThinkingLevel`)就不再覆盖:
         # 显式选择 > 配置。
         tuned = model_thinking_level(self.settings, resolved)
-        if tuned is not None and not self._thinking_pinned:
+        if tuned is not None and not self._level_pinned():
             adopted = normalize_thinking_level(tuned)
             if adopted != self.thinking_level:
                 self.thinking_level = adopted
@@ -1007,7 +1051,13 @@ class QiRuntime:
             client.thinking_level = self.thinking_level
         self._emit_notice("thinking_level_select", {
             "level": self.thinking_level, "previous_level": previous, "source": source})
-        self._thinking_pinned = True
+        # 记在**当前会话**上(没有会话就退回命令行那一档的语义:本次运行有效)——
+        # 这样"在 A 上设过"不会泄漏到 B(见 `_level_pinned`)。
+        session = self.current_session()
+        if session is not None:
+            self._level_pins.add(session.id)
+        else:
+            self._level_pinned_cli = True
         # 与 `set_model` 对称:只在级别**真的变了**时才落 entry(pi 的 `isChanging`)
         if previous != self.thinking_level:
             self._record_thinking_change()
@@ -1621,7 +1671,14 @@ class QiRuntime:
 
     async def stream(self, text: str, session: Session, agent_override: str | None = None,
                      abort: AbortSignal | None = None, source: str = "interactive"):
-        """处理一轮用户输入,产出事件。agent_override=manual(--agent / /agent)。
+        """处理一轮用户输入,产出事件。
+
+        **`agent_override` 已不再有任何作用(P-E4c 遗留)**:它此前是"这一轮直派哪个
+        agent"的入口,而 core 收窄成单 agent 之后角色归 qi-agents(靠 `before_agent_start`
+        改提示词,E14)—— 流水线里没有任何地方读它了。参数留着不删是为了让旧调用点
+        (qi-web 曾用它)不因签名变化而崩,但**它不会生效、也不报错**,所以:
+        要"以某个角色跑"请用 qi-agents 的 `--ext agent=<名>`,或自己挂 `before_agent_start`。
+        (web 端正是栽在这里 —— 界面显示着角色、提示词里却没有;见 docs/extensions.md §3.6。)
 
         `source` 进 `input` 事件的 payload(交互式 / 无头 / rpc)—— 扩展据此决定
         “要不要弹问”。目前调用方都用默认值:精确标签等真正需要它的人来传。

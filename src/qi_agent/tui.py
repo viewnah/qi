@@ -49,8 +49,9 @@ from textual.widgets.option_list import Option
 from textual.worker import Worker, WorkerState
 
 from .abort import AbortSignal
-from .auth import AuthStore, resolve_key
-from .config import ConfigError, ResolvedModel, resolve_default_model, resolve_model
+from .auth import AuthStore
+from .config import (ConfigError, ResolvedModel, resolve_default_model, resolve_model,
+                     selectable_models)
 from .llm import (DEFAULT_THINKING_LEVEL, THINKING_LEVELS, LiteLLMClient, ThinkingLLMClient,
                   normalize_thinking_level)
 from .loader import LoadError
@@ -4073,30 +4074,22 @@ class QiTui(App):
     def _model_options(self) -> list[tuple[str, str, bool]]:
         """可选模型(`/model` / ctrl+l / ctrl+p / `/scoped-models` 共用)。
 
-        **预置兜底那批只有“能解析出凭证”时才列出来** —— 用户只登录了 deepseek,就不该在
-        `/model` 里看到 moonshot / glm / …(他们的原话:“我还没登录,怎么就能选”)。
-        没登录又想用哪个,就去 `/login`(那里的选择器列全部预置)。
+        清单本身来自 **core** 的 `selectable_models()`(web 端的模型菜单用同一份 ——
+        两处各写一份口径,迟早一个改了另一个没改):**预置兜底那批只有"能解析出凭证"
+        时才列出来**,而 `models.json` 里**显式写过**的 provider 不受这条限制。
 
-        `models.json` 里**显式写过**的 provider 不受这条限制 —— 那是用户自己的配置,
-        可能正在配(缺密钥会在请求时报清楚)。
+        这里只做一件 TUI 自己的事:把"当前是哪个"标出来(`is_current`)。
         """
         rt = self._rt
         if rt is None:
             return []
         current = self._model
         cfg = getattr(rt, "cfg", None)
-        preset_only = set(getattr(cfg, "presetProviders", None) or ())
-        store = self._auth_store()
-        out: list[tuple[str, str, bool]] = []
-        providers = getattr(cfg, "providers", None) or {}
-        for provider, prov in sorted(providers.items()):
-            if provider in preset_only and not resolve_key(provider, prov.apiKey, store).ok:
-                continue
-            for entry in prov.models:
-                is_current = bool(current and current.provider == provider
-                                  and current.model == entry.id)
-                out.append((provider, entry.id, is_current))
-        return out
+        if cfg is None:
+            return []
+        return [(provider, model,
+                 bool(current and current.provider == provider and current.model == model))
+                for provider, model in selectable_models(cfg, store=self._auth_store())]
 
     def _auth_store(self) -> Any:
         """凭证库:优先用 runtime 身上那个(它带着 `--api-key` 的覆盖);拿不到就用真的。"""

@@ -30,6 +30,7 @@ import type {
   FileListing,
   McpList,
   Meta,
+  ModelCatalog,
   RunAgentInput,
   SessionDetail,
   SessionList,
@@ -194,6 +195,31 @@ export const api = {
   agentList: async (): Promise<AgentInfo[]> => (await api.agents()).agents,
 
   config: () => request<ConfigView>("/api/config"),
+
+  /**
+   * 可选模型清单 + 当前值(`GET /api/models`)。
+   *
+   * `session` 给了就按**那条会话**的口径答(后端会先绑定它)—— "当前是哪个模型"是
+   * 会话级的状态,而不是宿主进程的全局状态。
+   */
+  models: (session: string | null = null) =>
+    request<ModelCatalog>(
+      `/api/models${session === null ? "" : `?session=${encodeURIComponent(session)}`}`,
+    ),
+
+  /**
+   * 换模型 / 换思考级别(`POST /api/model`)。两个字段都可选、可只给一个 ——
+   * 只给一个时另一个保持会话里的值(实现是 PATCH 语义,不是 PUT)。
+   *
+   * 返回更新后的清单:界面在同一次往返里把 chip 的字与菜单里的 ✓ 一起改掉。
+   */
+  setModel: (
+    body: { provider?: string; model?: string; thinking_level?: string; session?: string | null },
+  ) =>
+    request<ModelCatalog>("/api/model", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 
   skills: () => request<SkillList>("/api/skills"),
 

@@ -2297,6 +2297,24 @@ chip(空态) = "auto"(带 agent 图标,位于模型名左边:x 1092.3 / 模型 1
 页面错误 = 0
 ```
 
+#### 后续修正(2026-09,P-E4c 之后)
+
+上面那张"实测"表是**分派器还在 core 里**的时候录的。P-E4c 把角色移出 core 之后,
+`runtime.stream(agent_override=…)` 这个参数**仍在签名里、但流水线里已经没有任何地方读它** ——
+于是这一段变成**静默空转**:chip 照常显示、前端照常把 `forwardedProps.agent` 送上来、
+后端照常"接受"它,只是角色提示词从没进过系统提示词(不报错,也不生效)。
+
+现在改走**角色本来那条路**:`qi_web.serve.pin_role()` 在这个 runtime 上挂一个
+`before_agent_start`,把钉住角色的正文拼进本轮提示词(`app.py` 的 AG-UI 生成器每轮开跑前调它)。
+项目级角色照 `project_trusted` 过闸门 —— 与 qi-agents 里 `--ext agent=<项目角色>` 同一条规矩。
+
+一个已知的粒度限度:`WebState` 按 cwd 缓存 runtime(一个 runtime 服务一个 cwd),
+所以钉住值挂在这个 runtime 上 —— **同一 cwd 下的多个浏览器客户端会互相覆盖**(取最后一次请求)。
+与"不落盘、刷新回 auto"的既有口径一致;要按客户端隔离得单开一条通道。
+
+回归测试见 `tests/test_web_extensions_api.py` 的三条:钉住生效 / 切回 auto 生效 /
+项目级要过信任。
+
 #### 没做的
 
 - **不显示"本轮实际派给了谁"**:那是转录里分派行的活(它一直在写)。chip 只回答"设置成什么",
@@ -2597,3 +2615,115 @@ chip 菜单项    = [proj, proj2, proj1, 添加工作区…]     ← 能切、�
 发第一句       → 会话数 3,新会话 cwd = proj2          ← 落到刚选的目录
 左栏 3 行、会话视图、页面错误 = 0
 ```
+
+### 18.29 模型 chip:从只读回声变成可切换(2026-09)
+
+上一个切片补会话绑定时发现的一处**空白**:`WebState.bind()` 的注释写着"没有它,web 端的
+`/model` 不落盘" —— 而 web 端**根本没有 `/model`**。输入卡右下那个模型名是一个只读
+`<span>`,它的 CSS 注释写着"换模型在「设置」里",而设置页只有 provider 卡片与凭证,
+没有换模型的入口。TUI 有 `/model` / ctrl+l / ctrl+p,web 一条都没有。
+
+#### 补了什么
+
+| 面 | 内容 |
+| --- | --- |
+| `GET /api/models?session=` | 可选模型清单 + **当前值**(会话级)+ 思考级别与合法档 |
+| `POST /api/model` | 换模型 / 换级别(`{provider?, model?, thinking_level?, session?}`,可只给一个) |
+| 输入卡 chip | 原来的只读 `<span>` → `ModelMenu`(与智能体 chip 同一形态、同一套 portal 定位) |
+
+四条口径:
+
+- **清单口径与 TUI 的 `/model` 同一份** —— 都走 core 新收的 `config.selectable_models()`
+  (预置兜底那批要"解析得出凭证"才列;`models.json` 里显式写过的 provider 不过滤)。
+  两处各写一份清单,迟早一个改了另一个没改。TUI 那个 `_model_options()` 现在只负责
+  补一个 `is_current` 标志。
+- **`GET`/`POST` 都带 `session`** —— "当前是哪个模型"是**会话级**的(续会话会按会话里记的
+  `model_change` 还原,未必等于 settings 默认)。不给 `session` 就答 runtime 的当前状态。
+- **两个字段是 PATCH 语义**,不是 PUT:只给 `thinking_level` 时模型保持会话里的值。
+  实现成 PUT 的话,"只调级别"会顺手把模型改回 settings 默认 —— 那是最难查的一类。
+- **模型与级别在同一面板的两节**。级别那一节只在**当前模型会思考**时出现:对不思考的
+  模型显示"思考级别"是纯粹的噪音。分成两个 chip 会让输入卡右下变成四个控件。
+
+`GET`/`POST` 返回**同一份** `ModelCatalog`:`POST` 之后界面直接拿它替换本地那份 ——
+chip 上的字、菜单里的 ✓、上下文窗口一次全对(不做乐观更新:自己拼容易漏)。
+
+#### 顺手修掉的三处基座缺陷(都是"静默串会话")
+
+这三条都不是 web 独有的,但**只有在"一个 runtime 服务多个会话"时才会显形** ——
+而 web 正是这个形态(`WebState.runtime_for` 按 cwd 缓存,一个 runtime 覆盖该 cwd 下
+**所有**会话)。CLI/TUI 一次运行通常只服务一个会话,所以一直没被发现。
+
+| # | 症状 | 根因 |
+| --- | --- | --- |
+| 1 | A → B → A 切回来,**还拿着 B 的模型** | `_restored_sessions` 是一个 `set[str]`:同一个 id 还原过一次就再也不还原。判据应当是"**绑的会话换了没有**"(`_restored_session` 记上一个),同级重绑仍不重复还原 |
+| 2 | 在 A 上设过 `/thinking`,之后**任何**会话里记的级别都不再生效 | `_thinking_pinned` 是一个 `bool`,置 True 就整场运行有效。它该是**会话级**的(`_level_pins: set[session_id]`),另有一个 `_level_pinned_cli` 管命令行那档 |
+| 3 | 会话里记的模型**失效**时(provider 删了 / 缺凭证),界面说"已用默认模型继续",实际用的是**上一个会话的模型** | 那个分支只 append 了一条 note,`llm_exec` 原封不动。现在真的退回 `_default_llm_exec`(构造期那份) |
+
+第 3 条是**端到端抓出来的**:单测里"重开一个 runtime 只服务一个会话",所以 `llm_exec`
+恰好就是默认那份,看不出问题。真宿主上 A 切到缺凭证的 `beta/m3`、再问 A,拿到的是
+B 的 `alpha/m2`(而 note 里写着"已用默认模型继续")。
+
+还有一条**同族**的:`--thinking` / `--model p/m:级别` 是当次的显式覆盖,可与"会话级
+显式选择"合流进了同一个 bool —— 于是 `--thinking minimal` 续一条记着 `high` 的会话时,
+还原分支会把 `high` 装回来(命令行被静默忽略)。现在命令行那档单独记
+(`_level_pinned_cli`),而**会话级**那档不再拦"还原"——因为会话里记的级别**就是**用户在
+那个会话上显式选的那个,还原它不是在覆盖选择,而是在装回来。
+
+回归见 `tests/test_session_model_entries.py` 的 5 条(切回来要还原 / 同级重绑不还原 /
+级别不跨会话泄漏 / 命令行压过会话记录 / 还原失败真的退回默认)。
+
+#### 顺带:一个静默失效的设计门禁
+
+`check-dsh-tokens.mjs` 找 dsh 参照物的路径写的是 `join(ROOT, "..", "data", …)` ——
+那是前端还住在根目录 `web/` 时的相对位置。切片 3b 把前端整包搬进
+`extensions/qi-web/ui` 之后,那个路径不再存在,于是**这个门禁一直在"跳过"而不是在检查**
+(它还专门有一条"No DSH → 明确跳过"的分支,所以谁也不会注意到)。
+
+> **路径搬了、守卫静默失效**,本仓库这是第二次(另一次是 `contract.test.ts` 刮 python
+> 源文件那条,见上一个切片的记录)。两次的形状完全一样:**守卫的"找不到参照物"分支
+> 比失败更安静**。
+
+修好后 90 条颜色令牌 + 13 条字体阶梯逐条对拍全一致(也就是说这段时间里没有人
+真的改坏色值,但门禁确实不在值守)。
+
+#### 实测(真 Chrome/CDP,1440 宽;真 uvicorn 宿主 + 两个 provider 的 fixture)
+
+脚本:`scripts/e2e_ui_model.py`(25 项断言 = 20 种检查,"切会话 / 切换请求往返"这类按次断言,全部通过)。
+
+```text
+输入卡右下 = [智能体 chip x=1033, 模型 chip x=1121]        两个都带 chevron(可点)
+打开 A     → chip = "m1";后端 /api/config 的 default 也是 m1
+模型菜单   = ["✓ m1 / alpha · 32k", "m2 / alpha · 64k", "m3 / beta · 缺凭证 · 128k",
+              —— 分隔线「思考级别」——
+              "off", "minimal", "low", "✓ medium", "high", "xhigh", "max"]
+层叠       = elementFromPoint(菜单左上+20,20) 命中菜单(portal 压得住输入卡上方的行)
+A 选 m2    → chip = "m2";落盘 [model_change m1, thinking_level_change medium,
+                              model_change m2]
+切到 B     → B 是空会话,继承当前设置(设计语义,不是泄漏)
+B 选 m1    → chip = "m1";落盘 [model_change m2, thinking_level_change medium,
+                              model_change m1]      ← 注意起点是 m2:它建立时继承的就是 m2
+切回 A     → chip = "m2"    ← 修复前这里是 "m1"(B 的残留)
+再切到 B   → chip = "m1"
+A 选 high  → chip 仍是 "m2"(级别不占 chip);落盘多一条 thinking_level_change high
+页面错误   = 0
+```
+
+后端 6 条用例在 `tests/test_web_api.py`(清单口径含缺凭证标注 / 切换落进**那条**会话 /
+级别同理且未知档 422 / 两个字段互不影响 / 半个模型 422 与不存在会话 404 /
+两条会话各自的模型互不影响)。
+
+前端另有 4 条:`client.test.ts` 的**变异守卫**(路由路径与请求体字段名两侧对齐 ——
+字符串写错的症状是运行时 404/422,而这是前端与宿主之间唯一的桥)与
+`ModelMenu.test.ts` 的 `bareModelName`(模型 id 自己带斜杠时**只能按第一个斜杠切**,
+§18.13 的老教训)。
+
+#### 没做的
+
+- **不给"某个会话的模型"落盘以外的地方**:模型选择仍然写在会话文件里
+  (`model_change`),没有落到 settings —— 与 TUI 的 `/model` 一致(它也只作用于当前运行;
+  写回 settings 是 `/settings` 那类显式动作)。
+- **不做 provider 的启停 / 增删**:那是 `qi init` 与 `models.json` 的事。web 端只做
+  "**在用哪个**"。
+- **级别不显示在 chip 上**:它只在菜单里带 ✓。chip 那块地方放两个值会挤掉模型名。
+- **不做模型搜索框**:清单现在按 provider 分组列完(十几个量级),加搜索是过度设计;
+  真长起来了再说。

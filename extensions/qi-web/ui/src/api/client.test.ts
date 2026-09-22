@@ -6,6 +6,9 @@
  *   1. 不依赖 `event:` —— 类型在 JSON 里,切帧只看 `data:`;
  *   2. **半帧不能丢** —— 网络分块会从任意位置切断,尾巴必须原样留下次拼。
  */
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { parseFrames } from "./client";
 
@@ -50,5 +53,45 @@ describe("parseFrames", () => {
   it("data 冒号后的一个空格被去掉(规范要求)", () => {
     const r = parseFrames('data:{"a":1}\n\n');
     expect(r.payloads).toEqual(['{"a":1}']);
+  });
+});
+
+describe("模型面:客户端与宿主的两侧对齐", () => {
+  /**
+   * 这两条是**变异验证**:在 `app.py` 里改掉路由路径(或换个请求体字段名),
+   * 它们必须变红。理由与 `contract.test.ts` 同一条 —— 前端与宿主之间没有类型系统,
+   * 唯一的桥梁是字符串;而字符串写错了的症状是运行时 404/422,不是编译错误。
+   */
+  const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+  const appPy = readFileSync(resolve(ROOT, "qi_web/app.py"), "utf8");
+  /** 请求/响应模型在 `schemas.py` —— 字段名那一半的真相在那里。 */
+  const schemasPy = readFileSync(resolve(ROOT, "qi_web/schemas.py"), "utf8");
+  const clientTs = readFileSync(
+    resolve(dirname(fileURLToPath(import.meta.url)), "client.ts"),
+    "utf8",
+  );
+
+  it("宿主真的注册了 /api/models 与 /api/model", () => {
+    expect(appPy).toContain('@app.get("/api/models"');
+    expect(appPy).toContain('@app.post("/api/model"');
+  });
+
+  it("客户端打的就是这两个路径", () => {
+    expect(clientTs).toContain("`/api/models");
+    expect(clientTs).toContain('request<ModelCatalog>("/api/model"');
+  });
+
+  it("请求体字段名两侧一致(改一个而没改另一个 = 422)", () => {
+    // 宿主用 pydantic 收这四个键;前端只要拼错一个,后端就收不到它 ——
+    // 而症状是"点了没反应"(字段是可选时不会 422),不是编译错误。
+    for (const field of ["provider", "model", "thinking_level", "session"]) {
+      expect(schemasPy, `宿主不认识 ${field}`)
+        .toContain(`${field}: str | None = None`);
+    }
+    for (const field of ["provider", "model", "thinking_level", "session"]) {
+      expect(clientTs, `前端没送 ${field}`).toMatch(
+        new RegExp(`${field}\\?: string`),
+      );
+    }
   });
 });

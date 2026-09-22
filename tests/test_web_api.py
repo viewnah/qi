@@ -17,6 +17,7 @@ import httpx
 import pytest
 
 from qi_agent import paths
+from qi_agent.config import load_config, resolve_model
 from qi_agent.llm import LLMDelta, ToolCallOut
 from qi_agent.runtime import QiRuntime, RuntimeConfig
 from qi_agent.session import SessionStore
@@ -827,3 +828,267 @@ async def test_config_exposes_the_default_model_context_window(client):
     """
     body = (await client.get("/api/config")).json()
     assert body["default_model_context_window"] == 128000
+
+
+# ── 会话绑定:web 是"一个 runtime 服务多个会话" ──────────────
+#
+# 这一组钉的是 web 作为**第三个 consumer** 漏掉的那一半:CLI 与 TUI 各自都会
+# `bind_session` + `start_session`,web 此前一处都没有 —— 于是换模型不落盘、
+# 续会话不还原、`session_start` 从不派发(qi-mcp 的直连工具正挂在那上面)。
+
+@pytest.mark.asyncio
+async def test_turn_binds_the_session_and_fires_session_start(tmp_path, monkeypatch):
+    """跑一轮之前必须**绑定会话 + 派发一次 `session_start`**。"""
+    from qi_agent.extensions import ExtensionApi, ExtensionBus
+
+    seen: list[tuple[str, str]] = []
+
+    def factory(cwd):
+        _minimal_config(tmp_path, monkeypatch)
+        rt = QiRuntime(cwd=Path(cwd), runtime_cfg=RuntimeConfig(workdir=Path(cwd)),
+                       session_store=SessionStore(root=tmp_path / "sessions"),
+                       llm=StreamingStub())
+        api = ExtensionApi(catalog=rt.catalog, bus=rt.bus, _name="probe", _host=rt)
+        api.on("session_start", lambda payload, ctx: seen.append(
+            (str(payload.get("reason")), str(payload.get("session")))))
+        return rt
+
+    state = WebState(tmp_path, runtime_factory=factory)
+    app = create_app(cwd=tmp_path, state=state,
+                     workspace_store=WorkspaceStore(tmp_path / "workspaces.json"))
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        sid = (await client.post("/api/sessions", json={"title": "绑定", "cwd": str(tmp_path)})).json()["id"]
+        await _agui(client, sid)
+
+    assert seen == [("resume", sid)], f"session_start 没派发或派发错:{seen}"
+    # 绑定会在新会话上写**设置类 entry 的起点**(`_restore_context_settings` 空分支)。
+    # 这里只断言 `thinking_level_change`:替身的 LLM 客户端没有 `spec`,所以
+    # `model_change` 那条按设计跳过(它要求"当前客户端有个真实的模型")。
+    fresh = SessionStore(root=tmp_path / "sessions").get(sid)
+    assert fresh is not None
+    kinds = [e.get("type") for e in fresh.entries]
+    assert "thinking_level_change" in kinds, kinds
+
+
+@pytest.mark.asyncio
+async def test_binding_survives_a_runtime_without_the_hooks(tmp_path, monkeypatch):
+    """替身 runtime 没有 `bind_session` / `start_session` 时不该把整轮搞崩。
+
+    三种替身在这个仓库里都真实存在(只实现 `stream` 的、只有 `bind_session` 的、
+    两个都有的),所以两个方法都用 getattr 取 —— 但**缺一个不该让一轮跑不起来**。
+    """
+    class Bare:
+        """只有 `stream` 的替身:两个钩子都没有。"""
+
+        def __init__(self, root: Path) -> None:
+            self.sessions = SessionStore(root=root)
+
+        async def stream(self, text, session, agent_override=None, abort=None):
+            from qi_agent.models import AgentEvent
+
+            yield AgentEvent(kind="agent_start", agent="qi")
+            yield AgentEvent(kind="text_delta", text="好")
+            yield AgentEvent(kind="agent_end", text="好", data={"usage": {}})
+
+    _minimal_config(tmp_path, monkeypatch)
+    state = WebState(tmp_path, runtime_factory=lambda cwd: Bare(tmp_path / "sessions"))
+    app = create_app(cwd=tmp_path, state=state,
+                     workspace_store=WorkspaceStore(tmp_path / "workspaces.json"))
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        sid = (await client.post("/api/sessions", json={"title": "替身", "cwd": str(tmp_path)})).json()["id"]
+        events, _ = await _agui(client, sid)
+
+    assert _kinds(events)[-1] == "RUN_FINISHED"
+
+
+# ── 模型面:清单 + 切换(会话级)──────────────────────────
+#
+# 这一组钉的是 web 端此前**根本没有的入口**:界面能显示模型名、却换不了
+# (TUI 有 `/model` / ctrl+l / ctrl+p)。三条不变量:
+#   1. 清单口径与 TUI 的 `/model` **同一份**(都走 core 的 `selectable_models`);
+#   2. 切换走 `runtime.set_model()` / `set_thinking_level()` —— 事件与落盘都在里面;
+#   3. 带 `session` 时**先绑定再设**,所以 entry 写进那条会话的文件,
+#      而不是"上一次用了哪个会话"。
+
+def _model_config(base: Path, monkeypatch) -> None:
+    """两个 provider 的最小配置:alpha 明文 key(可用)、beta 走缺失的环境变量。"""
+    (base / "models.json").write_text(json.dumps({"providers": {
+        "alpha": {"api": "openai-completions", "apiKey": "k-alpha",
+                  "models": [{"id": "m1", "contextWindow": 32000}, {"id": "m2"}]},
+        "beta": {"api": "openai-completions", "apiKey": "$QI_TEST_NO_SUCH_KEY",
+                 "models": [{"id": "m3"}]},
+    }}), encoding="utf-8")
+    home = base / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "settings.json").write_text(
+        json.dumps({"defaultProvider": "alpha", "defaultModel": "m1"}), encoding="utf-8")
+    monkeypatch.setenv(paths.QI_AGENT_CONFIG, str(base / "models.json"))
+    monkeypatch.setenv(paths.QI_AGENT_HOME, str(home))
+    monkeypatch.delenv("QI_TEST_NO_SUCH_KEY", raising=False)
+
+
+def _model_app(tmp_path: Path, monkeypatch):
+    _model_config(tmp_path, monkeypatch)
+    sessions = SessionStore(root=tmp_path / "sessions")
+
+    def factory(cwd):
+        cfg, _ = load_config(Path(cwd))
+        llm = StreamingStub()
+        # 替身也要有 `spec` —— 这是真客户端的契约:`_record_model_change`(新会话的
+        # **起点**那两条 entry)与模型标签读的都是它。没有它,新会话的起点就写不进去,
+        # 于是"绑定时把当前值记成起点"这一步静默跳过,后面再绑就跟着别的会话漂。
+        llm.spec = resolve_model(cfg, "alpha", "m1")
+        return QiRuntime(cwd=Path(cwd), runtime_cfg=RuntimeConfig(workdir=Path(cwd)),
+                         session_store=sessions, llm=llm)
+
+    return create_app(cwd=tmp_path, state=WebState(tmp_path, runtime_factory=factory),
+                      workspace_store=WorkspaceStore(tmp_path / "workspaces.json"))
+
+
+@pytest.mark.asyncio
+async def test_models_endpoint_lists_what_you_can_actually_use(tmp_path, monkeypatch):
+    """清单 = provider + 模型 id + 上下文窗口 + 「解析得出凭证吗」。
+
+    beta 的 apiKey 指向一个不存在的环境变量 → 仍**列出**它(`models.json` 里显式写过
+    的 provider 不受凭证门槛限制),但 `credential_ok=False` —— 界面据此标"未配置",
+    而不是把这一条悄悄藏起来(用户会以为自己的配置没生效)。
+    """
+    app = _model_app(tmp_path, monkeypatch)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        body = (await client.get("/api/models")).json()
+
+    assert [(m["provider"], m["id"]) for m in body["models"]] == [
+        ("alpha", "m1"), ("alpha", "m2"), ("beta", "m3")]
+    window = {m["id"]: m["context_window"] for m in body["models"]}
+    assert window["m1"] == 32000, "上下文窗口来自 models.json"
+    assert window["m2"] == 128000, "没写就用默认值(不是 0)"
+    ok = {(m["provider"], m["id"]): m["credential_ok"] for m in body["models"]}
+    assert ok[("alpha", "m1")] is True
+    assert ok[("beta", "m3")] is False
+    assert body["currently"] == "alpha/m1"
+    assert "off" in body["thinking_levels"] or "medium" in body["thinking_levels"]
+
+
+@pytest.mark.asyncio
+async def test_switching_the_model_records_it_in_that_session(tmp_path, monkeypatch):
+    """**核心一条**:换模型要落进**那条会话**的文件(所以先绑定再设)。
+
+    这也是本扩展此前整条链路缺失的地方:`set_model()` 会写 `model_change`,而写进哪个
+    文件取决于 `bind_session` —— 不绑定就静默不写(不报错),于是刷新回来看还是旧模型。
+    """
+    app = _model_app(tmp_path, monkeypatch)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        sid = (await client.post("/api/sessions",
+                                 json={"title": "换模型", "cwd": str(tmp_path)})).json()["id"]
+        res = await client.post("/api/model",
+                                json={"provider": "alpha", "model": "m2", "session": sid})
+        assert res.status_code == 200, res.text
+        assert res.json()["currently"] == "alpha/m2"
+
+        # GET 也要反映它(同一个 runtime 的服务面,不是两条互不相干的路)
+        got = (await client.get("/api/models", params={"session": sid})).json()
+        assert got["currently"] == "alpha/m2"
+
+    session = SessionStore(root=tmp_path / "sessions").get(sid)
+    assert session is not None
+    changes = [e for e in session.branch() if e.get("type") == "model_change"]
+    assert [(e["provider"], e["model_id"]) for e in changes][-1] == ("alpha", "m2")
+
+
+@pytest.mark.asyncio
+async def test_switching_the_thinking_level_records_it_too(tmp_path, monkeypatch):
+    """级别同理:走 `set_thinking_level()`(事件 + `thinking_level_change` 都在里面)。"""
+    app = _model_app(tmp_path, monkeypatch)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        sid = (await client.post("/api/sessions",
+                                 json={"title": "换级别", "cwd": str(tmp_path)})).json()["id"]
+        res = await client.post("/api/model",
+                                json={"thinking_level": "high", "session": sid})
+        assert res.status_code == 200, res.text
+        assert res.json()["thinking_level"] == "high"
+        bad = await client.post("/api/model",
+                                json={"thinking_level": "很快", "session": sid})
+        assert bad.status_code == 422, "未知级别要被拒,而不是静默当 off"
+
+    session = SessionStore(root=tmp_path / "sessions").get(sid)
+    levels = [e["thinking_level"] for e in session.branch()
+              if e.get("type") == "thinking_level_change"]
+    assert levels[-1] == "high"
+
+
+@pytest.mark.asyncio
+async def test_the_two_fields_are_independent(tmp_path, monkeypatch):
+    """只给一个字段时,另一个**保持会话里的值**(不能顺手重置成默认)。
+
+    这是 PATCH 语义而不是 PUT:界面上的两个控件各改各的,合起来才是一次"设置"。
+    若实现成 PUT,"只换级别"会顺手把模型改回 settings 默认 —— 而那正是最难查的一类
+    (用户只想调级别,模型悄悄变了)。
+    """
+    app = _model_app(tmp_path, monkeypatch)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        sid = (await client.post("/api/sessions",
+                                 json={"title": "两件事", "cwd": str(tmp_path)})).json()["id"]
+        await client.post("/api/model",
+                          json={"provider": "alpha", "model": "m2", "session": sid})
+        body = (await client.post("/api/model",
+                                  json={"thinking_level": "low", "session": sid})).json()
+        assert body["currently"] == "alpha/m2", "只改级别不该动模型"
+        body = (await client.post("/api/model",
+                                  json={"provider": "alpha", "model": "m1",
+                                        "session": sid})).json()
+        assert body["thinking_level"] == "low", "只改模型不该动级别"
+
+
+@pytest.mark.asyncio
+async def test_model_endpoint_rejects_half_a_model_and_bad_ids(tmp_path, monkeypatch):
+    """给半个模型 / 指向不存在的会话:400 或 404,而不是静默生效。"""
+    app = _model_app(tmp_path, monkeypatch)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        res = await client.post("/api/model", json={"provider": "alpha"})
+        assert res.status_code == 422
+        assert "成对" in res.json()["detail"]
+        res = await client.post("/api/model", json={})
+        assert res.status_code == 422, "什么都不给 = 没说要改什么"
+        res = await client.post("/api/model",
+                                json={"provider": "alpha", "model": "m2",
+                                      "session": "no-such-session"})
+        assert res.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_each_session_keeps_its_own_model(tmp_path, monkeypatch):
+    """**一个 runtime 服务多个会话**:两条会话各自的模型互不影响。
+
+    这条钉的是基座那半个修复(runtime 的 `_restored_session` 由 `set[str]` 换成
+    "上一轮绑的是哪个"):早先 A → B → A 切回来时 A **不再还原** —— 于是 web 上
+    "切回会话 A,却还拿着 B 的模型"。而 web 恰恰是"一个 runtime 服务多个会话"的场景。
+    """
+    app = _model_app(tmp_path, monkeypatch)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        a = (await client.post("/api/sessions",
+                               json={"title": "A", "cwd": str(tmp_path)})).json()["id"]
+        # 每个会话**第一次被绑定时**会把当时的值记成它的起点(pi 的
+        # `appendModelChange` 只写新会话)。这里用 GET 触发那次绑定 —— 与前端
+        # 打开一条会话时发生的事同形,否则 A 是个**空文件**,它没有"自己的模型"可保。
+        await client.get("/api/models", params={"session": a})
+        b = (await client.post("/api/sessions",
+                               json={"title": "B", "cwd": str(tmp_path)})).json()["id"]
+        await client.get("/api/models", params={"session": b})
+        # A 留在默认 alpha/m1;B 切到 alpha/m2
+        await client.post("/api/model", json={"session": b,
+                                              "provider": "alpha", "model": "m2"})
+        # A → B → A 来回切,各自都要看到自己的值
+        assert (await client.get("/api/models", params={"session": a})).json()["currently"] \
+            == "alpha/m1"
+        assert (await client.get("/api/models", params={"session": b})).json()["currently"] \
+            == "alpha/m2"
+        assert (await client.get("/api/models", params={"session": a})).json()["currently"] \
+            == "alpha/m1", "切回 A 必须还原 A 的模型(不是 B 的残留)"

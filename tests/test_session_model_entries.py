@@ -387,3 +387,118 @@ def test_store_writes_a_new_node_with_parent_id(tmp_path):
     # 落盘的与内存里的一致(不是只改了内存)
     on_disk = [json.loads(x) for x in session.path.read_text(encoding="utf-8").splitlines()]
     assert on_disk[-1]["model_id"] == "m1"
+
+
+def test_unresolvable_model_really_falls_back_to_the_default(tmp_path, monkeypatch):
+    """**还原失败要真的把客户端退回默认**,而不是只记一句 note。
+
+    这条是端到端抓出来的:早先 `_restore_context_settings` 在还原失败时只 append 一条
+    note,`llm_exec` 原封不动 —— 于是它留在**上一个会话**的模型上(而 note 里写着
+    "已用默认模型继续")。CLI/TUI 里看不出来(一次运行通常只服务一个会话),
+    但 web 是"一个 runtime 服务同一 cwd 下的多个会话",必然发生:
+    切到一条模型已失效的会话,却拿另一条会话的模型去发请求。
+    """
+    runtime = _runtime(tmp_path, monkeypatch)
+    session = runtime.sessions.create("t", cwd=runtime.cwd)
+    runtime.bind_session(session)
+    runtime.set_model("beta", "m3")                   # 会话里记下 beta/m3
+
+    # 重开一个 runtime,但把 beta 整个删掉 —— 会话里记的模型解析不出来
+    alpha_only = {"providers": {"alpha": {"api": "openai-completions",
+                                          "baseUrl": "http://127.0.0.1:1/v1",
+                                          "apiKey": "k-alpha",
+                                          "models": [{"id": "m1"}, {"id": "m2"}]}}}
+    fresh = _runtime(tmp_path, monkeypatch, models=alpha_only)
+    # 先把它弄到"正在用别的模型"的状态(模拟"上一个会话留下的")——这正是 web 的常态
+    fresh.set_model("alpha", "m2")
+    assert fresh.llm_exec.spec.model == "m2"
+
+    fresh.bind_session(fresh.sessions.open_file(session.path))
+
+    assert fresh.llm_exec.spec.model == "m1", \
+        "记的模型没能恢复时必须真的退回默认(m1),不能留在上一个会话的 m2"
+    assert any("beta/m3" in note for note in fresh.notes)
+
+
+def test_switching_back_to_a_session_restores_its_model(tmp_path, monkeypatch):
+    """同一 runtime 里 A → B → A:**切回 A 要还原 A 的模型**。
+
+    一个 runtime 服务多个会话是 web 的常态(`runtime_for` 按 cwd 缓存),而"已还原过"
+    的记账早先是一个 `set[str]` —— 于是 A 还原过一次之后,再切回来就**不还原了**,
+    留在 B 的模型上。表现是"切回会话 A,却还拿着 B 的模型",而且不报任何错。
+
+    同级重绑(每回合开跑前都会调一次)仍然不重复还原 —— 那是这个记账要防的事,
+    所以两条一起钉:切回来要还原,反复绑同一个不要。
+    """
+    runtime = _runtime(tmp_path, monkeypatch)
+    a = runtime.sessions.create("A", cwd=runtime.cwd)
+    runtime.bind_session(a)                           # A 的起点 = alpha/m1
+    b = runtime.sessions.create("B", cwd=runtime.cwd)
+    runtime.bind_session(b)
+    runtime.set_model("beta", "m3")                   # B 记 beta/m3
+
+    runtime.bind_session(a)
+    assert runtime.llm_exec.spec.model == "m1", "切回 A 必须还原 A 的模型(不是 B 的残留)"
+    runtime.bind_session(b)
+    assert runtime.llm_exec.spec.model == "m3", "切回 B 同样要还原"
+    runtime.bind_session(a)
+    assert runtime.llm_exec.spec.model == "m1"
+
+
+def test_rebinding_the_same_session_does_not_re_restore(tmp_path, monkeypatch):
+    """反复绑**同一个**会话不重复还原 —— `set_model` 之后重绑不能把刚切的顶回去。
+
+    与上一条配对:判据是"绑的会话换了没有",不是"这个 id 还原过没有"。
+    web 每回合开跑前都会绑一次,若同级重绑也还原,用户换的模型会被每轮悄悄洗掉。
+    """
+    runtime = _runtime(tmp_path, monkeypatch)
+    session = runtime.sessions.create("t", cwd=runtime.cwd)
+    runtime.bind_session(session)
+    runtime.set_model("beta", "m3")
+
+    runtime.bind_session(session)                     # 同一会话再绑
+    assert runtime.llm_exec.spec.model == "m3", "同级重绑必须不动当前模型"
+
+
+def test_a_session_level_choice_does_not_leak_to_another_session(tmp_path, monkeypatch):
+    """"显式设过思考级别"是**会话级**的:在 A 上设过之后,切到 B 不该拦着 B 的还原。
+
+    早先它是一个 `bool`(`_thinking_pinned`),一旦置 True 就整场运行都不再从会话里
+    还原级别 —— 于是 web 上在 A 上调过一次 `/thinking`,之后切到任何别的会话,
+    那些会话里记的级别都不再生效(而界面上毫无提示)。
+    """
+    runtime = _runtime(tmp_path, monkeypatch)
+    a = runtime.sessions.create("A", cwd=runtime.cwd)
+    runtime.bind_session(a)
+    runtime.set_thinking_level("high")                # A:显式 high
+    b = runtime.sessions.create("B", cwd=runtime.cwd)
+    runtime.bind_session(b)
+    runtime.set_thinking_level("low")                 # B:显式 low
+
+    runtime.bind_session(a)
+    assert runtime.thinking_level == "high", "切回 A 要还原 A 的级别"
+    runtime.bind_session(b)
+    assert runtime.thinking_level == "low", "切回 B 要还原 B 的级别 —— 不能被 A 的选择挡住"
+
+
+def test_command_line_level_beats_the_session_record(tmp_path, monkeypatch):
+    """`--thinking` 是**当次**的显式覆盖,不该被会话里记的旧级别顶掉(与 `--model` 对称)。
+
+    早先命令行那档也合流进了 `_thinking_pinned`,而判断写的是"显式设过就不还原" ——
+    于是 `--thinking minimal` 续一条记着 high 的会话时,footer 显示 minimal、
+    还原分支却把会话里的 high 装了回来(命令行被静默忽略)。
+    """
+    project = tmp_path / "proj"
+    (project / ".git").mkdir(parents=True, exist_ok=True)
+    _env(tmp_path, monkeypatch)
+    from qi_agent.runtime import QiRuntime
+
+    seed = QiRuntime(cwd=project, approve_project=True)
+    session = seed.sessions.create("t", cwd=project)
+    seed.bind_session(session)
+    seed.set_thinking_level("high")
+
+    pinned = QiRuntime(cwd=project, approve_project=True, thinking_level="minimal")
+    pinned.bind_session(pinned.sessions.open_file(session.path))
+
+    assert pinned.thinking_level == "minimal", "命令行赢"

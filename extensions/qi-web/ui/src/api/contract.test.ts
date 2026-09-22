@@ -61,8 +61,8 @@ const QI_CUSTOM_NAMES = [
 
 describe("契约号", () => {
   it("两侧的 CONTRACT_VERSION 一致", () => {
-    const py = read("src/qi_agent/web/schemas.py");
-    const ts = read("web/src/api/types.ts");
+    const py = read("qi_web/schemas.py");
+    const ts = read("ui/src/api/types.ts");
     const host = /CONTRACT_VERSION = "([^"]+)"/.exec(py)?.[1];
     const ui = /CONTRACT_VERSION = "([^"]+)"/.exec(ts)?.[1];
     expect(host).toBeDefined();
@@ -73,7 +73,7 @@ describe("契约号", () => {
     // 这条断言的意义:如果谁把版本号改回 1,说明他以为形状没变。
     expect(
       /CONTRACT_VERSION = "([^"]+)"/.exec(
-        read("src/qi_agent/web/schemas.py"),
+        read("qi_web/schemas.py"),
       )?.[1],
     ).toBe("2");
   });
@@ -82,8 +82,8 @@ describe("契约号", () => {
 describe("事件类型两侧对齐", () => {
   it("后端能发的 AG-UI 类型全部被处理或显式忽略", () => {
     const sources = [
-      read("src/qi_agent/web/agui.py"),
-      read("src/qi_agent/web/app.py"),
+      read("qi_web/agui.py"),
+      read("qi_web/app.py"),
     ].join("\n");
     // agui.py 里事件类型只出现在 `"type": "XXX"` 或 `_base("XXX")` 两种位置
     const emitted = new Set<string>();
@@ -106,8 +106,8 @@ describe("事件类型两侧对齐", () => {
 
   it("声明清单里的每一项都能在后端找到出处(清单不许留陈迹)", () => {
     const sources = [
-      read("src/qi_agent/web/agui.py"),
-      read("src/qi_agent/web/app.py"),
+      read("qi_web/agui.py"),
+      read("qi_web/app.py"),
     ].join("\n");
     for (const t of HANDLED.filter((x) => !IGNORED_BY_DESIGN.includes(x))) {
       // CUSTOM 由 applyCustom 组装,不在 _base 里,单独断言
@@ -122,8 +122,8 @@ describe("事件类型两侧对齐", () => {
   });
 
   it("qi 的 CUSTOM 名字在两侧一致(后端发 = 前端认)", () => {
-    const py = read("src/qi_agent/web/agui.py");
-    const ts = read("web/src/api/types.ts");
+    const py = read("qi_web/agui.py");
+    const ts = read("ui/src/api/types.ts");
     for (const name of QI_CUSTOM_NAMES) {
       expect(py, `后端不发的 CUSTOM 名字:${name}`).toContain(`"${name}"`);
       expect(ts, `前端不认识但后端会发的 CUSTOM:${name}`).toContain(

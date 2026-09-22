@@ -36,6 +36,8 @@ import type {
   AgentInfo,
   ConfigView,
   Meta,
+  ModelCatalog,
+  ModelOption,
   SessionSummary,
   UsageSummary,
   WorkspaceNames,
@@ -44,6 +46,7 @@ import { ConfirmDialog } from "./components/ConfirmDialog";
 import { IconPanelLeftOutline16 } from "./components/icons";
 import { DirPicker } from "./components/DirPicker";
 import { Dock } from "./components/Dock";
+import { bareModelName } from "./components/ModelMenu";
 import { Rail } from "./components/Rail";
 import { BlockView } from "./components/Rows";
 import { Settings } from "./components/Settings";
@@ -193,6 +196,19 @@ function dialogWarning(dialog: Dialog): string {
   }
 }
 
+/**
+ * 把异常转成给人看的一句话。
+ *
+ * 提到组件外:它在多个 `useCallback` 里被用到,放进组件体会让每个回调都得把它列进
+ * 依赖(否则就是过期闭包 —— 这个文件为此栽过一次,见 design/web.md §18.8)。
+ * 它不读任何 state,所以放外面是诚实的做法,而不是把依赖数组糊过去。
+ */
+function describeError(err: unknown): string {
+  if (err instanceof ContractError) return err.message;
+  if (err instanceof ApiError) return `${err.detail}(HTTP ${err.status})`;
+  return String(err);
+}
+
 export function App() {
 
   const [meta, setMeta] = useState<Meta | null>(null);
@@ -218,6 +234,14 @@ export function App() {
   const [agent, setAgent] = useState<string | null>(null);
   /** 可选智能体清单(菜单用)。取不到就只剩 auto —— 不影响发消息。 */
   const [agents, setAgents] = useState<AgentInfo[]>([]);
+  /**
+   * 模型清单 + 当前值(`GET /api/models`)。`null` = 取不到(老宿主 / 还没加载)→
+   * 输入卡那个 chip 变成只读回声,不画 chevron、点不开(与"附件置灰"同一条规矩:
+   * 界面上不做点了没反应的控件)。
+   */
+  const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
+  /** 一次模型/级别切换正在往返(禁重复点,免得两次请求互相覆盖)。 */
+  const [modelBusy, setModelBusy] = useState(false);
   const [title, setTitle] = useState("");
   const [turn, setTurn] = useState<TurnState>(emptyTurn);
   const [draft, setDraft] = useState("");
@@ -266,11 +290,7 @@ export function App() {
     return () => window.clearInterval(timer);
   }, []);
 
-  const describe = (err: unknown): string => {
-    if (err instanceof ContractError) return err.message;
-    if (err instanceof ApiError) return `${err.detail}(HTTP ${err.status})`;
-    return String(err);
-  };
+  const describe = describeError;
 
   const refreshSessions = useCallback(async () => {
     try {
@@ -310,6 +330,82 @@ export function App() {
     })();
     return () => abortRef.current?.();
   }, [refreshSessions]);
+
+  /**
+   * 模型清单:**跟着会话走**。
+   *
+   * 为什么不能只在首屏取一次:"当前是哪个模型"是**会话级**的(续会话会按会话里记的
+   * `model_change` 还原,未必等于 settings 默认),而后端要拿会话 id 才知道答哪一条。
+   * 所以 `sessionId` 一变就重取 —— 与 `openSession` 拉明细同一个节奏。
+   *
+   * 取不到(老宿主 404 / 网络错)不当作致命:`modelCatalog=null` → chip 退回只读回声。
+   * 这与 `/api/workspaces`、`/api/agents` 是同一条降级规矩 —— 少一个可选端点
+   * 不该让整页白屏。
+   */
+  useEffect(() => {
+    let alive = true;
+    void (async () => {
+      try {
+        const catalog = await api.models(sessionId);
+        if (alive) setModelCatalog(catalog);
+      } catch {
+        if (alive) setModelCatalog(null);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [sessionId]);
+
+  /**
+   * 切模型 / 切级别。
+   *
+   * 两件事共用一条路径,因为它们走同一个端点、共用同一份"切换中"状态,而且返回的
+   * 都是更新后的清单 —— 界面直接拿它替换本地那份(不做乐观更新:清单里的 ✓ 与
+   * 上下文窗口都要跟着变,自己拼容易漏)。
+   *
+   * **失败不静默**:用 note 把后端的原因说出来(缺凭证 / provider 不存在都会回 400
+   * 带具体文字)。这比"点了没反应"好,也比把整页打成错误屏合适 —— 它只是这一步没成。
+   */
+  const switchModel = useCallback(
+    async (body: {
+      provider?: string;
+      model?: string;
+      thinking_level?: string;
+    }) => {
+      setModelBusy(true);
+      try {
+        const catalog = await api.setModel({ ...body, session: sessionId });
+        setModelCatalog(catalog);
+        if (body.thinking_level !== undefined) {
+          // 级别不在输入卡上显示(它在模型菜单里),所以给一句反馈 ——
+          // 否则用户看不到任何变化。
+          setTurn((prev) =>
+            withNote(prev, "思考级别", `已切到 ${catalog.thinking_level}`),
+          );
+        }
+      } catch (err) {
+        setTurn((prev) => withNote(prev, "切换模型失败", describe(err)));
+      } finally {
+        setModelBusy(false);
+      }
+    },
+    [sessionId, describe],
+  );
+
+  const onPickModel = useCallback(
+    (option: ModelOption) => {
+      void switchModel({ provider: option.provider, model: option.id });
+    },
+    [switchModel],
+  );
+
+  const onPickLevel = useCallback(
+    (level: string) => {
+      void switchModel({ thinking_level: level });
+    },
+    [switchModel],
+  );
 
   /**
    * 标题跟着**列表**走。
@@ -693,9 +789,8 @@ export function App() {
     }
     return null;
   }, [turn.rows]);
-  // 上下文窗口来自 /api/config(默认模型的 `contextWindow`)。0 = 取不到,
-  // 那时不画占用百分比 —— 而不是画一条永远 0% 的。
-  const contextWindow = config?.default_model_context_window ?? 0;
+  // 上下文窗口见下面 `contextWindow`(优先取**当前模型**的窗口,见那里的注释)。
+  // 0 = 取不到,那时不画占用百分比 —— 而不是画一条永远 0% 的。
   const empty = turn.rows.length === 0;
   /**
    * 「新会话页」= 还没说过话(草稿态,或早期"点了新会话就落文件"留下的空会话)。
@@ -708,8 +803,20 @@ export function App() {
   // 输入卡右下只显示**裸模型名**(`provider/model` 在窄窗口里放不下);完整标签
   // (`provider/model`)留给 tooltip 与遥测抽屉 —— 同 id 不同 provider 时靠它分辨。
   // `default_model_name` 是本次新加的字段,老宿主不给就回落完整标签(不会变空)。
-  const modelName = config?.default_model_name || config?.default_model || "";
-  const modelFull = config?.default_model ?? "";
+  //
+  // **当前值优先用 `modelCatalog.currently`**:那是**会话级**的真相(续会话会按会话里
+  // 记的 `model_change` 还原,未必等于 settings 默认)。`/api/config` 那份是"默认",
+  // 拿它当显示值会在会话换过模型之后说反话。清单取不到(老宿主)才回落它。
+  const configModelName = config?.default_model_name || config?.default_model || "";
+  const modelName = modelCatalog?.currently
+    ? bareModelName(modelCatalog.currently)
+    : configModelName;
+  const modelFull = modelCatalog?.currently || config?.default_model || "";
+  // 上下文窗口:同样以**当前模型**为准 —— 换到窗口更小的模型之后,占用条要跟着变
+  // (否则它会拿默认模型的窗口去算比例,百分比就是错的)。
+  const contextWindow =
+    modelCatalog?.models.find((m) => `${m.provider}/${m.id}` === modelCatalog.currently)
+      ?.context_window || config?.default_model_context_window || 0;
 
   /**
    * 输入卡「+」菜单里的命令。三条都映射到**已经实现**的动作:
@@ -832,6 +939,10 @@ export function App() {
       placeholder={PLACEHOLDER}
       model={modelName}
       modelFull={modelFull}
+      modelCatalog={modelCatalog}
+      modelBusy={modelBusy}
+      onPickModel={onPickModel}
+      onPickLevel={onPickLevel}
       current={currentAction(turn)}
       canFork={sessionId !== null}
       canCompact={sessionId !== null && turn.rows.length > 0}

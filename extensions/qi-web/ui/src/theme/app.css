@@ -1779,10 +1779,8 @@ pre,
  margin-left: auto;
 }
 
-/* 模型名:只读回声(不是菜单)。几何照 dsh `.select` 的字级,但不画 chevron、
-   不给 hover —— 换模型在「设置」里。 */
-/* ── 输入卡右下角的智能体 chip(模型名左边)────────────────────
-   与项目 chip 同一套几何(28px 高、r16、13/20、hover 给底)—— 它就是同一类东西:
+/* ── 输入卡右下角的两个 chip(智能体 · 模型)────────────────────
+   与项目 chip 同一套几何(28px 高、r16、13/20、hover 给底)—— 它们就是同一类东西:
    一个"这一轮会怎么走"的设置。菜单**朝上开**(输入卡在视口底部),而且 portal 到 body,
    所以这里是 `position: fixed` + 由 JS 量出来的 right/bottom(见 AgentMenu)。 */
 .agentchip {
@@ -1864,16 +1862,26 @@ pre,
  line-height: 16px;
 }
 
-.composer__model {
- max-width: 220px;
- overflow: hidden;
- color: var(--dsw-alias-label-secondary);
- font-size: 13px;
- font-weight: 500;
- line-height: 20px;
- text-overflow: ellipsis;
- white-space: nowrap;
+/* 模型菜单:比 agent 菜单宽一点(模型 id 长,如 deepseek/deepseek-v4.1-flash),
+   并给第二节的小标题。宽度只放宽下限,上限仍是 340 —— 超过就让它自己滚。 */
+.agentmenu--models {
+ min-width: 260px;
 }
+
+.agentmenu__section {
+ flex: none;
+ min-height: 26px;
+ padding: 6px 8px 2px;
+ color: var(--dsw-alias-label-tertiary);
+ font-size: 12px;
+ font-weight: 500;
+ line-height: 18px;
+}
+
+/* 模型名以前是这里的一个只读 `<span>`(`.composer__model`,220px 上限、省略号)。
+   现在是 `ModelMenu` 里的 chip —— 与智能体 chip 共用 `.agentchip` 那套几何,
+   所以这条规则**删掉**了:`max-width: 220px` 与 chip 自己的 180px 会打架,
+   留着它只会让"到底哪个生效"变成下一个读代码的人的疑问。 */
 
 /* 附件圆按钮:28px,selector 底(dsh `.add`)。qi 暂不支持附件,所以是禁用态。 */
 .composer__add {

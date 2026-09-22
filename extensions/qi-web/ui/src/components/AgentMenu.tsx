@@ -1,25 +1,29 @@
 /**
  * 输入卡右下角的**智能体 chip**(模型名左边)—— 显示当前用谁,并能切换。
  *
- * 语义与 TUI 的 `--agent` / `/agent` **完全一致**(照抄,不另发明):
- *   · **auto(默认)**:不指定,每一轮由分派器重新决定(读 keywords / Router-LLM);
- *   · **某个 agent**:接下来每一轮都直派它(`source: "manual"`,转录里的分派行会写出来)。
+ * 语义(pi 的"钉住角色",qi 侧由 qi-agents 的角色系统提供):
+ *   · **auto(默认)**:不钉,每一轮用基座角色;
+ *   · **某个 agent**:接下来每一轮都把这个角色的正文拼进系统提示词(`before_agent_start`)。
  *
  * 三条刻意的口径:
- *   1. **内置兜底 `general`(显示名就是「qi」)不单独列一项** —— 它与 auto 是**同一件事**:
- *      auto 每轮分派,匹配不到就落到它身上。菜单里再列一个「qi」只会让人以为
- *      "qi" 与 "auto" 是两个选择。它的注明写进了 auto 那一条。
- *      代价:想"强制用基座角色、不要路由"时,菜单里点不到了 —— 那条路仍在:
- *      消息里写 `@general`(分派器认 @ 点名,只作用于那一轮)。
- *   2. **不把"上次用到谁"显示成当前值**。会话文件里确实记着 `active_agent`(最近一次分派
- *      的结果),但那是**结果**不是**设置** —— 拿它当 chip 的值,界面会声称"现在钉在
- *      code-reviewer 上",而实际仍是 auto。所以 chip 只表达"设置成什么",默认就是 `auto`。
- *   3. **不落盘**(与 TUI 相同):手动选择是这个客户端的即时设置,刷新后回到 auto。
- *      要按会话粘住就得在后端开一个"会话级手动 agent"的口子,那是另一个决定。
+ *   1. **不列内置兜底角色** —— 它与 auto 是**同一件事**(没有钉住 = 基座提示词)。
+ *      菜单里再列一个只会让人以为它是另一个选择。
+ *   2. **不把"上次用到谁"显示成当前值**。会话文件里记着上一个回合是谁在跑,但那是**结果**
+ *      不是**设置** —— 拿它当 chip 的值,界面会声称"现在钉在 code-reviewer 上"。
+ *      chip 只表达"设置成什么",默认就是 `auto`。
+ *   3. **不落盘**(与 TUI 的 `--ext agent=` 相同):手动选择是这个客户端的即时设置,
+ *      刷新后回到 auto。要按会话粘住就得在后端开一个"会话级手动 agent"的口子,
+ *      那是另一个决定(它会让 auto 不再是默认)。
  *   4. **panel portal 到 `body`**(与 `CommandMenu` 同一手法):菜单朝上开、要盖住输入卡
  *      上方的项目 chip 行,而那一行在 hero 态是 `z-index: 10`、`.dock` 只有 1 ——
  *      留在卡片里会被它盖住(§18.16 的指令菜单踩过同一个坑)。portal 出去 + `position: fixed`
  *      按 chip 的 rect 定位,谁的 z-index 都压不住它。
+ *
+ * **后端怎么让它生效**(P-E4c 之后改过,别再退回老路):它走
+ * `qi_web.serve.pin_role()` → `before_agent_start`,把角色正文拼进本轮提示词。
+ * **不要**改成 `runtime.stream(agent_override=…)`:那是 core 还有分派器时的接口,
+ * 现在 signature 里还在、流水线里已无人读它 —— 传了不报错、只是没生效
+ * (界面会显示着角色而提示词里没有;见 design/web.md §18.24 的"后续修正")。
  */
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -137,7 +141,7 @@ export function AgentMenu({
               >
                 <span className="agentmenu__name">auto</span>
                 <span className="agentmenu__note">
-                  每轮由分派器决定,匹配不到就用 qi(内置 general)
+                  不钉角色:每一轮都用基座提示词
                 </span>
               </button>
               {selectable.length > 0 ? (

@@ -300,6 +300,37 @@ def in_play_providers(cfg: QiConfig, *, default_provider: str | None = None,
     return explicit | {name for name in (default_provider, router_provider) if name}
 
 
+def selectable_models(cfg: QiConfig, *, store: Any = None) -> list[tuple[str, str]]:
+    """**可选模型**清单(`provider, model_id`)—— `/model` 与 web 的模型菜单共用这一份。
+
+    口径(与 TUI 的 `/model` 逐条一致,web 端复用它而不是各写一份):
+
+    * **预置兜底那批只有"解析得出凭证"时才列** —— 用户只登录了 deepseek,就不该在
+      菜单里看到 moonshot / glm(他们的原话:"我还没登录,怎么就能选")。没登录又想用
+      哪个,去 `qi auth login <provider>`;
+    * **`models.json` 里显式写过的 provider 不受这条限制** —— 那是用户自己的配置,
+      可能正在配(缺密钥会在请求时报清楚)。
+
+    返回按 provider、再按模型 id 排序(界面直接照着画,不需要各自再排一遍)。
+
+    `store` 是凭证库(默认真的那个)。之所以收 `Any` 而不是 `AuthStore`:这个模块
+    不 import `auth`(auth 的 `apiKey` 引用语法在本模块解析,反向 import 会成环),
+    而调用方传进来的可能是 `AuthOverride`。
+    """
+    if store is None:
+        from .auth import AuthStore            # 局部导入:只在真的要判凭证时用
+        store = AuthStore()
+    from .auth import resolve_key
+    preset_only = set(cfg.presetProviders or ())
+    out: list[tuple[str, str]] = []
+    for provider, prov in sorted((cfg.providers or {}).items()):
+        if provider in preset_only and not resolve_key(provider, prov.apiKey, store).ok:
+            continue
+        for entry in prov.models:
+            out.append((provider, entry.id))
+    return out
+
+
 def resolve_model(cfg: QiConfig, provider: str, model: str) -> ResolvedModel:
     """按 provider 默认 + 模型条目合并出运行期模型(模型条目可缺省)。"""
     prov = cfg.providers.get(provider)

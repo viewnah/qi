@@ -152,11 +152,37 @@ qi 目前**写入** 8 类,另有 1 类**只读**。
 **回合外也能写**:`_active_session` 只在一个回合内有效,而 `/model` 发生在两次提问之间 ——
 所以前端选完会话要调 `bind_session()`,写入点取 `_active_session or _bound_session`。
 
+### 6.2 "哪个会话"必须按**会话**记,不能按"来过没有"
+
+`bind_session()` 要服务一种 CLI/TUI 里少见、而 web 是常态的形态:**一个 runtime 服务
+同一 cwd 下的多条会话**(`WebState.runtime_for` 按 cwd 缓存)。为此有三条记账规则,
+每一条早先都写错过,而症状都是"**静默串会话**"(不报错,只是拿着另一条会话的设置跑):
+
+| 记账 | 判据 | 写错的症状 |
+| --- | --- | --- |
+| 还原与否 | `_restored_session` = **上一轮绑的那个 id** | 用 `set[str]` 记"还原过的 id" → A → B → A 切回来**不再还原**,留在 B 的模型上 |
+| 显式级别 | `_level_pins: set[session_id]`(**会话级**)+ `_level_pinned_cli`(整场运行) | 用一个 `bool` → 在 A 上设过一次,之后**任何**会话里记的级别都不再生效 |
+| 还原失败 | 退回 `_default_llm_exec`(构造期那份) | 只记一条 note → 留在**上一个会话**的模型上,而 note 写着"已用默认模型继续" |
+
+三条的判据可以合成一句:**"当前设置"是会话的属性,不是 runtime 的属性**。
+runtime 上那份只是一个**缓存**,每次换会话都要用会话里记的 entry 重填。
+
+两条边界(与上面三条配对,别把它们一起改坏):
+
+- **同级重绑不还原**。web 每一轮开跑前都会 `bind_session(same_session)`,若同级也还原,
+  用户刚换的模型会被每一轮悄悄洗掉。
+- **会话级的"显式设过"不拦还原**。会话里记的级别**就是**用户在那个会话上显式选的那个 ——
+  还原它不是在覆盖选择,而是在装回来。所以 `_level_pins` 只用在一处:换模型时的
+  `modelThinkingLevels` 自动联动(不该覆盖用户的显式选择)。**只有命令行那档**(`--thinking`
+  / `--model p/m:级别`)才拦还原 —— 那是当次的显式覆盖,与 `--model` 同级。
+
 **绑定必须是同步的**(TUI 这条线踩过一次):`_select_session()` 之后紧跟一句**同步**的
 `_sync_model_from_runtime()`,而 `session_start` 走的是 async worker —— 若只靠 worker 里的
 bind,续会话时界面读到的是 restore **之前**的模型。表现是"footer 显示 settings 默认、
 请求却发会话里记的那个"(见 `tests/test_tui_model_restore.py`)。所以 `_select_session()`
 自己先同步 bind(`_bind_current_session`),`/resume` / `/fork` / `/import` 也各自 bind。
+web 端同理:每轮开跑前 `WebState.bind()`(`bind_session` + `start_session`),而
+`POST /api/model` 只做同步的 `bind_session`(换一次模型不该顺手派发 `session_start`)。
 
 **命名差异**:pi 是驼峰 `modelId`,qi 用本地约定 `model_id`(与 `custom_type` /
 `agent_id` / `duration_ms` 一致)。语义相同、键名不同,读 pi 会话时注意。

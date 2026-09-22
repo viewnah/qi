@@ -25,12 +25,15 @@ from qi_agent.config import (
     load_config,
     resolve_default_model,
     resolve_router_model,
+    selectable_models,
 )
+from qi_agent.llm import THINKING_LEVELS
 from qi_agent.loader import LoadError
 from qi_agent.session import usage_summary
 from qi_agent.workspaces import WorkspaceStore, normalize
 from . import agui, browse, files as fileapi, schemas
 from .security import check_credentials, check_host, mask_key
+from .serve import pin_role
 from .state import RunBusy, WebState
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -89,6 +92,10 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
             static_ready=STATIC_DIR.is_dir(),
             capabilities={"sse": True, "streaming": True, "cancel": True,
                           "auth_write": True, "config_read": True, "trajectory": True,
+                          # 模型面:v1 只有 `/api/config` 的只读回声 —— 界面能看见模型、
+                          # 却换不了。这一版补上清单与切换(`/api/models` + `/api/model`),
+                          # 老前端不认识这两个开关时照旧只显示,不影响它自己运行。
+                          "model_switch": True,
                           # 扩展面:插件据这两个开关决定要不要发结构化 UI。
                           # `ag_ui` = 事件形状是 AG-UI;`ui_v1` = 认 details["ui"] 的词汇表
                           # (见 design/web.md §16.2)。缺哪个都退回"折叠显示原始 JSON"。
@@ -522,6 +529,7 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
         entries = session.visible_entries()
 
         async def gen():
+            runtime = web.runtime_for(web.session_cwd(session))
             try:
                 # RUN_STARTED 必须是流的第一帧(AG-UI 生命周期边界),
                 # 紧接着把历史与状态作为权威起点推给客户端 —— 这是 qi 自己的决定:
@@ -535,8 +543,20 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
                 # qi 自己的完整 entry 列表:MESSAGES_SNAPSHOT 装不下 dispatch/tool/叙述,
                 # 不给这一份,刷新后轨迹就只剩对话(直播与回放不一致)。
                 yield agui.encode(agui.history_snapshot(entries))
-                async for ev in web.runtime_for(web.session_cwd(session)).stream(
-                        text, session, agent_override=inp.agent):
+                # **绑定会话**:web 是"一个 runtime 服务同一 cwd 下的多个会话",而
+                # `_active_session` 只在一个回合内有效 —— 不显式绑定,两件事同时坏掉:
+                #   ① 换模型/级别的落盘(`model_change` / `thinking_level_change`)写不进
+                #      "哪个文件"(web 端此前没有任何 `/model` 落盘点);
+                #   ② 续会话不还原上次用的模型(runtime 用一个模型发请求、界面上写着另一个)。
+                # `bind_session` 同时做还原,所以每轮**开跑前**调一次(它幂等:同一会话的
+                # 还原只做一次 —— `_restored_session` 记的是"上一轮绑的那个 id")。
+                await web.bind(runtime, session, reason="resume")
+                # 「智能体 chip」的落点。**不能**靠 `stream(agent_override=…)`:那是 P-E4c
+                # 之前的接口,core 收窄成单 agent 之后流水线里已经没人读它(传了不报错、
+                # 只是没生效)。角色现在是 qi-agents 的 `before_agent_start`,
+                # 所以这里把钉住值交给它(详见 `serve.pin_role`)。
+                pin_role(runtime, inp.agent)
+                async for ev in runtime.stream(text, session):
                     for frame in translator.feed(ev):
                         yield agui.encode(frame)
                 # 流正常结束:补收尾(万一最后一帧还开着文本/思考)
@@ -606,6 +626,108 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
             auth_file=str(AuthStore().path),
             checks=checks,
         )
+
+    # ── 模型:清单 + 切换(会话级)──────────────────────────
+    #
+    # 为什么需要这一节:web 端此前**只有 `/api/config` 的只读回声** —— 界面上那个模型名
+    # 标着"换模型在设置里",而设置页只有 provider 卡片与凭证,没有换模型的入口。
+    # 于是 web 能看见模型、却换不了(TUI 有 `/model` / ctrl+l / ctrl+p)。
+    #
+    # 三个决定:
+    #   · **清单口径与 TUI 的 `/model` 完全一致** —— 都走 core 的 `selectable_models()`
+    #     (预置兜底那批要"解析得出凭证"才列;`models.json` 里显式写过的不过滤)。
+    #     两处各写一份清单,迟早一个改了另一个没改;
+    #   · **换模型走 `runtime.set_model()` / `set_thinking_level()`** —— 那是唯一入口,
+    #     `model_select` / `thinking_level_select` 事件与 `model_change` /
+    #     `thinking_level_change` 的落盘都在里面。界面层不自己拼 entry;
+    #   · **带 `session` 时先绑定** —— 一个 runtime 服务同一 cwd 下的多个会话,
+    #     不绑定就"不知道该写进哪个文件"(这正是本扩展此前漏掉会话绑定的那一类)。
+    #     绑定同时会按会话里记的 entry 还原模型,所以先绑再设,顺序不能反。
+
+    def _session_for(sid: str | None):
+        """按 id 取会话(不给则 None)。不存在 → 404(不是静默回落到别的会话)。"""
+        if sid is None:
+            return None
+        session = web.sessions.get(sid)
+        if session is None:
+            raise HTTPException(status_code=404, detail=f"会话不存在: {sid}")
+        return session
+
+    def _current_model_label(runtime) -> str:
+        spec = getattr(getattr(runtime, "llm_exec", None), "spec", None)
+        if spec is None:
+            return ""
+        return f"{spec.provider}/{spec.model}"
+
+    @app.get("/api/models", response_model=schemas.ModelCatalog,
+             dependencies=[Depends(guard)])
+    async def list_models(session: str | None = Query(None)) -> schemas.ModelCatalog:
+        """可选模型清单 + 当前值(与 TUI 的 `/model` 同一份口径)。
+
+        `session` 给了就先绑定它 —— 当前值要反映**那条会话**的还原结果,而不是
+        runtime 上残留的上一轮状态(一个 runtime 服务多个会话)。
+        """
+        from qi_agent.auth import resolve_key
+
+        target = _session_for(session)
+        runtime = web.runtime_for(web.session_cwd(target) if target else web.default_cwd)
+        if target is not None:
+            web.bind_session(runtime, target)
+        store = getattr(runtime, "_auth", None)
+        options: list[schemas.ModelOption] = []
+        for provider, model_id in selectable_models(runtime.cfg, store=store):
+            prov = (runtime.cfg.providers or {}).get(provider)
+            entry = next((m for m in (prov.models if prov else []) if m.id == model_id), None)
+            options.append(schemas.ModelOption(
+                provider=provider, id=model_id,
+                context_window=int(getattr(entry, "contextWindow", 0) or 0),
+                credential_ok=resolve_key(provider,
+                                          prov.apiKey if prov else None,
+                                          store).ok,
+            ))
+        return schemas.ModelCatalog(
+            models=options,
+            currently=_current_model_label(runtime),
+            thinking_level=str(getattr(runtime, "thinking_level", "") or ""),
+            thinking_levels=list(THINKING_LEVELS),
+        )
+
+    @app.post("/api/model", response_model=schemas.ModelCatalog,
+              dependencies=[Depends(guard)])
+    async def set_model(body: schemas.ModelSelect) -> schemas.ModelCatalog:
+        """换模型 / 换思考级别(下一回合生效),并返回更新后的当前值。
+
+        返回新的清单而不只是 204:界面要在同一次往返里把 chip 上的字与菜单里的 ✓ 一起
+        更新掉,否则它会显示"已经切了"而实际没切(或反过来)—— 复用 GET 的那份装配。
+        """
+        if (body.provider is None) != (body.model is None):
+            raise HTTPException(status_code=422,
+                                detail="provider 与 model 必须成对给(只给一个会切到半个模型)")
+        if body.provider is None and body.thinking_level is None:
+            raise HTTPException(status_code=422,
+                                detail="至少要给 model 或 thinking_level 之一")
+
+        target = _session_for(body.session)
+        runtime = web.runtime_for(web.session_cwd(target) if target else web.default_cwd)
+        if target is not None:
+            # 先绑:① 落盘要知道写哪个文件;② 绑定会按会话里的 entry 还原,
+            # 于是"这次没传的字段"保持会话里的值,而不是被上一次绑定的残留顶掉。
+            web.bind_session(runtime, target)
+        if body.provider is not None:
+            try:
+                runtime.set_model(str(body.provider), str(body.model), source="set")
+            except Exception as exc:      # noqa: BLE001 配置/凭证问题 → 400,不是 500
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{type(exc).__name__}: {exc}") from exc
+        if body.thinking_level is not None:
+            level = str(body.thinking_level).strip().lower()
+            if level not in THINKING_LEVELS:
+                raise HTTPException(status_code=422,
+                                    detail=f"未知思考级别: {body.thinking_level}"
+                                           f"(可选 {'/'.join(THINKING_LEVELS)})")
+            runtime.set_thinking_level(level, source="set")
+        return await list_models(body.session)
 
     @app.get("/api/skills", response_model=schemas.SkillList, dependencies=[Depends(guard)])
     async def list_skills() -> schemas.SkillList:

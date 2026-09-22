@@ -56,7 +56,7 @@ from .llm import (DEFAULT_THINKING_LEVEL, THINKING_LEVELS, LiteLLMClient, Thinki
 from .loader import LoadError
 from .registry import ToolCatalog
 from .runtime import MAX_TOOL_ENTRY_CHARS, QiRuntime
-from .session import Session, SessionStore
+from .session import Session, SessionStore, has_title
 from .settings import (DEFAULT_TUI_MODE, TUI_MODES, SettingsError, double_escape_action,
                        next_choice, parse_value, set_value, tui_mode as resolve_tui_mode)
 from .theme import (
@@ -66,6 +66,7 @@ from .theme import (
     git_branch,
     resolve_theme,
     rich_theme,
+    shorten_home,
     syntax_theme,
     textual_theme,
 )
@@ -325,8 +326,12 @@ HOTKEYS_TEXT = """\
   ctrl+p / ctrl+shift+p   切换下一个 / 上一个模型
   ctrl+z                  挂起(回到 shell,fg 回来)
 
+会话选择器(/resume,占编辑器那一格):
+  打字过滤(空格分词模糊 / "短语" 精确 / re:<正则>)/ tab 切当前目录↔全部
+  ↑↓ 选择 · enter 恢复 · ctrl+s 排序(树状/最近/最相关)· ctrl+n 只看命名
+  ctrl+p 显示路径 · ctrl+r 重命名 · ctrl+d 删除(需确认)· escape 取消
+
 尚未对齐(pi 有,qi 缺能力或驱动不了):
-  ctrl+n 会话列表过滤   ctrl+r 重命名会话
   ctrl+v 粘贴图片(现在只会粘文本)
 """
 
@@ -1691,19 +1696,240 @@ class ScopedModelsSelector(EditorSlotPanel):
                 listing.select(value)
 
 
+def shorten_path(path: str, home: str | None = None) -> str:
+    """列表右侧的路径:`~` 缩写(pi `shortenPath`)。"""
+    return shorten_home(str(path), home)
+
+
+def format_age(modified: float, now: float | None = None) -> str:
+    """最后活动时间 → pi 那种紧凑年龄(`now` / `5m` / `3h` / `2d` / `1w` / `4mo` / `1y`)。
+
+    相对时间比绝对时间戳有用:选会话时关心的是"这是刚才那条还是上周那条"。
+    """
+    if modified <= 0:
+        return "?"
+    delta = max(0.0, (now if now is not None else time.time()) - modified)
+    minutes = int(delta // 60)
+    if minutes < 1:
+        return "now"
+    if minutes < 60:
+        return f"{minutes}m"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}h"
+    days = hours // 24
+    if days < 7:
+        return f"{days}d"
+    if days < 30:
+        return f"{days // 7}w"
+    if days < 365:
+        return f"{days // 30}mo"
+    return f"{days // 365}y"
+
+
+def fuzzy_score(query: str, text: str) -> float | None:
+    """pi-tui `fuzzyMatch` 的移植:子序列匹配 + 词边界/连续性打分(越小越靠前)。
+
+    返回 None = 不匹配。分数只在**同一批**结果里比大小,绝对值无语义。
+    """
+    query_lower = query.lower()
+    text_lower = text.lower()
+
+    def match(needle: str) -> float | None:
+        if not needle:
+            return 0.0
+        if len(needle) > len(text_lower):
+            return None
+        score = 0.0
+        query_index = 0
+        last_match = -1
+        consecutive = 0
+        while query_index < len(needle):
+            found = text_lower.find(needle[query_index], last_match + 1)
+            if found < 0:
+                return None
+            boundary = found == 0 or text_lower[found - 1] in " \t-_./:"
+            if last_match == found - 1:
+                consecutive += 1
+                score -= consecutive * 5
+            else:
+                consecutive = 0
+                if last_match >= 0:
+                    score += (found - last_match - 1) * 2
+            if boundary:
+                score -= 10
+            score += found * 0.1
+            last_match = found
+            query_index += 1
+        if needle == text_lower:
+            score -= 100
+        return score
+
+    primary = match(query_lower)
+    if primary is not None:
+        return primary
+    # 字母数字颠倒(`2d` 也能命中 `d2`):pi 的同一个兜底
+    swapped = ""
+    if re.fullmatch(r"[a-z]+[0-9]+", query_lower):
+        swapped = re.sub(r"^([a-z]+)([0-9]+)$", r"\2\1", query_lower)
+    elif re.fullmatch(r"[0-9]+[a-z]+", query_lower):
+        swapped = re.sub(r"^([0-9]+)([a-z]+)$", r"\2\1", query_lower)
+    return match(swapped) if swapped else None
+
+
+#: 搜索词的一个片段:`kind` ∈ `fuzzy`(子序列)/ `phrase`(连续子串)。
+SEARCH_TOKEN = NamedTuple("SEARCH_TOKEN", [("kind", str), ("value", str)])
+
+
+def parse_search_query(query: str) -> dict:
+    """把过滤框里那串字解析成 pi 的三态查询(pi `parseSearchQuery`)。
+
+    | 写法 | 语义 |
+    | --- | --- |
+    | `re:foo.*bar` | 正则(不分大小写);语法错 → `error` 非空,列表显示错误 |
+    | `"node cve" fix` | 引号内是**短语**(连续子串),外部是模糊词 |
+    | `abc def` | 全部模糊词,必须都命中 |
+
+    引号不成对时退化成纯空格分词(pi 同款)—— 打字的中间态不该被判成错误。
+    """
+    trimmed = query.strip()
+    if not trimmed:
+        return {"mode": "tokens", "tokens": [], "error": None}
+    if trimmed.startswith("re:"):
+        pattern = trimmed[3:].strip()
+        if not pattern:
+            return {"mode": "regex", "regex": None, "error": "空正则"}
+        try:
+            return {"mode": "regex", "regex": re.compile(pattern, re.IGNORECASE), "error": None}
+        except re.error as exc:
+            return {"mode": "regex", "regex": None, "error": f"正则错误: {exc}"}
+    tokens: list[SEARCH_TOKEN] = []
+    buf = ""
+    in_quote = False
+
+    def flush(kind: str) -> None:
+        nonlocal buf
+        value = buf.strip()
+        buf = ""
+        if value:
+            tokens.append(SEARCH_TOKEN(kind, value))
+
+    for ch in trimmed:
+        if ch == '"':
+            if in_quote:
+                flush("phrase")
+                in_quote = False
+            else:
+                flush("fuzzy")
+                in_quote = True
+            continue
+        if not in_quote and ch.isspace():
+            flush("fuzzy")
+            continue
+        buf += ch
+    if in_quote:                     # 引号没闭合:整串按空格分词,不报错
+        return {"mode": "tokens", "error": None,
+                "tokens": [SEARCH_TOKEN("fuzzy", t) for t in trimmed.split() if t]}
+    flush("fuzzy")
+    return {"mode": "tokens", "tokens": tokens, "error": None}
+
+
+def match_session_text(text: str, parsed: dict) -> float | None:
+    """一条会话是否命中查询;命中返回分数(越小越靠前),不命中返回 None。"""
+    if parsed.get("error"):
+        return None
+    if parsed["mode"] == "regex":
+        found = parsed["regex"].search(text)
+        return None if found is None else found.start() * 0.1
+    if not parsed["tokens"]:
+        return 0.0
+    total = 0.0
+    normalized: str | None = None
+    for token in parsed["tokens"]:
+        if token.kind == "phrase":
+            if normalized is None:
+                normalized = " ".join(text.lower().split())
+            phrase = " ".join(token.value.lower().split())
+            index = normalized.find(phrase)
+            if index < 0:
+                return None
+            total += index * 0.1
+            continue
+        score = fuzzy_score(token.value, text)
+        if score is None:
+            return None
+        total += score
+    return total
+
+
+def session_tree_order(items: list[Session]) -> list[tuple[Session, int, bool, list[bool]]]:
+    """把会话按 `parentSession` 串成树,再按前序遍历拍平(pi 的 `threaded` 排序)。
+
+    每项返回 `(会话, 深度, 是否最后兄弟, 祖先是否延续)` —— 后两项就是树状前缀
+    (`│  ` / `├─ ` / `└─ `)要用的东西。子节点按**最后活动时间倒序**排。
+
+    父节点不在这一批里(父会话在别的目录 / 已被删)=> 当根处理 —— 不能因为找不到父节点
+    就把整条会话藏起来。
+    """
+    by_path = {str(s.path): s for s in items}
+    children: dict[str | None, list[Session]] = {}
+    for session in items:
+        parent = session.parent_session
+        if parent is None or parent not in by_path:
+            parent = None
+        children.setdefault(parent, []).append(session)
+
+    def latest(session: Session) -> float:
+        """子树里最新的活动时间 —— 父节点跟着子节点一起往前排(pi 同款)。"""
+        best = session.modified_ts
+        for child in children.get(str(session.path), []):
+            best = max(best, latest(child))
+        return best
+
+    out: list[tuple[Session, int, bool, list[bool]]] = []
+    roots = sorted(children.get(None, []), key=lambda s: -latest(s))
+
+    def walk(node: Session, depth: int, ancestor_continues: list[bool], is_last: bool) -> None:
+        out.append((node, depth, is_last, ancestor_continues))
+        # 非根的祖先要画竖线延续(pi 的 `depth > 0 ? !isLast : false`)
+        continues = (not is_last) if depth > 0 else False
+        kids = sorted(children.get(str(node.path), []), key=lambda s: -latest(s))
+        for index, child in enumerate(kids):
+            walk(child, depth + 1, [*ancestor_continues, continues], index == len(kids) - 1)
+
+    for index, root in enumerate(roots):
+        walk(root, 0, [], index == len(roots) - 1)
+    return out
+
+
 class SessionSelector(EditorSlotPanel):
-    """`/resume` 的会话选择器(对齐 pi 的会话选择器键位)。
+    """`/resume` 的会话选择器(对齐 pi 的 `SessionSelectorComponent`)。
 
     外壳与其它选择器同款(`EditorSlotPanel`):贴底、全宽、上下 `─`、footer 之上。
 
-    返回选中的会话 id;取消返回 None。重命名与删除直接作用在 store 上(由 App 传进来的
-    回调负责),选择器只负责交互与刷新 —— 所以它在改完之后重新 `provider()` 取一遍列表。
+    与 pi 的四处对齐:
+      · **列表自己画**(`Static`,`_repaint_list`),不用 Textual 的 `OptionList` ——
+        它自带 `tall $border-blurred` 边框与整行高亮底,而 pi 的列表是"一行一条、
+        光标 `› `、选中整行 selectedBg、无边框无底色"(老的 `/resume` 就是这样漏了一整圈框);
+      · 头部是**状态行**(范围 `◉ 当前目录 | ○ 全部` + `名字:` + `排序:`),
+        键位提示**两行** —— pi 的 `SessionSelectorHeader` 是三行一组;
+      · 排序三档 `threaded/recent/fuzzy`(pi 的 threaded/recent/relevance)、
+        `tab` 切「当前目录 / 全部」、`re:<正则>` 与 `"短语"` 搜索语法;
+      · `ctrl+d` 删除前先**确认**(pi 的 delete confirmation),且删不掉当前会话。
+
+    返回选中的会话 id;取消返回 None。重命名与删除由 App 传进来的回调负责落盘,
+    这里只负责交互与刷新 —— 改完重新 `provider()` 取一遍列表。
     """
 
-    SORTS = ("recent", "oldest", "name")
+    SORTS = ("threaded", "recent", "fuzzy")
+    SORT_LABELS = {"threaded": "树状", "recent": "最近", "fuzzy": "最相关"}
+    #: 列表最多显示几行(pi 的 `maxVisible = 10`)
+    MAX_VISIBLE = 10
     BOX_ID = "session-box"
     BINDINGS = [
         Binding("escape", "cancel", "取消"),
+        Binding("enter", "confirm", "恢复", show=False),
+        Binding("tab", "toggle_scope", "当前目录/全部", priority=True, show=False),
         Binding("ctrl+n", "toggle_named", "只看命名会话", priority=True, show=False),
         Binding("ctrl+s", "toggle_sort", "切换排序", priority=True, show=False),
         Binding("ctrl+p", "toggle_path", "显示/隐藏路径", priority=True, show=False),
@@ -1711,96 +1937,334 @@ class SessionSelector(EditorSlotPanel):
         Binding("ctrl+d", "delete", "删除", priority=True, show=False),
     ]
 
-    def __init__(self, provider, *, on_rename, on_delete, current: str | None = None) -> None:
+    def __init__(self, provider, *, on_rename, on_delete,
+                 current: str | None = None, current_cwd: str | None = None) -> None:
         super().__init__()
-        self._provider = provider          # () -> list[Session],每次刷新重取
+        self._provider = provider          # () -> list[Session];结果缓存,见 `_all_sessions`
         self._on_rename = on_rename
         self._on_delete = on_delete
         self._current = current
+        self._cwd = current_cwd
         self._named_only = False
-        self._sort = "recent"
+        self._sort = "threaded"
         self._show_path = False
+        self._scope = "current"            # current | all
         self._renaming: str | None = None
+        self._renaming_from = ""
+        self._confirming: str | None = None
+        self._status: tuple[str, str] | None = None    # (文本, 色调)
+        self._search_error: str | None = None
+        self._rows: list[tuple[Session, str]] = []     # (会话, 树状前缀)
+        self._cache: list[Session] | None = None       # `provider()` 的结果(见 `_all_sessions`)
+        self._index = 0
+        self._touched = False              # 用户动过方向键之后,刷新不再重置选中项
+        self._list = Static("", id="session-list")
 
     PANEL_TITLE = "恢复会话"
-    HINTS = ("↑↓ 选择 · enter 恢复 · ctrl+n 只看命名 · ctrl+s 排序 · "
-             "ctrl+p 路径 · ctrl+r 重命名 · ctrl+d 删除 · escape 取消")
+
+    # -- 头部(状态行 + 两行键位提示)------------------------
+    def _header_line(self) -> str:
+        p = self.palette()
+        if self._status is not None:        # 刚做完的动作用一行状态顶掉标题(pi 同款)
+            text, tone = self._status
+            return p.fg(tone, text)
+        title = "恢复会话 · 当前目录" if self._scope == "current" else "恢复会话 · 全部"
+        right = (f"名字:{'命名' if self._named_only else '全部'}"
+                 f"  ·  排序:{self.SORT_LABELS.get(self._sort, self._sort)}")
+        return f"{p.fg('accent', title)}{' ' * 3}{p.fg('muted', right)}"
+
+    def _scope_line(self) -> str:
+        p = self.palette()
+        if self._scope == "current":
+            return f"{p.fg('accent', '◉ 当前目录')}{p.fg('muted', ' | ○ 全部')}"
+        return f"{p.fg('muted', '○ 当前目录 | ')}{p.fg('accent', '◉ 全部')}"
+
+    def _keys_lines(self) -> tuple[str, str]:
+        p = self.palette()
+        if self._confirming is not None:
+            # pi:确认删除时头部换成一句 error 色的问句,键位提示退成"enter/escape"
+            return ("删除这个会话?enter 确认 · escape 取消", "")
+        first = (p.fg("muted", "tab 切换范围 · 搜索:空格分词(模糊) · ")
+                 + p.fg("muted", '"短语" 精确 · re:<正则> 正则'))
+        second = p.fg("muted", " · ".join((
+            "enter 恢复", "ctrl+s 排序", "ctrl+n 只看命名", "ctrl+d 删除",
+            f"ctrl+p 路径({'on' if self._show_path else 'off'})", "ctrl+r 重命名",
+            "escape 取消")))
+        return first, second
 
     def title_text(self) -> str:
+        # `#model-hint` 是 accent bold(pi 的面板标题);键位提示不该跟着变粗
+        # → 除第一行外都用 `[not bold]` 退回(行内标记,比再拆一个 Static 便宜)
+        not_bold = "[not bold]"
         if self._renaming is not None:
-            return "重命名:输入新名字后 enter 保存,escape 取消"
-        return self.PANEL_TITLE
+            p = self.palette()
+            return "\n".join([
+                p.fg("accent", "重命名会话"),
+                "",
+                not_bold + p.fg("muted", "enter 保存 · escape 取消(留空 = 不改)"),
+            ])
+        first, second = self._keys_lines()
+        return "\n".join([self._header_line(), not_bold + self._scope_line(),
+                          not_bold + first, not_bold + second])
 
     def _refresh_title(self) -> None:
-        self.query_one("#model-hint", Static).update(self.title_text())
+        with contextlib.suppress(NoMatches):
+            self.query_one("#model-hint", Static).update(self.title_text())
+
+    def hints_text(self) -> str:
+        return ""                          # 提示行已经在标题块里(pi 也是多行一组)
 
     def compose_body(self) -> ComposeResult:
-        yield prompt_row("session-filter", placeholder="输入以过滤(标题 / id)")
-        yield OptionList(id="session-list")
+        yield prompt_row("session-filter", placeholder="输入以过滤(标题 / id / 内容)")
+        yield self._list
 
     def on_panel_ready(self) -> None:
         self.query_one("#session-filter", Input).focus()
         self._refresh()
 
     # -- 列表 ---------------------------------------------------------
-    def _visible(self) -> list[Session]:
-        items = list(self._provider())
-        if self._named_only:
-            items = [s for s in items if (s.title or "").strip()]
-        if self._sort == "oldest":
-            items = list(reversed(items))
-        elif self._sort == "name":
-            items.sort(key=lambda s: (s.title or "").lower() or "\uffff")
-        query = self.query_one("#session-filter", Input).value.strip().lower()
-        if query:
-            items = [s for s in items
-                     if query in s.id.lower() or query in (s.title or "").lower()]
+    def _all_sessions(self) -> list[Session]:
+        """按范围取候选:当前目录(默认)/ 全部(pi 的 tab 切换)。
+
+        **缓存 `provider()` 的结果**:它每次都把整个会话目录读进内存(`list()` 在本机
+        3200 条会话上约 0.5s),而这里是在**每次按键**的路径上 —— 不缓存的话打字会卡。
+        缓存由 `invalidate()` 在改名 / 删除后清掉(那两种操作会让列表内容变)。
+        """
+        if self._cache is None:
+            self._cache = list(self._provider())
+        items = self._cache
+        if self._scope == "current" and self._cwd:
+            same = [s for s in items if (s.cwd or "") == self._cwd]
+            if same:
+                return same
+            # 当前目录一条都没有 → 回落到全部(pi 是提示"按 tab 看全部",qi 直接给全部:
+            # 面板空着比"多列了几条"更让人困惑)
         return items
 
-    def _refresh(self) -> None:
-        listing = self.query_one("#session-list", OptionList)
-        listing.clear_options()
-        items = self._visible()
-        for session in items:
-            label = f"{session.title or '(未命名)'}   {session.id}   {session.created_at}"
-            if session.branch_points:
-                label += f"   分支点×{session.branch_points}"
-            if self._show_path:
-                label += f"   {session.path}"
-            if session.id == self._current:
-                label += "   ← 当前"
-            listing.add_option(Option(label, id=session.id))
-        if items:
-            listing.highlighted = 0
+    def invalidate(self) -> None:
+        """丢掉会话列表缓存(内容真的变了:改名 / 删除之后)。"""
+        self._cache = None
+
+    def _visible(self) -> list[Session]:
+        return [session for session, _prefix in self._rows]
+
+    def _recompute(self, *, keep: str | None = None) -> None:
+        """过滤 + 排序 + 树状前缀,结果存进 `self._rows`。
+
+        `keep` = 刷新后要尽量保持选中的会话(重命名 / 删除之后用)。
+        """
+        items = self._all_sessions()
+        if self._named_only:
+            items = [s for s in items if has_title(s.title)]
+        query = self._input().value
+        parsed = parse_search_query(query)
+        self._search_error = parsed.get("error")
+        scored: list[tuple[Session, float]] = []
+        if not parsed.get("error"):
+            if not query.strip():
+                scored = [(s, 0.0) for s in items]
+            else:
+                for session in items:
+                    score = match_session_text(session.search_text, parsed)
+                    if score is not None:
+                        scored.append((session, score))
+        picked = [s for s, _ in scored]
+        scores = {s.id: score for s, score in scored}
+
+        if self._sort == "recent" and query.strip():
+            # pi 的 recent = 「只过滤,保持原顺序(最近在前)」,不打分重排
+            picked.sort(key=lambda s: -s.modified_ts)
+        elif query.strip():
+            # threaded / fuzzy 在有查询时都按**相关度**排(pi 的 `filterAndSortSessions`
+            # 对 threaded 也是走 relevance 分支)—— 打了字还按时间排会让最相关的那条
+            # 淹没在几十条弱命中里
+            picked.sort(key=lambda s: (scores.get(s.id, 0.0), -s.modified_ts))
+        elif self._sort == "threaded":
+            self._rows = [(session, self._tree_prefix(depth, is_last, continues))
+                          for session, depth, is_last, continues
+                          in session_tree_order(picked)]
+            self._restore_index(keep)
+            return
+        else:
+            picked.sort(key=lambda s: -s.modified_ts)
+        self._rows = [(s, "") for s in picked]
+        self._restore_index(keep)
+
+    @staticmethod
+    def _tree_prefix(depth: int, is_last: bool, continues: list[bool]) -> str:
+        """pi 的 `buildTreePrefix`:根不缩进,其余 `│  `/`   ` + `├─ `/`└─ `。"""
+        if depth == 0:
+            return ""
+        parts = ["│  " if flag else "   " for flag in continues]
+        return "".join(parts) + ("└─ " if is_last else "├─ ")
+
+    def _restore_index(self, keep: str | None) -> None:
+        if keep is not None:
+            for index, (session, _prefix) in enumerate(self._rows):
+                if session.id == keep:
+                    self._index = index
+                    return
+        if not self._touched:
+            # pi:用户还没动过选择时,选中项停在第一条(默认是最近的一条)
+            self._index = 0
+        self._index = max(0, min(self._index, max(0, len(self._rows) - 1)))
+
+    def _row_text(self, session: Session, prefix: str, index: int, width: int) -> Text:
+        """一行:光标 + 树状前缀 + 名字(没起过名时回落第一句话)+ 右对齐 `路径 消息数 年龄`。
+
+        样式照 pi 的 `SessionList.render`:光标 `› ` 用 accent,**正文按状态上色**
+        (当前 = accent、有名字 = warning、确认删除 = error),选中行整行 `selectedBg`;
+        右侧信息一律 muted(确认删除时 error)。
+        """
+        p = self.palette()
+        selected = index == self._index
+        confirming = self._confirming == session.id
+        text = " ".join(session.display_label.split())
+        if confirming:
+            text = f"删除? {text}"
+        elif session.id == self._current:
+            text = f"{text}  ← 当前"
+        if session.branch_points:
+            text += f"  ⑂{session.branch_points}"
+        right = f"{session.message_count}  {format_age(session.modified_ts)}"
+        if self._show_path:
+            right = f"{self._short_path(str(session.path))}  {right}"
+        elif self._scope == "all" and session.cwd:
+            right = f"{self._short_path(session.cwd)}  {right}"
+        head = prefix + text
+        room = width - Text(head).cell_len - Text(right).cell_len - 3
+        if room < 0:
+            # 放不下:左半(名字/第一句话)优先,右侧信息用省略号收掉
+            keep = max(4, width - Text(right).cell_len - 5)
+            head = Text(head)[:keep].plain + "…"
+            room = max(0, width - Text(head).cell_len - Text(right).cell_len - 3)
+        tone = ("error" if confirming else "accent" if session.id == self._current
+                else "warning" if has_title(session.title) else "text")
+        line = Text()
+        line.append("› " if selected else "  ", style=Style(color=p.hex("accent")))
+        line.append(head, style=Style(color=p.hex(tone), bold=selected))
+        line.append(" " * room)
+        line.append(right, style=Style(color=p.hex("error") if confirming else p.hex("muted")))
+        if selected:
+            # pi 的选中行是**整行底色**(selectedBg)—— 一行一条的列表里,
+            # 底色比只加粗好认,尤其名字长短不一时
+            line.stylize(Style(bgcolor=p.hex("selectedBg")))
+        return line
+
+    @staticmethod
+    def _short_path(path: str, keep: int = 2) -> str:
+        """路径列:`~` 缩写;仍太长就只留末尾若干段(`…/Desktop/qi`)。
+
+        不缩的话它会挤掉左边的名字 —— 而名字才是“这条会话是什么”的唯一线索。
+        """
+        shown = shorten_path(path)
+        parts = [part for part in shown.split("/") if part]
+        if Text(shown).cell_len <= 28 or len(parts) <= keep:
+            return shown
+        return "…/" + "/".join(parts[-keep:])
+
+    def _repaint_list(self) -> None:
+        if self._search_error:
+            self._list.update(Text(f"  {self._search_error}",
+                                   style=Style(color=self.palette().hex("error"))))
+            return
+        if not self._rows:
+            hint = ("没有命名过的会话。ctrl+n 显示全部。" if self._named_only
+                    else "当前目录没有会话。tab 看全部。")
+            self._list.update(Text(f"  {hint}", style=Style(color=self.palette().hex("muted"))))
+            return
+        span = min(self.MAX_VISIBLE, len(self._rows))
+        start = max(0, min(self._index - span // 2, len(self._rows) - span))
+        end = start + span
+        width = self.body_width()          # 循环外算一次:每行都 query 一次盒子没必要
+        out = Text()
+        for index in range(start, end):
+            if out.plain:
+                out.append("\n")
+            session, prefix = self._rows[index]
+            out.append_text(self._row_text(session, prefix, index, width))
+        if start > 0 or end < len(self._rows):
+            out.append("\n")
+            out.append(f"  ({self._index + 1}/{len(self._rows)})",
+                       style=Style(color=self.palette().hex("muted")))
+        self._list.update(out)
+
+    def rendered_rows(self) -> list[tuple[Session, str]]:
+        """当前列表内容(诊断/测试用)。"""
+        return list(self._rows)
+
+    def _refresh(self, *, keep: str | None = None) -> None:
+        self._recompute(keep=keep)
+        self._repaint_list()
+        self._refresh_title()
 
     def _highlighted_id(self) -> str | None:
-        listing = self.query_one("#session-list", OptionList)
-        if not listing.option_count:
+        if not self._rows:
             return None
-        index = listing.highlighted if listing.highlighted is not None else 0
-        return str(listing.get_option_at_index(index).id)
+        index = max(0, min(self._index, len(self._rows) - 1))
+        return self._rows[index][0].id
 
     def _input(self) -> Input:
         return self.query_one("#session-filter", Input)
+
+    def _flash_status(self, text: str, tone: str = "accent") -> None:
+        self._status = (text, tone)
 
     # -- 键位 ---------------------------------------------------------
     def action_cancel(self) -> None:
         if self._renaming is not None:          # 先退出重命名,再考虑关面板
             self._end_rename()
             return
+        if self._confirming is not None:        # 删除确认先取消
+            self._confirming = None
+            self._refresh(keep=self._highlighted_id())
+            return
         self.dismiss(None)
+
+    def action_confirm(self) -> None:
+        """enter:重命名态 = 保存;删除确认态 = 真的删;否则恢复选中的会话。"""
+        if self._renaming is not None:
+            self._commit_rename()
+            return
+        if self._confirming is not None:
+            target, self._confirming = self._confirming, None
+            self._on_delete(target)
+            self.invalidate()                       # 删掉了:缓存里的那条不能再出现
+            self._flash_status("会话已删除")
+            self._refresh()
+            return
+        session_id = self._highlighted_id()
+        if session_id is not None:
+            self.dismiss(session_id)
+
+    def action_move(self, step: int) -> None:
+        if not self._rows:
+            return
+        self._touched = True
+        self._index = max(0, min(self._index + step, len(self._rows) - 1))
+        self._repaint_list()
+
+    def action_toggle_scope(self) -> None:
+        if self._renaming is not None:
+            return                             # 重命名时 tab 留给输入框补全
+        self._scope = "all" if self._scope == "current" else "current"
+        self._touched = False
+        self._status = None
+        self._refresh()
 
     def action_toggle_named(self) -> None:
         self._named_only = not self._named_only
+        self._touched = False
         self._refresh()
 
     def action_toggle_sort(self) -> None:
         self._sort = self.SORTS[(self.SORTS.index(self._sort) + 1) % len(self.SORTS)]
+        self._touched = False
         self._refresh()
 
     def action_toggle_path(self) -> None:
         self._show_path = not self._show_path
-        self._refresh()
+        self._refresh(keep=self._highlighted_id())
 
     def action_rename(self) -> None:
         if self._renaming is not None:
@@ -1809,10 +2273,11 @@ class SessionSelector(EditorSlotPanel):
         session_id = self._highlighted_id()
         if session_id is None:
             return
-        title = next((s.title for s in self._provider() if s.id == session_id), "")
+        row = next((s for s, _ in self._rows if s.id == session_id), None)
         self._renaming = session_id
+        self._renaming_from = self._input().value
         box = self._input()
-        box.value = title or ""
+        box.value = (row.title if row is not None and has_title(row.title) else "")
         box.cursor_position = len(box.value)
         self._refresh_title()
 
@@ -1820,36 +2285,36 @@ class SessionSelector(EditorSlotPanel):
         session_id = self._highlighted_id()
         if session_id is None:
             return
-        self._on_delete(session_id)
-        self._refresh()
+        if session_id == self._current:
+            # pi:不能删当前会话 —— 错误显示在头部状态行上
+            self._flash_status("不能删除当前会话", "error")
+            self._refresh_title()
+            return
+        self._confirming = session_id             # 先确认(pi 的 delete confirmation)
+        self._refresh(keep=session_id)
 
     def _end_rename(self) -> None:
         self._renaming = None
-        self._input().value = ""
-        self._refresh_title()
-        self._refresh()
+        self._input().value = self._renaming_from
+        self._refresh(keep=self._highlighted_id())
 
     def _commit_rename(self) -> None:
         session_id, self._renaming = self._renaming, None
         name = self._input().value.strip()
+        self._input().value = self._renaming_from
         if session_id and name:
             self._on_rename(session_id, name)
-        self._end_rename()
+            self.invalidate()                       # 名字变了:缓存里的旧名要重取
+            self._flash_status(f"已重命名为 {name}")
+        self._refresh(keep=session_id)
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if self._renaming is None:              # 重命名时输入框是名字,不是过滤器
+            self._touched = False
             self._refresh()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        if self._renaming is not None:
-            self._commit_rename()
-            return
-        session_id = self._highlighted_id()
-        if session_id is not None:
-            self.dismiss(session_id)
-
-    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        self.dismiss(str(event.option.id))
+        self.action_confirm()
 
 
 TREE_FILTERS = ("default", "no-tools", "user-only", "labeled-only", "all")
@@ -1929,7 +2394,7 @@ class TreeSelector(EditorSlotPanel):
 
     def compose_body(self) -> ComposeResult:
         yield prompt_row("session-filter", placeholder="输入搜索节点(空格分词)")
-        yield OptionList(id="session-list")
+        yield OptionList(id="tree-list")
 
     def on_panel_ready(self) -> None:
         self.query_one("#session-filter", Input).focus()
@@ -1950,7 +2415,7 @@ class TreeSelector(EditorSlotPanel):
         return self._provider(self._mode, self._input().value.strip(), self._show_label_time)
 
     def _refresh(self) -> None:
-        listing = self.query_one("#session-list", OptionList)
+        listing = self.query_one("#tree-list", OptionList)
         listing.clear_options()
         rows = self._rows()
         for row in rows:
@@ -1960,7 +2425,7 @@ class TreeSelector(EditorSlotPanel):
         self._refresh_title()
 
     def _highlighted_id(self) -> str | None:
-        listing = self.query_one("#session-list", OptionList)
+        listing = self.query_one("#tree-list", OptionList)
         if not listing.option_count:
             return None
         index = listing.highlighted if listing.highlighted is not None else 0
@@ -2202,17 +2667,23 @@ class QiTui(App):
         border-bottom: solid $secondary;
         padding: 0 1;
     }
-    /* pi 的面板标题是 accent bold;键位提示行是 dim */
+    /* pi 的面板标题是 accent bold;键位提示行是 dim(非粗体:行内用 `[not bold]` 退回) */
     #model-hint { color: $primary; text-style: bold; }
     #panel-hints { color: $text-muted; }
     .panel-gap { height: 1; }
-    #model-list, #session-list, #scoped-list { background: transparent; }
-    /* OptionList(会话 / 树 / scoped 列表)去掉自带的 `$surface` 底与整行高亮底,
-       只把选中行提亮成 accent —— pi 的列表没有行底色。 */
-    #session-list > .option-list--option-highlighted,
+    #model-list, #scoped-list { background: transparent; }
+    /* 会话选择器的列表是**自己画的一列文本**(`Static`):pi 的列表没有边框、没有底色,
+       选中行是整行 selectedBg。Textual 的 `OptionList` 自带 `tall $border-blurred`
+       边框与整行高亮底 —— 那圈框就是以前 `/resume` 与 `/model` 不一致的来源。 */
+    #session-list { background: transparent; height: auto; max-height: 11; width: 1fr; }
+    /* OptionList(/tree 与 scoped 列表)去掉自带的 `tall` 边框、`$surface` 底与整行高亮底,
+       只把选中行提亮成 accent —— pi 的列表没有边框也没有行底色。 */
+    #tree-list, #scoped-list { border: none; padding: 0; height: auto; max-height: 50%;
+                               background: transparent; }
     #scoped-list > .option-list--option-highlighted,
-    #session-list:focus > .option-list--option-highlighted,
-    #scoped-list:focus > .option-list--option-highlighted {
+    #scoped-list:focus > .option-list--option-highlighted,
+    #tree-list > .option-list--option-highlighted,
+    #tree-list:focus > .option-list--option-highlighted {
         background: transparent;
         color: $primary;
         text-style: bold;
@@ -2227,7 +2698,6 @@ class QiTui(App):
         height: 1;
         width: 1fr;
     }
-    #session-list { height: auto; max-height: 50%; }
     """
 
     # pi 没有命令面板;Textual 默认用 ctrl+p 开面板,而 pi 的 ctrl+p = 切模型。
@@ -2954,12 +3424,14 @@ class QiTui(App):
         rt = self._rt
         self._append(UserMessage(self._transform_markdown(text), self._renderer, self._palette))
         if self._session is None:
-            self._session = self._session_store().create("tui", cwd=rt.cwd)
-            # 会话是这一刻才建出来的 → 通知 runtime 绑定它,否则这一轮里的 `/model`
-            # 找不到"该往哪个文件记"(设置类 entry 见 docs/session-format.md §6.1)
-            bind = getattr(rt, "bind_session", None)
-            if callable(bind):
-                bind(self._session)
+            # 懒建:到这里才真有话要说,现在建会话(普通启动=落文件,`--no-session`=内存)。
+            self._session = self._lazy_session()
+        # 会话是这一刻才建出来的(或早就绑过)→ 通知 runtime 绑定它,否则这一轮里的 `/model`
+        # 找不到"该往哪个文件记"(设置类 entry 见 docs/session-format.md §6.1)。
+        # 幂等,随手调一次没关系。
+        bind = getattr(rt, "bind_session", None)
+        if callable(bind):
+            bind(self._session)
         self.run_worker(self._run(text), exclusive=False, exit_on_error=False)
 
     # -- 事件循环 -------------------------------------------------------
@@ -3127,9 +3599,12 @@ class QiTui(App):
         elif cmd == "/new":
             if rt is None:
                 return
+            # 新会话**不带标题**:标题由自动命名在首次提问的回合末尾补上
+            # (写死一个默认名会让 `has_title()` 认为"已经有名字了",自动命名就永远不跑)
+            # 且**不建文件**:与裸 `qi` 一样走预留 —— 连点两次 `/new` 不该堆两个空会话
+            # (web 端 §18.28 就是为这个改成懒创建的,pi 的 `/new` 同样不落文件)。
             self._run_guarded(self._switch_guarded(
-                store.create("tui", cwd=rt.cwd), reason="new",
-                note="已开新会话(auto)"))
+                self._lazy_session(), reason="new", note="已开新会话(auto)"))
         elif cmd == "/resume":
             if arg:
                 s = store.get(arg)
@@ -3262,6 +3737,12 @@ class QiTui(App):
             session = self._session
             if session is None:
                 self._note("当前没有会话", "warning")
+                self._scroll_end()
+                return
+            if not session.entries or (session.unflushed and not session.path.exists()):
+                # 还没落盘(刚起会话、一句都还没聊,或 `--no-session`)→ 说清楚,
+                # 而不是让 `copy` 抛一个 `[Errno 2] No such file`(用户看不到所以然)
+                self._note("这个会话还没落盘,没有可导出的文件(先聊一轮)", "warning")
                 self._scroll_end()
                 return
             target = Path(arg).expanduser() if arg else Path.cwd() / f"qi-{session.id}.jsonl"
@@ -3763,24 +4244,33 @@ class QiTui(App):
         self.push_screen(
             SessionSelector(store.list, on_rename=self._rename_session,
                             on_delete=self._delete_session,
-                            current=self._session.id if self._session else None),
+                            current=self._session.id if self._session else None,
+                            current_cwd=(str(self._rt.cwd) if self._rt is not None
+                                         else str(Path.cwd()))),
             picked)
 
     def _rename_session(self, session_id: str, name: str) -> None:
+        """改名走 runtime 的 `set_session_title`(内存 + header + 落盘 + 事件一处做完)。"""
         store = self._session_store()
         session = store.get(session_id)
         if session is None:
             return
-        session.title = name
-        if session.entries and session.entries[0].get("type") == "session":
-            session.entries[0]["title"] = name
-        store.save(session)
+        setter = getattr(self._rt, "set_session_title", None) if self._rt is not None else None
+        try:
+            if callable(setter):
+                setter(session, name, source="user")
+            else:
+                store.set_title(session, name)
+        except OSError as exc:
+            self._note(f"改名失败: {exc}", "error")
+            return
         if self._session is not None and self._session.id == session_id:
             self._session.title = name
             self._refresh_footer()
 
     def _delete_session(self, session_id: str) -> None:
         if not self._session_store().delete(session_id):
+            self._note(f"删除失败: {session_id}", "error")
             return
         if self._session is not None and self._session.id == session_id:
             self._session = None          # 删的是当前会话:下一条消息会自动新建
@@ -3788,7 +4278,6 @@ class QiTui(App):
             bind = getattr(self._rt, "bind_session", None) if self._rt is not None else None
             if callable(bind):
                 bind(None)
-        self._flash(f"已删除会话 {session_id}")
 
     def _entry_label(self, entry: dict) -> str:
         """树/选择器里的一行标签(单行、截断)。"""
@@ -4213,7 +4702,7 @@ class QiTui(App):
         if entry is None:
             self._flash("找不到那条消息")
             return
-        title = f"{session.title} @fork" if session.title else "fork"
+        title = f"{session.display_label} @fork" if session.display_label else "fork"
         forked = self._session_store().fork_at(session, entry.get("parentId"), title=title)
         text = str(entry.get("content") or "")
         self._switch_session(forked, note=f"已 fork 出新会话 {forked.id}(那条消息已放回编辑器)")
@@ -4231,7 +4720,7 @@ class QiTui(App):
             self._scroll_end()
             return
         cloned = self._session_store().fork_at(
-            session, session.current, title=title or f"{session.title} 副本")
+            session, session.current, title=title or f"{session.display_label} 副本")
         self._switch_session(cloned, note=f"已 clone 到新会话 {cloned.id}(分支已复制)")
 
     def _switch_session(self, session, note: str = "") -> None:
@@ -4330,42 +4819,81 @@ class QiTui(App):
                         exit_on_error=False)
 
     def _pick_session(self) -> None:
+        """按 CLI 意图选会话。**无事发生时不自作主张建文件** —— 见 `_lazy_session()`。
+
+        懒建(对齐 web 端 §18.28 的同一条结论):"点了就落文件"会让 TUI 每次启动都留一个
+        空会话,`--no-session` 更是宣称不落盘却落了盘。所以:
+          - 显式给了会话意图(`--session` / `--fork` / `--session-id` / `-c` / `--name`)→ 照做;
+          - 什么都没给 → **不建**,等第一句话真发出去时再建(`_submit` → `_lazy_session()`);
+          - `--no-session` → 建**内存会话**(entries 照常,永不写盘)。
+        """
         store = self._session_store()
         cwd = self._rt.cwd if self._rt is not None else Path.cwd()
         name = (self._want_name or "").strip()
 
         if self._want_no_session:
-            self._session = store.create(name or "ephemeral", cwd=cwd)
+            # 真·不落盘:以前走 `create()`,于是 `--no-session` 照样留文件
+            self._session = store.ephemeral(name or "ephemeral", cwd=cwd)
             return
         if self._want_fork_id:
             source = _open_session_ref(store, self._want_fork_id)
             if source is None:
-                self._session = store.create(name or "tui", cwd=cwd)
+                self._session = store.create(name, cwd=cwd)
                 self._startup_note = f"会话不存在: {self._want_fork_id}(已新建)"
                 return
-            title = name or (f"{source.title} @fork" if source.title else "fork")
+            # 分叉出来的会话**自带** `源名 @fork`:它有名字(所以自动命名不会覆盖),
+            # 而且来源一眼可见。源会话没名字时用它的第一句话当名字。
+            title = name or (f"{source.display_label} @fork" if source.display_label else "fork")
             self._session = store.fork_at(source, source.current, title=title)
             self._startup_note = f"已从 {source.id} 分叉出新会话 {self._session.id}"
             return
         if self._want_session_id:
             found = _open_session_ref(store, self._want_session_id)
             if found is None:
-                self._session = store.create(name or "tui", cwd=cwd)
+                self._session = store.create(name, cwd=cwd)
                 self._startup_note = f"会话不存在: {self._want_session_id}(已新建)"
             else:
                 self._session = found
                 if name:
-                    self._session.title = name
+                    store.set_title(self._session, name)
             return
         if self._exact_session_id:
             # `--session-id <id>`:精确 id,**不存在则建**(pi 同名旗标)
+            # 这是**显式**要一个特定 id 的会话(脚本/CI 拿它当句柄),所以照建 —— 不懒。
             found = store.get(self._exact_session_id)
-            self._session = found or store.create(name or "tui", cwd=cwd,
+            self._session = found or store.create(name, cwd=cwd,
                                                  session_id=self._exact_session_id)
-        if self._want_cont:
-            self._session = store.latest() or store.create(name or "tui", cwd=cwd)
             return
-        self._session = store.create(name or "tui", cwd=cwd)
+        if self._want_cont:
+            self._session = store.latest() or store.create(name, cwd=cwd)
+            return
+        if name:
+            # `qi -n <名字>`:显式要一个带名字的新会话 → 建(否则一个没文件的名字没处安放)
+            self._session = store.create(name, cwd=cwd)
+            return
+        # 裸 `qi`:**预留**一个会话,但**不建文件** —— 文件推迟到第一条助手回答。
+        #
+        # 为什么不干脆留空(`self._session = None`):pi 的 `SessionManager` 构造时就
+        # `newSession()`(只算路径、`flushed=false`),于是"当前会话"这个不变量在 pi 里
+        # 始终成立 —— 历史、用量、扩展的 `ctx.session_manager`、`/session` 信息行都照常工作。
+        # 留空则要在下游每一处判 None,而那些判空迟早漏一个。所以:**对象照建,只懒文件**。
+        self._session = store.reserve(name, cwd=cwd)
+
+    def _lazy_session(self):
+        """第一句话真发出去时把会话**预留**出来(懒建的唯一收口)。
+
+        注意"预留"不是"建文件":`store.reserve()` 只定下 id 与路径,文件推迟到第一条
+        **assistant** 回答(`session.py` 的 `_persist`)。所以"问一句就被打断"也不留文件。
+
+        为什么值得为它单独一个方法:`--no-session` 要内存会话、普通启动要预留,
+        而这层差别不该散到 `_submit` / `/new` / 删掉当前会话后继续说话……每个调用点各写一遍,
+        迟早有一处忘了(那处就会重新开始漏空会话)。
+        """
+        store = self._session_store()
+        cwd = self._rt.cwd if self._rt is not None else Path.cwd()
+        if self._want_no_session:
+            return store.ephemeral(self._want_name or "ephemeral", cwd=cwd)
+        return store.reserve(self._want_name, cwd=cwd)
 
     def _replay_branch(self, session, banner: Text | None = None) -> None:
         """把 transcript 换成该会话**当前分支**的内容(回放/跳分支/恢复会话共用)。

@@ -17,7 +17,7 @@
 
 | 目的 | 命令 |
 | --- | --- |
-| 新开一条(默认行为) | `qi` 或 `qi "第一个问题"` |
+| 新开一条(**说话才落盘**) | `qi` 或 `qi "第一个问题"` |
 | 接着最近一条继续 | `qi -c` / `qi --continue` |
 | 指定某条会话 | `qi --session <路径 / id 或前缀>` |
 | 用精确 id(不存在则建) | `qi --session-id <id>` |
@@ -27,7 +27,7 @@
 | 给会话起名 | `qi -n "名字"`(或 `--name`) |
 | 不落盘(临时试一把) | `qi --no-session` |
 | 导出成 JSONL 文件 | `qi --export out.jsonl`(可配 `--session`;省略则导出最近一条) |
-| 列出 / 查看 / 重命名 / 删除 | TUI 的 `/resume` 选择器(`qi -r` 直接进)—— 与 pi 同一种分工,它也没有 `pi sessions` |
+| 列出 / 查看 / 重命名 / 删除 | TUI 的 `/resume` 选择器(`qi -r` 直接进)—— 与 pi 同一种分工,它也没有 `pi sessions`。选择器默认只看**当前目录**,`tab` 切全部 |
 
 **`<id 或前缀>` 两种前缀都认**:header 的 `id` 前缀,以及文件名 stem 前缀(即含
 `<时间戳>_` 的那一截)。**也接受文件路径** —— `qi --session ./some.jsonl` 会直接读那个文件。
@@ -35,8 +35,14 @@
 
 ## 3. 一条会话的边界
 
-- `--no-session` 的会话**不落盘**:只在内存里跑完这一轮,不产生文件(拿它做一次性脚本很合适)。
+- **新会话懒建**:`qi` / `/new` 会**立刻有一个会话对象,但不建文件** —— 文件推迟到**第一条助手回答**
+  (对齐 pi:`newSession()` 只算路径,`flushed=false`,真写盘在 `_persist`)。所以"进来看看就退出"、
+  "问了句就被 Ctrl+C"都不留空会话。带显式意图的创建(`-c` / `--session` / `--fork` / `-n` /
+  `--session-id` / web 的 `POST /api/sessions`)**照旧立刻落文件** —— 懒建只针对"什么都没说"。
+- `--no-session` 的会话**不落盘**:是**内存会话**(`session.ephemeral`),只在内存里跑完这一轮,
+  磁盘上一个字节都不留(拿它做一次性脚本很合适)。
 - `qi --export` 是**导出后退出**:不会跑模型,只是把现有会话原样拷成一个可带走的 JSONL。
+  还没落盘的会话没有文件可导,TUI 会明说而不是抛 `Errno 2`。
 - 删除会**直接 unlink 文件**,不可恢复(网页端删工作区时是同一语义:目录不动,只删会话文件)。
 
 ## 4. 工作目录与按项目分组
@@ -107,10 +113,12 @@ TUI 里回放会话、以及网页端显示的用量,都来自 `session.py` 的 
 
 | 项 | 行为 |
 | --- | --- |
-| 触发条件 | **这个会话还没有标题**(`not session.title.strip()`)—— 新建的、以及本功能上线前建的老会话都算 |
+| 触发条件 | **这个会话还没有标题**(`not has_title(session.title)`)—— 新建的、以及本功能上线前建的老会话都算。注意 TUI 现在**不再**给新会话写默认名 `tui`(写死默认名的后果:那 2000+ 条老会话一律叫 `tui`,而自动命名因为"看起来有名字"永远不跑),`has_title()` 把历史默认名 `tui` 也算作"没有名字",所以存量会话同样会被补上标题 |
 | 输入 | 会话**原本的第一句话**,不是这一轮说的话。否则老会话续聊时,一句「接着再补个测试」会把一个讲仓库结构的会话命名成「补充测试」 |
 | 时机 | 与回合**并行**起(`asyncio.create_task`)—— **不拖首字延迟**;回合末尾才套用标题 |
 | 被取消时 | 硬取消时连标题任务一起取消 —— 不能把它漏在后台,它还会往会话里写 |
+| 用户改过名 | 不覆盖:`/name` 或选择器里 `ctrl+r` 改的名字(`source="user"`)优先级最高 |
+| 还没起名时显示什么 | 会话选择器显示**第一句话**(`Session.display_label` 的回落,pi 的 `firstMessage` 同款)—— 命名调用失败也不会剩一排「未命名」 |
 
 标题的读写都走 `SessionStore.set_title()`:它同时改内存、header entry、磁盘,**写盘失败还会把
 内存回滚**。只改一处会出现"列表里是新名、重开又变回旧的",而那种不一致最难查。
@@ -123,8 +131,13 @@ TUI 里回放会话、以及网页端显示的用量,都来自 `session.py` 的 
 | | pi | qi |
 | --- | --- | --- |
 | 文件位置 | `~/.pi/agent/sessions/` | `~/.qi/agent/sessions/`(同构;qi 多一个 `sessionDir` 覆盖) |
+| 名字 | `session_info` entry 的 `name`(每次改名追加一条,**最后一条胜**) | header 的 `title`(`set_title()` 整文件重写;旧会话兼容) |
+| 起名 | **不自动起名**:没名字就显示第一句话 | 模型自动起名(见 §7),另加第一句话回落 |
+| 分叉来源 | header `parentSession`,选择器按它排成树 | 同名同义(`Session.parent_session`),`/fork` `/clone` `--fork` 都写 |
 | 会话格式 | JSONL + 树(`id`/`parentId`) | 同构,见 [session-format.md](session-format.md) |
 | 续接 / 指定 / 分叉 | `-c` / `--session` / `--fork` | 同名同义 |
+| 新会话落盘时机 | `newSession()` 起就有对象,文件推迟到第一条 assistant 回答(`_persist`) | 同构:`reserve()` 预留,`_has_assistant` 触发 `flush()` |
+| 不落盘运行 | `SessionManager.inMemory()` | `--no-session` → `store.ephemeral()`(同义) |
 | 分支交互 | `/tree` | `/tree` + 跳分支自动写 `branch_summary` |
 | 模型/级别随会话 | `model_change` / `thinking_level_change` entry,续接时还原 | 同构(键名 `model_id`,见 [session-format.md](session-format.md) §6.1);还原前多一道凭证检查 |
 

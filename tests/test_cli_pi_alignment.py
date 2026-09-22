@@ -344,3 +344,54 @@ def test_cli_passes_the_new_flags_through(fake_runtime):
     assert kwargs.get("scoped_models") == ["beta/m3", "ollama/x"]
     assert kwargs.get("no_extensions") is False
     assert kwargs.get("no_context_files") is False
+
+
+# ── `--no-session` 真的不落盘 ────────────────────────────────────────
+#
+# 名字与文档一直说"不落盘"(`docs/sessions.md` §3:`只在内存里跑完这一轮,不产生文件`),
+# 而实现走的是 `store.create()` —— 于是它**照样留一个文件**。这类"文档与实现不一致"
+# 最难发现:用户按文档去用一次性脚本,攒下一堆空会话才知道。
+
+def test_no_session_creates_an_in_memory_session(tmp_path, monkeypatch):
+    """`--no-session` → 内存会话:entries 能攒、能被查询,磁盘上不留文件。"""
+    rt = _runtime(tmp_path, monkeypatch)
+    session = rt.sessions.ephemeral("ephemeral", cwd=rt.cwd)
+    rt.sessions.append(session, {"type": "message", "role": "user", "content": "一"})
+    rt.sessions.append(session, {"type": "message", "role": "assistant", "content": "二"})
+
+    assert session.ephemeral is True
+    assert session.message_count == 2                  # 会话内容照常可用
+    assert list(rt.sessions.root.glob("*.jsonl")) == []   # 但一个文件都没有
+
+
+def test_no_session_headless_leaves_no_file(tmp_path, monkeypatch):
+    """端到端:`qi -p --no-session "hi"` 跑完,sessions 目录里空无一物。
+
+    用真 runtime(不 stub),否则测的是替身的行为 —— 而这条 bug 恰恰在真实现里。
+    """
+    home = _env(tmp_path, monkeypatch)
+    project = _project(tmp_path)
+    monkeypatch.chdir(project)
+
+    class _StubLLM:
+        async def astream(self, messages, tools=None, temperature=None):
+            from qi_agent.llm import LLMDelta
+
+            yield LLMDelta(text="答")
+            yield LLMDelta(finished=True, usage={"prompt_tokens": 1, "completion_tokens": 1})
+
+        async def chat(self, messages, tools=None, temperature=None):
+            return ChatResponse(text="标题")
+
+    real_runtime = runtime_mod.QiRuntime
+
+    def _patched(*args, **kwargs):
+        kwargs.setdefault("llm", _StubLLM())      # 不联网
+        return real_runtime(*args, **kwargs)
+
+    monkeypatch.setattr(runtime_mod, "QiRuntime", _patched)
+    res = runner.invoke(app, ["-p", "--no-session", "--no-extensions",
+                              "--no-context-files", "hi"])
+    assert res.exit_code == 0, res.output
+    assert list((home / "sessions").glob("*.jsonl")) == [], \
+        "--no-session 说了不落盘,就不该留下文件"

@@ -90,3 +90,54 @@ async def test_startup_restores_the_thinking_level(tmp_path, monkeypatch):
         await pilot.pause(0.3)
         assert app._thinking_level == "high"
         assert "high" in app.footer_text.plain
+
+
+# ── 懒建:真 runtime 路径(假替身不写会话,测不到"什么时候落盘")──────
+
+
+class _StubLLM:
+    """只实现 runtime 用到的两个方法:`astream` 出回答、`chat` 出标题。"""
+
+    async def astream(self, messages, tools=None, temperature=None):
+        from qi_agent.llm import LLMDelta
+
+        yield LLMDelta(text="答")
+        yield LLMDelta(finished=True, usage={"prompt_tokens": 1, "completion_tokens": 1})
+
+    async def chat(self, messages, tools=None, temperature=None):
+        from qi_agent.llm import ChatResponse
+
+        return ChatResponse(text="测试标题")
+
+
+@pytest.mark.asyncio
+async def test_bare_start_flushes_only_after_the_first_answer(tmp_path, monkeypatch):
+    """裸 `qi` + 真 runtime:助手一回答,文件才出现(**且带上刚才那句用户消息**)。
+
+    这条必须在**真** runtime 上测:文件是 runtime 的 `sessions.append()` 触发的
+    (`FakeRuntime` 的 `stream` 只是演一遍事件,不碰会话)。
+    """
+    project = _env(tmp_path, monkeypatch)
+    store_dir = project.parent / "home" / "sessions"
+
+    rt = QiRuntime(cwd=project, approve_project=True, llm=_StubLLM())
+    app = tui_mod.QiTui(runtime=rt, palette=load_palette("dark"), approve_project=True)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.3)
+        assert app._session is not None and app._session.unflushed is True
+        assert list(store_dir.glob("*.jsonl")) == []          # 还没说话:没有文件
+
+        editor = app.query_one("#editor")
+        editor.load_text("你好")
+        editor.move_cursor((0, 2))
+        await pilot.press("enter")
+        await pilot.pause(1.2)
+
+        files = sorted(store_dir.glob("*.jsonl"))
+        assert len(files) == 1, "回答到了就该落盘"
+        assert files[0] == app._session.path
+        # 落盘的是**全部** entry:用户那句话也在里面(不是只有回答)
+        contents = [json.loads(line).get("content")
+                    for line in files[0].read_text(encoding="utf-8").splitlines()
+                    if json.loads(line).get("type") == "message"]
+        assert contents == ["你好", "答"]

@@ -108,7 +108,7 @@ class _TurnStub:
 
 
 @pytest.mark.asyncio
-async def test_first_turn_names_the_session_once(tmp_path):
+async def test_first_turn_names_the_session_once(tmp_path, minimal_config):
     store = SessionStore(root=tmp_path / "sessions")
     stub = _TurnStub()
     runtime = QiRuntime(cwd=tmp_path, runtime_cfg=RuntimeConfig(workdir=tmp_path),
@@ -134,7 +134,7 @@ async def test_first_turn_names_the_session_once(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_naming_failure_leaves_the_turn_intact(tmp_path):
+async def test_naming_failure_leaves_the_turn_intact(tmp_path, minimal_config):
     """命名炸了:回答照常落盘,标题保持「未命名」——不编、不报错。"""
     class _Boom(_TurnStub):
         async def chat(self, messages, tools=None, temperature=None):
@@ -153,7 +153,7 @@ async def test_naming_failure_leaves_the_turn_intact(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_naming_an_old_session_uses_its_first_message(tmp_path):
+async def test_naming_an_old_session_uses_its_first_message(tmp_path, minimal_config):
     """老会话(上线之前建的)第一次跑时补标题:输入是它原本的第一句话。
 
     否则续聊一句"接着再补个测试",一个讲仓库结构的会话会被命名成「补充测试」。
@@ -171,3 +171,39 @@ async def test_naming_an_old_session_uses_its_first_message(tmp_path):
 
     assert stub.title_inputs == ["最早那句:看下仓库结构"]
     assert session.title == "梳理仓库结构"
+
+
+@pytest.mark.asyncio
+async def test_legacy_default_title_counts_as_unnamed(tmp_path, minimal_config):
+    """上线前建的会话标题是写死的 `tui` —— 那不算名字,照样要补一个。
+
+    真实数据:本地 3064 个会话里有 2700+ 个叫 `tui`。要是把「有 title」当判据,
+    这个功能对**存量会话**等于没上线,而用户看到的正是这一堆同名条目。
+    """
+    store = SessionStore(root=tmp_path / "sessions")
+    stub = _TurnStub()
+    runtime = QiRuntime(cwd=tmp_path, runtime_cfg=RuntimeConfig(workdir=tmp_path),
+                        session_store=store, llm=stub)
+    session = store.create("tui", cwd=tmp_path)                 # 老默认名
+    store.append(session, {"type": "message", "role": "user", "content": "最早那句:看下仓库结构"})
+
+    async for _ in runtime.stream("接着再补个测试", session):
+        pass
+
+    assert session.title == "梳理仓库结构"
+
+
+@pytest.mark.asyncio
+async def test_user_named_session_is_never_renamed(tmp_path, minimal_config):
+    """用户手动改过的名字(`/name`)不能被自动命名覆盖。"""
+    store = SessionStore(root=tmp_path / "sessions")
+    stub = _TurnStub()
+    runtime = QiRuntime(cwd=tmp_path, runtime_cfg=RuntimeConfig(workdir=tmp_path),
+                        session_store=store, llm=stub)
+    session = store.create("我自己起的名字", cwd=tmp_path)
+
+    async for _ in runtime.stream("你好", session):
+        pass
+
+    assert session.title == "我自己起的名字"
+    assert stub.title_calls == 0                    # 连命名请求都不发

@@ -49,6 +49,33 @@ def _as_version(value: object) -> int:
         return 2
 
 
+def _has_assistant(session: Session) -> bool:
+    """这个会话已经有助手回答了吗?—— `unflushed` 会话落盘的触发条件。
+
+    为什么以 **assistant** 为界(而不是"有任何 entry"):文件一旦被写出来,它就会出现在
+    `/resume` 列表里。用户敲了一句话、没等到回答就退出(打断 / 报错 / Ctrl+C)时,
+    列表里多一条无回答的会话毫无价值 —— 而"真聊过一轮"才值得留档。pi 的 `_persist`
+    用的正是这个判据。
+    """
+    return any(e.get("type") == "message" and e.get("role") == "assistant"
+               for e in session.entries)
+
+
+#: TUI 在会话自动命名上线前写死的默认标题(`SessionStore.create("tui", …)`)。它**不是名字**:
+#: 那时每个新会话都叫 `tui`,列表里一列同名的 `tui` 等于没有名字。见 `has_title()`。
+LEGACY_DEFAULT_TITLE = "tui"
+
+
+def has_title(title: str | None) -> bool:
+    """这个标题算「有名字」吗?
+
+    空串与历史默认值 `LEGACY_DEFAULT_TITLE` 都不算 —— 两处要口径一致:
+    自动命名拿它判断「要不要起名」,选择器拿它判断「显示标题还是回落第一句话」。
+    """
+    cleaned = (title or "").strip()
+    return bool(cleaned) and cleaned != LEGACY_DEFAULT_TITLE
+
+
 @dataclass
 class Session:
     id: str
@@ -60,6 +87,30 @@ class Session:
     version: int = 2                  # 格式版本(1 = 线性旧格式)
     position: str | None = None       # 下一次 append 的父节点(None = 用 leaf)
     migrated: bool = False            # 读入时补过链,尚未落盘
+    #: **内存会话**:`--no-session` 用。entries 照常攒、能被查询与回放,但**任何写盘都被跳过**
+    #: (append / save / set_title)。为什么不干脆不建 Session:整条回合链路(历史、用量、
+    #: 事件、扩展的 `ctx.session_manager`)都假定"有当前会话" —— 给一个真对象、只是不落盘,
+    #: 比在下游到处判 None 可靠得多。
+    ephemeral: bool = False
+    #: **尚未落过盘**:文件还没被创建出来。pi 的 `flushed` 同义 —— 见 `SessionStore._persist`:
+    #: 文件推迟到**第一条 assistant 回答**才写在磁盘上。
+    #:
+    #: 为什么需要它:回合一开始就得有会话对象(历史、用量、扩展的 `ctx.session_manager`
+    #: 都要),但"用户问了却没得到回答"(Ctrl+C、模型报错、问一句就走)不该在磁盘上留东西 ——
+    #: 那正是空会话堆积的成因(`docs/session-format.md` §9.1)。用户那句话仍留在内存里,
+    #: 真有回答时一起写出。
+    unflushed: bool = False
+
+    @property
+    def parent_session(self) -> str | None:
+        """本会话是从哪个会话分叉出来的(header 的 `parentSession`,pi 同名字段)。
+
+        只有 `/fork` / `/clone` 建出来的会话有;老会话没有这个键 → None。
+        pi 的会话选择器用它把分叉串成树(`threaded` 排序)。
+        """
+        header = self.entries[0] if self.entries else {}
+        value = header.get("parentSession") if header.get("type") == "session" else None
+        return str(value) if value else None
 
     # ── 树 ──
     @property
@@ -136,6 +187,64 @@ class Session:
     def message_count(self) -> int:
         """当前分支上的消息数(不是文件里所有分支的总和)。"""
         return self.message_count_of()
+
+    # ── 选择器用的派生量(pi 的 SessionInfo 那几项)──
+    @property
+    def first_user_text(self) -> str:
+        """当前分支上第一条用户消息 —— 没起过名时,**它就是列表里显示的那行**(pi 同款)。
+
+        用户消息的 `content` 可能是非字符串(图片块等),那种跳过继续找。
+        """
+        for entry in self.branch():
+            if entry.get("type") == "message" and entry.get("role") == "user":
+                content = entry.get("content")
+                if isinstance(content, str) and content.strip():
+                    return content
+        return ""
+
+    @property
+    def display_label(self) -> str:
+        """列表里显示什么:有名字用名字,否则回落第一句话(再没有就占位)。"""
+        if has_title(self.title):
+            return self.title.strip()
+        first = " ".join(self.first_user_text.split())
+        return first or "(无消息)"
+
+    @property
+    def modified_ts(self) -> float:
+        """最后活动时间:取 entry 里最晚的 `ts`;**没有 entry 时间就回落 header 的 `created_at`**
+        (刚建的会话只有 header)。
+
+        为什么不用文件 mtime:整文件重写(改名、迁移)会把它推到现在,排序就乱了。
+        坏值忽略(不抛):一行脏数据不该让整个列表排不出来。
+        """
+        best = 0.0
+        for entry in self.entries:
+            raw = entry.get("ts") or (entry.get("created_at")
+                                      if entry.get("type") == "session" else None)
+            if not isinstance(raw, str):
+                continue
+            try:
+                best = max(best, time.mktime(time.strptime(raw[:19], "%Y-%m-%dT%H:%M:%S")))
+            except ValueError:
+                continue
+        return best
+
+    @property
+    def search_text(self) -> str:
+        """模糊/短语搜索的语料:id + 标题 + **全部**消息 + cwd(pi 的 `getSessionSearchText`)。
+
+        用 `entries` 而不是 `branch()`:pi 也是把文件里所有消息拼进去 —— 搜的是
+        「这个会话里聊过什么」,翻过的旧分支同样算。
+        """
+        parts = [self.id, self.title or "", self.cwd or ""]
+        for entry in self.entries:
+            if entry.get("type") != "message":
+                continue
+            content = entry.get("content")
+            if isinstance(content, str) and content:
+                parts.append(content)
+        return " ".join(parts)
 
 
 def _as_int(value: object) -> int:
@@ -264,13 +373,17 @@ class SessionStore:
         return entries
 
     def create(self, title: str = "", cwd: Path | str | None = None,
-               session_id: str | None = None) -> Session:
+               session_id: str | None = None,
+               parent_session: Path | str | None = None) -> Session:
         """新建会话文件(v2 树格式)。
 
         `cwd` 写进 header:按项目分组与恢复时选对工作目录都靠它。
         省略时为 None,后续由 `ensure_cwd()` 回填。
 
         `session_id` 给了就用它(CLI 的 `--session-id <id>`:精确 id,不存在则建),否则随机。
+
+        `parent_session` = 这个会话从哪个文件分叉出来(pi header 的 `parentSession`)。
+        只有 `/fork` / `/clone` 会传;会话选择器的树状(threaded)视图靠它串起来。
         """
         sid = session_id or _new_id()
         path = self.root / f"{time.strftime('%Y%m%dT%H%M%S')}_{sid}.jsonl"
@@ -279,9 +392,66 @@ class SessionStore:
                         "title": title, "created_at": now}
         if cwd is not None:
             header["cwd"] = str(Path(cwd).expanduser().resolve())
+        if parent_session is not None:
+            header["parentSession"] = str(Path(parent_session).expanduser())
         path.write_text(json.dumps(header, ensure_ascii=False) + "\n", encoding="utf-8")
         return Session(id=sid, path=path, title=title, created_at=now,
                        cwd=header.get("cwd"), entries=[header], version=2)
+
+    def ephemeral(self, title: str = "", cwd: Path | str | None = None) -> Session:
+        """建一个**不落盘**的会话(`qi --no-session`)。
+
+        与 `create()` 的唯一差别:不写文件、`ephemeral=True`。`path` 仍给一个**看起来正常**
+        的路径 —— 下游(`/session` 的信息行、`QI_SESSION_FILE` 环境变量、扩展)都能照常读它,
+        只是永远没有那个文件。用 `session.ephemeral` 判真假,不要拿 `path.exists()` 判:
+        那会在"文件刚好被删掉"时给出错误答案。
+        """
+        sid = _new_id()
+        now = _now()
+        header: dict = {"type": "session", "version": 2, "id": sid,
+                        "title": title, "created_at": now}
+        if cwd is not None:
+            header["cwd"] = str(Path(cwd).expanduser().resolve())
+        return Session(id=sid, path=self.root / f"{time.strftime('%Y%m%dT%H%M%S')}_{sid}.jsonl",
+                       title=title, created_at=now, cwd=header.get("cwd"),
+                       entries=[header], version=2, ephemeral=True)
+
+    def reserve(self, title: str = "", cwd: Path | str | None = None) -> Session:
+        """**预留**一个新会话:id 与路径定下来,但**文件先不建**(`unflushed=True`)。
+
+        这是"裸 `qi` 进来"该走的路 —— 对齐 pi 的 `newSession()`:它同样只算好
+        `sessionFile`、`flushed=false`,真写到磁盘要等第一条 assistant 回答
+        (pi 的 `_persist`:`openSync(path, "wx")` 一次写出全部 entry)。
+
+        为什么不能就在 `create()` 里建文件:`qi` 看一眼就走、或问了句就被 Ctrl+C,
+        都会留下一个空会话;本机 3000+ 个空会话就是这么攒出来的。
+        """
+        sid = _new_id()
+        now = _now()
+        header: dict = {"type": "session", "version": 2, "id": sid,
+                        "title": title, "created_at": now}
+        if cwd is not None:
+            header["cwd"] = str(Path(cwd).expanduser().resolve())
+        return Session(id=sid, path=self.root / f"{time.strftime('%Y%m%dT%H%M%S')}_{sid}.jsonl",
+                       title=title, created_at=now, cwd=header.get("cwd"),
+                       entries=[header], version=2, unflushed=True)
+
+    def flush(self, session: Session) -> None:
+        """把一个 `unflushed` 的会话写出来(第一条 assistant 回答到达时调)。幂等。
+
+        用 `"x"`(独占创建,即 `O_EXCL`)而不是 `"w"`:`unflushed` 期间**不该有**文件,
+        真有就说明路径撞了 —— 那种情况宁可报错,也不要静默覆盖掉另一个会话
+        (用户的会话是**不可再生**的数据)。
+        """
+        if session.ephemeral or not session.unflushed:
+            return
+        with session.path.open("x", encoding="utf-8") as fh:
+            for entry in session.entries:
+                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        session.unflushed = False
+        session.migrated = False
+        self.save(session)
+        return session
 
     @staticmethod
     def migrate(entries: list[dict]) -> bool:
@@ -395,6 +565,25 @@ class SessionStore:
         entry.setdefault("parentId", session.current)
         session.entries.append(entry)
         session.position = str(entry["id"])
+        self._persist(session, entry)
+
+    def _persist(self, session: Session, entry: dict) -> None:
+        """把刚 append 的 entry 落到磁盘(pi 的 `_persist` 同形)。
+
+        三条分支:
+          - **内存会话**(`--no-session`):不碰磁盘;
+          - **还没落过盘**(`unflushed`,裸 `qi` 建的新会话):也先不落 —— 文件推迟到
+            第一条 **assistant** 回答。这样"问了句就被打断"同样不留文件;
+          - 其余:追加一行(补过链的老会话整文件重写)。
+        """
+        if session.ephemeral:
+            return
+        if session.unflushed:
+            # 有 assistant 回答了吗?有就现在把**全部** entries 一次性写出(含 header)
+            if not _has_assistant(session):
+                return
+            self.flush(session)
+            return
         if session.migrated:
             # 补链过的老 entry 只在内存里,必须整文件重写才能让新节点的 parent 可回溯
             session.migrated = False
@@ -437,7 +626,14 @@ class SessionStore:
         return True
 
     def save(self, session: Session) -> None:
-        """整文件重写(改名/标题/迁移/分叉等)。"""
+        """整文件重写(改名/标题/迁移/分叉等)。内存会话跳过(没有文件可写)。"""
+        if session.ephemeral:
+            session.migrated = False
+            return
+        if session.unflushed:
+            # 还没落过盘的会话:整文件重写就等于**把它提前建出来了** —— 那是 `flush` 的活。
+            # 这里只可能来自"改标题"这类操作;让 `flush` 一次写全(下次 append 也会带走)。
+            return
         with session.path.open("w", encoding="utf-8") as fh:
             for e in session.entries:
                 fh.write(json.dumps(e, ensure_ascii=False) + "\n")
@@ -469,6 +665,8 @@ class SessionStore:
         session.title = title
         if header is not None:
             header["title"] = title
+        if session.ephemeral:
+            return                      # 内存会话:内存与 header 都改了,没有文件要写
         try:
             self.save(session)
         except OSError:
@@ -487,7 +685,8 @@ class SessionStore:
         原 id/parentId:链在新文件里自洽,未来再引用时不至于指向另一个文件。
         """
         branch = session.branch(entry_id) if entry_id else []
-        new = self.create(title if title is not None else session.title, cwd=session.cwd)
+        new = self.create(title if title is not None else session.title, cwd=session.cwd,
+                          parent_session=session.path)
         for entry in branch:
             new.entries.append(copy.deepcopy(entry))
         self.save(new)

@@ -554,6 +554,14 @@ async def test_tui_command_surface(tmp_path, monkeypatch):
         app._command("/changelog")
         assert "CHANGELOG" in notes[-1][0]
 
+        # 还没落盘的会话(懒建:一句话都没聊)没有文件可导出 —— 要说得清楚,
+        # 而不是抛一个 `[Errno 2] No such file`(用户看不到所以然)
+        app._command("/export")
+        assert "还没落盘" in notes[-1][0]
+
+        # 真聊一轮(落盘)之后再导出就正常了
+        app._session_store().append(app._session, {
+            "type": "message", "role": "assistant", "content": "答"})
         app._command("/export")
         assert "已导出" in notes[-1][0]
         assert Path(notes[-1][0].split("→ ")[1].strip()).is_file()
@@ -1959,11 +1967,78 @@ async def test_tui_session_selection_flags(tmp_path, monkeypatch):
         app._refresh_footer()
         assert "我的名字" in app.footer_text.plain
 
-    # --no-session:临时会话(仍落盘,但名字明确)
+    # --no-session:临时会话(**不落盘**,名字明确)
     app = QiTui(palette=PALETTE, no_session=True)
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause(0.1)
         assert app._session is not None and app._session.title == "ephemeral"
+        assert app._session.ephemeral is True, "--no-session 必须是内存会话"
+
+
+# ── 懒建:没说话就不在磁盘上留东西 ──────────────────────────
+#
+# 开发机上真实事故:`~/.qi/agent/sessions/` 攒了 3000+ 个空会话。TUI 这条路径的成因是
+# "进界面就落一个文件"(`_pick_session` 里无条件的 `store.create()`)。这组测试钉住新语义:
+# 会话**对象**照常有(否则下游到处要判 None),**文件**推迟到第一条助手回答。
+
+@pytest.mark.asyncio
+async def test_bare_start_writes_no_file_until_first_answer(tmp_path, monkeypatch):
+    """裸 `qi`:会话对象在,**文件**推迟到第一条助手回答 —— 看一眼前就走不留空会话。"""
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        store = app._session_store()
+        # 会话对象在(pi 的 SessionManager 构造时就 newSession(),不变量同形)
+        assert app._session is not None
+        assert app._session.unflushed is True
+        # 但磁盘上什么都没有:进来看一眼就走 → 不留垃圾
+        assert store.list() == []
+        assert not app._session.path.exists()
+        # 甚至 `/session` 这类命令也照常工作(会话对象在,只是没文件)
+        assert not app._session.message_count
+
+
+@pytest.mark.asyncio
+async def test_no_session_writes_nothing_even_after_chatting(tmp_path, monkeypatch):
+    """`--no-session`:聊完一整轮也**一个文件都不留**(以前它照样落盘)。"""
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE, no_session=True)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        await _type_and_submit(app, pilot, "你好")
+        await app.workers.wait_for_complete()
+        await pilot.pause(0.1)
+        assert app._session is not None and app._session.ephemeral is True
+        assert list(app._session_store().root.glob("*.jsonl")) == []
+
+
+@pytest.mark.asyncio
+async def test_new_session_command_does_not_pile_up_empty_files(tmp_path, monkeypatch):
+    """连点 `/new` 不堆空会话(web 端 §18.28 的同一条结论;pi 的 `/new` 也不落文件)。"""
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        store = app._session_store()
+        for _ in range(3):
+            app._command("/new")
+            await app.workers.wait_for_complete()
+            await pilot.pause(0.05)
+        assert store.list() == [], "/new 不落文件"
+        assert app._session is not None and app._session.unflushed is True
 
 
 # ── 压缩(pi 的 /compact)────────────────────────────────
@@ -2288,7 +2363,54 @@ async def test_scoped_models_saves_and_limits_cycling(tmp_path, monkeypatch):
         assert app._cycle_labels() == ["alpha/m1", "alpha/m2", "beta/m3"]
 
 
-# ── 会话选择器(/resume;pi 的会话选择器键位)──────────────
+# ── 会话选择器(/resume;对齐 pi 的 SessionSelectorComponent)──────
+
+
+def test_session_search_syntax_tokens_phrases_and_regex():
+    """过滤框的三态语法:`re:` 正则 / `"短语"` 精确 / 空格分词模糊(pi 的 parseSearchQuery)。"""
+    plain = tui_mod.parse_search_query("abc def")
+    assert plain["mode"] == "tokens" and plain["error"] is None
+    assert [(t.kind, t.value) for t in plain["tokens"]] == [("fuzzy", "abc"), ("fuzzy", "def")]
+
+    mixed = tui_mod.parse_search_query('foo "node cve" bar')
+    assert [(t.kind, t.value) for t in mixed["tokens"]] == [
+        ("fuzzy", "foo"), ("phrase", "node cve"), ("fuzzy", "bar")]
+
+    # 引号没闭合 = 打字中间态 → 退化成空格分词,不报错
+    broken = tui_mod.parse_search_query('foo "node cve')
+    assert broken["error"] is None
+    assert all(t.kind == "fuzzy" for t in broken["tokens"])
+
+    regex = tui_mod.parse_search_query("re:^2026.*tui$")
+    assert regex["mode"] == "regex" and regex["error"] is None
+    assert tui_mod.parse_search_query("re:[unclosed")["error"]
+    assert tui_mod.parse_search_query("re:")["error"]
+
+
+def test_session_search_matching_is_fuzzy_phrase_and_regex():
+    text = "9d291f93ac15 tui 梳理仓库结构 /Users/me/proj"
+    assert tui_mod.match_session_text(text, tui_mod.parse_search_query("仓库")) is not None
+    # 模糊:子序列也算命中("gt 结构" 这种跨词的也认)
+    assert tui_mod.match_session_text(text, tui_mod.parse_search_query("9d2tui")) is not None
+    assert tui_mod.match_session_text(text, tui_mod.parse_search_query("无关词")) is None
+    # 短语必须连续
+    assert tui_mod.match_session_text(text, tui_mod.parse_search_query('"仓库结构"')) is not None
+    assert tui_mod.match_session_text(text, tui_mod.parse_search_query('"结构仓库"')) is None
+    # 正则
+    assert tui_mod.match_session_text(text, tui_mod.parse_search_query(r"re:^9d\w+ tui")) is not None
+    assert tui_mod.match_session_text(text, tui_mod.parse_search_query("re:^zzz")) is None
+
+
+def test_session_age_is_compact():
+    now = 1_700_000_000.0
+    assert tui_mod.format_age(now - 10, now) == "now"
+    assert tui_mod.format_age(now - 300, now) == "5m"
+    assert tui_mod.format_age(now - 3 * 3600, now) == "3h"
+    assert tui_mod.format_age(now - 2 * 86400, now) == "2d"
+    assert tui_mod.format_age(now - 10 * 86400, now) == "1w"
+    assert tui_mod.format_age(now - 100 * 86400, now) == "3mo"
+    assert tui_mod.format_age(now - 800 * 86400, now) == "2y"
+    assert tui_mod.format_age(0, now) == "?"
 
 
 @pytest.mark.asyncio
@@ -2302,54 +2424,92 @@ async def test_session_selector_lists_filters_and_acts(tmp_path, monkeypatch):
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause(0.1)
         store = app._session_store()
-        zeta = store.create("zeta")
-        alpha = store.create("alpha")
-        unnamed = store.create("")
-        order = [s.id for s in store.list()]             # 最新在前(mtime);包含 App 启动时那个会话
+        # 选择器默认只看**当前目录**,所以测试里的会话要带上 cwd(真实会话都写了 cwd)
+        zeta = store.create("zeta", cwd=tmp_path)
+        alpha = store.create("alpha", cwd=tmp_path)
+        unnamed = store.create("", cwd=tmp_path)
+        other = store.create("别的目录", cwd=tmp_path / "elsewhere")   # 用于 tab 切范围
+        here = str(tmp_path.resolve())
+        order = [s.id for s in store.list() if s.cwd == here]
 
         app._command("/resume")
         await pilot.pause(0.1)
         selector = app.screen
         assert isinstance(selector, tui_mod.SessionSelector)
-        listing = selector.query_one("#session-list", tui_mod.OptionList)
-        assert listing.option_count == len(order)
+        # 选会话默认只看**当前目录**(pi 的 scope=current)
         assert [s.id for s in selector._visible()] == order
 
-        # 输入即过滤(标题 / id)
+        # 列表是自绘的 Static —— 不再是 OptionList(那圈 tall 边框与整行高亮底就是没对齐 pi 的来源)
+        listing = selector.query_one("#session-list", Static)
+        assert listing.styles.background.hex == "#00000000"         # 无底色
+        assert listing.styles.border_top[0] in (None, "")           # 无边框
+
+        # 输入即过滤:`"短语"` 是连续子串(模糊匹配会命中 id/cwd 里的子序列,这里要精确)
         box = selector.query_one("#session-filter", tui_mod.Input)
-        box.value = "alp"
+        box.value = '"alpha"'
         await pilot.pause(0.05)
         assert [s.id for s in selector._visible()] == [alpha.id]
+        box.value = "re:^" + alpha.id
+        await pilot.pause(0.05)
+        assert [s.id for s in selector._visible()] == [alpha.id]
+        box.value = "re:["
+        await pilot.pause(0.05)
+        assert selector._visible() == []                     # 正则语法错:列表空 + 头部报错
+        assert selector.query_one("#session-list", Static).render().plain.strip()
         box.value = ""
         await pilot.pause(0.05)
 
+        # tab:当前目录 ↔ 全部(pi 的 scope 切换)
+        await pilot.press("tab")
+        await pilot.pause(0.05)
+        assert selector._scope == "all"
+        assert other.id in [s.id for s in selector._visible()]    # 全部 = 也含别的目录
+        await pilot.press("tab")
+        await pilot.pause(0.05)
+        assert selector._scope == "current"
+        assert other.id not in [s.id for s in selector._visible()]
+
         await pilot.press("ctrl+n")                      # 只看命名会话
         await pilot.pause(0.05)
-        named = [s.id for s in store.list() if (s.title or "").strip()]
-        assert [s.id for s in selector._visible()] == named
+        named = sorted(s.id for s in store.list() if tui_mod.has_title(s.title) and s.cwd == here)
+        assert sorted(s.id for s in selector._visible()) == named
         await pilot.press("ctrl+n")
         await pilot.pause(0.05)
         assert len(selector._visible()) == len(order)
 
-        await pilot.press("ctrl+s")                      # recent → oldest → name
-        await pilot.pause(0.05)
-        assert [s.id for s in selector._visible()] == list(reversed(order))
+        # ctrl+s 三档循环:threaded → recent → fuzzy
         await pilot.press("ctrl+s")
         await pilot.pause(0.05)
-        titled = [s.title for s in selector._visible()]
-        nonempty = [t for t in titled if t]
-        assert nonempty == sorted(nonempty)              # 命名的按名字排;未命名的垫底
-
-        await pilot.press("ctrl+p")                      # 显示路径
+        assert selector._sort == "recent"
+        assert [s.id for s in selector._visible()] == order      # recent = 按最后活动时间倒序
+        await pilot.press("ctrl+s")
         await pilot.pause(0.05)
-        assert str(alpha.path) in str(listing.get_option_at_index(
-            [i for i, s in enumerate(selector._visible()) if s.id == alpha.id][0]).prompt)
+        assert selector._sort == "fuzzy"
+        await pilot.press("ctrl+s")
+        await pilot.pause(0.05)
+        assert selector._sort == "threaded"
+
+        await pilot.press("ctrl+p")                      # 显示路径(太长就缩成 `…/段/段`)
+        await pilot.pause(0.05)
+        shown = selector.query_one("#session-list", Static).render().plain
+        assert alpha.path.name in shown and "…/" in shown
         await pilot.press("ctrl+p")
         await pilot.pause(0.05)
+        assert alpha.path.name not in selector.query_one("#session-list", Static).render().plain
+
+        # ↑↓ 移动光标(自绘列表也要能手选)
+        selector._index = 0
+        await pilot.press("down")
+        await pilot.pause(0.05)
+        assert selector._index == 1
+        await pilot.press("up")
+        await pilot.pause(0.05)
+        assert selector._index == 0
 
         # ctrl+r 重命名:输入框变名字编辑器,enter 保存并落盘
         index = [i for i, s in enumerate(selector._visible()) if s.id == zeta.id][0]
-        listing.highlighted = index
+        selector._index = index
+        selector._touched = True
         await pilot.press("ctrl+r")
         await pilot.pause(0.05)
         assert selector._renaming == zeta.id
@@ -2359,22 +2519,92 @@ async def test_session_selector_lists_filters_and_acts(tmp_path, monkeypatch):
         assert selector._renaming is None
         assert store.get(zeta.id).title == "重命名后"    # type: ignore[union-attr]
 
-        # ctrl+d 删除高亮的会话
+        # ctrl+d 删除要**先确认**(pi 的 delete confirmation),escape 能取消
         before = len(store.list())
-        index = [i for i, s in enumerate(selector._visible()) if s.id == unnamed.id][0]
-        listing.highlighted = index
+        selector._index = [i for i, s in enumerate(selector._visible())
+                           if s.id == unnamed.id][0]
         await pilot.press("ctrl+d")
+        await pilot.pause(0.05)
+        assert selector._confirming == unnamed.id
+        await pilot.press("escape")
+        await pilot.pause(0.05)
+        assert selector._confirming is None
+        assert len(store.list()) == before               # 取消 = 没删
+
+        await pilot.press("ctrl+d")
+        await pilot.pause(0.05)
+        await pilot.press("enter")                       # 确认删除
         await pilot.pause(0.05)
         assert len(store.list()) == before - 1
         assert store.get(unnamed.id) is None
 
+        # 当前会话不能被删(pi 的口径):提示写在头部状态行,会话还在。
+        #
+        # 注意:启动时那个会话是 `reserve()` 出来的 —— **还没落盘**,所以它压根不在列表里
+        # (这正是懒建的效果:进来看一眼就走不留文件)。要测"当前会话删不掉",得先切到一个
+        # **已落盘**的会话上。
+        selector._index = [i for i, s in enumerate(selector._visible())
+                           if s.id == alpha.id][0]
+        await pilot.press("enter")
+        await pilot.pause(0.1)
+        assert app._session is not None and app._session.id == alpha.id
+
+        app._command("/resume")
+        await pilot.pause(0.1)
+        selector = app.screen
+        assert isinstance(selector, tui_mod.SessionSelector)
+        selector._index = [i for i, s in enumerate(selector._visible())
+                           if s.id == alpha.id][0]
+        await pilot.press("ctrl+d")
+        await pilot.pause(0.05)
+        assert selector._confirming is None                       # 连确认框都不弹
+        assert selector._status is not None and "当前会话" in selector._status[0]
+        assert store.get(alpha.id) is not None                    # 会话还在
+
         # enter 恢复高亮的那条(并关闭选择器)
-        index = [i for i, s in enumerate(selector._visible()) if s.id == alpha.id][0]
-        listing.highlighted = index
+        selector._index = [i for i, s in enumerate(selector._visible())
+                           if s.id == zeta.id][0]
         await pilot.press("enter")
         await pilot.pause(0.1)
         assert not isinstance(app.screen, tui_mod.SessionSelector)
-        assert app._session is not None and app._session.id == alpha.id
+        assert app._session is not None and app._session.id == zeta.id
+
+
+@pytest.mark.asyncio
+async def test_session_selector_threaded_tree_and_unnamed_fallback(tmp_path, monkeypatch):
+    """分支会话按 `parentSession` 缩进成树;没起过名的会话显示**第一句话**(pi 同款)。"""
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        store = app._session_store()
+        root = store.create("", cwd=tmp_path)        # 未命名:靠第一句话显示
+        store.append(root, {"type": "message", "role": "user", "content": "梳理仓库结构"})
+        child = store.fork_at(root, root.leaf, title="梳理仓库结构 @fork")
+
+        app._command("/resume")
+        await pilot.pause(0.1)
+        selector = app.screen
+        assert isinstance(selector, tui_mod.SessionSelector)
+        ids = [s.id for s in selector._visible()]
+        assert child.id in ids and root.id in ids
+        prefixes = {s.id: prefix for s, prefix in selector.rendered_rows()}
+        assert prefixes[child.id].strip() == "└─"            # 子会话挂了一条树枝
+        assert prefixes[root.id] == ""                       # 根不缩进
+        assert child.parent_session == str(root.path)        # header 里真写了 parentSession
+
+        text = selector.query_one("#session-list", Static).render().plain
+        assert "梳理仓库结构" in text                          # 未命名 → 显示第一句话
+
+        # recent 排序下不画树(pi 只在 threaded 且无搜索时画)
+        selector._sort = "recent"
+        selector._refresh()
+        await pilot.pause(0.05)
+        assert all(prefix == "" for _s, prefix in selector.rendered_rows())
 
 
 @pytest.mark.asyncio
@@ -2388,7 +2618,35 @@ async def test_session_selector_escape_cancels(tmp_path, monkeypatch):
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause(0.1)
         store = app._session_store()
-        store.create("只有一个")
+        store.create("只有一个", cwd=tmp_path)
+        current = app._session.id if app._session else None
+
+        app._command("/resume")
+        await pilot.pause(0.1)
+        assert isinstance(app.screen, tui_mod.SessionSelector)
+        await pilot.press("ctrl+r")                      # 进重命名态
+        await pilot.pause(0.05)
+        await pilot.press("escape")                      # 第一次 escape:只退出重命名
+        await pilot.pause(0.05)
+        assert isinstance(app.screen, tui_mod.SessionSelector)
+        await pilot.press("escape")                      # 第二次:关面板
+        await pilot.pause(0.1)
+        assert not isinstance(app.screen, tui_mod.SessionSelector)
+        assert (app._session.id if app._session else None) == current
+
+
+@pytest.mark.asyncio
+async def test_session_selector_escape_cancels(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        store = app._session_store()
+        store.create("只有一个", cwd=tmp_path)
         current = app._session.id if app._session else None
 
         app._command("/resume")
@@ -2416,7 +2674,7 @@ async def test_modal_blocks_app_level_shortcuts(tmp_path, monkeypatch):
     app = QiTui(palette=PALETTE)
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause(0.1)
-        app._session_store().create("x")
+        app._session_store().create("x", cwd=tmp_path)
         app._command("/resume")
         await pilot.pause(0.1)
         assert isinstance(app.screen, tui_mod.SessionSelector)
@@ -2498,7 +2756,7 @@ async def test_tree_filters_search_and_labels(tmp_path, monkeypatch):
         await pilot.pause(0.05)
 
         # shift+l 打标签:输入框变标签编辑器,enter 保存并落盘
-        listing = selector.query_one("#session-list", tui_mod.OptionList)
+        listing = selector.query_one("#tree-list", tui_mod.OptionList)
         listing.highlighted = 0
         target = selector._rows()[0].id
         await pilot.press("shift+l")

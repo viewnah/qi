@@ -56,7 +56,7 @@ from .models import AgentEvent
 from .registry import CapabilityRegistry, ToolCatalog, discover_extensions
 from .runner import AgentRunner, RunnerSettings, RunSpec
 from .session import (MODEL_CHANGE, THINKING_LEVEL_CHANGE, Session, SessionStore,
-                      context_settings)
+                      context_settings, has_title)
 from .titling import suggest_title
 from .settings import (default_tools, extension_dirs, load_settings, load_settings_by_scope,
                        branch_summary_skip_prompt, model_thinking_level,
@@ -1668,9 +1668,10 @@ class QiRuntime:
                 yield event
             return
         # 自动命名:**并行**跑(不拖首字延迟),回合末尾才套用(见 `_apply_title`)。
-        # 触发条件是"这个会话还没有标题" —— 新建的与本功能上线前建的老会话都算。
+        # 触发条件是"这个会话还没有标题" —— 新建的与本功能上线前建的老会话都算
+        # (`has_title`:历史默认名 `tui` 也算没有,否则那两千多条老会话永远不被命名)。
         title_task: asyncio.Task[str | None] | None = None
-        if not session.title.strip():
+        if not has_title(session.title):
             # 输入取会话原本的第一句话,不是这一轮说的话:老会话续聊时,
             # "接着再补个测试"会把一个讲仓库结构的会话命名成"补充测试"。
             # (本轮的用户消息此刻还没落盘 —— 它在下面 append,所以新会话会回落到 text。)
@@ -1817,7 +1818,7 @@ class QiRuntime:
         实际落盘走 `set_session_title` —— 那里同时发 `session_info_changed`,
         所以自动命名与用户改名两条路都不会漏事件(也不会重发)。
         """
-        if not title or session.title.strip():
+        if not title or has_title(session.title):
             return
         self.set_session_title(session, title, source="auto")
 

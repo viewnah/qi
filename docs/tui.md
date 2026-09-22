@@ -119,7 +119,7 @@ fullscreen 退出时**不重放 transcript**(pi 有 `fullscreenExitOutput: trans
 | --- | --- |
 | `/hotkeys` | 快捷键(明写哪些 pi 键位还没做) |
 | `/quit` | 退出 |
-| `/new` | 新会话 |
+| `/new` | 新会话(**不落文件** —— 与裸 `qi` 一样是预留,说话才落盘) |
 | `/resume [id]` | 不给 id = 打开**会话选择器**(占编辑器那一格的面板);给 id = 直接恢复 |
 | `/name <name>` | 会话显示名(进 footer) |
 | `/session` | 会话信息(ID/文件/cwd/消息数·仅当前分支/节点数与分支点/模型/用量) |
@@ -157,6 +157,12 @@ fullscreen 退出时**不重放 transcript**(pi 有 `fullscreenExitOutput: trans
 进 TUI 时的会话选择与 headless 同义:`qi -c`(续最近)/ `--session <id>` /
 `--fork <id>` / `-n <名>` / `--no-session` 都生效,有历史就把当前分支回放到 transcript
 (以前 TUI 无视这些参数、每次都新建一个叫 `tui` 的会话)。
+
+**裸 `qi` 与 `/new` 走懒建**:会话对象立刻就有(所以 `/session`、footer、扩展的
+`ctx.session_manager` 都照常工作),但**文件推迟到第一条助手回答**才出现。这样"进来看看就退出"、
+"连点两次 `/new`"、"问了句就被 Ctrl+C"都不会在会话目录里留下空文件
+(该事故的成因与三态见 [session-format.md](session-format.md) §9.1)。`--no-session` 更进一步:
+它是**内存会话**,聊完整轮也不产生文件。
 
 qi 与 pi 的差异(已落档):
 
@@ -271,18 +277,29 @@ qi 用 `priority=True` 抢过来以匹配 pi 语义(`ctrl+d` 非空时仍自己�
 | --- | --- | --- |
 | `ctrl+v` | 粘贴图片 | 无图片输入,目前只会粘文本 |
 
-模态里的键位(会话选择器,`/resume`;对齐 pi):
+会话选择器(`/resume`,占编辑器那一格;对齐 pi 的 `SessionSelectorComponent`):
 
 | 键 | 行为 |
 | --- | --- |
-| 输入框打字 | 按标题 / id 过滤 |
+| 输入框打字 | 过滤。三态语法:`空格` 分词(模糊子序列)/ `"短语"` 精确连续 / `re:<正则>` 正则(语法错 → 列表里报错) |
+| `tab` | 切换范围:**当前目录**(默认)↔ **全部** |
 | `↑` / `↓` / `enter` | 选 / 恢复 |
 | `ctrl+n` | 只看命名会话 |
-| `ctrl+s` | 排序循环(最新 → 最旧 → 名字) |
-| `ctrl+p` | 显示 / 隐藏会话文件路径 |
-| `ctrl+r` | 重命名选中会话(输入框变名字编辑器,`enter` 保存) |
-| `ctrl+d` | 删除选中会话(删当前会话时下一条消息会自动新建) |
-| `escape` | 先退出重命名态,再关面板 |
+| `ctrl+s` | 排序循环:树状(threaded)→ 最近(recent)→ 最相关(fuzzy)。pi 的三档同名同义 |
+| `ctrl+p` | 显示 / 隐藏会话文件路径(默认关) |
+| `ctrl+r` | 重命名选中会话(整块换成名字输入框,`enter` 保存) |
+| `ctrl+d` | 删除选中会话:**先确认**(`enter` 确认、`escape` 取消);当前会话删不掉 |
+| `escape` | 先退出重命名态 / 取消删除确认,再关面板 |
+
+版式与 pi 一致:一行一条(没有 Textual `OptionList` 的 `tall` 边框与 `$surface` 底),
+光标 `› `、选中行整行 `selectedBg` 底色,左侧名字按状态上色(当前 = accent、有名字 = warning),
+右侧 muted 的 `消息数 年龄`(范围 = 全部时再前置 cwd),放不下时左半优先、右侧收成 `…`。
+头部三行 = 标题(范围 + `名字:` + `排序:`)+ 范围指示(`◉ 当前目录 | ○ 全部`)+ 两行键位提示。
+
+**没起过名的会话显示第一句话**(pi 的 `firstMessage` 回落):老会话的默认标题 `tui`
+不算名字,所以那批会话现在是"按内容认"而不是一排同名条目(见 [sessions.md](sessions.md) §7)。
+树状排序按 header 的 `parentSession` 缩进(`└─ `/`├─ `,深度 > 0 时画 `│  ` 延续线)——
+`/fork` / `/clone` / `qi --fork` 建的会话都带这个字段。
 
 实现注记:Textual 的 **priority 绑定是从 App 往下检查**的(`reversed(_binding_chain)`),
 所以 App 级的 `ctrl+d/o/t/l/p/x/c` 会盖掉模态里同名的键 —— 而 pi 的选择器恰好全用这些键。

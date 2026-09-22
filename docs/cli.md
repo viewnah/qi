@@ -89,8 +89,8 @@ qi -ne | -nc                                  # 关扩展发现 / 关 AGENTS.md 
 | `--session-id <id>` | 用**精确的项目会话 id**,不存在则建 | ✅ |
 | `--fork <path\|id>` | 从已有会话分叉出新会话(复制它的当前分支;`/fork` `/clone` 的另一入口) | ✅ `pi --fork` |
 | `--session-dir <dir>` | 会话目录(优先于 `settings.sessionDir`) | ✅ |
-| `--no-session` / `-n, --name` | 临时会话 / 显示名 | ✅ |
-| 历史浏览 / 恢复 / 重命名 / 删除 | 都在 **TUI 的 `/resume` 选择器**里(`qi -r` 直接进那里)。列表带会话 cwd(有分支时标 `分支点×N`),回放用**记录时的展示名**(`display_name`,回落到 name) | 无 CLI 子命令(pi 也是在选择器里 Ctrl+D 删) |
+| `--no-session` / `-n, --name` | 临时会话(**内存,不落盘**)/ 显示名 | ✅ |
+| 历史浏览 / 恢复 / 重命名 / 删除 | 都在 **TUI 的 `/resume` 选择器**里(`qi -r` 直接进那里)。范围(当前目录 / 全部)、搜索(`"短语"` / `re:<正则>`)与排序(树状 / 最近 / 最相关)都在面板里,键位见 [tui.md](tui.md);回放用**记录时的展示名**(`display_name`,回落到 name) | 无 CLI 子命令(pi 也是在选择器里 Ctrl+D 删,且删前要确认) |
 | `--export <file>` | **按扩展名选格式**(pi 同口径):`.html` / `.htm` → **自包含 HTML**(只含当前分支;CSS 内联、内容全部转义);其余 → 原始 **JSONL**(整个文件,含其它分支) | ✅ |
 
 `-c/-r/--session` 管"接着跑哪段";**历史浏览 / 重命名 / 删除在 TUI 的选择器里**(`qi -r` 直接进)—— 与 pi 同一种分工(它也没有 `pi sessions`)。

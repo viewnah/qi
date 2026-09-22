@@ -417,7 +417,8 @@ def root_callback(
         err_console.print(f"[yellow]{escape(note)}[/yellow]")
     session = None
     if no_session:
-        session = store.create(name or "ephemeral", cwd=runtime.cwd)
+        # 真·不落盘:以前走 `create()`,于是 `--no-session` 照样留一个文件
+        session = store.ephemeral(name or "ephemeral", cwd=runtime.cwd)
     elif fork_id:
         # 对齐 pi `--fork <path|id>`:把源会话的当前分支复制成一个新会话再跑
         source = _open_session(store, fork_id)

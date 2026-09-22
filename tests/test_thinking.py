@@ -564,7 +564,7 @@ class ThinkingStub:
 
 
 @pytest.mark.asyncio
-async def test_thinking_is_persisted_before_the_answer_and_stays_out_of_context(tmp_path):
+async def test_thinking_is_persisted_before_the_answer_and_stays_out_of_context(tmp_path, minimal_config):
     from qi_agent.runtime import QiRuntime, RuntimeConfig
     from qi_agent.session import SessionStore
 

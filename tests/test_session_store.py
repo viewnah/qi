@@ -138,3 +138,153 @@ def test_usage_summary_ignores_dirty_values():
     got = usage_summary(branch)
     assert got["steps"] == 0 and got["total_tokens"] == 7
     assert got["prompt_tokens"] == 0 and got["completion_tokens"] == 0
+
+
+def test_display_label_and_search_text_fall_back_to_first_message(tmp_path):
+    """没起过名的会话:`display_label` 回落第一句话、`search_text` 覆盖全部消息。
+
+    会话选择器就靠这两条(pi 的 `firstMessage` / `allMessagesText`)。
+    """
+    store = _store(tmp_path)
+    named = store.create("梳理仓库结构")
+    unnamed = store.create("")
+    store.append(unnamed, {"type": "message", "role": "user", "content": "帮我看看\n这个仓库"})
+    store.append(unnamed, {"type": "message", "role": "assistant", "content": "好的"})
+
+    assert named.display_label == "梳理仓库结构"
+    assert unnamed.display_label == "帮我看看 这个仓库"       # 多行压成一行
+    assert store.create("").display_label == "(无消息)"
+    assert "帮我看看" in unnamed.search_text and "好的" in unnamed.search_text
+
+
+def test_fork_records_parent_session(tmp_path):
+    """分叉写 header 的 `parentSession`(pi 同名字段)—— 选择器的树状视图靠它。"""
+    store = _store(tmp_path)
+    root = store.create("源会话", cwd=tmp_path)
+    store.append(root, {"type": "message", "role": "user", "content": "一"})
+    child = store.fork_at(root, root.leaf, title="源会话 @fork")
+
+    assert child.parent_session == str(root.path)
+    assert root.parent_session is None
+    assert store.get(child.id).parent_session == str(root.path)   # 真的落盘了
+
+
+def test_modified_ts_prefers_entry_time_and_falls_back_to_header(tmp_path):
+    """排序用的"最后活动时间"取 entry 的 `ts`;刚建、只有 header 的会话回落 `created_at`。"""
+    store = _store(tmp_path)
+    session = store.create("x")
+    created = session.modified_ts
+    assert created > 0                                    # header.created_at 兜住了
+    store.append(session, {"type": "message", "role": "user", "content": "一",
+                           "ts": "2030-01-02T03:04:05"})
+    assert session.modified_ts > created                  # 取最新的一条
+
+
+# ── 懒建 / 内存会话(空会话不再堆在磁盘上)─────────────────────
+#
+# 为什么这些断言值得写:开发机上真实事故 —— `~/.qi/agent/sessions/` 攒了 3000+ 个空会话。
+# 两个来源,这里各钉一组:
+#   1. 裸 `qi` 一进来就落文件(测试更是每条用例都漏一个);
+#   2. `--no-session` 名字叫"不落盘",实际走 `create()` 照样落文件。
+
+
+def test_reserve_does_not_touch_the_disk(tmp_path):
+    """`reserve()` 只定下 id/路径,**不建文件** —— 这正是裸 `qi` 进来时该有的行为。"""
+    store = _store(tmp_path)
+    session = store.reserve("", cwd=tmp_path)
+
+    assert session.unflushed is True
+    assert not session.path.exists(), "预留阶段不该建文件(否则看一眼前就留一个空会话)"
+    assert session.entries[0]["type"] == "session"
+    assert session.cwd == str(tmp_path.resolve())     # cwd 仍然写进 header(内存里)
+
+
+def test_reserved_session_is_invisible_until_flushed(tmp_path):
+    """预留的会话对 `list()` / `latest()` **不可见** —— 它还没有文件。
+
+    这是"懒建"的另一半好处:`/resume` 列表里不会出现一个到此一游的空会话。
+    """
+    store = _store(tmp_path)
+    store.reserve("", cwd=tmp_path)
+    assert store.list() == []
+    assert store.latest() is None
+
+
+def test_flush_writes_everything_accumulated(tmp_path):
+    """落盘时把**已经攒下的全部 entry**一次写出(不是只写最后那条)。
+
+    否则启动阶段攒的设置类 entry(model/级别)会丢 —— 续会话时模型就退回默认了。
+    """
+    store = _store(tmp_path)
+    session = store.reserve("", cwd=tmp_path)
+    store.append(session, {"type": "thinking_level_change", "thinking_level": "high"})
+    store.append(session, {"type": "message", "role": "user", "content": "你好"})
+    assert not session.path.exists()                  # 还没有助手回答 → 仍然没文件
+
+    store.append(session, {"type": "message", "role": "assistant", "content": "答"})
+
+    assert session.path.is_file()
+    assert session.unflushed is False
+    kinds = [e.get("type") for e in session.entries]
+    assert kinds == ["session", "thinking_level_change", "message", "message"]
+    reloaded = store.get(session.id)                  # 真的读得回来(不是只在内存里对)
+    assert reloaded is not None
+    assert [e.get("content") for e in reloaded.branch()
+            if e.get("type") == "message"] == ["你好", "答"]
+
+
+def test_user_message_alone_does_not_flush(tmp_path):
+    """只问不答(打断 / 报错 / Ctrl+C)**不落盘**。
+
+    判据是"有没有 assistant 回答",不是"有没有 entry":文件一出现就会进 `/resume` 列表,
+    而一个没有回答的会话在列表里没有价值。pi 的 `_persist` 用的是同一个判据。
+    """
+    store = _store(tmp_path)
+    session = store.reserve("", cwd=tmp_path)
+    store.append(session, {"type": "message", "role": "user", "content": "问了句就被打断"})
+    assert not session.path.exists()
+    assert session.message_count == 1                 # 内存里照常有(回放还在)
+
+
+def test_flush_is_idempotent_and_never_overwrites(tmp_path):
+    """已落盘的会话再 `flush()` 是空操作 —— 绝不覆盖已有文件。
+
+    用 `wx`(独占创建)而不是 `w`:文件是**不可再生**的用户数据,宁可在"路径撞了"时
+    报错,也不能静默盖掉另一个会话。
+    """
+    store = _store(tmp_path)
+    session = store.reserve("", cwd=tmp_path)
+    store.append(session, {"type": "message", "role": "assistant", "content": "答"})
+    assert session.path.is_file()
+
+    session.path.write_text('{"type": "session", "id": "别人"}\n', encoding="utf-8")
+    store.flush(session)                              # 已 flush(unflushed=False)→ 直接返回
+    assert '"id": "别人"' in session.path.read_text(encoding="utf-8")
+
+
+def test_ephemeral_session_never_writes(tmp_path):
+    """`--no-session` 的内存会话:entries 照常攒,磁盘上一个字节都不留。"""
+    store = _store(tmp_path)
+    session = store.ephemeral("ephemeral", cwd=tmp_path)
+    store.append(session, {"type": "message", "role": "user", "content": "一"})
+    store.append(session, {"type": "message", "role": "assistant", "content": "二"})
+    store.set_title(session, "起了个名")
+    store.save(session)
+
+    assert session.ephemeral is True
+    assert session.title == "起了个名"                 # 内存里改了
+    assert session.message_count == 2
+    assert list(tmp_path.glob("**/*.jsonl")) == []    # 磁盘上一个文件都没有
+
+
+def test_create_still_writes_immediately(tmp_path):
+    """`create()` **保持原样**:显式要一个会话(`-n` / `-c` / `--fork` / web API)就立刻落文件。
+
+    懒建只针对"裸 `qi` 进来且没说话"这一种情况 —— 把它扩散到所有创建路径会把
+    显式意图也变成"看不着的东西"。
+    """
+    store = _store(tmp_path)
+    session = store.create("显式建的", cwd=tmp_path)
+    assert session.unflushed is False
+    assert session.path.is_file()
+    assert session.path.read_text(encoding="utf-8").strip().startswith('{"type": "session"')

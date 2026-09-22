@@ -102,7 +102,7 @@ async def _role_mcp_names(api: Any, role: Role, ctx: Any,
     return await register_role_mcp(
         api,
         role_dir=role.path.parent if role.path else None,
-        cwd=getattr(ctx, "workdir", None),
+        cwd=_cwd_of(ctx),
         role_tools=list(role_tools),
         on_note=(ui.notify if ui is not None else None))
 
@@ -129,24 +129,76 @@ def _apply_disallowed(tools: list[str] | None, disallowed: list[str] | None,
     return [t for t in tools if not any(fnmatch(t, pattern) for pattern in disallowed)]
 
 
+def _cwd_of(ctx: Any) -> Any:
+    """`ctx` 的工作目录 —— 两个形状的名字不同(见 `_abort_signal` 的说明)。
+
+    `ToolContext.workdir`(工具侧,`subagent` 走的就是这条)与
+    `ExtensionContext.cwd`(handler 侧)。只认 `workdir` 会让工具路径下的角色发现
+    退化成"从当前进程 cwd 找项目" —— `.qi/agents/` 在会话目录不在进程 cwd 时找不到。
+    """
+    return getattr(ctx, "workdir", None) or getattr(ctx, "cwd", None)
+
+
+def _abort_signal(ctx: Any) -> Any:
+    """本回合的中断信号(`AbortSignal`),取不到就 None。
+
+    **为什么不能只写 `ctx.signal` 或只写 `ctx.abort`**:`ctx` 有两个形状,而这里
+    两种都会遇到 ——
+
+    * **工具侧**(`Tool.execute` 的第二个参数)= `ToolContext`,信号在 **`abort`** 字段上,
+      没有 `signal`;
+    * **事件 handler 侧** = `ExtensionContext`,信号在 **`signal`** 上,而 `abort` 是
+      **方法**(pi 的 `ctx.abort()`)。
+
+    所以上一版写的 `getattr(ctx, "signal", None)` 在工具路径上**恒为 None**,而更早那版
+    `getattr(ctx, "abort", None)` 在 handler 路径上会拿到一个**绑定方法** —— 两次都是
+    静默降级(拿 None / 拿错对象都不会抛),"Esc 杀不掉子 agent"于是有两张脸。
+
+    判据落在**形状**上:可调用的一律不认(那是方法),再看它是否长得像信号。
+    """
+    for name in ("signal", "abort"):
+        value = getattr(ctx, name, None)
+        if value is None or callable(value):
+            continue
+        if hasattr(value, "aborted") or hasattr(value, "wait"):
+            return value
+    return None
+
+
 async def _run_one(api: Any, role: Role, task: str, ctx: Any,
                    sem: asyncio.Semaphore | None = None) -> dict:
     """跑一个角色。返回结构化结果(带 usage/错误),失败**不抛**给上层 ——
     一个子任务失败不该把另外几个已经跑完的结果一起扔掉。"""
-    tools = None if role.tools is None else [t for t in role.tools if t != "subagent"]
+    # `tools: None` = **继承父**。以前这里直接把 None 交给 `runAgent`,由宿主去解析成
+    # "父的当前集合" —— 那条路**绕过了下面的递归防护**:父的集合里有 `subagent`,子就拿到了它,
+    # 于是"子 agent 不能再起子 agent"只在角色显式写了 `tools:` 时才成立(实测:省略时子运行
+    # 的工具清单里有 `subagent`)。
+    # 所以在扩展这一侧先把父集合具象化,让递归防护**只有一条出口**。
+    tools: list[str] | None
+    if role.tools is None:
+        # 宿主可能只有其中一种写法(snake_case 是正式名,camelCase 是别名) —— 两种都试。
+        getter = getattr(api, "get_active_tools", None) or getattr(api, "getActiveTools", None)
+        tools = [str(t) for t in getter()] if callable(getter) else None
+    else:
+        tools = [str(t) for t in role.tools]
     # E25:角色 `tools:` 里的 MCP 条目**换掉**成真实工具名 —— `mcp__gh__*` 是模式、不是工具名,
     # 直接留给 runner 会被报成“未知工具”;`mcp` 会由返回的名字重新带回。
-    mcp_names = await _role_mcp_names(api, role, ctx, role.tools)
     if tools is not None:
+        mcp_names = await _role_mcp_names(api, role, ctx, role.tools)
         rest = [t for t in tools if t != "mcp" and not t.startswith("mcp__")]
-        tools = [*rest, *mcp_names]
+        # 继承父那条路:父的 `mcp` 代理要留着(那是父本来就有的权限,不是提权);
+        # 显式声明那条路:由 `mcp_names` 决定。
+        keep_proxy = role.tools is None and "mcp" in tools
+        tools = [*rest, *(mcp_names or (["mcp"] if keep_proxy else []))]
+        # **递归防护是结构性的**:任何一条路径都不能把 `subagent` 交给子运行。
+        tools = [t for t in tools if t != "subagent"]
     # denylist 放最后:它要能减掉 MCP 直连出来的工具(`mcp__github__*`)
     tools = _apply_disallowed(tools, role.disallowed_tools, api)
     spec = {"system_prompt": role.prompt or f"你是 {role.name}。",
             "name": role.name, "tools": tools, "model": role.model}
-    # `ctx.signal` 才是 AbortSignal(`ctx.abort()` 是**方法** —— 以前这里取错成那个方法,
-    # 结果中断根本没传下去:E12 的“协作式中断直接透传”一直是空的)。
-    signal = getattr(ctx, "signal", None)
+    # 中断信号:`ctx` 在工具路径上是 `ToolContext`(字段 `abort`)、在 handler 路径上是
+    # `ExtensionContext`(字段 `signal`,而 `abort` 是方法)—— 见 `_abort_signal`。
+    signal = _abort_signal(ctx)
     # 宿主可能只有其中一种写法(snake_case 是正式名,camelCase 是别名) —— 两种都试。
     run_agent = getattr(api, "run_agent", None) or getattr(api, "runAgent")
     try:
@@ -178,7 +230,7 @@ def build_tool(api: Any) -> Tool:
         from qi_agent.models import TOOL_ERROR, ToolOutcome
 
         scope: AgentScope = args.get("agentScope") or "user"
-        cwd = getattr(ctx, "workdir", None)
+        cwd = _cwd_of(ctx)
         roles = discover(cwd, scope)
         tasks = _tasks_of(args)
         if not tasks:

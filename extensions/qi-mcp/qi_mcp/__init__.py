@@ -72,6 +72,10 @@ async def register_direct_tools(api: Any, ctx: Any, *, manager: ServerManager) -
     """
     added: list[str] = []
     existing = set(api.catalog.names)
+    # **判定基准要在注册之前取**:注册完再比,"集合 === catalog" 会因为自己刚加进去的工具
+    # 而永远不成立(那样这条判据等于没写)。`current` 也在这里取,后面直接用。
+    current = list(api.getActiveTools())
+    narrowed = set(current) != existing
     for name, spec in manager.specs.items():
         if not spec.direct_tools:                     # 默认 false → 只走代理
             continue
@@ -86,8 +90,12 @@ async def register_direct_tools(api: Any, ctx: Any, *, manager: ServerManager) -
             api.registerTool(tool)
             existing.add(tool.name)
             added.append(tool.name)
-    if added:
-        current = api.getActiveTools()
+    if added and narrowed:
+        # **只在"工具集被显式收窄过"时才去动它** —— 这一步以前无条件执行,会把这批名字
+        # 变成一个**静态覆盖列表**(`setActiveTools` 是"覆盖",不是"加进去"):此后任何
+        # 动态注册的工具(另一个扩展的、或本扩展下一条 `session_start` 加的)都被挡在外面,
+        # 而症状是"装了新工具却调不到",不报错。
+        # 判据见上:`register` 之前 集合 === catalog = 没人收窄过 → catalog 里的工具本来就在。
         api.setActiveTools([*current, *[n for n in added if n not in current]])
     return added
 

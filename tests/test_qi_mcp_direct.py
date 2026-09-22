@@ -274,3 +274,62 @@ async def test_disabled_server_is_not_connected_for_direct_tools():
     await register_direct_tools(_api(FakeHost()), SimpleNamespace(cwd=Path("/tmp"), ui=FakeUi()),
                                manager=manager)
     assert called == []
+
+
+@pytest.mark.asyncio
+async def test_activation_is_not_pinned_to_a_stale_snapshot():
+    """直连注册**不能**把工具集变成一个静态覆盖列表。
+
+    `setActiveTools` 的语义是**覆盖**,不是"加进去"。此前这段无条件执行:一旦直连注册过,
+    当前集合就冻结成"当时那一份 + 直连工具" —— 此后任何**动态注册**的工具(另一个扩展的,
+    或本扩展下一条 `session_start` 加的)都被挡在外面,而症状只是"装了新工具却调不到"。
+
+    判据:没人收窄过工具集(集合 === catalog)时**什么都不该做** —— catalog 里刚注册进来的
+    工具本来就在集合里。
+    """
+    spec = _spec(directTools=True)
+    manager = _manager(spec, ["create_issue"])
+
+    class CountingHost(FakeHost):
+        """真宿主:工具集默认等于 catalog(`tool_names()` 就是 catalog 的全部)。"""
+
+        def __init__(self) -> None:
+            super().__init__(names=[])
+            self.set_calls = 0
+
+        def tool_names(self) -> list[str]:
+            return sorted(self.names)
+
+        def set_tool_names(self, names) -> None:
+            self.set_calls += 1
+            super().set_tool_names(names)
+
+    host = CountingHost()
+    api = ExtensionApi(catalog=ToolCatalog(), bus=ExtensionBus(), _name="mcp",
+                       _host=host, _commands=CommandRegistry())
+    api.catalog.register(Tool("read", "读", {"type": "object", "properties": {}}, _noop))
+    host.names = ["read"]                      # 集合 === catalog → 没人收窄过
+
+    added = await register_direct_tools(api, SimpleNamespace(cwd=Path("/tmp"), ui=FakeUi()),
+                                        manager=manager)
+
+    assert added == ["mcp__gh__create_issue"]
+    assert host.set_calls == 0, "集合与 catalog 一致时不该去覆盖工具集"
+
+
+@pytest.mark.asyncio
+async def test_activation_still_extends_a_narrowed_tool_set():
+    """被 `--tools` 之类收窄过时,直连工具仍要补进去(原有那份不能丢)。"""
+    spec = _spec(directTools=True)
+    manager = _manager(spec, ["create_issue"])
+    host = FakeHost(names=["read"])            # 收窄过:集合 != catalog
+    api = ExtensionApi(catalog=ToolCatalog(), bus=ExtensionBus(), _name="mcp",
+                       _host=host, _commands=CommandRegistry())
+    for name in ("read", "write", "bash"):     # catalog 比集合大 → 判定为"被收窄过"
+        api.catalog.register(Tool(name, name, {"type": "object", "properties": {}}, _noop))
+
+    added = await register_direct_tools(api, SimpleNamespace(cwd=Path("/tmp"), ui=FakeUi()),
+                                        manager=manager)
+
+    assert added == ["mcp__gh__create_issue"]
+    assert host.names == ["read", "mcp__gh__create_issue"], "收窄的那份要保留,只补直连工具"

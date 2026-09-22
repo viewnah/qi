@@ -154,6 +154,7 @@ qi 的 snake_case 是正式名,pi 的驼峰是属性/方法别名(`ctx.hasUI` / 
 | `ctx.hasUI` / `ctx.has_ui` | 是否有人在看(TUI/web=真,`-p`=假) |
 | `ctx.isProjectTrusted()` | 信任状态 |
 | `ctx.signal` | **协作式中断信号** —— 扩展做异步时必须传它(Esc 才能取消 `fetch`/子进程) |
+| `ctx.abort()` | 中断当前回合(`ctx.signal` 是**信号对象**,这里的是**方法** —— 两者名字接近,别取错;`ctx` 在两个位置上形状不同,见 §3.6) |
 | `ctx.session_manager` | 当前会话的**只读**视图。读:`entries`/`custom_entries`/`get_entry`/`get_leaf_id`/`get_leaf_entry`/`get_branch`/`build_context_entries`/`get_header`/`get_tree`/`get_label`/`get_cwd`/`get_session_dir`/`get_session_file`/`get_session_name`;写只走 `api.append_entry`(以及 `api.set_label` / `api.set_session_name`) |
 | `ctx.model_registry` | `ModelRegistryView`:`get_all` / `get_available` / `find` / `has_configured_auth` / `get_provider_display_name` / `register_provider` / `unregister_provider` |
 | `ctx.scoped_models` / `scopedModels` | `--models` / `enabledModels` 圈定的模型(空 = 不限制) |
@@ -238,6 +239,27 @@ pi 的回调直接返回**组件**。qi 同形(TUI 里返回 **textual widget**)
    因为一个坏回调而消失(那是“装了扩展反而看不清输出”的最坏结果)。
 3. 工具块可以是内置 `ToolBlock` 也可以是 `ExtensionToolBlock` —— 两者都实现
    `set_state` / `set_output`,所以 `_tool_blocks`(展开/复制/session 回放)不必分叉。
+
+### 3.6 `ctx` 有**两个形状**(写扩展时必须知道的一件事)
+
+同一个 `ctx`,在两条路径上不是同一个类 —— 而它们**字段名不同**,只认其中一个的话,
+另一个形状上会静默拿到 `None`(不报错、不失效地"看起来在跑")。
+
+| 路径 | 类型 | 中断信号 | 工作目录 | 问人 | 信任 |
+| --- | --- | --- | --- | --- | --- |
+| **handler**(`api.on(...)` / 命令) | `ExtensionContext` | `ctx.signal` | `ctx.cwd` | `ctx.ui.confirm`(async) | `ctx.project_trusted` |
+| **工具**(`Tool.execute(args, ctx)` 的第 2 个参数) | `ToolContext` | `ctx.abort` | `ctx.workdir` | `ctx.ui.confirm`(async) | `ctx.project_trusted` |
+
+三条由此而来的写法规矩(都是踩过的):
+
+1. **取信号要两边都认**:`ctx.abort` 在 handler 侧是**方法**(`ctx.abort()`),`ctx.signal`
+   在工具侧不存在。判据落在形状上(可调用的一律不认),不要只 `getattr` 一个名字 ——
+   两次写错的版本都不抛错,症状只是"Esc 杀不掉子 agent"。
+2. **取目录同理**:`ctx.cwd` / `ctx.workdir` 各认一半。
+3. **项目级 prompt / 角色正文这类"仓库控制的内容"必须先过 `project_trusted`** ——
+   两条路径都要(`--ext agent=<项目角色>` 与 web 的「钉住角色」是这条规矩的两个实例)。
+
+参考实现:`extensions/qi-agents/qi_agents/subagent.py` 的 `_abort_signal()` / `_cwd_of()`。
 
 ## 4. 中间件链语义(硬规则)
 

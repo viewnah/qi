@@ -32,21 +32,54 @@ def _role_for_flag(api: ExtensionApi, cwd: Any) -> Any:
     return discover(cwd, "both").get(name), name
 
 
+async def _project_role_setup(role: Any, ctx: Any) -> str:
+    """项目级角色要用就得先过信任 —— 返回跳过原因,空串 = 放行。
+
+    **为什么这条闸门必须在**:项目级角色的正文是**仓库控制的提示词**(与 `subagent` 工具的
+    `agentScope="project"` 同一条安全模型)。此前 `--ext agent=<项目角色>` 直接把它拼进系统
+    提示词 —— `subagent` 那条路有闸门、这条路没有,同一个风险两个口径。
+
+    与工具路径的差别只在**无界面时**:那里是"保守拒绝"(角色本来就没跑);这里是"跳过并说明"
+    —— 用户敲的是"以这个角色起会话",静默地少掉角色层比说一句更糟。
+
+    这个函数是 `async` 的:闸门要问人(`ctx.ui.confirm` 是协程),而事件总线支持 async handler。
+    """
+    if getattr(role, "source", "") != "project":
+        return ""
+    trusted = getattr(ctx, "project_trusted", None)
+    if trusted is None:
+        checker = getattr(ctx, "is_project_trusted", None)
+        trusted = checker() if callable(checker) else True
+    if trusted:
+        return ""
+    ui = getattr(ctx, "ui", None)
+    if getattr(ctx, "has_ui", False) and ui is not None:
+        consent = await ui.confirm(f"要用项目里的角色 {role.name} 吗?", title="项目级角色",
+                                   default=False)
+        return "" if consent else f"项目级角色 {role.name} 未获批准"
+    return f"项目未被信任,项目级角色 {role.name} 未使用(用 `-a` 信任,或改用用户级角色)"
+
+
 def register(api: ExtensionApi) -> None:
     # ── 1. 角色选择:一个旗标 + 一个钩子,不碰 core ──
     api.registerFlag("agent", type="string", default="",
-                     description="以某个角色运行(名字见 `qi --ext agent=` 的提示 / /agents)")
+                     description="以某个角色运行(名字见 `--ext agent=` 的提示 / /agents)")
 
-    def on_start(payload: dict, ctx: Any):
+    async def on_start(payload: dict, ctx: Any):
         found = _role_for_flag(api, ctx.cwd)
         if found is None:
             return None
         role, wanted = found
+        notes = getattr(ctx, "notes", None)
         if role is None:
-            api_notes = getattr(ctx, "notes", None)
-            if isinstance(api_notes, list):
-                api_notes.append(f"--ext agent={wanted} 找不到这个角色;"
-                                 f"可用:{format_roles(discover(ctx.cwd, 'both'))}")
+            if isinstance(notes, list):
+                notes.append(f"--ext agent={wanted} 找不到这个角色;"
+                             f"可用:{format_roles(discover(ctx.cwd, 'both'))}")
+            return None
+        blocked = await _project_role_setup(role, ctx)
+        if blocked:
+            if isinstance(notes, list):
+                notes.append(blocked)
             return None
         # 追加到**基座之后**(与 v1 的顺序一致:基座 → 角色层 → 项目上下文 → …)
         return {"system_prompt": f"{payload['system_prompt']}\n\n{role.prompt}".rstrip()}

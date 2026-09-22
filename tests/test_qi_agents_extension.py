@@ -339,3 +339,103 @@ def test_agents_command_lists_roles(tmp_path, monkeypatch):
     ctx: Any = SimpleNamespace(cwd=tmp_path, ui=ui)      # 鸭子类型的最小 ctx
     command.handler("", ctx)                             # 命令处理器是**同步**的
     assert any("scout" in m and "只读侦察" in m for m in ui.messages)
+
+
+# ── 与基座的兼容面(回归)──────────────────────────────
+#
+# 下面四条钉住的都是"扩展面对基座的两个形状"这件事 —— 它们在 P-E4c 之后的基座上
+# 各自真的坏过一次,而且**都是静默的**(不抛错、只是行为悄悄不对)。
+
+@pytest.mark.asyncio
+async def test_subagent_recursion_guard_holds_when_role_inherits_tools(tmp_path, monkeypatch):
+    """`tools:` 省略(= 继承父)时,子运行的工具清单里**也不能**有 `subagent`。
+
+    此前这条路是漏的:省略时把 `tools=None` 交给宿主的 `runAgent`,由它解析成"父的当前
+    集合" —— 而父的集合里有 `subagent`,于是"子 agent 不能再起子 agent"只在角色显式写了
+    `tools:` 时才成立。递归防护必须是**结构性**的(任何路径都过同一道),不是"写对了才有"。
+    """
+    from qi_agent.llm import ToolCallOut
+
+    llm = _LLM([ChatResponse(text="", tool_calls=[ToolCallOut(id="c1", name="subagent", args=_SUB)]),
+                ChatResponse(text="子:好了"), ChatResponse(text="父:收到")])
+    home = _env(tmp_path, monkeypatch)
+    _write_role(home / "agents", "scout", tools=None)        # 省略 → 继承父
+    runtime = _runtime(tmp_path, monkeypatch, llm, approve=True)
+    session = runtime.sessions.create("t", cwd=runtime.cwd)
+    async for _e in runtime.stream("查", session):
+        pass
+
+    child = llm.tools[1]
+    assert "subagent" not in child, f"递归防护在这条路上失效了:{child}"
+    assert "read" in child, f"继承父的其它工具不该被清掉:{child}"
+
+
+@pytest.mark.asyncio
+async def test_subagent_receives_the_abort_signal_from_a_tool_context(tmp_path, monkeypatch):
+    """中断信号在**两个 ctx 形状**上都要取到。
+
+    `subagent` 是**工具**,拿到的 ctx 是 `ToolContext`(信号字段叫 `abort`);
+    而 handler 路径给的是 `ExtensionContext`(信号叫 `signal`,`abort` 是**方法**)。
+    两个形状都遇到过写错的版本(`getattr(ctx, "signal")` 在工具路径上恒 None),
+    而且两次都不抛错 —— 症状只是"Esc 杀不掉子 agent"。
+    """
+    from qi_agent.abort import AbortSignal
+    from qi_agent.tools import ToolContext
+
+    import qi_agents.subagent as sub
+
+    _env(tmp_path, monkeypatch)
+    _write_role(tmp_path / "home" / "agents", "scout")
+    captured: list = []
+
+    class FakeApi:
+        async def runAgent(self, spec, task, abort=None):
+            captured.append(abort)
+            return "子结果"
+
+    role = sub.discover(None, "user")["scout"]
+    signal = AbortSignal()
+    await sub._run_one(FakeApi(), role, "x",
+                       ToolContext(agent_name="qi", workdir=tmp_path, abort=signal))
+    assert captured[0] is signal, "工具路径(ToolContext.abort)上的信号没传下去"
+
+
+@pytest.mark.asyncio
+async def test_project_role_is_not_injected_without_trust(tmp_path, monkeypatch):
+    """`--ext agent=<项目角色>` 在项目未被信任时**不注入提示词**。
+
+    项目级角色的正文是**仓库控制的提示词**,与 `subagent` 的 `agentScope="project"` 是同一个
+    风险;那条路有闸门,这条路此前没有 —— 未信任的项目可以靠一个 agent.md 直接改系统提示词。
+    无界面时按 fail-closed 跳过(并留一条 note 说明为什么少了一层)。
+    """
+    llm = _LLM()
+    project = tmp_path / "proj"
+    _env(tmp_path, monkeypatch)
+    _write_role(project / ".qi" / "agents", "evil",
+                body="MARKER-项目角色提示词,未信任时不该出现。")
+    runtime = _runtime(tmp_path, monkeypatch, llm, flags=["agent=evil"],
+                       approve=False, project=project)
+    assert runtime.project_trusted is False
+    session = runtime.sessions.create("t", cwd=runtime.cwd)
+    async for _e in runtime.stream("你好", session):
+        pass
+
+    assert "MARKER-项目角色" not in llm.system()
+    assert any("未被信任" in n and "evil" in n for n in runtime.notes), runtime.notes
+
+
+@pytest.mark.asyncio
+async def test_project_role_is_injected_when_trusted(tmp_path, monkeypatch):
+    """信任了就照常注入 —— 闸门不能反过来把正常用法也挡掉。"""
+    llm = _LLM()
+    project = tmp_path / "proj"
+    _env(tmp_path, monkeypatch)
+    _write_role(project / ".qi" / "agents", "reviewer",
+                body="MARKER-项目审查员。")
+    runtime = _runtime(tmp_path, monkeypatch, llm, flags=["agent=reviewer"],
+                       approve=True, project=project)
+    session = runtime.sessions.create("t", cwd=runtime.cwd)
+    async for _e in runtime.stream("你好", session):
+        pass
+
+    assert "MARKER-项目审查员" in llm.system()

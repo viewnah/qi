@@ -33,7 +33,9 @@ from qi_agent.runtime import parse_model_flag  # noqa: E402
 _MODELS = json.dumps({
     "providers": {
         "ollama": {"api": "openai-completions", "models": [{"id": "x"}, {"id": "y"}]},
-        "beta": {"api": "openai-completions", "models": [{"id": "m3"}]},
+        # `apiKey` 用字面量:清单按凭证过滤(`selectable_models`),不写就等于“用不了”
+        "beta": {"api": "openai-completions", "apiKey": "k-beta",
+                 "models": [{"id": "m3"}]},
     },
 })
 _SETTINGS = '{"defaultProvider": "ollama", "defaultModel": "x"}'

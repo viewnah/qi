@@ -77,7 +77,12 @@ class Cdp:
 
     async def _read_loop(self) -> None:
         async for raw in self.ws:
-            msg = json.loads(raw)
+            try:
+                msg = json.loads(raw)
+            except (TypeError, ValueError):
+                # CDP 的帧理论上是 JSON,但“理论”不该是这条链路上的单点故障:
+                # 一个解不开的帧就当没看见,不要让整场 e2e 以 JSONDecodeError 倒下。
+                continue
             mid = msg.get("id")
             if mid is not None:
                 fut = self._pending.pop(mid, None)
@@ -304,18 +309,18 @@ async def main() -> int:
             await asyncio.sleep(0.4)
             items = await cdp.js(MENU_ITEMS)
             names = [i["name"] for i in (items or [])]
-            check("菜单列出全部可选模型(含缺凭证的那个)",
-                  [n.strip("✓ ") for n in names[:3]] == ["m1", "m2", "m3"],
+            check("菜单只列能用的模型(beta 缺凭证 → m3 不进清单)",
+                  [n.strip("✓ ") for n in names[:2]] == ["m1", "m2"],
                   json.dumps(names, ensure_ascii=False))
             notes = [i["note"] for i in (items or [])]
-            check("缺凭证的 provider 标出来了", any("缺凭证" in n for n in notes),
-                  json.dumps(notes[:3], ensure_ascii=False))
+            check("缺凭证的 provider 一条都不列", not any("m3" in n for n in names),
+                  json.dumps(names, ensure_ascii=False))
             check("上下文窗口标在 provider 后", any("32k" in n for n in notes), notes[0] if notes else "")
             check("当前值带 ✓",
                   any(i["checked"] == "true" and "m1" in i["name"] for i in (items or [])), "")
             check("思考级别在同一面板的第二节",
                   any(n.strip("✓ ") in ("medium", "high") for n in names),
-                  json.dumps(names[3:], ensure_ascii=False))
+                  json.dumps(names[2:], ensure_ascii=False))
             layered = await cdp.js("""
               (() => {
                 const p = document.querySelector('.agentmenu--models');

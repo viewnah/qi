@@ -301,7 +301,12 @@ async def test_model_selector_hides_presets_you_have_not_logged_into(tmp_path, m
 
     用户的原话:“别的 provider 我还没登陆,怎么 /model 切换时就可以选择呢?” ——
     预置那批只在解析得出凭证时才进 `/model`;没登录的想登录就去 `/login`(那里列全部)。
-    `models.json` 里**显式写过**的 provider 不受这条限制(那是用户自己的配置)。
+
+    第二条用户原话是“我把 mimo logout 了,它怎么还在” —— `models.json` 里**显式写过**
+    的 provider **没有豁免**:写了 `apiKey` 却解析不出来(环境变量没导出、`$(…)` 跑不通)
+    就是“用不了”,不该在选择器里冒充可选。与 pi 同口径:pi 的清单是
+    `modelRuntime.getAvailableSnapshot()`,没凭证的 provider 一个模型都不在里面。
+    想知道“我配的 provider 到底怎么啦”去看 `qi doctor` / `qi --list-models`(那两个面照列全量)。
     """
     import sys as _sys
 
@@ -320,7 +325,7 @@ async def test_model_selector_hides_presets_you_have_not_logged_into(tmp_path, m
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause(0.1)
         assert app._rt is not None
-        # `_tui_env` 写的 models.json 里只有 ollama(显式配置 → 不受凭证门槛限制)
+        # `_tui_env` 写的 models.json 里只有 ollama(免密钥 provider → 不需要凭证)
         app._rt.cfg = load_config(tmp_path)[0]
         providers = {provider for provider, _, _ in app._model_options()}
         assert providers == {"ollama"}                # 预置那批一个都没登录 → 一个都不列
@@ -329,14 +334,18 @@ async def test_model_selector_hides_presets_you_have_not_logged_into(tmp_path, m
         providers = {provider for provider, _, _ in app._model_options()}
         assert providers == {"ollama", "deepseek"}    # 登录了谁就多列谁
 
-        # 显式写在 models.json 里的 provider 不设门槛(用户自己的配置,可能正在配)
+        # 显式写在 models.json 里、**没写 apiKey** 的 provider:一样过不了门槛
+        # (本地无鉴权端点写一个字面 `apiKey` 就进来了 —— 下面那个 `local`)
         (tmp_path / "models.json").write_text(
-            '{"providers": {"my-proxy": {"baseUrl": "https://p.internal/v1",'
-            ' "models": [{"id": "p1"}]}}}', encoding="utf-8")
+            '{"providers": {'
+            ' "my-proxy": {"baseUrl": "https://p.internal/v1",'
+            '              "models": [{"id": "p1"}]},'
+            ' "local": {"baseUrl": "http://127.0.0.1:8080/v1", "apiKey": "none",'
+            '           "models": [{"id": "l1"}]}}}', encoding="utf-8")
         monkeypatch.setenv(paths.QI_AGENT_CONFIG, str(tmp_path / "models.json"))
         app._rt.cfg = load_config(tmp_path)[0]
         providers = {provider for provider, _, _ in app._model_options()}
-        assert providers == {"deepseek", "my-proxy"}
+        assert providers == {"deepseek", "local"}     # my-proxy 缺凭证 → 不列
 
         # `/model` 用的就是同一份清单
         app._command("/model")
@@ -344,7 +353,8 @@ async def test_model_selector_hides_presets_you_have_not_logged_into(tmp_path, m
         selector = app.screen
         assert isinstance(selector, tui_mod.ModelSelector)
         shown = selector.rendered_text().plain
-        assert "my-proxy" in shown and "deepseek" in shown and "kimi" not in shown
+        assert "local" in shown and "deepseek" in shown
+        assert "my-proxy" not in shown and "kimi" not in shown
         assert "ollama" not in shown
         await pilot.press("escape")
         await pilot.pause(0.1)

@@ -45,7 +45,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.screen import ModalScreen, Screen
-from textual.widgets import Input, OptionList, SelectionList, Static, TextArea
+from textual.widgets import Input, OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 from textual.worker import Worker, WorkerState
 
@@ -141,6 +141,9 @@ class Candidate(NamedTuple):
     label: str          # 面板里显示的名字
     detail: str = ""    # 右侧说明
     source: str = ""    # 来源标签(空 = 内置)
+    #: 正文划掉(pi 的 `theme.strikethrough`:”这个模型已经不可用了“)。
+    #: 只划正文 —— `/scoped-models` 的 `[unavailable]` 说明与 `→ ` 箭头都不划。
+    strike: bool = False
 
 
 def _candidate_items(raw: Any) -> list[Candidate]:
@@ -580,7 +583,9 @@ def pi_select_text(items: list[Candidate], index: int, width: int, limit: int,
     * 说明用 `muted`;来源标签(`[u]/[p]/[t]`)拼在**说明**里(pi 的口径);
     * 选项装不下时尾部补 `  (n/total)`(n = 选中项序号,同 pi);
     * `column=None` = 说明紧跟正文一个空格(pi 的模型选择器就把 `[provider]` 放在模型名后);
-      给了数字 = 正文按该列宽对齐,放不下就不画说明(pi 的两个阈值)。
+      给了数字 = 正文按该列宽对齐,放不下就不画说明(pi 的两个阈值);
+    * `strike=True` 的项只把**正文**划掉(pi 的 `theme.strikethrough`,用于"已不可用");
+      箭头与说明不划 —— pi 那边 `providerBadge` 也是分开拼的。
     """
     if not items:
         return Text("")
@@ -592,6 +597,7 @@ def pi_select_text(items: list[Candidate], index: int, width: int, limit: int,
     muted = Style(color=palette.hex("muted"))
     accent = Style(color=palette.hex("accent"))
     plain = Style(color=palette.hex("text"))
+    struck = Style(strike=True)
     out = Text()
     for position in range(start, end):
         if out.plain:
@@ -605,15 +611,18 @@ def pi_select_text(items: list[Candidate], index: int, width: int, limit: int,
                            else f"[{item.source}]")
         head_width = Text(head).cell_len
         room = width - head_width - 2
+        # 划掉的是**正文**(pi 的 `theme.strikethrough(id)`):箭头与 `[unavailable]` 说明不划
+        head_style = accent if selected else plain
+        if item.strike:
+            head_style += struck
         # pi 的两个门槛:行宽 > 40 才带说明,剩下的位置 > 10 才画得下
         fits = bool(description) and width > PI_DESCRIPTION_WIDTH_GATE \
             and room > PI_DESCRIPTION_MIN_WIDTH
+        out.append("→ " if selected else "  ", style=accent if selected else plain)
+        out.append(item.label, style=head_style)
         if fits:
             gap = " " if column is None else " " * max(1, column - head_width)
-            out.append(head, style=accent if selected else plain)
             out.append(gap + description, style=muted)
-        else:
-            out.append(head, style=accent if selected else plain)
     if end - start < len(items):
         out.append("\n")
         out.append(f"  ({index + 1}/{len(items)})", style=muted)
@@ -1639,7 +1648,16 @@ class ThinkingSelector(PickerScreen):
         return out
 
 class ScopedModelsSelector(EditorSlotPanel):
-    """`/scoped-models`:挑 Ctrl+P 轮换哪些模型(对齐 pi 的 ScopedModelsSelectorComponent)。
+    """`/scoped-models`:挑 Ctrl+P 轮换哪些模型(对齐 pi 的 `ScopedModelsSelectorComponent`)。
+
+    行版式照 pi 的 `updateList()`(`scoped-models-selector.js`):
+    `→ `(高亮)+ `✓ `/`  `(勾选)+ 模型名 + muted `[provider]`。这里**不用** Textual 的
+    `SelectionList` —— 它的勾选框是 `▐X▌`,落在屏幕上就是一个 `×`;pi 是 `✓`。所以和
+    `/model`、`/settings` 一样自己画一列(`pi_select_text`)。
+
+    `settings.enabledModels` 里记着、但**现在已经不可用**的条目(provider 删了 / 凭证
+    没了 / 模型下线)也列出来 —— 完整 `provider/model` + 删除线 + `[unavailable]`,
+    与 pi 同形。不能静默丢:它们一不在列表里,下一次保存就会从 `enabledModels` 里消失。
 
     返回选中的 `provider/model` 列表;取消返回 None。**全选 = 空列表** = 轮换全部,
     与 pi 的「scopedModels 为空则用全部」语义一致。
@@ -1647,9 +1665,13 @@ class ScopedModelsSelector(EditorSlotPanel):
 
     PANEL_TITLE = "Ctrl+P 轮换哪些模型"
     HINTS = "space 勾选 · ctrl+s 保存 · ctrl+a 全选 · ctrl+x 全不选 · ctrl+p 切换 provider · escape 取消"
+    #: 列表最多显示几行(pi 的 `maxVisible = 8`);装不下时尾部补 `  (n/total)`
+    MAX_VISIBLE = 8
 
     BINDINGS = [
-        ("escape", "dismiss(None)", "取消"),
+        *EditorSlotPanel.BINDINGS,               # escape 取消 / ↑↓ / j k
+        Binding("space", "pick", "勾选", show=False),
+        Binding("enter", "pick", "勾选", show=False),
         Binding("ctrl+s", "save", "保存", show=False),
         Binding("ctrl+a", "pick_all", "全选", show=False),
         Binding("ctrl+x", "pick_none", "全不选", show=False),
@@ -1658,49 +1680,169 @@ class ScopedModelsSelector(EditorSlotPanel):
 
     def __init__(self, options: list[tuple[str, str]], enabled: list[str]) -> None:
         super().__init__()
-        self._options = options          # (provider/model, provider)
-        self._enabled = enabled
+        # (provider/model, provider, 模型名):pi 的行里模型名与 provider 徽标是两段
+        self._options = [(f"{provider}/{model}", provider, model) for provider, model in options]
+        known = {value for value, _, _ in self._options}
+        # settings 里记着、**现在已经不可用**的(provider 删了 / 凭证没了 / 模型下线):
+        # 照 pi 的 `getSortedIds` 列出来(删除线 + `[unavailable]`),不静默丢 ——
+        # 不列就意味着下一次保存把它们从 `enabledModels` 里抹掉。
+        self._unavailable = [value for value in enabled if value not in known]
+        chosen = {value for value in enabled if value in known} | set(self._unavailable)
+        # 空 = 全部(pi 的 `enabledIds === null` 就是全开)
+        self._chosen: set[str] = chosen or set(known)
+        self._index = 0
+        self._list = Static("", id="scoped-list")
+        self._text = Text("")
 
+    # -- 列表状态(与 `PickerScreen` / `SelectionList` 同形)--------------
+    def rendered_text(self) -> Text:
+        """当前画出来的列表(诊断/测试用,与 `PickerScreen` 同形)。"""
+        return self._text
+
+    def _stale(self) -> list[str]:
+        """现在还勾着的“已不可用”条目(取消勾选就从列表里消失)。"""
+        return [value for value in self._unavailable if value in self._chosen]
+
+    def _values(self) -> list[str]:
+        """列表里现在有哪些行(**显示顺序**):先能用的,再“已勾选但已不可用”的。
+
+        不可用的那些一旦取消勾选就从列表里消失 —— pi 的 `getSortedIds` 也是这个效果
+        (不在 `enabledIds`、也不在 `allIds` 里,自然就不在了)。
+        """
+        return [value for value, _, _ in self._options] + self._stale()
+
+    @property
+    def highlighted(self) -> int:
+        return self._index
+
+    @highlighted.setter
+    def highlighted(self, index: int) -> None:
+        count = len(self._values())
+        if not count:
+            return
+        try:                     # 与 `PickerScreen` 同口径:怪值当 0,不抛
+            wanted = int(index)
+        except (TypeError, ValueError):
+            wanted = 0
+        self._index = max(0, min(wanted, count - 1))
+        self._paint()
+
+    @property
+    def option_count(self) -> int:
+        return len(self._values())
+
+    @property
+    def selected(self) -> list[str]:
+        """勾上的模型(按**列表顺序** —— 落盘的就是这个顺序,pi 的 `getSortedIds` 同理)。"""
+        return [value for value in self._values() if value in self._chosen]
+
+    def select(self, value: str) -> None:
+        self._chosen.add(value)
+        self._paint()
+
+    def deselect(self, value: str) -> None:
+        self._chosen.discard(value)
+        self._paint()
+
+    def select_all(self) -> None:
+        """`ctrl+a`:能用的全勾上。已勾选但不可用的**留着**(pi 的 `enableAll` 不碰它们)。"""
+        self._chosen |= {value for value, _, _ in self._options}
+        self._paint()
+
+    def deselect_all(self) -> None:
+        """`ctrl+x`:全不选 —— 连“已不可用”的那些一起清掉(pi 的 `clearAll` 同义)。"""
+        self._chosen = set()
+        self._paint()
+
+    # -- 渲染 / 键位 -----------------------------------------------------
     def compose_body(self) -> ComposeResult:
-        from textual.widgets.selection_list import Selection
-
-        known = {value for value, _ in self._options}
-        chosen = {v for v in self._enabled if v in known} or known   # 空 = 全部
-        selections = [Selection(value, value, value in chosen) for value, _ in self._options]
-        yield SelectionList[str](*selections, id="scoped-list")
+        yield self._list
 
     def on_panel_ready(self) -> None:
-        self.query_one("#scoped-list", SelectionList).focus()
+        self._paint()
 
-    def _listing(self) -> SelectionList[str]:
-        return self.query_one("#scoped-list", SelectionList)
+    def on_resize(self) -> None:
+        self._paint()
 
-    def action_save(self) -> None:
-        picked = list(self._listing().selected)
-        everything = [value for value, _ in self._options]
-        # 全选 = 不限,回写空列表(pi:空 scopedModels = 轮换全部)
-        self.dismiss([] if len(picked) == len(everything) else picked)
+    def _paint(self) -> None:
+        """一列 `Candidate`:勾选标记进 label(pi 就把它放在模型名前面),provider 进说明。
+
+        不可用的那些用**完整** `provider/model` 当正文并划掉(pi 的 `item.fullId` 那条路),
+        说明写 `[unavailable]`。
+        """
+        items = [Candidate(value,
+                           f"{'✓ ' if value in self._chosen else '  '}{model}",
+                           f"[{provider}]")
+                 for value, provider, model in self._options]
+        items += [Candidate(value, f"✓ {value}", "[unavailable]", strike=True)
+                  for value in self._stale()]
+        self._text = pi_select_text(items, self._index, self.body_width(),
+                                    self.MAX_VISIBLE, self.palette())
+        self._list.update(self._text)
+
+    def action_move(self, step: int) -> None:
+        count = len(self._values())
+        if not count:
+            return
+        self._index = (self._index + step) % count
+        self._paint()
+
+    def action_pick(self) -> None:
+        """space / enter:勾选当前行(pi 的 `tui.select.confirm` → `toggle`)。
+
+        不叫 `action_toggle` —— 那是 Textual `DOMNode` 自己的方法(`action_toggle(attribute_name)`),
+        同名覆盖会被静态检查判成签名不兼容。
+        """
+        values = self._values()
+        if not values:
+            return
+        value = values[min(self._index, len(values) - 1)]
+        if value in self._chosen:
+            self._chosen.discard(value)
+        else:
+            self._chosen.add(value)
+        # 取消勾选可能让末行消失(不可用的那些)→ 光标要收在范围内
+        self._index = min(self._index, len(self._values()) - 1)
+        self._paint()
 
     def action_pick_all(self) -> None:
-        self._listing().select_all()
+        self.select_all()
 
     def action_pick_none(self) -> None:
-        self._listing().deselect_all()
+        self.deselect_all()
 
     def action_toggle_provider(self) -> None:
-        listing = self._listing()
+        """ctrl+p:整个 provider 一起勾/取消(pi 的 `app.models.toggleProvider`)。"""
         if not self._options:
             return
-        index = listing.highlighted if listing.highlighted is not None else 0
-        provider = self._options[min(index, len(self._options) - 1)][1]
-        targets = [value for value, prov in self._options if prov == provider]
-        selected = set(listing.selected)
-        if all(value in selected for value in targets):
+        values = self._values()
+        if not values:
+            return
+        # 高亮行可能是“已不可用”的那条(不在 `_options` 里)—— 按它的 provider 段推
+        current = values[min(self._index, len(values) - 1)]
+        targets = [value for value, prov, _ in self._options
+                   if prov == current.partition("/")[0]]
+        if not targets:
+            if current in self._chosen:
+                self._chosen.discard(current)      # 只剩它自己可切
+                self._index = min(self._index, len(self._values()) - 1)
+                self._paint()
+            return
+        if all(value in self._chosen for value in targets):
             for value in targets:
-                listing.deselect(value)
+                self._chosen.discard(value)
         else:
-            for value in targets:
-                listing.select(value)
+            self._chosen.update(targets)
+        self._paint()
+
+    def action_save(self) -> None:
+        picked = self.selected
+        everything = self._values()
+        # 全选 = 不限,回写空列表(pi:空 scopedModels = 轮换全部)。
+        # 列表里还勾着**已不可用**的行时照实写(pi 的 `normalizeEnabled` 也一样:
+        # 只要集合里还有 `allIds` 之外的 id,就不收成 null)。
+        all_available = len(picked) == len(everything) and not self._stale()
+        self.dismiss([] if all_available else picked)
 
 
 def shorten_path(path: str, home: str | None = None) -> str:
@@ -2686,12 +2828,10 @@ class QiTui(App):
        选中行是整行 selectedBg。Textual 的 `OptionList` 自带 `tall $border-blurred`
        边框与整行高亮底 —— 那圈框就是以前 `/resume` 与 `/model` 不一致的来源。 */
     #session-list { background: transparent; height: auto; max-height: 11; width: 1fr; }
-    /* OptionList(/tree 与 scoped 列表)去掉自带的 `tall` 边框、`$surface` 底与整行高亮底,
+    /* OptionList(/tree 列表)去掉自带的 `tall` 边框、`$surface` 底与整行高亮底,
        只把选中行提亮成 accent —— pi 的列表没有边框也没有行底色。 */
-    #tree-list, #scoped-list { border: none; padding: 0; height: auto; max-height: 50%;
-                               background: transparent; }
-    #scoped-list > .option-list--option-highlighted,
-    #scoped-list:focus > .option-list--option-highlighted,
+    #tree-list { border: none; padding: 0; height: auto; max-height: 50%;
+                 background: transparent; }
     #tree-list > .option-list--option-highlighted,
     #tree-list:focus > .option-list--option-highlighted {
         background: transparent;
@@ -3697,7 +3837,7 @@ class QiTui(App):
         elif cmd == "/model":
             options = self._model_options()
             if not options:
-                self._note("models.json 里没有可选模型", "warning")
+                self._note(self._no_models_note(), "warning")
             elif not arg:
                 # pi 的口径:无参**也是开选择器**(`showModelSelector`),不是打印一张表
                 self.action_select_model()
@@ -4097,8 +4237,9 @@ class QiTui(App):
         """可选模型(`/model` / ctrl+l / ctrl+p / `/scoped-models` 共用)。
 
         清单本身来自 **core** 的 `selectable_models()`(web 端的模型菜单用同一份 ——
-        两处各写一份口径,迟早一个改了另一个没改):**预置兜底那批只有"能解析出凭证"
-        时才列出来**,而 `models.json` 里**显式写过**的 provider 不受这条限制。
+        两处各写一份口径,迟早一个改了另一个没改):**解析得出凭证的 provider 才列**
+        —— 预置兜底那批与 `models.json` 里显式写过的都一样,没有豁免。没登录的 provider
+        想用就去 `/login`;`qi --list-models` / `qi doctor` 那两个诊断面照列全量。
 
         这里只做一件 TUI 自己的事:把"当前是哪个"标出来(`is_current`)。
         """
@@ -4143,7 +4284,7 @@ class QiTui(App):
         """ctrl+l(以及 `/model` 无参):模型选择器(对齐 pi 的 `showModelSelector`)。"""
         options = self._model_options()
         if not options:
-            self._flash("models.json 里没有可选模型")
+            self._flash(self._no_models_note())
             return
 
         def picked(value: str | None) -> None:
@@ -4191,19 +4332,33 @@ class QiTui(App):
         """Ctrl+P 会轮换到的模型标签(`provider/model`)。"""
         return [f"{provider}/{model}" for provider, model, _ in self._cycle_options()]
 
+    def _no_models_note(self) -> str:
+        """一个模型都列不出来时说清**为什么** —— 现在最常见的因因是缺凭证。
+
+        清单按凭证过滤(`selectable_models`),所以"models.json 里没写"已不是主因;
+        照旧一句"没有可选模型"会把用户引向错误的检查方向。
+        """
+        cfg = getattr(self._rt, "cfg", None)
+        if getattr(cfg, "providers", None):
+            return ("没有能用的模型:provider 都解析不出凭证"
+                    "(`/login` 或 `qi auth login <名>` 之后才会出现在这里)")
+        return "models.json 里没有可选模型"
+
     def action_scoped_models(self) -> None:
         """/scoped-models:挑 Ctrl+P 轮换哪些模型(对齐 pi 的 `/scoped-models`)。"""
-        options = [(f"{provider}/{model}", provider)
-                   for provider, model, _ in self._model_options()]
-        if not options:
-            self._flash("models.json 里没有可选模型")
+        options = [(provider, model) for provider, model, _ in self._model_options()]
+        enabled = self._enabled_models()
+        # 一个能用的都没有、但 settings 里还记着几个 —— 照样开面板:
+        # 那些条目已经不可用了,得让用户**看得见并取消勾选**,而不是把入口一拍两散。
+        if not options and not enabled:
+            self._flash(self._no_models_note())
             return
 
         def picked(values: list[str] | None) -> None:
             if values is not None:
                 self._save_scoped_models(values)
 
-        self.push_screen(ScopedModelsSelector(options, self._enabled_models()), picked)
+        self.push_screen(ScopedModelsSelector(options, enabled), picked)
 
     def _save_scoped_models(self, values: list[str]) -> None:
         """写回 `settings.enabledModels`(全局设置,对齐 pi 的 app.models.save)。"""
@@ -4222,7 +4377,7 @@ class QiTui(App):
     def _cycle_model(self, step: int) -> None:
         options = self._cycle_options()
         if not options:
-            self._flash("models.json 里没有可选模型")
+            self._flash(self._no_models_note())
             return
         flat = [(provider, model) for provider, model, _ in options]
         current = (self._model.provider, self._model.model) if self._model else None
@@ -4570,9 +4725,21 @@ class QiTui(App):
             if not provider:
                 return
         if store.remove(provider):
-            self._note(f"已删除 {provider} 的凭证;环境变量与 models.json 里的 apiKey 不受影响",
-                       "info")
-            # 下一回合重新解析:删掉 auth.json 那条后可能落到 env / models.json
+            # 删掉 `auth.json` 那条之后,凭证可能落到约定环境变量 / `models.json` 的 `apiKey`
+            # 引用上 —— 那两路照样算“能用”,清单里就还在。所以不能说一句“不受影响”带过:
+            # 用户上一秒的问题恰恰就是“我都 logout 了,模型怎么还在 /scoped-models 里”,
+            # 这一句得把**结果**说准(还在 / 不在了)。
+            from .auth import resolve_key
+
+            prov = getattr(getattr(self._rt, "cfg", None), "providers", {}).get(provider)
+            left = resolve_key(provider, getattr(prov, "apiKey", None), store)
+            if left.ok:
+                self._note(f"已删除 {provider} 的凭证;仍会用 {left.source} 里的密钥", "info")
+            else:
+                self._note(
+                    f"已删除 {provider} 的凭证;`/model` 与 Ctrl+P 轮换清单不再列它的模型"
+                    "(`models.json` 里的是环境变量引用 —— 要留着就直接写字面 apiKey,或重新 `/login`)",
+                    "info")
             rt = self._rt
             if rt is not None and hasattr(rt, "reload_credentials"):
                 rt.reload_credentials()

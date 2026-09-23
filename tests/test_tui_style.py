@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from qi_agent import tui as tui_mod
-from qi_agent.config import ResolvedModel
+from qi_agent.config import ResolvedModel, load_config
 from qi_agent.models import AgentEvent
 from qi_agent.llm import THINKING_LEVELS, LiteLLMClient
 from qi_agent.session import SessionStore
@@ -41,7 +41,7 @@ MODEL = ResolvedModel(provider="deepseek", model="deepseek-v4.1-flash",
                       reasoning=True, context_window=1_000_000, max_tokens=16384)
 
 _MODELS = ('{"providers": {"ollama": {"api": "openai-completions", '
-           '"models": [{"id": "x"}]}}}')
+           '"apiKey": "none", "models": [{"id": "x"}]}}}')
 _SETTINGS = '{"defaultProvider": "ollama", "defaultModel": "x"}'
 
 
@@ -628,13 +628,18 @@ async def test_tui_import_session_and_copy_answer(tmp_path, monkeypatch):
 
 
 def _fake_cfg():
-    """两个 provider / 三个模型:用来验证模型选择与轮换顺序。"""
+    """两个 provider / 三个模型:用来验证模型选择与轮换顺序。
+
+    `apiKey` 给的是**字面量**:清单按凭证过滤(`selectable_models`,与 pi 的
+    `getAvailableSnapshot()` 同口径),没有可用凭证的 provider 一个模型都不列。
+    """
     from qi_agent.config import ModelEntry, ProviderConfig, QiConfig
 
     return QiConfig(providers={
-        "alpha": ProviderConfig(api="openai-completions",
+        "alpha": ProviderConfig(api="openai-completions", apiKey="k-alpha",
                                 models=[ModelEntry(id="m1"), ModelEntry(id="m2")]),
-        "beta": ProviderConfig(api="openai-completions", models=[ModelEntry(id="m3")]),
+        "beta": ProviderConfig(api="openai-completions", apiKey="k-beta",
+                               models=[ModelEntry(id="m3")]),
     })
 
 
@@ -2332,11 +2337,28 @@ async def test_scoped_models_saves_and_limits_cycling(tmp_path, monkeypatch):
         await pilot.pause(0.1)
         selector = app.screen
         assert isinstance(selector, tui_mod.ScopedModelsSelector)
-        listing = selector.query_one("#scoped-list", tui_mod.SelectionList)
-        assert listing.option_count == 3
-        assert len(listing.selected) == 3                # 未配置 = 全选
+        # 行 = pi 的 `updateList()`:`→ ` + `✓ `/`  ` + 模型名 + muted `[provider]`。
+        # 勾选标记必须是 `✓` —— 以前走 Textual 的 `SelectionList`,画出来是 `▐X▌`(一个 `×`)。
+        shown = selector.rendered_text().plain
+        rows = shown.split("\n")
+        assert rows[0].startswith("→ ✓ m1 [alpha]")
+        assert "X" not in shown and "▐" not in shown and "✗" not in shown
+        assert selector.option_count == 3
+        assert len(selector.selected) == 3                # 未配置 = 全选
 
-        listing.deselect("alpha/m2")
+        selector.deselect("alpha/m2")                     # 取消勾选 → 该行标记回两个空格
+        await pilot.pause(0.05)
+        assert selector.rendered_text().plain.split("\n")[1] == "    m2 [alpha]"
+
+        selector.highlighted = 2                          # enter 与 space 都是勾选
+        await pilot.press("space")
+        await pilot.pause(0.05)
+        assert selector.rendered_text().plain.split("\n")[2] == "→   m3 [beta]"
+        await pilot.press("enter")
+        await pilot.pause(0.05)
+        assert selector.rendered_text().plain.split("\n")[2] == "→ ✓ m3 [beta]"
+
+        selector.deselect("alpha/m2")
         await pilot.press("ctrl+s")                      # 保存 → 只剩 m1/m3
         await pilot.pause(0.1)
         assert not isinstance(app.screen, tui_mod.ScopedModelsSelector)
@@ -2368,6 +2390,94 @@ async def test_scoped_models_saves_and_limits_cycling(tmp_path, monkeypatch):
         await pilot.pause(0.1)
         assert app._rt.settings.enabledModels == []
         assert app._cycle_labels() == ["alpha/m1", "alpha/m2", "beta/m3"]
+
+        # ctrl+p = 整个 provider 一起勾/取消(pi 的 `app.models.toggleProvider`)
+        app._command("/scoped-models")
+        await pilot.pause(0.1)
+        panel = app.screen
+        assert isinstance(panel, tui_mod.ScopedModelsSelector)
+        await pilot.press("down")                        # ↑↓ / j k 仍然动高亮(键归面板收)
+        await pilot.press("j")
+        await pilot.pause(0.05)
+        assert panel.highlighted == 2                     # 停在 beta/m3
+        await pilot.press("ctrl+p")                      # → beta 那个一起下
+        await pilot.pause(0.05)
+        assert panel.selected == ["alpha/m1", "alpha/m2"]
+        await pilot.press("escape")
+        await pilot.pause(0.05)
+        assert app._rt.settings.enabledModels == []       # 取消不改盘
+
+
+@pytest.mark.asyncio
+async def test_logout_makes_that_providers_models_go_away(tmp_path, monkeypatch):
+    """logout 之后那家的模型要从清单里消失;`enabledModels` 里残留的 id 要标 `[unavailable]`。
+
+    用户报的就是这条:models.json 里**显式**写着 mimo(`apiKey: "$MIMO_API_KEY"`),
+    `/logout mimo` 只删 `auth.json` 里那条凭证 —— 而清单以前对“显式写过”的 provider 有豁免,
+    于是 mimo 照样列在 `/scoped-models` 里,而它其实已经用不了了。
+
+    现在只有一条门槛:`resolve_key(...).ok`(与 pi 的 `getAvailableSnapshot()` 同口径)。
+    已经写进 `settings.enabledModels` 的 id 不静默丢 —— pi 会把它们画成
+    删除线 + `[unavailable]`,取消勾选才真的移出清单。
+    """
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    # models.json 里显式写着 mimo,密钥走**环境变量引用**(与用户手上那份同形)
+    (tmp_path / "models.json").write_text(json.dumps({"providers": {
+        "mimo": {"api": "openai-completions", "apiKey": "$QI_TEST_NO_MIMO_KEY",
+                 "models": [{"id": "mimo-v2.6-pro"}]}}}), encoding="utf-8")
+    monkeypatch.delenv("QI_TEST_NO_MIMO_KEY", raising=False)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    from qi_agent.auth import AuthStore
+
+    AuthStore().set_key("mimo", "sk-mimo")               # 先登录:此时可用
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        assert app._rt is not None
+        app._rt.cfg = load_config(tmp_path)[0]
+        assert [p for p, _, _ in app._model_options()] == ["mimo"]
+
+        # 这一家已经进过 Ctrl+P 轮换清单
+        cast(Any, app._rt).settings.enabledModels = ["mimo/mimo-v2.6-pro"]
+
+        notes = await _command_notes(app, monkeypatch)
+        app._command("/logout mimo")
+        await pilot.pause(0.15)
+        assert AuthStore().get("mimo") is None
+        assert app._model_options() == []                # 登录没了 → 清单里也没了
+        assert any("不再列它的模型" in text for text, _ in notes), notes
+
+        # 但 settings 里还记着它 —— 面板照样能开(否则这条永远清不掉),
+        # 而且看得见、删得掉
+        app._command("/scoped-models")
+        await pilot.pause(0.1)
+        panel = app.screen
+        assert isinstance(panel, tui_mod.ScopedModelsSelector)
+        text = panel.rendered_text()
+        assert text.plain.split("\n")[0] == "→ ✓ mimo/mimo-v2.6-pro [unavailable]"
+        assert any(getattr(span.style, "strike", False) for span in text.spans), \
+            "已不可用的模型要划掉(pi 的 theme.strikethrough)"
+
+        # 直接保存:不能静默把它从 settings 里抹掉
+        await pilot.press("ctrl+s")
+        await pilot.pause(0.1)
+        assert app._rt.settings.enabledModels == ["mimo/mimo-v2.6-pro"]
+
+        # 取消勾选 → 行消失 → 保存才真的清掉
+        app._command("/scoped-models")
+        await pilot.pause(0.1)
+        panel = app.screen
+        assert isinstance(panel, tui_mod.ScopedModelsSelector)
+        await pilot.press("space")
+        await pilot.pause(0.05)
+        assert panel.rendered_text().plain == ""          # 不可用的那条取消后连行都不留
+        await pilot.press("ctrl+s")
+        await pilot.pause(0.1)
+        assert app._rt.settings.enabledModels == []
 
 
 @pytest.mark.asyncio
@@ -2584,7 +2694,9 @@ async def test_session_selector_lists_filters_and_acts(tmp_path, monkeypatch):
         await pilot.press("enter")
         await pilot.pause(0.05)
         assert selector._renaming is None
-        assert store.get(zeta.id).title == "重命名后"    # type: ignore[union-attr]
+        renamed = store.get(zeta.id)
+        assert renamed is not None, "会话就在刚重命名的那条上"
+        assert renamed.title == "重命名后"
 
         # ctrl+d 删除要**先确认**(pi 的 delete confirmation),escape 能取消
         before = len(store.list())

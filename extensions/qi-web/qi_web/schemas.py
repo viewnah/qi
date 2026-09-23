@@ -51,12 +51,14 @@ class ModelOption(BaseModel):
     id: str
     #: 上下文窗口(tokens,来自 models.json)。0 = 取不到 → 界面不画占用条。
     context_window: int = 0
-    #: 这个 provider 现在解析得出凭证吗(`/model` 用它标"未配置")。
-    credential_ok: bool = False
 
 
 class ModelCatalog(BaseModel):
     """`GET /api/models` —— 可选模型清单(与 TUI 的 `/model` **同一份口径**)。
+
+    口径是**能用**的模型:解析得出凭证的 provider 才在里面(`selectable_models`)。
+    所以不需要“这条有没有凭证”的字段 —— 清单里每一条都有。缺凭证的 provider 想去配
+    看设置页的 provider 卡片(`/api/config` 那份带 `credential_ok`)。
 
     `currently` = 这次请求的会话**当前生效**的模型(可从会话里还原过,未必等于 settings
     默认)。`session` 为 None 时它取自 runtime 的当前状态。

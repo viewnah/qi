@@ -73,10 +73,19 @@ qi                                    # 直接跑
 
 TUI 里 `/login` 的 provider 选择器列出**全部**预置(带 `(无凭证 · 预置)` 标记)—— 那是登录入口。
 
-**但 `/model`、`ctrl+l/p` 轮换、`/scoped-models`、`qi --list-models` 只列你能用的**:
-预置 provider 要**解析得出凭证**(auth store / 约定环境变量 / `apiKey` 引用)才会出现 ——
-没登录就不该在切换列表里看到它(想登录就去 `/login`)。`models.json` 里**显式写过**的
-provider 不受这条限制:那是你自己的配置,可能正在配。`qi doctor` 列全量并标 `(预置)`。
+**但 `/model`、`ctrl+l/p` 轮换、`/scoped-models`、web 的模型菜单、`qi --list-models` 只列你能用的**:
+一个 provider 要**解析得出凭证**(auth store / 约定环境变量 / `models.json` 里 `apiKey` 的字面值
+或 `$VAR`·`$(命令)` 引用 / 免密钥的 `ollama`)才会进清单 —— 没登录就不该在切换列表里看到它
+(想登录就去 `/login`)。`models.json` 里**显式写过**的 provider **没有豁免**:写了 `apiKey`
+却解析不出来(环境变量没导出、命令跑不通),就是“用不了”—— “我刚把 mimo logout 了,
+它怎么还在 `/scoped-models` 里”就是这个豁免造成的。这条与 pi 同口径:pi 的清单是
+`modelRuntime.getAvailableSnapshot()`,没凭证的 provider 一个模型都不在里面。
+
+`qi doctor` 与 `qi --list-models` 是**诊断面**,照列全量并标 `缺密钥`(唯一例外:`--list-models`
+仍列**当前默认模型**那个 provider —— 否则你看不出自己缺的是哪把钥匙)。
+
+本地**无鉴权**端点(自建代理 / llama.cpp 之类)想进清单,写一个**字面** `apiKey` 就行
+(`"apiKey": "none"`)—— `resolve_key` 认它,请求只是多一个 Authorization 头。
 
 **`models.json` 里写了同名 provider 就以你写的为准** —— 预置从不覆盖用户的定义(baseUrl /
 apiKey / 模型清单全是)。
@@ -94,8 +103,9 @@ qi init --preset deepseek,moonshot --local   # 多个 / 写进项目 .qi/models.
 物化(baseUrl / apiKey 引用 / 模型清单先备好,下面几问回车即保留);没选中的预置不写盘。
 新建时敲个预置名、或 `-y --provider deepseek`,同样先物化 —— 否则写出的 provider 没有 baseUrl。
 
-“缺凭证”的告警口径只算**在用**的 provider(`models.json` 里写过的 + 默认/路由模型那个)——
-预置那十家只是目录,不会让“凭证全部就绪”永远不成立。
+“缺凭证”的告警口径只算**在用**的 provider(`models.json` 里写过的 + 默认/路由模型那个) ——
+预置那十家只是目录,不会让“凭证全部就绪”永远不成立。这条**不管**清单:没凭证的 provider
+既不在 `/model` 里,又可能在 `qi doctor` 里被点名 —— 那正是它该干的事(说清缺什么)。
 
 预置了什么:**baseUrl + api + 约定环境变量名 + 模型清单**,每个模型都带两个数 ——
 

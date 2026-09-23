@@ -646,9 +646,9 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
     # 于是 web 能看见模型、却换不了(TUI 有 `/model` / ctrl+l / ctrl+p)。
     #
     # 三个决定:
-    #   · **清单口径与 TUI 的 `/model` 完全一致** —— 都走 core 的 `selectable_models()`
-    #     (预置兜底那批要"解析得出凭证"才列;`models.json` 里显式写过的不过滤)。
-    #     两处各写一份清单,迟早一个改了另一个没改;
+    #   · **清单口径与 TUI 的 `/model` 完全一致** —— 都走 core 的 `selectable_models()`:
+    #     **解析得出凭证的 provider 才列**(`models.json` 里显式写过的也没有豁免,
+    #     写了 `$ENV` 却没导出就是“用不了”)。两处各写一份清单,迟早一个改了另一个没改;
     #   · **换模型走 `runtime.set_model()` / `set_thinking_level()`** —— 那是唯一入口,
     #     `model_select` / `thinking_level_select` 事件与 `model_change` /
     #     `thinking_level_change` 的落盘都在里面。界面层不自己拼 entry;
@@ -679,8 +679,6 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
         `session` 给了就先绑定它 —— 当前值要反映**那条会话**的还原结果,而不是
         runtime 上残留的上一轮状态(一个 runtime 服务多个会话)。
         """
-        from qi_agent.auth import resolve_key
-
         target = _session_for(session)
         runtime = web.runtime_for(web.session_cwd(target) if target else web.default_cwd)
         if target is not None:
@@ -693,9 +691,6 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
             options.append(schemas.ModelOption(
                 provider=provider, id=model_id,
                 context_window=_int_field(entry, "contextWindow"),
-                credential_ok=resolve_key(provider,
-                                          prov.apiKey if prov else None,
-                                          store).ok,
             ))
         return schemas.ModelCatalog(
             models=options,

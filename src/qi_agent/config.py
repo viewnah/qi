@@ -301,15 +301,20 @@ def in_play_providers(cfg: QiConfig, *, default_provider: str | None = None,
 
 
 def selectable_models(cfg: QiConfig, *, store: Any = None) -> list[tuple[str, str]]:
-    """**可选模型**清单(`provider, model_id`)—— `/model` 与 web 的模型菜单共用这一份。
+    """**可选模型**清单(`provider, model_id`)—— `/model` / ctrl+l·p 轮换 / `/scoped-models` /
+    web 的模型菜单 / `qi --list-models` 共用这一份。
 
-    口径(与 TUI 的 `/model` 逐条一致,web 端复用它而不是各写一份):
+    口径一条:**解析得出凭证的 provider 才列**(`resolve_key(...).ok`)—— auth store →
+    约定环境变量 → `models.json` 里的 `apiKey` 引用(含 `$(命令)`),三路任一命中即可;
+    `ollama` 这类本来就不需要密钥的在 `KEYLESS_PROVIDERS` 里,照样算命中。
 
-    * **预置兜底那批只有"解析得出凭证"时才列** —— 用户只登录了 deepseek,就不该在
-      菜单里看到 moonshot / glm(他们的原话:"我还没登录,怎么就能选")。没登录又想用
-      哪个,去 `qi auth login <provider>`;
-    * **`models.json` 里显式写过的 provider 不受这条限制** —— 那是用户自己的配置,
-      可能正在配(缺密钥会在请求时报清楚)。
+    与 pi 对齐:pi 的清单是 `modelRuntime.getAvailableSnapshot()`,而它由
+    `Models.getAvailable()` → `checkProviderAuth()` 产出 —— **没有凭证的 provider
+    一个模型都不进选择器**(pi 只提示 “Only showing models from configured providers.
+    Use /login to add providers.”)。`models.json` 里显式写过的 provider **没有豁免**:
+    写了 `apiKey` 却解析不出来(环境变量没导出、`$(…)` 跑不通),那就是“用不了”,
+    不该在选择器里冒充可选 —— 用户的口径是“我把 mimo logout 了,它怎么还在”,
+    而 `qi doctor` / `--list-models` 仍然会把“缺密钥”列出来(那两个面就是用来看配置的)。
 
     返回按 provider、再按模型 id 排序(界面直接照着画,不需要各自再排一遍)。
 
@@ -321,10 +326,9 @@ def selectable_models(cfg: QiConfig, *, store: Any = None) -> list[tuple[str, st
         from .auth import AuthStore            # 局部导入:只在真的要判凭证时用
         store = AuthStore()
     from .auth import resolve_key
-    preset_only = set(cfg.presetProviders or ())
     out: list[tuple[str, str]] = []
     for provider, prov in sorted((cfg.providers or {}).items()):
-        if provider in preset_only and not resolve_key(provider, prov.apiKey, store).ok:
+        if not resolve_key(provider, prov.apiKey, store).ok:
             continue
         for entry in prov.models:
             out.append((provider, entry.id))

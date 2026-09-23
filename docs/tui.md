@@ -89,8 +89,10 @@
   qi 用 `EditorSlotPanel`(ModalScreen)做到同一形状:全宽、`align-vertical: bottom`、
   `margin-bottom` = footer 实际行数、`border-top/bottom: solid`、底色取 `$background`
   (= 探测到的终端底色,看不出“填色”但又盖住底下的编辑器)、backdrop 透明。
-  列表渲染与补全面板**同一份**(`pi_select_text`,pi 的 `SelectList` 版式)。
-  非选择器类的面板(`PromptScreen` / `EditorScreen` / `CustomScreen` / 会话 / 树 / scoped)
+  列表渲染与补全面板**同一份**(`pi_select_text`,pi 的 `SelectList` 版式)——
+  `/model`、`/thinking`、`/settings` 与 `/scoped-models` 都走它(`/scoped-models` 的勾选
+  标记是 pi 的 `✓`/`  `,不是 Textual `SelectionList` 那个 `▐X▌` 方框)。
+  非选择器类的面板(`PromptScreen` / `EditorScreen` / `CustomScreen` / 会话 / 树)
   共用同一外壳,只换正文。
 - **主题**:`theme` 设 `auto`(默认)时用 OSC 11 探测终端背景色 → dark/light,
   并把探测到的背景色设为 Textual 主题底色 —— 于是区域看不出“被填色”。
@@ -130,14 +132,14 @@ CLI 起的 inline 小 App —— 那里没有跑着的事件循环;fullscreen �
 | `/fork [序号\|id]` | 从某条用户消息**之前**分叉出新会话,并把那条消息放回编辑器(对齐 pi) |
 | `/clone [名字]` | 把当前分支复制成新会话 |
 | `/compact [提示]` | 压缩上下文:把旧消息压成结构化摘要(可给一句关注点) |
-| `/model [p/m]` | 不给参数 = **开选择器**(与 ctrl+l 同一个,pi 的 `showModelSelector`;`✓` 标当前、`[provider] · default` 徽标)；给 `p/m` 或唯一模型名 = 直接切。切换会往会话里落一条 `model_change`,**下次打开这条会话仍用它**([sessions.md](sessions.md) §6.1) |
-| `/scoped-models` | 挑 Ctrl+P 轮换哪些模型(面板里勾选;空 = 全部,写回 `settings.enabledModels`) |
+| `/model [p/m]` | 不给参数 = **开选择器**(与 ctrl+l 同一个,pi 的 `showModelSelector`;`✓` 标当前、`[provider] · default` 徽标)；给 `p/m` 或唯一模型名 = 直接切。切换会往会话里落一条 `model_change`,**下次打开这条会话仍用它**([sessions.md](sessions.md) §6.1)。**只列解析得出凭证的模型**(与 pi 的 `getAvailableSnapshot()` 同口径) |
+| `/scoped-models` | 挑 Ctrl+P 轮换哪些模型(行是 pi 的 `→ ✓ 模型 [provider]`;空 = 全部,写回 `settings.enabledModels`)。已记进 settings 但**现已不可用**的条目画成删除线 + `[unavailable]`,取消勾选才真的移出清单 |
 | `/export [file]` | 导出会话 JSONL(默认 `./qi-<id>.jsonl`;**pi 默认导出 HTML** —— qi 无 HTML 导出器) |
 | `/import <file>` | 从 JSONL 导入并切换会话(重名给提示,不静默覆盖) |
 | `/copy` | 复制最后一条回答到剪贴板(OSC 52) |
 | `/reload` | 重载 agents / plugins / 配置(主题改动需重开) |
 | `/login [provider]` | 不给 provider 先弹**选择器**(列 `models.json` 里的 provider + `(已存凭证)`/`(无凭证)`),然后**遮罩输入** API key → 写 `auth.json`(0600)并重建客户端;key 不进 transcript。当前**没可用模型**时顺带选中该 provider 的第一个模型(pi 同口径)。与 pi 的差异:pi 的 `/login` 主要在做**订阅登录**(`auth.oauth`),qi 的凭证层只有 api_key |
-| `/logout [provider]` | 不给 provider 先弹已存凭证的选择器;删的是 `auth.json` 里那条(**环境变量与 `models.json` 的 `apiKey` 不受影响**,消息里会说) |
+| `/logout [provider]` | 不给 provider 先弹已存凭证的选择器;删的是 `auth.json` 里那条(**环境变量与 `models.json` 的 `apiKey` 不受影响**,消息里会直说删完还剩哪路密钥)。此后那家的模型**不再进 `/model` 与 Ctrl+P 清单** —— 清单只列解析得出凭证的 |
 | `/changelog` | 显示 `CHANGELOG.md`(qi 仓库暂无该文件) |
 
 ### 会话树(格式 v2,对齐 pi 的 `id`/`parentId`)

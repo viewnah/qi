@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -30,6 +31,10 @@ from qi_agent.workspaces import WorkspaceStore
 
 class StreamingStub:
     """第 1 轮:边说边调一个工具;第 2 轮:给结论。"""
+
+    #: 真客户端的 `spec`(`ResolvedModel`)—— `_record_model_change` 与模型标签读它。
+    #: 替身默认没有(`None`),需要它的用例自己赋上(见 `_model_app`)。
+    spec: Any = None
 
     def __init__(self) -> None:
         self.calls = 0
@@ -892,7 +897,17 @@ async def test_binding_survives_a_runtime_without_the_hooks(tmp_path, monkeypatc
             yield AgentEvent(kind="agent_end", text="好", data={"usage": {}})
 
     _minimal_config(tmp_path, monkeypatch)
-    state = WebState(tmp_path, runtime_factory=lambda cwd: Bare(tmp_path / "sessions"))
+
+    def bare_factory(cwd: Path) -> Any:
+        """只有 `stream` 的替身工厂。
+
+        `WebState` 的 `runtime_factory` 契约上给的是 `QiRuntime`;这里故意给鸭子类型的替身
+        (本仓测试的常规做法:替身只建模契约,不搬真实现)—— 所以标 `Any`,别把假类型
+        写成真类型。
+        """
+        return Bare(tmp_path / "sessions")
+
+    state = WebState(tmp_path, runtime_factory=bare_factory)
     app = create_app(cwd=tmp_path, state=state,
                      workspace_store=WorkspaceStore(tmp_path / "workspaces.json"))
     transport = httpx.ASGITransport(app=app)
@@ -949,11 +964,12 @@ def _model_app(tmp_path: Path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_models_endpoint_lists_what_you_can_actually_use(tmp_path, monkeypatch):
-    """清单 = provider + 模型 id + 上下文窗口 + 「解析得出凭证吗」。
+    """清单 = **能用**的模型(provider + 模型 id + 上下文窗口)。
 
-    beta 的 apiKey 指向一个不存在的环境变量 → 仍**列出**它(`models.json` 里显式写过
-    的 provider 不受凭证门槛限制),但 `credential_ok=False` —— 界面据此标"未配置",
-    而不是把这一条悄悄藏起来(用户会以为自己的配置没生效)。
+    beta 的 apiKey 指向一个不存在的环境变量 → **不进清单**(`selectable_models` 一条门槛:
+    `resolve_key(...).ok`;与 pi 的 `modelRuntime.getAvailableSnapshot()` 同口径)。
+    以前这里会照列 beta 并带 `credential_ok=false` 让界面标“未配置”,现在那一行根本不出现 ——
+    要配凭证去设置页的 provider 卡片(`/api/config`,那份里仍有 `credential_ok`)。
     """
     app = _model_app(tmp_path, monkeypatch)
     transport = httpx.ASGITransport(app=app)
@@ -961,13 +977,10 @@ async def test_models_endpoint_lists_what_you_can_actually_use(tmp_path, monkeyp
         body = (await client.get("/api/models")).json()
 
     assert [(m["provider"], m["id"]) for m in body["models"]] == [
-        ("alpha", "m1"), ("alpha", "m2"), ("beta", "m3")]
+        ("alpha", "m1"), ("alpha", "m2")]
     window = {m["id"]: m["context_window"] for m in body["models"]}
     assert window["m1"] == 32000, "上下文窗口来自 models.json"
     assert window["m2"] == 128000, "没写就用默认值(不是 0)"
-    ok = {(m["provider"], m["id"]): m["credential_ok"] for m in body["models"]}
-    assert ok[("alpha", "m1")] is True
-    assert ok[("beta", "m3")] is False
     assert body["currently"] == "alpha/m1"
     assert "off" in body["thinking_levels"] or "medium" in body["thinking_levels"]
 
@@ -1016,6 +1029,7 @@ async def test_switching_the_thinking_level_records_it_too(tmp_path, monkeypatch
         assert bad.status_code == 422, "未知级别要被拒,而不是静默当 off"
 
     session = SessionStore(root=tmp_path / "sessions").get(sid)
+    assert session is not None, "上一条 POST 已成功,会话必然在盘上"
     levels = [e["thinking_level"] for e in session.branch()
               if e.get("type") == "thinking_level_change"]
     assert levels[-1] == "high"

@@ -2693,7 +2693,7 @@ B 的 `alpha/m2`(而 note 里写着"已用默认模型继续")。
 ```text
 输入卡右下 = [智能体 chip x=1033, 模型 chip x=1121]        两个都带 chevron(可点)
 打开 A     → chip = "m1";后端 /api/config 的 default 也是 m1
-模型菜单   = ["✓ m1 / alpha · 32k", "m2 / alpha · 64k", "m3 / beta · 缺凭证 · 128k",
+模型菜单   = ["✓ m1 / alpha · 32k", "m2 / alpha · 64k",
               —— 分隔线「思考级别」——
               "off", "minimal", "low", "✓ medium", "high", "xhigh", "max"]
 层叠       = elementFromPoint(菜单左上+20,20) 命中菜单(portal 压得住输入卡上方的行)
@@ -2708,7 +2708,7 @@ A 选 high  → chip 仍是 "m2"(级别不占 chip);落盘多一条 thinking_lev
 页面错误   = 0
 ```
 
-后端 6 条用例在 `tests/test_web_api.py`(清单口径含缺凭证标注 / 切换落进**那条**会话 /
+后端 6 条用例在 `tests/test_web_api.py`(清单口径只列能用的 / 切换落进**那条**会话 /
 级别同理且未知档 422 / 两个字段互不影响 / 半个模型 422 与不存在会话 404 /
 两条会话各自的模型互不影响)。
 
@@ -2727,3 +2727,36 @@ A 选 high  → chip 仍是 "m2"(级别不占 chip);落盘多一条 thinking_lev
 - **级别不显示在 chip 上**:它只在菜单里带 ✓。chip 那块地方放两个值会挤掉模型名。
 - **不做模型搜索框**:清单现在按 provider 分组列完(十几个量级),加搜索是过度设计;
   真长起来了再说。
+
+#### 后续修正(2026-09,使用反馈:口径收紧)
+
+用户报的是一条**反直觉**:“我已经把 mimo logout 了,为什么 `/scoped-models` 还有 mimo 的模型”。
+查下去发现不是缓存,而是当时那条**豁免**在作祟:清单只对“预置兜底”那批查凭证,
+`models.json` 里**显式写过**的 provider 一律照列(理由写的是“那是用户自己的配置,
+可能正在配”)。而 `/logout` 删的只是 `auth.json` 里那条凭证 —— 于是 provider 定义还在
+models.json 里写着(`apiKey: "$MIMO_API_KEY"`),模型就一直在菜单里冒充可选,
+即使它已经用不了(`resolve_key(...).ok == False`)。
+
+pi 不是这个口径:它的清单是 `modelRuntime.getAvailableSnapshot()`,而它由
+`Models.getAvailable()` → `checkProviderAuth()` 产出 —— **没凭证的 provider 一个模型都不进
+选择器**,只在界面上提示“Use /login to add providers”。于是这一版把口径统一成一条:
+
+- **core** `selectable_models()`:所有 provider 都过 `resolve_key(...).ok`(auth store →
+  约定环境变量 → `models.json` 的 `apiKey` 字面值 / `$VAR` / `$(命令)`;免密钥的 `ollama`
+  本来就算命中)。本地无鉴权端点写一个字面 `apiKey` 即可。
+- **`qi --list-models` / `qi doctor` 照列全量**(诊断面),`--list-models` 唯一例外是仍列
+  **当前默认模型**那个 provider —— 否则用户看不出自己缺的是哪把钥匙。
+- **`/api/models` 不再需要 `credential_ok`**:清单里每一条都有凭证,那个字段与
+  `ModelMenu` 的“· 缺凭证”标注一起删掉(要配凭证去设置页的 provider 卡片,那里仍有状态)。
+- **TUI `/scoped-models` 按 pi 画“已不可用”**:`settings.enabledModels` 里残留、现在已经
+  解析不出模型的 id 用**完整** `provider/model` + 删除线 + `[unavailable]` 列出(取消勾选才
+  真的移出)。不能静默丢 —— 一不在列表里,下一次 `ctrl+s` 就会把它们从 settings 里抹掉。
+
+连带修的:清单为空时的提示从“models.json 里没有可选模型”改成说清是**缺凭证**
+(按凭证过滤之后前者已不是主因,照旧那句话会把人引向错误的检查方向);`/logout` 的提示
+改成直说结果(还剩哪路密钥 / 该家已不再进清单),不再用“不受影响”一句带过。
+
+验证:全量 pytest 1207 passed / 新增回归 `test_logout_makes_that_providers_models_go_away`
+(logout 后清单为空 + `[unavailable]` 行 + 保存不静默丢 + 取消勾选才清掉);
+`scripts/e2e_ui_model.py` 第 ③ 组断言跟着改成“缺凭证的 provider 一条都不列”
+(真跑 Chrome/CDP 的那一步本环境跑不了 —— 需要一个真浏览器)。

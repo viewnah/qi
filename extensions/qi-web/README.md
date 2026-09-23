@@ -47,7 +47,8 @@ qi web -H 0.0.0.0 --password 口令
    流水线里已无人读它。见 `tests/test_web_extensions_api.py`。
 3. **模型面**(`/api/models` + `/api/model`)。此前 web **只有 `/api/config` 的只读回声**:
    界面能显示模型、却换不了(TUI 有 `/model` / ctrl+l / ctrl+p)。现在补上清单与切换,
-   清单口径与 TUI 的 `/model` **同一份**(core 的 `selectable_models()`),
+   清单口径与 TUI 的 `/model` **同一份**(core 的 `selectable_models()`,即
+   **解析得出凭证的 provider 才列**:缺凭证的 provider 一条都不进菜单,要配凭证去设置页),
    切换走 `runtime.set_model()` / `set_thinking_level()`(事件与落盘都在里面)。
    输入卡右下那个只读的模型名因此变成了一个真 chip(`ModelMenu`)。
 
@@ -63,4 +64,3 @@ python scripts/e2e_ui_model.py     # 真 Chrome/CDP:模型 chip 的可点性、�
 ```
 
 需要本机装了 Google Chrome(headless 起临时实例,不动你的 profile)。
-

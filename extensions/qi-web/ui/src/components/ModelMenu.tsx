@@ -15,9 +15,10 @@
  *    级别那一节只在**当前模型会思考**时出现 —— 对不思考的模型显示"思考级别"是纯粹的噪音。
  * 2. **显示的是裸模型名**(与 §18.13 一致):`provider/model` 在窄窗口里放不下,
  *    完整标签留给 `title`。菜单里则两者都给 —— 同 id 不同 provider 时靠它分辨。
- * 3. **`credential_ok=false` 的条目照列但标出来**,不隐藏:那是用户自己写在
- *    `models.json` 里的配置,藏起来他会以为"配置没生效";点了会拿到后端的 400
- *    与具体原因(那比界面上悄悄不给点好)。
+ * 3. **只列能用的模型**:清单来自后端的 `selectable_models()`(解析得出凭证的
+ *    provider,与 TUI 的 `/model` 同一条口径)。以前这里会照列缺凭证的条目并缀一句
+ *    “· 缺凭证”,现在它们压根不进菜单 —— 要配凭证去设置页的 provider 卡片
+ *    (那里仍旧标着状态)。用户的口径是“我把 mimo logout 了,它怎么还在”。
  */
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -163,7 +164,6 @@ export function ModelMenu({
                         </span>
                         <span className="agentmenu__note">
                           {option.provider}
-                          {option.credential_ok ? "" : " · 缺凭证"}
                           {option.context_window > 0
                             ? ` · ${Math.round(option.context_window / 1000)}k`
                             : ""}

@@ -854,10 +854,12 @@ def _cmd_list_models(search: str | None = None) -> None:
     shown: set[str] = set()
     for name_, prov in cfg.providers.items():
         rk = resolve_key(name_, prov.apiKey, store)
-        # 预置兜底那批只列**能用的**(有凭证的)—— 没登录的 provider 列出来也没用,
-        # 想知道有哪些可登录的看 `qi init --list-presets` 或直接 `qi auth login <名>`。
-        # `models.json` 里显式写过的照列(那是用户自己的配置)。
-        if name_ in cfg.presetProviders and not rk.ok and name_ != provider:
+        # 与 `/model` 同一条口径(`selectable_models`):解析不出凭证的 provider 不列 ——
+        # `models.json` 里显式写过的也没有豁免(写了 `$ENV` 却没导出 = 用不了)。
+        # 例外只有一个:**当前默认模型的那个 provider** 照列,否则用户看不出自己缺的是哪把
+        # 钥匙(那一行的 `credential` 列会写清缺什么)。想知道还有哪些预置可登录:
+        # `qi init --list-presets` 或直接 `qi auth login <名>`。
+        if not rk.ok and name_ != provider:
             continue
         for m in prov.models:
             label = f"{name_}/{m.id}"

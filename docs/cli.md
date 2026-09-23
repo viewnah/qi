@@ -75,7 +75,7 @@ qi -ne | -nc                                  # 关扩展发现 / 关 AGENTS.md 
 | `--provider <名>` / `--model <模式>` | 按次覆盖模型。`--model` 写 `provider/模型`,可带 `:<思考级别>` 后缀(**只认已知级别**,所以 `openrouter/x:free` 不会被误切);只给 `--provider` 时用它 models.json 里的第一个模型 | ✅ pi 同名 |
 | `--api-key <键>` | 按次覆盖密钥,**不落盘**(优先于 auth store / 环境变量 / `models.json` 的引用) | ✅ pi `--api-key` |
 | `--models <清单>` | 本次运行 Ctrl+P 的轮换清单(逗号分隔)。**不回写** settings —— 要持久化用 TUI 的 `/scoped-models` | ✅ pi `--models` |
-| `--list-models [搜索词]` | 列出可用模型后退出(ctx / max 两列来自模型条目)。搜索词写成**位置参数**:`qi --list-models sonnet`(pi 的可选值形态 click 表达不了)。**没登录的预置 provider 不列** —— 那是登录入口的事(`/login`) | ✅ 形态同 pi |
+| `--list-models [搜索词]` | 列出可用模型后退出(ctx / max 两列来自模型条目),每行带 `credential` 列(缺密钥的也列 —— 这是诊断面)。搜索词写成**位置参数**:`qi --list-models sonnet`(pi 的可选值形态 click 表达不了)。**解析不出凭证的 provider 不列**(例外:当前默认模型那个照列,否则看不出缺哪把钥匙);没登录的预置去 `/login` | ✅ 形态同 pi |
 | `--no-extensions`(=`-ne`) | 关掉扩展**发现**(entry point / `~/.qi/agent/extensions/` / `settings.extensions[]`);`-e` 显式给的仍生效 | ✅ pi `-ne` |
 | `--no-context-files`(=`-nc`) | 不注入 `AGENTS.md` / `CLAUDE.md` | ✅ pi `-nc` |
 
@@ -190,7 +190,7 @@ qi -ne | -nc                                  # 关扩展发现 / 关 AGENTS.md 
 
 | 命令 | 说明 | pi 对齐 |
 | --- | --- | --- |
-| `qi --list-models [搜索词]` | 列 `models.json` 的 provider/模型(标记默认) | ✅ pi `--list-models` |
+| `qi --list-models [搜索词]` | 列 `models.json` 的 provider/模型(标记默认;缺密钥的也列 —— 诊断面) | ✅ pi `--list-models` |
 | `qi doctor` | 诊断:配置/provider/凭证(按 pi 凭证顺序验) | 🟡 替代 pi auth |
 
 ## 7. 安全与信任

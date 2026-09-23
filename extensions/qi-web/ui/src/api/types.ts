@@ -475,8 +475,6 @@ export interface ModelOption {
    id: string;
    /** 上下文窗口(tokens)。0 = 取不到 → 不画占用条。 */
    context_window: number;
-   /** 这个 provider 现在解析得出凭证吗(界面据此标"未配置")。 */
-   credential_ok: boolean;
 }
 
 export interface ModelCatalog {

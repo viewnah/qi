@@ -1,4 +1,4 @@
-"""qi-agent:编码 agent 框架(单 agent core + 扩展)。"""
+"""qi(发行名 `qi-coding-agent`):编码 agent 框架 —— 单 agent core + 扩展。"""
 
 import os
 

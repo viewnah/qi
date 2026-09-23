@@ -177,8 +177,12 @@ async def _run_one(api: Any, role: Role, task: str, ctx: Any,
     tools: list[str] | None
     if role.tools is None:
         # 宿主可能只有其中一种写法(snake_case 是正式名,camelCase 是别名) —— 两种都试。
+        # 鸭子类型调用:先把结果落成 `object`,再用 isinstance 收窄。
+        # (`getattr` 的结果过了 `callable()` 之后会被静态检查当成 `(...) -> object`,
+        #  直接迭代它会被判成"object is not iterable"。)
         getter = getattr(api, "get_active_tools", None) or getattr(api, "getActiveTools", None)
-        tools = [str(t) for t in getter()] if callable(getter) else None
+        names: object = getter() if callable(getter) else None
+        tools = [str(t) for t in names] if isinstance(names, (list, tuple)) else None
     else:
         tools = [str(t) for t in role.tools]
     # E25:角色 `tools:` 里的 MCP 条目**换掉**成真实工具名 —— `mcp__gh__*` 是模式、不是工具名,

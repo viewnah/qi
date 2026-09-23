@@ -1,7 +1,7 @@
-"""P-E2d:依赖契约 —— 扩展不得把宿主写进 `dependencies`(docs/extensions.md §11 / design/extensions-design.md 的 E11)。
+"""P-E2d:依赖契约 —— 扩展不得把宿主写进 `dependencies`(docs/extensions.md §10 / design/extensions-design.md 的 E11)。
 
 pi 用 `peerDependencies` + `"*"` 表达“宿主提供、别自己打包”;Python **没有** peer 这个概念。
-于是扩展一旦写 `qi-agent==0.1.0`,pip 就会在解析时把 qi 自己降级 —— **宿主被自己的扩展
+于是扩展一旦写 `qi-coding-agent==0.1.0`,pip 就会在解析时把 qi 自己降级 —— **宿主被自己的扩展
 踢掉**,而故障现场(某个 API 不存在)和根因(pyproject 里一行依赖)隔得很远。所以要在
 装载那一刻就把这句话说出来。
 
@@ -48,9 +48,9 @@ def _warn(requires: list[str] | None) -> list[str]:
 # ── 单元:判定与措辞 ─────────────────────────────────────
 
 def test_reports_when_host_is_declared():
-    msgs = _warn(["qi-agent==0.1.0", "pymysql>=1.1"])
+    msgs = _warn(["qi-coding-agent==0.1.0", "pymysql>=1.1"])
     assert len(msgs) == 1
-    assert "qi-agent==0.1.0" in msgs[0]
+    assert "qi-coding-agent==0.1.0" in msgs[0]
     assert "从 pyproject 里去掉" in msgs[0]           # 报告要给出可执行的动作
 
 
@@ -61,25 +61,33 @@ def test_silent_for_unrelated_dependencies():
 def test_silent_without_requirements_or_dist_or_report():
     assert _warn(None) == []
     assert _warn([]) == []
-    assert _warn(["qi-agent"]) != []                 # 裸名字也算(没版本约束同样是声明)
+    assert _warn(["qi-coding-agent"]) != []           # 裸名字也算(没版本约束同样是声明)
     warn_host_dependency("probe", None, [].append)   # 没有 dist → 不炸
-    warn_host_dependency("probe", _Dist(["qi-agent"]), None)   # 没有报告通道 → 不炸
+    warn_host_dependency("probe", _Dist(["qi-coding-agent"]), None)   # 没有报告通道 → 不炸
 
 
 def test_name_normalization_catches_spelling_variants():
-    """PEP 503:`Qi.Agent` / `qi_agent` / `QI-AGENT` 都是同一个 distribution。"""
-    for spelling in ("Qi.Agent>=0.1", "qi_agent", "QI-AGENT[x]>=0.1"):
+    """PEP 503:`Qi.Coding.Agent` / `qi_coding_agent` / `QI-CODING-AGENT` 都是同一个 distribution。"""
+    for spelling in ("Qi.Coding.Agent>=0.1", "qi_coding_agent", "QI-CODING-AGENT[x]>=0.1"):
         assert _warn([spelling]), f"没认出来: {spelling}"
 
 
 def test_does_not_mistake_a_lookalike_package_for_the_host():
-    """`qi-agent-extra` 是另一个包 —— 不能因为前缀相同就误报。"""
-    assert _warn(["qi-agent-extra>=1.0", "qi-agents"]) == []
+    """`qi-coding-agent-extra` 是另一个包 —— 不能因为前缀相同就误报。"""
+    assert _warn(["qi-coding-agent-extra>=1.0", "qi-agents"]) == []
+
+
+def test_legacy_name_is_reported_with_its_own_wording():
+    """旧名 `qi-agent` 在 PyPI 上属于**别的项目** —— 要单独报,并说清为什么危险。"""
+    msgs = _warn(["qi-agent>=0.1"])
+    assert len(msgs) == 1
+    assert "qi-agent" in msgs[0] and "别的项目" in msgs[0]
+    assert "qi-coding-agent" in msgs[0], "要给出正确的宿主名"
 
 
 def test_reports_version_mismatch_explicitly():
     """版本对不上时要说清“不满足”,而不只是把两个字符串摆在一起。"""
-    msgs = _warn(["qi-agent>=999.0"])
+    msgs = _warn(["qi-coding-agent>=999.0"])
     assert len(msgs) == 1
     assert "999.0" in msgs[0]
     if installed_host_version() is not None:
@@ -111,7 +119,7 @@ def _catalog() -> tuple[ToolCatalog, CapabilityRegistry]:
 
 def test_discovery_warns_but_still_loads(tmp_path, monkeypatch, entry_point_channel):
     monkeypatch.setenv(paths.QI_AGENT_HOME, str(tmp_path / "home"))
-    entry_point_channel(["qi-agent==0.1.0"])
+    entry_point_channel(["qi-coding-agent==0.1.0"])
     warnings: list[str] = []
 
     catalog, caps = _catalog()
@@ -152,10 +160,10 @@ async def test_runtime_surfaces_the_warning_in_notes(tmp_path, monkeypatch, entr
         json.dumps({"defaultProvider": "ollama", "defaultModel": "x"}), encoding="utf-8")
     monkeypatch.setenv(paths.QI_AGENT_CONFIG, str(tmp_path / "models.json"))
     monkeypatch.setenv(paths.QI_AGENT_HOME, str(home))
-    entry_point_channel(["qi-agent>=0.0.1"])
+    entry_point_channel(["qi-coding-agent>=0.0.1"])
 
     from qi_agent.runtime import QiRuntime
 
     runtime = QiRuntime(cwd=tmp_path)
     assert runtime.extensions == ["from-pip"]
-    assert any("qi-agent" in n and "dependencies" in n for n in runtime.notes)
+    assert any("qi-coding-agent" in n and "dependencies" in n for n in runtime.notes)

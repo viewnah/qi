@@ -45,7 +45,7 @@ ENTRYPOINT ["qi"]
 docker build -t qi-local .
 docker run --rm -it \
   -v "$PWD:/workspace" \
-  -v qi-agent-home:/root/.qi/agent \
+  -v qi-home:/root/.qi/agent \
   -e DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" \
   qi-local
 ```

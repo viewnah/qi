@@ -10,7 +10,7 @@
 
 ```text
 /workspace/qi/                  ← 仓库根(uv build / pip install . 从这里打)
-├── pyproject.toml              # name = "qi-agent",hatchling 构建
+├── pyproject.toml              # name = "qi-coding-agent",hatchling 构建
 ├── README.md                   # 入口页(装 + 快速开始 + 索引)
 ├── docs/                       # 手册(force-include → qi_agent/docs,随 wheel 发布;索引进提示词)
 ├── design/                     # 设计记录 + 本 PLAN.md(不进 wheel、不注入)
@@ -59,7 +59,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "qi-agent"
+name = "qi-coding-agent"
 version = "0.1.0"
 description = "多 agent 编码框架:专职角色 agent + auto 分派(Dispatcher)"
 readme = "README.md"
@@ -102,7 +102,7 @@ testpaths = ["tests"]
 | 无任何角色/技能数据(**零内置**;角色归 qi-agents) | 运行时 `~/.qi` 数据(永不打包) |
 | `docs/` 手册(**已落地**:force-include → `qi_agent/docs/`,提示词里注入索引) | MCP / web 代码(core 不含,归 qi-mcp / qi-web) |
 
-安装后:`pip install qi-agent` → `qi` 命令可用,`~/.qi/` 首次运行创建;MCP / 角色 / web 都在**独立扩展包**里(qi-mcp / qi-agents / qi-web),core 一个都不带。
+安装后:`pip install qi-coding-agent` → `qi` 命令可用,`~/.qi/` 首次运行创建;MCP / 角色 / web 都在**独立扩展包**里(qi-mcp / qi-agents / qi-web),core 一个都不带。
 
 ## 2. v1(核心库 + CLI + TUI + MCP + 数据源)
 
@@ -156,7 +156,7 @@ testpaths = ["tests"]
 
 | # | 决策 | 结论 |
 | --- | --- | --- |
-| A1/N10 | 仓库与包名 | `qi-agent` / `qi_agent`,hatchling + uv,`/workspace/qi` 为根,sdk/ 留参考(见 §1) |
+| A1/N10 | 仓库与包名 | **发行名 `qi-coding-agent`**(2026-09 改:`qi-agent` / `qi` 在 PyPI 上都已被别的项目占用),import 包名仍 `qi_agent`、命令仍 `qi`;hatchling + uv,`/workspace/qi` 为根,sdk/ 留参考(见 §1) |
 | A2/N2 | 应用配置 | `models.json`(格式对齐 pi)+ 分层(env→项目→用户)+ pydantic 校验 |
 | A3/N1 | frontmatter 语法 | YAML(对齐 Agent Skills/Claude) |
 | A4/N8 | LLM 接入 | litellm(统一多 provider) |

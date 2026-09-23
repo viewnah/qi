@@ -5,7 +5,8 @@
 **core 就是单 agent**:会话(JSONL + 分支树)、工具循环、系统提示词、CLI 与 TUI、压缩、认证都在里面;
 角色 / MCP / Web 这类增值功能全部走**扩展**,不塞进 core。
 
-> **现状**:`qi-agent` 还没发布到 PyPI,以**从源码安装**为主(见下)。
+> **发行名是 `qi-coding-agent`** —— PyPI 上的 `qi-agent` 属于**别的项目**,别装错;
+> import 包名仍是 `qi_agent`、命令仍是 `qi`。现在还没发布,所以以**从源码安装**为主(见下)。
 > `qi-mcp` / `qi-agents` / `qi-web` 是三个独立官方 pip 包,各自带自己的手册。
 
 ## 装
@@ -24,6 +25,13 @@ uv run qi doctor         # 冒烟:配置 / 凭证 / 扩展 / 包声明,一次全
 ```bash
 pip install -e extensions/qi-agents -e extensions/qi-mcp -e extensions/qi-web
 uv run qi doctor         # 「声明了但没装」「装了但没声明」都在这里报出来,并给出装法
+```
+
+**发布之后**(现在还没有)可以直接装发行版,扩展用 `--with` 一次装齐:
+
+```bash
+uv tool install qi-coding-agent                       # 只装 core
+uv tool install qi-coding-agent --with qi-mcp --with qi-agents
 ```
 
 装法(自家 venv / `uv tool` / 只读解释器)与声明层(`settings.packages`)的差别见

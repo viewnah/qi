@@ -1,0 +1,93 @@
+name: publish
+
+# 发布四个 distribution:qi-coding-agent(core)+ qi-mcp / qi-agents / qi-web。
+# 锁步同版本;先构建校验,再按目标索引发布。
+#
+# 触发:
+#   - push tag `v*`  → 发布到 PyPI(正式)
+#   - workflow_dispatch → 手选 testpypi / pypi(试跑用 testpypi)
+#
+# 首次发布前要在 PyPI / TestPyPI 各配一次 **Trusted Publisher**(不需要 API token):
+#   Owner: viewnah · Repository: qi · Workflow: publish.yml · Environment: pypi(或 testpypi)
+# 本文件用 OIDC(id-token)发布,所以两个 job 都声明了 `environment`。
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 发布到哪个索引
+        type: choice
+        options: [testpypi, pypi]
+        default: testpypi
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: 校验 + 构建
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: 版本一致性(core 与三个扩展锁步;tag 触发时顺带核 tag)
+        env:
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: python3 scripts/check_versions.py
+
+      - name: 构建四个 distribution
+        run: |
+          uv build --out-dir dist
+          uv build extensions/qi-mcp    --out-dir dist
+          uv build extensions/qi-agents --out-dir dist
+          uv build extensions/qi-web    --out-dir dist
+
+      - name: 产物清单
+        run: ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish-testpypi:
+    name: 发布到 TestPyPI
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'testpypi'
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write                      # OIDC 信任发布,不用 token
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          packages-dir: dist/
+          skip-existing: true              # 重跑同一版本不炸
+
+  publish-pypi:
+    name: 发布到 PyPI
+    needs: build
+    if: >-
+      github.ref_type == 'tag' ||
+      (github.event_name == 'workflow_dispatch' && inputs.target == 'pypi')
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/

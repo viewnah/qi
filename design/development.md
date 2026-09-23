@@ -115,3 +115,59 @@ uv run qi doctor                                 # 冒烟:配置/凭证/扩展/�
 
 改到文档时,顺手确认链接没断:`docs/docs.json` 的 `navigation` 每一条 path 都必须真实存在
 (它是导航清单,也是"文档还缺哪几篇"的账本;补完一篇就从 `planned` 移进 `navigation`)。
+
+## 7. 发布(四个 distribution)
+
+仓库里有**四个** PyPI distribution,锁步同版本:
+
+| 包 | 发行名 | 说明 |
+| --- | --- | --- |
+| core | **`qi-coding-agent`** | import 包名仍是 `qi_agent`,命令仍是 `qi` |
+| 扩展 | `qi-mcp` / `qi-agents` / `qi-web` | 各自独立;`qi-agents` 依赖 `qi-mcp` |
+
+> **为什么发行名不是 `qi-agent`**:PyPI 上的 `qi-agent`(以及 `qi`)**已被别的项目占用**(前者 2026-09 还在发版,不是抢注),PEP 503 归一后也不能靠大小写/下划线绕开。发行名只影响 `pip install` 的那串名字 —— import 包名与命令都没变。旧名写进扩展依赖会被装载时单独报出来(见 `registry.warn_host_dependency`)。
+
+### 发布前
+
+1. **四个 `pyproject.toml` 的 `version` 一起改**(core + 三个扩展):
+   `python3 scripts/check_versions.py`(可加 `TAG=v0.2.0` 顺便核 tag)。
+2. 本地过一遍全量测试与构建:
+
+```bash
+.venv/bin/python -m pytest -q
+uv build --out-dir dist && uv build extensions/qi-mcp --out-dir dist \
+  && uv build extensions/qi-agents --out-dir dist && uv build extensions/qi-web --out-dir dist
+```
+
+### 走 workflow(推荐)
+
+`.github/workflows/publish.yml`:
+
+- **打 tag 发布**:`git tag v0.1.0 && git push origin v0.1.0` → 构建 + 发布到 **PyPI**;
+- **手动试跑**:Actions → publish → Run workflow → 选 `testpypi`,先发 TestPyPI 验证;
+- 用的是 **Trusted Publishing(OIDC)**,不需要 API token —— 但要在两处各配一次 publisher:
+
+| 索引 | Publisher 配置 |
+| --- | --- |
+| PyPI | Owner `viewnah` · Repository `qi` · Workflow `publish.yml` · Environment **`pypi`** |
+| TestPyPI | 同上,Environment **`testpypi`** |
+
+workflow 里两个 job 都声明了 `environment`,与这里的名字必须一致;`id-token: write` 是 OIDC 的前提。
+TestPyPI 那步带 `skip-existing`,所以同一个版本可以反复试跑。
+
+从 TestPyPI 验装(依赖仍在正式索引):
+
+```bash
+uv tool install --index-url https://test.pypi.org/simple/ \
+  --extra-index-url https://pypi.org/simple qi-coding-agent
+```
+
+### 手动发布(不想用 CI 时)
+
+```bash
+uv build --out-dir dist && uv build extensions/qi-web --out-dir dist   # …四个都构建
+uv publish --token "$UV_PUBLISH_TOKEN"        # 或 twine upload dist/*
+```
+
+**首次发布尤其建议先走 TestPyPI** —— 名字是否可用、metadata 是否合法、`README` 能否渲染成描述页,
+这些在正式索引上改不了(同一个版本号不能重发,只能 bump)。

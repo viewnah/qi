@@ -49,7 +49,12 @@ from .loader import (
     load_top_level_skills,
 )
 from .paths import MODELS_FILE_NAME, SETTINGS_FILE_NAME, global_home, project_home
-from .registry import CapabilityRegistry, ToolCatalog, discover_extensions
+from .registry import (
+    HOST_DISTRIBUTION,
+    CapabilityRegistry,
+    ToolCatalog,
+    discover_extensions,
+)
 from .packages import install_hints, package_report
 from .session import SessionStore
 from .settings import (
@@ -818,7 +823,7 @@ def list_extensions() -> None:
         raise typer.Exit(code=2) from exc
     if not report.installed and not report.declared:
         console.print("[dim]没有已装扩展,settings.packages 里也没有声明。[/dim]")
-        console.print("[dim]装法:uv tool install qi-agent --with qi-mcp[/dim]")
+        console.print(f"[dim]装法:uv tool install {HOST_DISTRIBUTION} --with qi-mcp[/dim]")
         return
     declared_names = {item.name for item in report.declared}
     table = Table(title="扩展")
@@ -903,8 +908,8 @@ def _run_pip(args: list[str]) -> int:
         return 1
     if code != 0:
         err_console.print(f"[red]pip 退出码 {code}[/red]")
-        err_console.print("[dim]如果目标是只读解释器或 uv tool 环境,改用:"
-                          "`uv tool install qi-agent --with <包>`[/dim]")
+        err_console.print(f"[dim]如果目标是只读解释器或 uv tool 环境,改用:"
+                          f"`uv tool install {HOST_DISTRIBUTION} --with <包>`[/dim]")
     return code
 
 
@@ -1057,7 +1062,7 @@ def update(target: str = typer.Argument(None, help="更新谁:self | pi | 包名
     failed = 0
     if want_self:
         failed += _run_pip(["install", "--upgrade", *(
-            ["--force-reinstall"] if force else []), "qi-agent"]) != 0
+            ["--force-reinstall"] if force else []), HOST_DISTRIBUTION]) != 0
     if want_ext:
         pick = extension or (target if target not in (None, "self", "pi") else None)
         specs = _declared_for("user") + _declared_for("project")
@@ -2060,7 +2065,12 @@ def _extension_report(cwd: Path | None = None) -> tuple[list[str], list[str]]:
     不会各说各话(doctor 的价值正在此)。所以这里宁可做一次轻量装载,也不读扩展自己的日志。
     """
     from .extensions import CliCommandRegistry, CommandRegistry, ExtensionBus, FlagRegistry
-    from .registry import CapabilityRegistry, ToolCatalog, discover_extensions
+    from .registry import (
+    HOST_DISTRIBUTION,
+    CapabilityRegistry,
+    ToolCatalog,
+    discover_extensions,
+)
 
     catalog, caps = ToolCatalog(), CapabilityRegistry()
     commands, flags, cli_commands = CommandRegistry(), FlagRegistry(), CliCommandRegistry()

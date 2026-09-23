@@ -181,13 +181,13 @@ def test_update_without_target_updates_qi_itself(tmp_path, monkeypatch, pip):
     _env(tmp_path, monkeypatch)
     res = runner.invoke(app, ["update"])
     assert res.exit_code == 0, res.output
-    assert pip.calls == [["install", "--upgrade", "qi-agent"]]
+    assert pip.calls == [["install", "--upgrade", "qi-coding-agent"]]
 
 
 def test_update_self_and_all(tmp_path, monkeypatch, pip):
     _env(tmp_path, monkeypatch)
     runner.invoke(app, ["update", "self"])
-    assert pip.calls == [["install", "--upgrade", "qi-agent"]]
+    assert pip.calls == [["install", "--upgrade", "qi-coding-agent"]]
 
 
 def test_update_extensions_upgrades_declared_pip_packages(tmp_path, monkeypatch, pip):
@@ -218,7 +218,7 @@ def test_update_unknown_extension_is_reported(tmp_path, monkeypatch, pip):
 def test_update_force_passes_force_reinstall(tmp_path, monkeypatch, pip):
     _env(tmp_path, monkeypatch)
     runner.invoke(app, ["update", "--self", "--force"])
-    assert pip.calls == [["install", "--upgrade", "--force-reinstall", "qi-agent"]]
+    assert pip.calls == [["install", "--upgrade", "--force-reinstall", "qi-coding-agent"]]
 
 
 def test_update_models_says_qi_has_no_catalogs(tmp_path, monkeypatch, pip):

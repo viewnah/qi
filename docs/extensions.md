@@ -344,11 +344,13 @@ api.register_tool(Tool(
 **安装目标:统一装进 qi 自己的解释器环境。** 目标是 qi 所在的那个 venv,**不是**用户 cwd 的项目 venv(否则就是那个经典失败:"我在项目里 pip install 了,qi 就是 import 不到")。装法就是往 `sys.executable` 对应的环境里 pip —— **这个动作 qi 不替你做**(见下)。
 
 - **公开 import 白名单**:只能 import §3 列的那些名字。别的 `qi_agent.*` 模块算内部实现。
-- **扩展不得把 `qi-agent` 写进 `dependencies`**(否则 pip 会在解析时把 qi 自己降级 —— 宿主被自己的扩展踢掉)。
-  装载时会读 pip 通道的 `requires()`(目录通道读 PEP 723 的 `# /// script` 声明),命中就**报告**(带版本满足判定与修复动作)。**只报告不拒绝** —— 声明本身不危险,危险的是被 pip 解成一棵冲突的树;拒载会让本来能跑的扩展直接不可用。判定按 PEP 503 归一(`Qi.Agent` / `qi_agent` 都算),但 `qi-agent-extra` 不算。
+- **扩展不得把 `qi-coding-agent` 写进 `dependencies`**(否则 pip 会在解析时把 qi 自己降级 —— 宿主被自己的扩展踢掉)。
+  装载时会读 pip 通道的 `requires()`(目录通道读 PEP 723 的 `# /// script` 声明),命中就**报告**(带版本满足判定与修复动作)。**只报告不拒绝** —— 声明本身不危险,危险的是被 pip 解成一棵冲突的树;拒载会让本来能跑的扩展直接不可用。判定按 PEP 503 归一(`Qi.Coding.Agent` / `qi_coding_agent` 都算),但 `qi-coding-agent-extra` 不算。
+  另一条会单独报出来:**旧名 `qi-agent`** —— 那个名字在 PyPI 上属于别的项目,写进依赖不是"多写一条",
+  而是会真的装一个不相干的包(还可能与 qi 的 import 包在 `site-packages` 里撞车)。
 - **接受的代价**:所有扩展 + 宿主共用一棵解析树 → **版本冲突无处躲**。三层缓解:① 装载时比对已装版本,**不一致就报告**(不静默);② 冲突就拆成独立进程(自己的环境);③ 重依赖优先走外部进程/服务。
-- **uv tool / pipx 的坑**:uv 文档原话 —— tool 环境 "may be upgraded via `uv tool upgrade`, or **re-created entirely** via subsequent `uv tool install`",所以 pip 装进去的扩展**会被重建抹掉**。规矩:声明永远在 `settings.packages`,用 `qi doctor` / `qi list` 在每次重建后**发现**它丢了(并给出装法);或者这类用户直接用 `uv tool install qi-agent --with <包>`(写进 uv 的托管依赖,升级不丢 —— 这条更省事,推荐)。
-- **宿主环境只读时**(系统 Python / Homebrew 管理的解释器):pip 会自己报错;出路是 `uv tool install qi-agent --with <ext>`,或换一个可写的安装方式。qi 不检测这件事 —— 它不调 pip,所以也不该假装知道装不装得进。
+- **uv tool / pipx 的坑**:uv 文档原话 —— tool 环境 "may be upgraded via `uv tool upgrade`, or **re-created entirely** via subsequent `uv tool install`",所以 pip 装进去的扩展**会被重建抹掉**。规矩:声明永远在 `settings.packages`,用 `qi doctor` / `qi list` 在每次重建后**发现**它丢了(并给出装法);或者这类用户直接用 `uv tool install qi-coding-agent --with <包>`(写进 uv 的托管依赖,升级不丢 —— 这条更省事,推荐)。
+- **宿主环境只读时**(系统 Python / Homebrew 管理的解释器):pip 会自己报错;出路是 `uv tool install qi-coding-agent --with <ext>`,或换一个可写的安装方式。qi 不检测这件事 —— 它不调 pip,所以也不该假装知道装不装得进。
 - **`qi install <来源> [-l]`** 帮你走一步:调 pip + 写进 `settings.packages`(带 `-l` 写项目)。它**不替代**“想清楚装到哪个环境”这件事,所以每次都先把要跑的命令打出来。`qi remove` / `uninstall` 只从声明里移除(**不卸包**)。详见 [packages.md](packages.md) 与 [cli.md](cli.md)。
 
 ## 11. 细节与已知限制

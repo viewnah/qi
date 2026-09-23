@@ -15,6 +15,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from qi_agent import paths
+from qi_agent.registry import HOST_DISTRIBUTION  # noqa: E402
 from qi_agent.packages import (DeclaredPackage, InstalledExtension, build_report,
                                discover_declared, install_hints, normalize_name,
                                parse_declaration)
@@ -22,7 +23,7 @@ from qi_agent.packages import (DeclaredPackage, InstalledExtension, build_report
 
 def test_normalize_name_is_pep503():
     assert normalize_name("Qi.MCP") == normalize_name("qi-mcp") == "qi-mcp"
-    assert normalize_name("qi_agent") == "qi-agent"
+    assert normalize_name("qi_coding_agent") == "qi-coding-agent"
     assert normalize_name("") == ""
 
 
@@ -115,6 +116,6 @@ def test_discover_declared_reads_both_scopes_project_wins(tmp_path, monkeypatch)
 def test_install_hints_are_copy_pasteable():
     hints = install_hints("pip:qi-mcp")
     assert any("-m pip install" in h and "qi-mcp" in h for h in hints)
-    assert any(h.startswith("uv tool install qi-agent --with") for h in hints)
+    assert any(h.startswith(f"uv tool install {HOST_DISTRIBUTION} --with") for h in hints)
     # 通道前缀必须剥掉,否则用户复制到的是一条跑不通的命令
     assert all("pip:" not in h for h in hints)

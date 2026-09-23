@@ -43,8 +43,12 @@ __all__ = [
 EXTENSION_ENTRY_FILE = "extension.py"
 #: pip 通道的 entry point 组(v1 叫 `qi.plugins`;**cold cut,不留别名** —— 见 design/extensions-design.md 的 E1)
 EXTENSION_ENTRY_POINT_GROUP = "qi.extensions"
-#: 宿主自己的 distribution 名(禁写进扩展的 dependencies —— 见 §5.5)
-HOST_DISTRIBUTION = "qi-agent"
+#: 宿主自己的 distribution 名(禁写进扩展的 dependencies —— 见 docs/extensions.md 的依赖契约)
+HOST_DISTRIBUTION = "qi-coding-agent"
+#: 旧名。PyPI 上的 `qi-agent` **是别人的项目**,所以扩展依赖里出现它不只是"多写了一条":
+#: 它会真的装一个不相干的包(还可能和 qi 的 import 包在 site-packages 里撞车),单独报一条。
+#: (import 包名仍是 `qi_agent`、命令仍是 `qi` —— 只有发行名被占用了。)
+LEGACY_HOST_DISTRIBUTION = "qi-agent"
 
 # `packaging` 是可选依赖:它在绝大多数环境里经由 setuptools/pip/pytest 存在,
 # 但 qi 自己不依赖它 —— 拿不到就只报告原始 spec,不猜“满不满足”。
@@ -63,8 +67,8 @@ def _normalize_dist_name(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name or "").strip().lower()
 
 
-def _requirement_targets_host(req: str) -> bool:
-    """这条依赖是否指向宿主(不借助 packaging 也能判定 —— 它只影响诊断)。"""
+def _requirement_targets(req: str, distribution: str) -> bool:
+    """这条依赖是否指向给定的 distribution(不借助 packaging 也能判定 —— 它只影响诊断)。"""
     name = ""
     if _Requirement is not None:
         try:
@@ -74,11 +78,11 @@ def _requirement_targets_host(req: str) -> bool:
     if not name:
         match = _LEADING_NAME.match(req)
         name = match.group(1) if match else ""
-    return _normalize_dist_name(name) == _normalize_dist_name(HOST_DISTRIBUTION)
+    return _normalize_dist_name(name) == _normalize_dist_name(distribution)
 
 
 def installed_host_version() -> str | None:
-    """当前装着的 qi-agent 版本(拿不到就 None)。"""
+    """当前装着的 qi 宿主版本(拿不到就 None)。"""
     import importlib.metadata as metadata
 
     try:
@@ -108,7 +112,7 @@ def warn_host_dependency(name: str, dist: Any,
     """报告“扩展把宿主写进了依赖”这件亊(§5.5 / E11)。
 
     为什么不静默:pi 用 `peerDependencies` + `"*"` 表达“宿主提供、别自己打包”,
-    而 Python **没有** peer 这个概念 —— 扩展一旦写 `qi-agent==0.1.0`,pip 就会在解析时
+    而 Python **没有** peer 这个概念 —— 扩展一旦写 `qi-coding-agent==0.1.0`,pip 就会在解析时
     把我们自己的 qi 降级(宿主被自己的扩展踢掉)。这类故障现场和根因隔得很远,
     所以到了装完才报就晚了;装载时就指出。
 
@@ -127,7 +131,15 @@ def warn_host_dependency(name: str, dist: Any,
         where = "脚本的 `# /// script` 声明"
     else:
         return
-    host_specs = [r for r in requires if _requirement_targets_host(r)]
+    hint = ("从 pyproject 里去掉" if dist is not None
+            else "从脚本的 `# /// script` 声明里去掉")
+    legacy_specs = [r for r in requires if _requirement_targets(r, LEGACY_HOST_DISTRIBUTION)]
+    if legacy_specs:
+        report(f"扩展 {name} 的依赖里有 {LEGACY_HOST_DISTRIBUTION}({where}):"
+               f"{'、'.join(legacy_specs)}。那个名字在 PyPI 上**属于别的项目**,不是 qi 宿主"
+               f"(宿主的发行名现在是 {HOST_DISTRIBUTION};import 包名仍是 `qi_agent`)—— 请{hint},"
+               f"否则 pip 会装一个不相干的包,或在同一个环境里和 qi 撞 site-packages。")
+    host_specs = [r for r in requires if _requirement_targets(r, HOST_DISTRIBUTION)]
     if not host_specs:
         return
     installed = installed_host_version()
@@ -135,8 +147,6 @@ def warn_host_dependency(name: str, dist: Any,
     verdict = ("" if allowed is None else
                "当前版本**满足**它" if allowed else "当前版本**不满足**它")
     detail = "" if allowed is not None else "(未能判定是否满足:缺 packaging 或版本信息)"
-    hint = ("从 pyproject 里去掉" if dist is not None
-            else "从脚本的 `# /// script` 声明里去掉")
     report(f"扩展 {name} 把宿主 {HOST_DISTRIBUTION} 写进了依赖({where}):"
            f"{'、'.join(host_specs)};当前 {HOST_DISTRIBUTION} {installed or '未知'}。"
            f"{verdict}{detail} "

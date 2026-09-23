@@ -6,8 +6,9 @@
 
 qi 需要 **Python ≥ 3.12**。
 
-**目前以从源码安装为主**——仓库里没有发布配置(无 CI、无 PyPI 上传),所以不要假设
-`pip install qi-agent` 能装到东西(那个名字是[设计里写的目标形态](../design/PLAN.md),不是现状)。
+**发行名是 `qi-coding-agent`**(PyPI 上的 `qi-agent` 属于**别的项目**,别装错;import 包名仍是
+`qi_agent`、命令仍是 `qi`)。目前**还没发布**,所以以从源码安装为主 —— 不要假设
+`pip install qi-coding-agent` 现在就能装到东西。
 
 ```bash
 git clone https://github.com/viewnah/qi.git

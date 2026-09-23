@@ -185,7 +185,7 @@ pi 里其实是两个正交概念:编译进 dist 的**默认 prompt**(代码内�
 | 附加路径 | `settings.extensions`(路径列表) | 同名,同一个语义 |
 | 单次试用 | `pi -e <path>` | `qi -e <path>`(TUI 与无头两个模式都生效,只本进程,scope=temporary) |
 | 入口文件名 | 无固定名(`*.ts` / `index.ts`) | 固定 `extension.py`(E9:qi 保持"1 目录 = 1 扩展") |
-| 依赖 | `dependencies` + `peerDependencies`(宿主提供) | 同构,但 Python 没有 peer:明文规定**扩展不得把 `qi-agent` 写进 `dependencies`**(见 [extensions.md](../docs/extensions.md) §10) |
+| 依赖 | `dependencies` + `peerDependencies`(宿主提供) | 同构,但 Python 没有 peer:明文规定**扩展不得把宿主写进 `dependencies`**(见 [extensions.md](../docs/extensions.md) §10) |
 
 ### 11.2 qi 的增量(pi 没有的)(原 §2.1)
 

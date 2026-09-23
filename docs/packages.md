@@ -10,7 +10,7 @@
 
 1. **目标环境有三种**:qi 自己的 venv、`uv tool` 托管的环境、只读的系统解释器(Homebrew / 系统 Python)。
    qi 每次都把要跑的命令**先打出来**,所以你能看出装到了哪里;只读解释器下 pip 会自己报错,
-   qi 把输出原样给你并补上 `uv tool install qi-agent --with <包>` 那条出路。
+   qi 把输出原样给你并补上 `uv tool install qi-coding-agent --with <包>` 那条出路。
 2. **`uv tool` 会整个重建环境**。uv 文档的原话:tool 环境 "may be upgraded via `uv tool upgrade`,
    or **re-created entirely** via subsequent `uv tool install`"。所以 pip 装进去的扩展**会被抹掉**
    —— 声明还在,`qi doctor` 会把它报出来(这正是“声明层”存在的意义)。
@@ -68,7 +68,7 @@
 /path/to/venv/bin/python -m pip install "qi-mcp>=0.2"
 
 # ② 写进 uv tool 的托管依赖(uv tool 重建 / 升级后仍然在 —— 推荐)
-uv tool install qi-agent --with "qi-mcp>=0.2"
+uv tool install qi-coding-agent --with "qi-mcp>=0.2"
 ```
 
 | | ① 直接 pip | ② uv 托管依赖 |
@@ -111,7 +111,7 @@ tool 重建后补回
 包声明:
   ✗ 声明了但没装: pip:qi-todo (settings:user)
       /…/bin/python3 -m pip install "qi-todo"
-      uv tool install qi-agent --with "qi-todo"
+      uv tool install qi-coding-agent --with "qi-todo"
   ⚠ 无法解析的声明: git+https://host/repo
       用 `名字 @ URL` 写法才认得出名(如 qi-mcp @ git+https://host/repo)
   已装但未声明(2): qi-mcp、qi-web —— 写进 settings.packages 才能在 uv tool 重建后补回

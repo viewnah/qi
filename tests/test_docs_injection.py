@@ -176,10 +176,26 @@ def test_wheel_force_includes_docs():
 
 
 def test_docs_json_matches_the_manuals_on_disk():
-    """索引与实际手册不许漂(提示词报的路径必须是真文件)。"""
+    """索引与实际手册不许漂(提示词报的路径必须是真文件)。
+
+    `navigation` 的形状对齐 pi:分组可以有**子分组**(`items` 里再套 `items`),所以这里递归取值。
+    """
     root = paths.docs_dir()
     assert root is not None
     data = json.loads((root / paths.DOCS_INDEX_FILE_NAME).read_text(encoding="utf-8"))
-    missing = [item["path"] for group in data["navigation"] for item in group["items"]
-               if not (root / item["path"]).is_file()]
+
+    def paths_in(items: object) -> list[str]:
+        out: list[str] = []
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            if item.get("path"):
+                out.append(str(item["path"]))
+            else:
+                out.extend(paths_in(item.get("items")))
+        return out
+
+    listed = paths_in(data["navigation"])
+    assert listed, "navigation 里应该至少有一条 path"
+    missing = [p for p in listed if not (root / p).is_file()]
     assert missing == [], missing

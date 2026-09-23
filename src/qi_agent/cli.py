@@ -80,7 +80,7 @@ class QiGroup(TyperGroup):
     """顶层群组:位置参数何时算“消息”、何时算“子命令”。
 
     Click 的 Group 会把第一个位置参数无条件当子命令名解析,于是:
-      - `qi -p "你好"` → No such command '你好'(docs/cli.md §1)
+      - `qi -p "你好"` → No such command '你好'(docs/cli.md 的「调用与输出」)
       - `qi -p "version"` → 消息恰好同名子命令时,跑去了 `qi version`
     规则:`-p/--print` 已给出 —— 位置参数全是消息;否则首个位置参数不是已注册
     子命令时,也当消息(交给顶层 callback 拼成 prompt)。
@@ -333,7 +333,7 @@ def root_callback(
     # (help 里写的是 "Append text or file contents")。
     append_prompt = [_text_or_file(item) for item in (append_prompt or [])]
     system_prompt = _text_or_file(system_prompt) if system_prompt else None
-    # docs/cli.md §1 / 对齐 pi:不带 -p 恒为交互(`-p` 才是无头),也不再需要 `qi tui`;
+    # docs/cli.md 的「调用与输出」:不带 -p 恒为交互(`-p` 才是无头),也不再需要 `qi tui`;
     # 给了消息就进 TUI 并把它作为首条消息发出(pi 的 `pi "问题"` 同款)。
     # `--mode json` 是脚本路径(输出事件流,不是 TUI),仍走无头。
     interactive = not print_mode and mode == "text"
@@ -1935,7 +1935,7 @@ def _discover_cli_commands(cwd: Path | None = None) -> CliCommandRegistry:
 
 
 #: 官方扩展提供的 CLI 子命令 → 提供它的包。
-#: 与 `docs/extensions.md` §8.1 那张表同源:core 不内置它们,所以这份名单必须写在 core 里 ——
+#: 与 design/extensions-design.md 的迁移清单同源:core 不内置它们,所以这份名单必须写在 core 里 ——
 #: 否则"没装那个扩展的人"永远只能看到 `No such command`,而不知道要装什么。
 _OFFICIAL_EXTENSION_COMMANDS = {"web": "qi-web"}
 
@@ -1957,7 +1957,7 @@ def _reject_unimplemented_flags(*, prompt_template, no_prompt_templates, theme_f
                        "选主题用 `QI_THEME=light` 或 `qi config --set theme=`")
     if str(mode or "").strip().lower() == "rpc":
         missing.append("`--mode rpc` -- qi 的输出模式只有 text | json; "
-                       "stdio JSON-RPC 还没实现(见 docs/cli.md §9)")
+                       "stdio JSON-RPC 还没实现(见 design/PLAN.md 的 v2 清单)")
     if not missing:
         return
     for item in missing:

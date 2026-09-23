@@ -147,7 +147,7 @@ def cross_tool_skills_dirs(cwd: Path | None = None) -> list[tuple[Path, str]]:
     """Agent Skills 标准的 `.agents/skills` 目录,低 → 高优先级。
 
     全局 `~/.agents/skills`(永远视为已信任)与项目祖先链 `.agents/skills`
-    (由远到近,近者覆盖远者)。不对应任何单一工具,见 docs/agent-config.md。
+    (由远到近,近者覆盖远者)。不对应任何单一工具,见 design/agent-config-design.md。
     """
     home = Path.home() / CROSS_TOOL_DIR_NAME / SKILLS_DIR_NAME
     project = [

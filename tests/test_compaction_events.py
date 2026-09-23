@@ -3,7 +3,7 @@
 压缩**只有一个入口**(`QiRuntime.compact_session`:TUI 的 `/compact` 与自动压缩都走它),
 所以三个事件都在那一处发 —— 这也是设计里说"一处就能接完"的那件事。
 
-契约(`docs/extensions.md` §3.1):
+契约(`docs/extensions.md` §4):
 
 * `session_before_compact` —— 可 `{cancel: true}` 拦下,或 `{summary: "…"}` 自带摘要
   (自带时**不调模型**);

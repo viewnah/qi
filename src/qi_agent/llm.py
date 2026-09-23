@@ -414,7 +414,7 @@ class LiteLLMClient:
         pi 对它分三路:Anthropic / Google / Bedrock **原生**用,OpenAI 兼容形态**只在**模型配了
         `compat.thinkingTokenBudgetField`(指定"预算写进哪个请求字段")时才用。qi 只做**原生那一路**
         (litellm 在 Anthropic 形态上有对应参数);OpenAI 兼容那半不做 —— qi 没有 compat 层,
-        而加那层是独立的一件事(见 docs/cli.md §10)。
+        而加那层是独立的一件事(见 design/pi-alignment.md)。
         """
         effort = _EFFORT_MAP.get(self.thinking_level)
         if not (effort and self.spec.reasoning and not self._no_reasoning_effort):

@@ -41,7 +41,7 @@ __all__ = [
 
 # 扩展本地目录通道:目录含 extension.py,export register(api)
 EXTENSION_ENTRY_FILE = "extension.py"
-#: pip 通道的 entry point 组(v1 叫 `qi.plugins`;**cold cut,不留别名** —— 见 extensions.md E1)
+#: pip 通道的 entry point 组(v1 叫 `qi.plugins`;**cold cut,不留别名** —— 见 design/extensions-design.md 的 E1)
 EXTENSION_ENTRY_POINT_GROUP = "qi.extensions"
 #: 宿主自己的 distribution 名(禁写进扩展的 dependencies —— 见 §5.5)
 HOST_DISTRIBUTION = "qi-agent"
@@ -273,7 +273,7 @@ def discover_extensions(catalog: ToolCatalog, capabilities: CapabilityRegistry,
     `scope` 就是 `source_info.scope`,用于 `getAllTools()` 过滤与诊断。
 
     `project_trusted=False` 时**不扫项目目录** —— 扩展是仓库控制的任意代码,
-    未信任就不能执行(docs/extensions.md §5.3)。`extra_dirs` 由调用方负责:
+    未信任就不能执行(docs/extensions.md §2)。`extra_dirs` 由调用方负责:
     从**项目级** settings 解析出来的路径要自己在未信任时不传。
 
     `no_discovery=True`(CLI 的 `--no-extensions`)关掉**发现**:entry point、内建目录、

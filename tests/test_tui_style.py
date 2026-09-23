@@ -775,7 +775,7 @@ async def test_ctrl_x_copies_last_answer(tmp_path, monkeypatch):
     copied: list[str] = []
     async with app.run_test(size=(100, 30)) as pilot:
         await pilot.pause(0.1)
-        app.copy_to_clipboard = copied.append      # type: ignore[method-assign]
+        app.copy_to_clipboard = copied.append      # pyright: ignore[reportAttributeAccessIssue]
         await pilot.press("ctrl+x")                # 还没有回答
         await pilot.pause(0.05)
         assert app._status == "还没有回答可复制" and copied == []
@@ -1817,7 +1817,7 @@ def test_fork_numeric_arg_is_index_not_id_prefix():
     「id 以 2 开头」的第 1 条抢走 —— 按运行随机失败。"""
     app = QiTui(palette=PALETTE)
     session = object()
-    app._user_message_options = lambda _session: [      # type: ignore[method-assign]
+    app._user_message_options = lambda _session: [      # pyright: ignore[reportAttributeAccessIssue]
         ("2abc-def", "你: Q1"), ("f00d", "你: Q2"),
     ]
     assert app._resolve_user_message(session, "2") == "f00d"    # 序号优先

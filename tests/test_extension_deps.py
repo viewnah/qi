@@ -1,4 +1,4 @@
-"""P-E2d:依赖契约 —— 扩展不得把宿主写进 `dependencies`(docs/extensions.md §5.5 / E11)。
+"""P-E2d:依赖契约 —— 扩展不得把宿主写进 `dependencies`(docs/extensions.md §11 / design/extensions-design.md 的 E11)。
 
 pi 用 `peerDependencies` + `"*"` 表达“宿主提供、别自己打包”;Python **没有** peer 这个概念。
 于是扩展一旦写 `qi-agent==0.1.0`,pip 就会在解析时把 qi 自己降级 —— **宿主被自己的扩展

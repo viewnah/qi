@@ -1,7 +1,7 @@
 """顶层无头运行:`qi -p "问题"` 的位置参数解析(回归:No such command)。
 
 历史问题:Typer 的 Group 把第一个位置参数当子命令名解析,
-`qi -p "你好"` 会报 `No such command '你好'`(docs/cli.md §1 / README 快速开始都依赖它)。
+`qi -p "你好"` 会报 `No such command '你好'`(docs/cli.md 的「调用与输出」 / README 快速开始都依赖它)。
 """
 
 from __future__ import annotations

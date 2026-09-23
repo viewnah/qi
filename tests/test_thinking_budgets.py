@@ -5,7 +5,7 @@ pi 分三路处理它(`docs/settings.md`):Anthropic / Google / Bedrock **原生*
 并且**钳制到至少留 1024 token 给答案**。
 
 qi 只做**原生那一路** —— litellm 在 Anthropic 形态上有对应参数(`thinking.budget_tokens`);
-OpenAI 兼容那半不做,因为 qi 没有 compat 层(加那层是独立的一件事,见 `docs/cli.md` §10)。
+OpenAI 兼容那半不做,因为 qi 没有 compat 层(加那层是独立的一件事,见 `design/pi-alignment.md`)。
 
 两条刻意的选择:
 

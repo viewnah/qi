@@ -178,7 +178,7 @@ class QiRuntime:
         self.stop_after = stop_after
         self.workdir = self.runtime_cfg.workdir
         # 基座:项目 .qi/SYSTEM.md > ~/.qi/agent/SYSTEM.md;都没有则空串
-        # (空串 = 用 system_prompt.py 里的代码内默认基座,见 docs/system-prompt.md)
+        # (空串 = 用 system_prompt.py 里的代码内默认基座,见 docs/configuration.md)
         self.base_prompt, self.base_prompt_source = resolve_base_prompt(self.cwd)
         # `--system-prompt`:命令行直接给基座 —— 与 `.qi/SYSTEM.md` **同一语义**(整体替换)
         if base_prompt_override and base_prompt_override.strip():
@@ -465,7 +465,7 @@ class QiRuntime:
     def _note_missing_agent_support(self) -> None:
         """有角色目录、但没有能读它的扩展 → 说一句(否则那些文件静默无效)。
 
-        与 `docs/extensions.md` §8.1 那张表同源:`.qi/agents/` 归 qi-agents,
+        与 design/extensions-design.md 的迁移清单同源:`.qi/agents/` 归 qi-agents,
         core 不读它。未信任的项目目录也有可能读不到 —— 但那种情况另有提示
         (信任门控自己会说),这里只说"扩展不在"。
         """
@@ -1678,7 +1678,7 @@ class QiRuntime:
         改提示词,E14)—— 流水线里没有任何地方读它了。参数留着不删是为了让旧调用点
         (qi-web 曾用它)不因签名变化而崩,但**它不会生效、也不报错**,所以:
         要"以某个角色跑"请用 qi-agents 的 `--ext agent=<名>`,或自己挂 `before_agent_start`。
-        (web 端正是栽在这里 —— 界面显示着角色、提示词里却没有;见 docs/extensions.md §3.6。)
+        (web 端正是栽在这里 —— 界面显示着角色、提示词里却没有;见 docs/extensions.md §6.1。)
 
         `source` 进 `input` 事件的 payload(交互式 / 无头 / rpc)—— 扩展据此决定
         “要不要弹问”。目前调用方都用默认值:精确标签等真正需要它的人来传。

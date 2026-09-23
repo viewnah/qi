@@ -4,7 +4,7 @@
 **静默执行了不该执行的代码**(扩展 = 全权限),或者反过来 —— 配置写了却不生效。
 
 装载优先级(先到先得,同名跳过):项目 `.qi/extensions/` → 全局 `<agent>/extensions/`
-→ `settings.extensions[]` → entry point。见 docs/extensions.md §2 / §5.3。
+→ `settings.extensions[]` → entry point。见 docs/extensions.md §2。
 """
 
 from __future__ import annotations
@@ -267,7 +267,7 @@ def test_project_legacy_plugins_dir_is_only_reported(tmp_path, monkeypatch):
 # ── entry point 组 ──────────────────────────────────────
 
 def test_entry_point_group_is_qi_extensions(monkeypatch):
-    """cold cut:`qi.plugins` 不再被读,也不留别名(见 extensions.md E1)。"""
+    """cold cut:`qi.plugins` 不再被读,也不留别名(见 design/extensions-design.md 的 E1)。"""
     seen: list[str | None] = []
 
     def fake_entry_points(*, group=None, **kwargs):

@@ -74,7 +74,7 @@ class QiSettings(BaseModel):
     #: 优先级见 `QiRuntime.__init__`:`--thinking` > `--model :级别` > 这里 > 全局默认。
     modelThinkingLevels: dict[str, str] = Field(default_factory=dict)
     #: 每个思考级别的 token 预算(pi 同名段)。**只对 Anthropic 形态生效**(litellm 只在那里
-    #: 有对应参数);不配就不带(pi 另有内置默认表,qi 没有 —— 差异见 docs/cli.md §10)。
+    #: 有对应参数);不配就不带(pi 另有内置默认表,qi 没有 —— 差异见 design/pi-alignment.md)。
     thinkingBudgets: dict[str, int] = Field(default_factory=dict)
     #: 分支摘要(`/tree` 跳转时):`{"skipPrompt": true}` —— 不问也不摘要(pi 同名段)。
     #: pi 的 `reserveTokens` **未接**:qi 的摘要预算固定,加一个不生效的旋钮不如不加。
@@ -86,7 +86,7 @@ class QiSettings(BaseModel):
     quietStartup: bool = False
     #: TUI 模式(pi 同名键 `tuiMode`):`regular` = inline(不占全屏、终端自己管回滚缓冲);
     #: `fullscreen` = 备用屏(qi 拥有视口,滚轮只滚 transcript)。
-    #: **qi 默认 fullscreen,与 pi 的默认(regular)相反** —— 取舍与理由见 `docs/tui.md` §1。
+    #: **qi 默认 fullscreen,与 pi 的默认(regular)相反** —— 取舍与理由见 `design/internals.md` 的终端界面一节。
     tuiMode: str | None = None
     defaultProjectTrust: str = "ask"
     doubleEscapeAction: str = "tree"
@@ -343,7 +343,7 @@ def next_choice(key: str, current: str) -> str:
 #: TUI 模式取值(pi `tuiMode` 的两个值,语义同 pi)。
 TUI_MODES: tuple[str, ...] = ("regular", "fullscreen")
 #: **qi 的默认**是 fullscreen(pi 默认 regular)。为什么不同:pi 的 regular 把滚动权交给终端,
-#: 滚轮/PageUp 会翻到启动 qi 之前的 shell 输出;qi 要的是“滚动只在本界面内”(见 docs/tui.md §1)。
+#: 滚轮/PageUp 会翻到启动 qi 之前的 shell 输出;qi 要的是“滚动只在本界面内”(见 design/internals.md 的终端界面一节)。
 DEFAULT_TUI_MODE = "fullscreen"
 
 
@@ -414,7 +414,7 @@ def resolve_project_trust(settings: QiSettings | None, *,
                           approve: bool | None = None,
                           has_ui: bool = False,
                           stored: tuple[bool, str] | None = None) -> tuple[bool, str]:
-    """项目信任判定 → `(trusted, reason)`(docs/extensions.md §5.3 / E16)。
+    """项目信任判定 → `(trusted, reason)`(docs/extensions.md §2 / design/extensions-design.md 的 E16)。
 
     优先级(对齐 pi 的 "saved decisions ... apply before the global default"):
 

@@ -1,7 +1,7 @@
 """扩展宿主:事件总线 + 扩展上下文 + 工具定义 + 传给 `register(api)` 的接口。
 
 对应 pi 的 `ExtensionAPI` / `ExtensionContext` / 事件订阅 / `registerTool`
-(docs/extensions.md §3、§4)。
+(docs/extensions.md §4–§6)。
 
 **公开面白名单**(§5.5 —— pi 的 `## Available Imports` 对应物)。承诺的只有本模块:
 
@@ -57,7 +57,7 @@ _DELIVER_AS = {
 
 #: 事件 payload 的**客户端兼容层**:同一个概念在 pi 那里是驼峰时,qi 额外镜一份。
 #:
-#: qi 自己的键名仍是 snake_case(见 docs/extensions.md §3.1),这里**不改名、只加一个别名** ——
+#: qi 自己的键名仍是 snake_case(见 docs/extensions.md §4),这里**不改名、只加一个别名** ——
 #: 所以两边的读法都成立,而 qi 的既有消费者一字不改。
 #: 只列两边**同名同义**的键;pi 的 payload 结构不同处(如 `turn_end` 带 `message`/`toolResults`,
 #: qi 带 `text`/`tool_calls`)不在这里假造。
@@ -271,7 +271,7 @@ ShortcutHandler = Callable[["ExtensionContext"], Any | Awaitable[Any]]
 #: 能力解析器(E20 的产物):拿到一个**作用域**(`scope`),交回该作用域下这个种类的工具。
 #: (MCP 已改走按值注入 E25,不再用它;完整论证见 design/extensions-design.md §13。)
 #: 返回 `list[Tool]` 或 awaitable。`scope` 的形态由提供方与消费方约定 —— qi 里通常是
-#: 一个 agent 目录(§7.4)。故意用 `...` 而不是固定签名:作用域这个参数到底长什么样,
+#: 一个目录作用域(§10)。故意用 `...` 而不是固定签名:作用域这个参数到底长什么样,
 #: 是提供方与消费方之间的事,core 不应当插进来定它。
 ResolverFn = Callable[..., Any | Awaitable[Any]]
 #: CLI 子命令处理器:收**命令名之后的原始 argv**(如 `["--port", "30142"]`),回退出码或 None。
@@ -657,7 +657,7 @@ def _is_verdict(returned: dict, stop_keys: tuple[str, ...] | None,
 
 
 class ExtensionUi:
-    """`ctx.ui` —— 扩展向前端要交互的唯一入口(docs/extensions.md §5.1)。
+    """`ctx.ui` —— 扩展向前端要交互的唯一入口(docs/extensions.md §8)。
 
     分两层(与 pi 一致):
 
@@ -1358,7 +1358,7 @@ class ModelRegistryView:
 
 @dataclass(frozen=True)
 class ExtensionContext:
-    """`ctx` —— 传给每个 handler 的上下文(见 docs/extensions.md §3.3)。
+    """`ctx` —— 传给每个 handler 的上下文(见 docs/extensions.md §6)。
 
     字段是**只读值**(frozen),但方法(`abort()` / `compact()` / `getContextUsage()` /
     命令上下文的那几个)要回宿主去问 —— 所以带一个 `host` 后向引用(鸭子类型;
@@ -2187,7 +2187,7 @@ class ExtensionApi:
     def register_resolver(self, kind: str, resolver: ResolverFn) -> None:      # noqa: N802
         """登记“这个种类的配置怎么变成能用的东西”。
 
-        `resolver(scope=…)` 返回 `list[Tool]`(或 awaitable);`scope` 是**作用域**(§7.4:
+        `resolver(scope=…)` 返回 `list[Tool]`(或 awaitable);`scope` 是**作用域**(§10:
         qi 里最常见的作用域 = 一个 agent 目录)。同时隐含 `provides_config(kind)` ——
         能解析就等于在管这个种类,不必再声明一次。
 

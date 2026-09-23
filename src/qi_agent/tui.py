@@ -2908,7 +2908,7 @@ class QiTui(App):
                  tui_mode: str | None = None):
         super().__init__()
         # TUI 模式(pi 同名键;`--tui-mode` 压过 settings)。**qi 默认 fullscreen** ——
-        # 为什么不是 pi 的 regular:见 `docs/tui.md` §1。
+        # 为什么不是 pi 的 regular:见 `design/internals.md` 的终端界面一节。
         self._tui_mode = tui_mode if tui_mode in TUI_MODES else DEFAULT_TUI_MODE
         self._fullscreen = self._tui_mode == "fullscreen"
         self._rt = runtime
@@ -4639,7 +4639,7 @@ class QiTui(App):
           · 登录后重建客户端 —— 不然新 key 不生效(`LiteLLMClient` 构造时就解析好了);
           · key 只进 auth store,**不进 transcript**(pi 那个对话框也是这个目的)。
 
-        与 pi 的差异(已落档,见 docs/tui.md):pi 的 `/login` 主要在做**订阅登录**
+        与 pi 的差异(已落档,见 design/pi-alignment.md):pi 的 `/login` 主要在做**订阅登录**
         (provider 声明 `auth.oauth`,跑 device-code / PKCE),qi 的凭证层只有 api_key;
         另外 key 输入在 qi 里是**遮罩**的(pi 的对话框明文回显)。
         """
@@ -5152,7 +5152,7 @@ class QiTui(App):
                 self._append_compaction(entry)
             elif kind == "custom":
                 # 未注册渲染器的 custom entry:**退回原始显示,绡不丢弃**
-                # (docs/extensions.md §8.2 的旧会话回放兼容)。以前这里什么都不画,
+                # (design/extensions-design.md 的旧会话回放兼容)。以前这里什么都不画,
                 # 于是“扩展存的状态”在回放里凭空消失 —— 那是很难查的一类不一致。
                 self._append(Static(
                     f"[{custom_type or 'custom'}] "
@@ -6185,7 +6185,7 @@ def run_tui(initial_prompt: str | None = None, *, session_id: str | None = None,
     会话选择参数与 headless 路径同义:`qi -c` / `--session` / `--fork` / `-n` / `--no-session`。
 
     渲染模式:`--tui-mode` 压过 `settings.tuiMode`,都没给就是 `fullscreen`(qi 的默认,
-    pi 的默认是 regular —— 取舍见 `docs/tui.md` §1)。
+    pi 的默认是 regular —— 取舍见 `design/internals.md` 的终端界面一节)。
     """
     settings = None
     try:

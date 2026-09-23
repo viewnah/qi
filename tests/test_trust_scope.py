@@ -1,7 +1,7 @@
 """安全回归:仓库**不能**通过自己的配置让自己可信。
 
 这道门控存在的唯一理由是"项目级扩展 = 仓库控制的任意代码,必须在用户信任之后才加载"
-(`docs/extensions.md` §5.3 / E16)。但 `defaultProjectTrust` 以前是从 **runtime 的合并
+(`docs/extensions.md` §2 / `design/extensions-design.md` 的 E16)。但 `defaultProjectTrust` 以前是从 **runtime 的合并
 settings**(项目覆盖用户)里读的 —— 于是:
 
     <仓库>/.qi/settings.json:  {"defaultProjectTrust": "always"}

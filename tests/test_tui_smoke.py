@@ -208,7 +208,7 @@ def test_reset_mouse_reporting_writes_disable_sequences(monkeypatch):
 def test_run_tui_uses_fullscreen_by_default(tmp_path, monkeypatch):
     """默认 fullscreen:进备用屏(`run()` 不带 inline),**且开鼠标** —— 滚轮归 transcript。
 
-    这是相对 pi 的一个明说取舍(pi 默认 regular):见 `docs/tui.md` §1。
+    这是相对 pi 的一个明说取舍(pi 默认 regular):见 `design/internals.md` 的终端界面一节。
     """
     _tui_env(tmp_path, monkeypatch)
     from qi_agent import tui as tui_mod

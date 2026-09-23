@@ -1,8 +1,8 @@
-"""内置 8 工具 + clarify(对齐 docs/tools.md):read/ls/find/grep/write/edit/bash/powershell。
+"""内置 8 工具 + clarify(对齐 docs/how-qi-works.md):read/ls/find/grep/write/edit/bash/powershell。
 
 安全:六个文件工具的路径限制在会话工作目录内。bash / powershell 与 pi 一致 —— **不做命令级过滤**
 (不筛子命令、不拦重定向),限制只来自工具级收窄(tools / disallowed_tools)或容器/VM。
-见 docs/tools.md §4 与 design/bash-allowlist.md。
+见 docs/security.md 与 design/bash-allowlist.md。
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ class ToolContext:
     on_update: Callable[[Any], None] | None = None
     #: 这一回合的**会话环境变量**(`QI_MODEL` / `QI_SESSION_ID` …):bash / powershell
     #: 会把它并进子进程环境(pi 的 `exposeSessionEnvironment`)。它同时是 agent
-    #: **自查当前模型**的唯一通道 —— 换模型是界面状态,不进对话上下文(见 docs/tools.md §3)。
+    #: **自查当前模型**的唯一通道 —— 换模型是界面状态,不进对话上下文(见 docs/environment-variables.md)。
     session_env: dict[str, str] = field(default_factory=dict)
 
     def guard(self, p: str | Path) -> Path:
@@ -336,7 +336,7 @@ def register_builtin_tools(catalog) -> None:
         {"command": {"type": "string"}, "timeout": {"type": "number"}}, ["command"]), _bash,
         prompt_snippet="执行 bash 命令",
         # pi 的 bash 也带这条:换模型是界面状态、不进上下文,所以环境变量是 agent
-        # **自查当前模型/会话**的唯一通道(见 docs/tools.md §3)
+        # **自查当前模型/会话**的唯一通道(见 docs/environment-variables.md)
         prompt_guidelines=["你想确认当前模型/会话时,可以读 QI_* 环境变量"
                            "(QI_PROVIDER / QI_MODEL / QI_REASONING_LEVEL / QI_SESSION_ID)。"]))
     add(Tool("powershell", "执行 PowerShell 命令(仅 Windows;输出走 UTF-8)。", _schema(

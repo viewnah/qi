@@ -1,4 +1,4 @@
-"""缺失扩展时的两条提示(对齐 docs/extensions.md §8.1 / §8.2)。
+"""缺失扩展时的两条提示(对齐 design/extensions-design.md 的迁移清单)。
 
 以前这两种情况都是**静默失效**:
 

@@ -14,7 +14,7 @@ P-E4c 起 core **不再追加角色层与数据源** —— 两者都是“角�
 (E1.1/E15):角色说明由它通过 `before_agent_start` 拼进来(那个钩子的返回值是链式的),
 数据源实例住在角色目录里。默认基座的身份描述也因此不再宣称“多 agent”。
 
-副作用(与 pi 一致,已写进 docs/system-prompt.md):自定义 SYSTEM.md 会丢掉
+副作用(与 pi 一致,已写进 docs/configuration.md):自定义 SYSTEM.md 会丢掉
 默认基座里的「可用工具 / 指南」两块 —— 那两块只随默认基座出现。
 """
 
@@ -98,12 +98,28 @@ def docs_navigation() -> list[tuple[str, list[tuple[str, str]]]]:
     except (OSError, ValueError):
         return []
     out: list[tuple[str, list[tuple[str, str]]]] = []
+
+    def collect(items: object) -> list[tuple[str, str]]:
+        """把（可能嵌套的）分组的条目展平成一串 (标题, 路径)。
+
+        `docs.json` 的分组照 pi 的写法可以有子分组("指南 → 运行 qi / 定制 qi / 构建于 qi"),
+        而提示词里只需要一份平铺的“标题: 文件”清单 —— 递归取到底即可。
+        """
+        flat: list[tuple[str, str]] = []
+        for item in items if isinstance(items, list) else []:
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("path") or "")
+            if path:
+                flat.append((str(item.get("title") or ""), path))
+            else:
+                flat.extend(collect(item.get("items")))
+        return flat
+
     for group in data.get("navigation") or []:
         if not isinstance(group, dict):
             continue
-        items = [(str(item.get("title") or ""), str(item.get("path") or ""))
-                 for item in (group.get("items") or []) if isinstance(item, dict)]
-        items = [(title, name) for title, name in items if title and name]
+        items = [(title, name) for title, name in collect(group.get("items")) if title and name]
         if items:
             out.append((str(group.get("title") or DOCS_DIR_NAME), items))
     return out

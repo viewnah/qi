@@ -145,7 +145,7 @@ def session_env(session_id: str | None, session_file: str | None,
 
     给 bash / powershell 的运行时环境:`env | grep QI_` 就能自查"当前是哪个模型、
     哪个会话"。**为什么必须走环境变量**:换模型是界面状态,不进对话上下文,
-    所以工具是 agent 唯一能**自证**"现在跑的是什么"的通道(见 docs/tools.md §3)。
+    所以工具是 agent 唯一能**自证**"现在跑的是什么"的通道(见 docs/environment-variables.md)。
 
     取不到的值**不设**(而不是设成空串):空串会被读成"设过了,值是空的"。
     """

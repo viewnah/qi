@@ -40,6 +40,45 @@ from .servers import Client, ManagerError
 DEFAULT_READ_TIMEOUT_SECONDS = 30.0
 DEFAULT_CONNECT_TIMEOUT_SECONDS = 60.0
 
+#: 单个 MCP 结果回给模型的文本上限。**必须有** ——
+#: * `runtime.py` 里那道上限只管**落盘**(避免单条工具结果撑破会话文件),模型上下文这边没人管;
+#: * 而 MCP 结果是第三方 server 给的:一个返回几 MB 文本的 server 能一次把窗口打爆。
+#:
+#: 字符数是关键那条,取 **50k** —— 与 qi 内置工具的 `MAX_FILE_CHARS`(`tools/__init__.py`)
+#: 以及 pi 的 output guard 同一个量级。行数取 **2000**(pi 的数),而**不是** qi 内置工具的
+#: 200:那个数是给 `ls` / `grep` 这类自产输出调的,拿它卡第三方 API 的正常 JSON 会丢真数据。
+MAX_RESULT_CHARS = 50_000
+MAX_RESULT_LINES = 2_000
+
+#: 急用时的开关(与 pi 的 `MCP_OUTPUT_GUARD=0` 同名同义)。
+GUARD_ENV = "MCP_OUTPUT_GUARD"
+
+
+def _guard_enabled() -> bool:
+    """`MCP_OUTPUT_GUARD=0` 关掉护栏。
+
+    **每次读环境变量**(不缓存)—— 单测会改它,缓存会让“改了没生效”变成一类难查的假失败。
+    """
+    return os.environ.get(GUARD_ENV, "1").strip().lower() not in ("0", "false", "off", "no")
+
+
+def _guard_result(text: str) -> str:
+    """过长的结果 → head + 一句“被截了多少”。
+
+    口径与 qi 自己的工具一致(**截断 + 说明**,不做落盘 spill):`tools/__init__.py` 里的
+    `_truncate` 与 `read` 都是这个形状。说明里带上**总行数/总字数**:模型才知道自己看到的
+    不是全部 —— 否则它会把截断当成“就这么多”,然后基于残缺数据下结论。
+    """
+    if not _guard_enabled():
+        return text
+    total_lines = text.count("\n") + 1
+    if len(text) <= MAX_RESULT_CHARS and total_lines <= MAX_RESULT_LINES:
+        return text
+    head = "\n".join(text.split("\n")[:MAX_RESULT_LINES])[:MAX_RESULT_CHARS]
+    shown_lines = head.count("\n") + 1
+    return (f"{head}\n…(MCP 结果过长已截断:共 {total_lines} 行 / {len(text)} 字,"
+            f"上面只给了前 {shown_lines} 行 / {len(head)} 字)")
+
 #: `Opener`:返回一个 async context manager,yield `(read, write)` 两条流。
 Opener = Callable[[], Any]
 
@@ -59,12 +98,16 @@ def _field(obj: Any, *names: str) -> Any:
 
 
 def _render_call_result(result: Any) -> str:
-    """把 `CallToolResult` 变成文本。非文本内容(图片等)只标类型 —— 不假装能渲染它。"""
+    """把 `CallToolResult` 变成文本。非文本内容(图片等)只标类型 —— 不假装能渲染它。
+
+    结果**先过输出护栏、再标错误**:这里是 MCP 输出通往模型的**唯一**口子,
+    代理工具与直连工具都走它,所以护栏加在这一处就够。
+    """
     parts: list[str] = []
     for item in _field(result, "content") or []:
         text = getattr(item, "text", None)
         parts.append(text if text is not None else f"[{type(item).__name__}]")
-    text = "\n".join(parts) if parts else "(空结果)"
+    text = _guard_result("\n".join(parts) if parts else "(空结果)")
     return f"[工具报告错误] {text}" if _field(result, "is_error", "isError") else text
 
 
@@ -235,7 +278,14 @@ class SessionClient:
         try:
             async with self._open() as streams:
                 read, write = streams[0], streams[1]     # 有的是 (read, write[, get_id])
-                async with ClientSession(read, write) as session:
+                # `read_timeout_seconds` 定在**会话**上，而不是每次调用传:
+                #  `ClientSession.list_tools()` **不收**这个参数(签名只有 `params`)，
+                #   所以逐次传只能管到 `call_tool` —— 而列工具卡住同样会让
+                #   `mcp({search})` / 面板永久挂起。
+                #  SDK 里这个值只在 `send_request` 用(另有一处是订阅流，本扩展不用)，
+                #   **不**给空闲读循环上铊 —— 所以闲着的连接不会被它掐掉。
+                async with ClientSession(read, write,
+                                         read_timeout_seconds=self._timeout()) as session:
                     await session.initialize()
                     # **初始化完成就要放行 `start()`** —— 这条曾经只在 finally 里(那要等到
                     # 会话结束才执行),于是正常启动路径上永远不 set,调用方白等到连接超时。
@@ -289,11 +339,24 @@ class SessionClient:
 
     async def call_tool(self, name: str, args: dict) -> str:
         async def _call(session: Any) -> str:
-            result = await session.call_tool(name, arguments=args,
-                                             read_timeout_seconds=self._timeout())
+            # 不再逐次传 `read_timeout_seconds` —— `ClientSession` 构造时就定了默认读超时
+            # （见 `_serve`），一处给值、一处口径。
+            result = await session.call_tool(name, arguments=args)
             return _render_call_result(result)
 
         return await self._submit(_call)
+
+    def alive(self) -> bool:
+        """连接还在跑吗?—— **收尾后**或**长驻 task 已退出**都算死。
+
+        长驻 task 退出 = 传输断了/会话结束(`_serve` 的 finally 会把排队的请求失败掉)。
+        有它 `ServerManager` 才能在断线后重连:否则那个死 client 会一直被返回,
+        整条会话都得到一个永远报“连接已关闭”的 server。
+        """
+        if self._closed:
+            return False
+        task = self._task
+        return task is not None and not task.done()
 
     async def aclose(self) -> None:
         self._closed = True
@@ -330,5 +393,12 @@ async def connect(spec: ServerSpec) -> Client:
         return await connect_stdio(spec)
     if spec.transport == "http":
         return await connect_http(spec)
+    if spec.transport == "sse":
+        # 旧 HTTP+SSE —— **明确不做**(docs/extensions.md §7.5),但要说清楚是哪一个。
+        # 否则用户手里只有一份 `"type": "sse"` 的 mcp.json,而报错只说“未实现”。
+        raise ManagerError(
+            f"MCP server `{spec.name}`:传输 `sse`(旧 HTTP+SSE)尚未实现 —— "
+            f"改用服务器的 Streamable HTTP 端点(`\"type\": \"streamable-http\"`)")
     raise ManagerError(
-        f"MCP server `{spec.name}`:传输 `{spec.transport}` 尚未实现(目前支持 stdio 与 http)")
+        f"MCP server `{spec.name}`:传输 `{spec.transport}` 尚未实现"
+        f"(目前支持 stdio 与 streamable-http)")

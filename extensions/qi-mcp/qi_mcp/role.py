@@ -43,8 +43,25 @@ _MANAGERS: dict[str, ServerManager] = {}
 
 
 def reset_managers() -> None:
-    """清缓存(测试用:每个用例要一个干净的连接世界)。"""
+    """清空 manager 缓存 —— **不关连接**。只给测试用(那里的 client 是假的)。
+
+    真收尾用 `close_managers()`:这个函数直接把表清掉,里面活着的 stdio 子进程
+    与 HTTP 连接池就再也没人认领了。两条路分开是有意的 —— 一个 async 一个 sync,
+    合在一起会让测试的 fixture 也得变成异步。
+    """
     _MANAGERS.clear()
+
+
+async def close_managers() -> None:
+    """关掉所有角色 manager 的连接,再清表(退出 / 重载 / 换会话前调)。
+
+    **先取出、再清表、最后逐个 await** —— 清表之后 manager 就没人引用了,
+    而 `aclose()` 是 async 的;边清边 await 会让“已经清了但还没关”这个窗口真实存在。
+    """
+    managers = list(_MANAGERS.values())
+    _MANAGERS.clear()
+    for manager in managers:
+        await manager.aclose()
 
 
 def role_specs(role_dir: Path | None, cwd: Path | None = None) -> tuple[dict[str, ServerSpec],

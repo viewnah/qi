@@ -6,7 +6,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
+import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -16,7 +18,11 @@ sys.path.insert(0, str(REPO / "extensions" / "qi-mcp"))
 import pytest  # noqa: E402
 
 from qi_mcp.config import ServerSpec  # noqa: E402
-from qi_mcp.proxy import build_tool  # noqa: E402
+from qi_mcp.proxy import (  # noqa: E402
+    DEFAULT_SEARCH_LIMIT,
+    MAX_SEARCH_LIMIT,
+    build_tool,
+)
 from qi_mcp.servers import ServerManager, qualified, split_qualified  # noqa: E402
 
 _ISSUE_SCHEMA = {
@@ -52,6 +58,10 @@ class FakeClient:
         self.calls.append((name, args))
         return f"ok:{name}:{sorted(args)}"
 
+    def alive(self) -> bool:
+        """`Client` 协议的存活面（关掉就不再复用 —— 见 servers.py 的重连逻辑）。"""
+        return not self.closed
+
     async def aclose(self) -> None:
         self.closed = True
 
@@ -82,7 +92,11 @@ class Harness:
         # 绑定到局部变量再调:本仓已知的 semgrep 误报模式(`.execute(` 被当成 SQL sink,
         # runner.py:421 同样处理)—— 解析器解析不出属性链的终点,只看到动态执行。
         run_tool = self.tool.execute
-        return await run_tool(args, None)              # 代理工具不看 ctx
+        result = await run_tool(args, None)            # 代理工具不看 ctx
+        # 代理工具的契约是“**总是纯文本**”(它自己从不回结构化结果)—— 把它钉下来,
+        # 而不是把 `str | ToolOutcome` 原样当 str 交出去。
+        assert isinstance(result, str), f"代理工具应当返回纯文本,收到 {type(result).__name__}"
+        return result
 
 
 def spec(name: str, **cfg) -> ServerSpec:
@@ -280,3 +294,142 @@ def test_qualified_name_round_trip():
     assert split_qualified("mcp____x") is None                # 缺 server 名
     # server 名或工具名里带下划线时:按**第一个**双下划线切,server 名不含双下划线
     assert split_qualified("mcp__my_server__do_it") == ("my_server", "do_it")
+
+
+# ── 连接生命周期:并发 / 重连（servers.py 的三处修复）──────────
+
+class ReconnectingHarness:
+    """可控的连接器:能记下每次连接、能让已有连接“死掉”,还能给连接加延迟。
+
+    比扩展 `Harness` 更直白 —— 这三条测的是**连接生命周期**本身,而不是代理工具的
+    搜索/调用输出,所以这里只建生命周期需要的那点面。
+    """
+
+    def __init__(self, servers: dict[str, ServerSpec], *, delay: float = 0.0,
+                 tools: dict | None = None) -> None:
+        self.log: list[str] = []
+        self.clients: dict[str, FakeClient] = {}
+        self._tools = tools or {}
+
+        async def connector(spec: ServerSpec) -> FakeClient:
+            self.log.append(spec.name)
+            if delay:
+                await asyncio.sleep(delay)
+            client = FakeClient(self._tools.get(spec.name, ()))
+            self.clients[spec.name] = client
+            return client
+
+        self.manager = ServerManager(servers, connector)
+
+
+@pytest.mark.asyncio
+async def test_connections_are_not_serialized_behind_one_slow_server():
+    """**并发**连:两个各慢 0.2s 的 server 应该 ~0.2s 一起回来,而不是 ~0.4s 排队。
+
+    回归:以前是一把**全局锁**、而且跨 `await self._connect()` 持有 —— 慢的那个会把
+    后面全部挡住(最坏等满它的连接超时 60s)。锁只该保护"谁能建这条连接",不保护网络。
+    """
+    h = ReconnectingHarness(
+        {"a": spec("a"), "b": spec("b")}, delay=0.2,
+        tools={"a": [("ta", "A", {})], "b": [("tb", "B", {})]},
+    )
+    started = time.monotonic()
+    infos = await h.manager.tools()
+    elapsed = time.monotonic() - started
+
+    assert {i.name for i in infos} == {"ta", "tb"}
+    assert sorted(h.log) == ["a", "b"]
+    # 串行会是 0.4s+;给一点余量,但必须明显小于 2×delay
+    assert elapsed < 0.35, f"看起来还是串行:{elapsed:.3f}s"
+
+
+@pytest.mark.asyncio
+async def test_same_server_is_connected_only_once_under_concurrency():
+    """同一个 server 被并发要连接时**只连一次**(第二个等锁,拿到同一份)。"""
+    h = ReconnectingHarness({"a": spec("a")}, delay=0.1, tools={"a": [("ta", "A", {})]})
+
+    first, second = await asyncio.gather(h.manager.client("a"), h.manager.client("a"))
+    assert first is second
+    assert h.log == ["a"]
+
+
+@pytest.mark.asyncio
+async def test_dead_server_is_reconnected_instead_of_staying_broken():
+    """server 中途崩掉 → 下一次要连接时**重连**,而不是把那条会话永久留给死连接。
+
+    回归：`client()` 以前只看 `name in self._clients`，**不查存活** —— 传输断了以后
+    `_clients` 里那个死 client 会被一直返回，整条会话都得到 `连接已关闭`。
+    """
+    h = ReconnectingHarness({"a": spec("a")}, tools={"a": [("ta", "A", {})]})
+    first = await h.manager.client("a")
+    assert h.log == ["a"]
+    assert first is not None
+
+    # 从 `FakeClient` 引用改:`closed` 是假件自己的面,**不在 `Client` 协议上**
+    # (协议只有 list_tools / call_tool / aclose / alive)。
+    h.clients["a"].closed = True                       # 模拟传输断掉
+    again = await h.manager.client("a")
+
+    assert again is not first, "死连接被原样返回了(该丢掉重连)"
+    assert again is not None and again.alive()
+    assert h.log == ["a", "a"], "死连接没有被丢掉重连"
+    assert any("已断" in n for n in h.manager.notes)
+
+
+@pytest.mark.asyncio
+async def test_reconnect_refreshes_the_tool_cache():
+    """重连后**工具集可能变了** → 缓存要丢掉重列,不能拿旧的那份继续用。"""
+    h = ReconnectingHarness({"a": spec("a")}, tools={"a": [("old", "旧", {})]})
+    assert [i.name for i in await h.manager.tools_of("a")] == ["old"]
+
+    h.clients["a"].closed = True
+    h._tools["a"] = [("new", "新", {})]                # server 重启后换了一套工具
+
+    assert [i.name for i in await h.manager.tools_of("a")] == ["new"]
+
+
+# ── search 分页:代理工具自己不能把上下文倒满 ────────────────────
+
+def _many_tools(n: int) -> list[tuple[str, str, dict]]:
+    return [(f"tool_{i:03d}", f"第 {i} 个工具", {}) for i in range(n)]
+
+
+@pytest.mark.asyncio
+async def test_search_is_paginated_and_says_how_to_continue():
+    """`search` 默认只给 `DEFAULT_SEARCH_LIMIT` 个,并**说明**共多少、怎么翻页。
+
+    回归:以前一次把全部匹配连同 schema 倒出来 —— 查一个宽泛的词、或某个 server 工具特别多,
+    这个“为了省上下文才存在的代理工具”反而自己把上下文倒满了。
+    """
+    h = Harness({"a": spec("a")}, tools={"a": _many_tools(40)})
+    text = await h.call({"search": "工具"})                 # 40 个全匹配
+
+    assert f"tool_{DEFAULT_SEARCH_LIMIT - 1:03d}" in text   # 第 12 个在
+    assert f"tool_{DEFAULT_SEARCH_LIMIT:03d}" not in text   # 第 13 个不在
+    assert "共 40 个匹配" in text
+    assert f"offset={DEFAULT_SEARCH_LIMIT}" in text          # 明确告诉怎么翻页
+
+
+@pytest.mark.asyncio
+async def test_search_offset_walks_to_the_next_page():
+    """`offset` 真的翻页,且最后一页不再提示翻页。"""
+    h = Harness({"a": spec("a")}, tools={"a": _many_tools(DEFAULT_SEARCH_LIMIT + 3)})
+    page2 = await h.call({"search": "工具", "offset": DEFAULT_SEARCH_LIMIT})
+
+    assert f"tool_{DEFAULT_SEARCH_LIMIT:03d}" in page2       # 接上了
+    assert "tool_000" not in page2                           # 不重复第一页
+    assert "offset=" not in page2                            # 已经是最后一页
+
+
+@pytest.mark.asyncio
+async def test_search_limit_is_clamped_and_tolerates_junk():
+    """`limit` 是**模型给的** → 夹到合法区间、容忍字符串/负数/垃圾,不因此报错。"""
+    h = Harness({"a": spec("a")}, tools={"a": _many_tools(MAX_SEARCH_LIMIT + 20)})
+
+    huge = await h.call({"search": "工具", "limit": 100000})          # 想一次全拿
+    assert f"tool_{MAX_SEARCH_LIMIT - 1:03d}" in huge
+    assert f"tool_{MAX_SEARCH_LIMIT:03d}" not in huge                 # 硬上限挡住了
+
+    assert "tool_000" in await h.call({"search": "工具", "limit": "3"})   # 字符串也行
+    assert "tool_000" in await h.call({"search": "工具", "limit": None})  # None → 默认
+    assert "tool_000" in await h.call({"search": "工具", "limit": -5})    # 负数 → 夹到 1

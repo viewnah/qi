@@ -119,6 +119,32 @@ def test_mcp_endpoint_lists_layers_and_role_private(tmp_path, monkeypatch):
     assert by_scope["role"]["servers"][0]["name"] == "priv"
 
 
+def test_mcp_endpoint_shows_agent_plugins_type_verbatim(tmp_path, monkeypatch):
+    """`.qi/mcp.json` 用的是 Agent Plugins 1.0 写法(顶层 `$schema` + `type`)。
+
+    网页上显示的值要**和配置文件对得上**(`streamable-http` 而不是被推断出来的 `http`),
+    而 `type` 也不该被当成“未识别字段”报警。
+    """
+    project = _env(tmp_path, monkeypatch)
+    (project / ".qi").mkdir(parents=True, exist_ok=True)
+    (project / ".qi" / "mcp.json").write_text(json.dumps({
+        "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+        "mcpServers": {
+            "docs": {"type": "streamable-http", "url": "https://mcp.example.com/mcp"},
+            "legacy": {"command": "npx", "args": ["-y", "x"]},      # 没 `type` 的旧声明
+        },
+    }), encoding="utf-8")
+
+    with _client(project) as client:
+        sources = {s["scope"]: s for s in client.get("/api/mcp").json()["sources"]}
+    servers = {s["name"]: s for s in sources["project"]["servers"]}
+
+    assert servers["docs"]["transport"] == "streamable-http"      # 照 `type` 显示
+    assert servers["docs"]["url"] == "https://mcp.example.com/mcp"
+    assert servers["docs"]["unknown_fields"] == []                 # `type` / `$schema` 都不报
+    assert servers["legacy"]["transport"] == "stdio"              # 字段推断仍然生效
+
+
 def test_mcp_endpoint_never_leaks_values(tmp_path, monkeypatch):
     """**这条是从 v1 继承的安全规矩**,P-E4c 删端点时一起删过 —— 现在重新钉住。
 

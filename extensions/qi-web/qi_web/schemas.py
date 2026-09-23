@@ -349,7 +349,10 @@ class McpServerInfo(BaseModel):
     """
 
     name: str
-    transport: str = ""            # stdio | http | socket | unknown
+    #: 展示用的传输名。声明里写了 Agent Plugins 的 `type` 就照它显示(`stdio` /
+    #: `streamable-http` / `sse`);没写的老声明则按字段推断成 `stdio` / `http` /
+    #: `socket`,都没有才是 `unknown`。
+    transport: str = ""
     url: str = ""                  # http 的目标;stdio 的 command **不给**
     env_keys: list[str] = Field(default_factory=list)
     header_keys: list[str] = Field(default_factory=list)

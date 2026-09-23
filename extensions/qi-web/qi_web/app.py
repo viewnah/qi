@@ -39,6 +39,18 @@ from .state import RunBusy, WebState
 STATIC_DIR = Path(__file__).parent / "static"
 DEFAULT_WINDOW = 200          # 会话明细默认窗口(渐进恢复:老会话不因细节太多而卡住)
 
+
+def _int_field(obj: object, name: str) -> int:
+    """取一个 int 字段(缺省 0)。**字段写坏不该把整页打成 500** —— `/api/models` 是个
+    只读页面,为一个手写配置里写歪的 `contextWindow` 报 500 得不偿失。
+
+    与 `llm.py` / `runtime.py` / `session.py` / `tui.py` 里的 `_as_int` 同一口径。
+    """
+    try:
+        return int(getattr(obj, name, 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
 _PLACEHOLDER = """<!doctype html><meta charset="utf-8"><title>qi web</title>
 <style>body{{font:14px/1.7 -apple-system,"PingFang SC",sans-serif;max-width:640px;
 margin:72px auto;padding:0 24px;color:#0F1115;background:#F5F6F7}}
@@ -680,7 +692,7 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
             entry = next((m for m in (prov.models if prov else []) if m.id == model_id), None)
             options.append(schemas.ModelOption(
                 provider=provider, id=model_id,
-                context_window=int(getattr(entry, "contextWindow", 0) or 0),
+                context_window=_int_field(entry, "contextWindow"),
                 credential_ok=resolve_key(provider,
                                           prov.apiKey if prov else None,
                                           store).ok,
@@ -817,13 +829,21 @@ def _mcp_server_info(name, config, scope):
     env = config.get("env") if isinstance(config.get("env"), dict) else {}
     headers = config.get("headers") if isinstance(config.get("headers"), dict) else {}
     try:
+        # 传输判定**只有一处**:走 qi-mcp 的 `ServerSpec`(它认 Agent Plugins 的 `type`,
+        # 也在说“这一块归 qi-mcp 管”)。以前这里自己又抄了一份 `command`/`url`/`socket`
+        # 三连推断 —— 那意味着 `type: streamable-http` 的声明在两个面里得到不同答案。
         from qi_mcp.config import ServerSpec, unknown_fields
-        unknown = unknown_fields(ServerSpec(name=name, config=config))
+
+        spec = ServerSpec(name=name, config=config)
+        unknown = unknown_fields(spec)
+        transport = spec.transport_label     # 展示用:写了 type 就照它显示(如 streamable-http)
+        kind = spec.transport                # 判定用:stdio | http | socket | sse | unknown
     except ImportError:
         unknown = []
-    transport = ("stdio" if config.get("command") else
-                 "http" if config.get("url") else
-                 "socket" if config.get("socket") else "unknown")
+        kind = ("stdio" if config.get("command") else
+                "http" if config.get("url") else
+                "socket" if config.get("socket") else "unknown")
+        transport = kind
     direct = config.get("directTools", False)
     # `disabled` 是布尔开关:**只认真正的 JSON true**(`"true"` / `1` 都不算)。
     # 等价于 `config.get("disabled") is True`,但用 isinstance 门写 —— 与下面 direct_tools
@@ -831,7 +851,9 @@ def _mcp_server_info(name, config, scope):
     disabled = config.get("disabled")
     return McpServerInfo(
         name=name, transport=transport,
-        url=str(config.get("url", "")) if transport == "http" else "",
+        # `url` 只在 HTTP 家族(streamable-http / sse)才吐 —— stdio 的 `command`/`args`
+        # 是最容易直接写进明文密钥的地方,一律不出。
+        url=str(config.get("url", "")) if kind in ("http", "sse") else "",
         env_keys=sorted(str(k) for k in env),
         header_keys=sorted(str(k) for k in headers),
         disabled=isinstance(disabled, bool) and disabled,

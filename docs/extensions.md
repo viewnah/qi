@@ -412,7 +412,7 @@ await paste_to_editor / set_editor_text / get_editor_text
 
 | 扩展 | 职责 | 带的依赖 | 需要 core 的面 | 文档 |
 | --- | --- | --- | --- | --- |
-| **qi-mcp** | 读 `.qi/mcp.json` 全局/项目两层 + 角色私有的那份(由 qi-agents 按值传入,E25)→ 注册 `mcp` 代理工具(server lazy)与 `directTools` 直连工具 | `mcp` | `registerTool`(动态)、`registerCommand`(`/mcp`)、`catalog`/`setActiveTools`、`on`、`ctx.ui` | [README](../extensions/qi-mcp/README.md) |
+| **qi-mcp** | 读 `.qi/mcp.json` 全局/项目两层(标准 MCP 与 Agent Plugins 1.0 写法都收)+ 角色私有的那份(由 qi-agents 按值传入,E25)→ 注册 `mcp` 代理工具(server lazy)与 `directTools` 直连工具 | `mcp` | `registerTool`(动态)、`registerCommand`(`/mcp`)、`catalog`/`setActiveTools`、`on`、`ctx.ui` | [README](../extensions/qi-mcp/README.md) |
 | **qi-agents** | 角色发现(`.qi/agents/*.md`)+ 委派工具(§7);取代 [dispatcher.md](../design/dispatcher.md) | 无(用 `exec` 或进程内 runner) | `registerFlag`(`--ext agent=`)、`registerTool`(委派)、`registerCommand`(`/agents`)、`on`(`before_agent_start`)、`runAgent`(进程内子运行)、`getFlag`、`ctx.cwd`、`ctx.ui` | [README](../extensions/qi-agents/README.md) |
 | **qi-web** | HTTP 宿主 + AG-UI 桥 + 官方 UI 资源(自己 `mount` 静态目录) | `fastapi`、`uvicorn` | `registerCliCommand`(`qi web`) | [README](../extensions/qi-web/README.md) |
 

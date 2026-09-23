@@ -51,6 +51,10 @@ class FakeClient:
         self.calls.append((name, args))
         return f"ok:{name}"
 
+    def alive(self) -> bool:
+        """`Client` 协议的存活面。"""
+        return True
+
     async def aclose(self) -> None:
         pass
 

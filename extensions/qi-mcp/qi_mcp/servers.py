@@ -67,6 +67,15 @@ class Client(Protocol):
 
     async def aclose(self) -> None: ...
 
+    def alive(self) -> bool:
+        """连接还活着吗?**同步**回答 —— 不 await。
+
+        它是“要不要重连”的判据。没有它的话,server 中途崩掉后 `_clients` 里那个死
+        client 会一直被返回,于是**整条会话**都得到一个永远失败的 server(症状是
+        `连接已关闭`,而没有任何重试机会)。
+        """
+        ...
+
 
 Connector = Callable[[ServerSpec], Awaitable[Client]]
 
@@ -81,7 +90,17 @@ class ServerManager:
         self._failed: dict[str, str] = {}
         self._tools: dict[str, list[ToolInfo]] = {}
         self._notes: list[str] = []
-        self._lock = asyncio.Lock()
+        #: **每个 server 一把**连接锁(以前是一把全局锁,而且跨 `await connect` 持有)。
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    def set_on_note(self, on_note: Callable[[str], None] | None) -> None:
+        """换掉诊断出口 —— **后补也要生效**。
+
+        manager 是“谁先要谁建”的:代理工具那条路没有 ui,可能先把 manager 建出来;
+        此后 `session_start` / `/mcp tools` 再带 `notify=True` 想接上诊断就已经晚了。
+        不补的话,连接失败、列工具失败这些一律**静默丢掉** —— 而那正是用户最需要看到的东西。
+        """
+        self._on_note = on_note
 
     # ── 诊断面 ──
     @property
@@ -105,14 +124,43 @@ class ServerManager:
             self._on_note(text)
 
     # ── 生命周期 ──
+    def _usable(self, name: str) -> bool:
+        """缓存里有一个**还活着**的连接吗?"""
+        client = self._clients.get(name)
+        return client is not None and client.alive()
+
+    def _conn_lock(self, name: str) -> asyncio.Lock:
+        """取某个 server 的连接锁(`setdefault` 原子 —— 中间没有 await)。
+
+        锁只保护“**谁能建这条连接**”,不保护网络本身:同一 server 不重复连(第二个
+        等锁的人拿到的是同一份),不同 server 互不阻塞。
+        """
+        lock = self._locks.get(name)
+        if lock is None:
+            lock = self._locks[name] = asyncio.Lock()
+        return lock
+
     async def client(self, name: str) -> Client | None:
-        """拿到(必要时建立)某个 server 的连接。`None` = 不可用(没有/关了/连不上)。"""
-        async with self._lock:
-            if name in self._clients:
+        """拿到(必要时建立或**重连**)某个 server 的连接。`None` = 不可用。
+
+        两处以前的毛病在这里收掉:
+        * 一把全局锁跨 `await self._connect()` 持有 → 一个慢 server 挡住其余全部,
+          最坏等满它的连接超时(60s)。现在锁是**每 server 一把**。
+        * 只看 `name in self._clients`，**不查存活** → server 中途崩掉后那条会话
+          永久拿到一个死连接。现在先 `_usable()`,死的丢掉重连。
+        """
+        spec = self._specs.get(name)
+        if spec is None or spec.disabled:
+            return None
+        if self._usable(name):
+            return self._clients[name]
+        async with self._conn_lock(name):
+            if self._usable(name):            # 等锁期间别人可能已经连上了
                 return self._clients[name]
-            spec = self._specs.get(name)
-            if spec is None or spec.disabled:
-                return None
+            if name in self._clients:
+                self._note(f"MCP server `{name}` 的连接已断,重连")
+            self._clients.pop(name, None)
+            self._tools.pop(name, None)       # 重连后工具集可能变了 → 下次重新列
             try:
                 client = await self._connect(spec)
             except Exception as exc:                      # 一个 server 起不来不该毁整体
@@ -123,38 +171,46 @@ class ServerManager:
             self._failed.pop(name, None)
             return client
 
-    async def tools(self, *, refresh: bool = False) -> list[ToolInfo]:
-        """全部 active server 的工具(逐个 lazy 连接;列过的记住)。"""
-        out: list[ToolInfo] = []
-        for name, spec in self._specs.items():
-            if spec.disabled:
-                continue
-            client = await self.client(name)
-            if client is None:
-                continue
-            if refresh or name not in self._tools:
-                try:
-                    listed = await client.list_tools()
-                except Exception as exc:
-                    self._note(f"MCP server `{name}` 列工具失败:{type(exc).__name__}: {exc}")
-                    continue
-                # `includeTools` / `excludeTools` 在这里生效 —— **对代理也一样**:
-                # 它决定的是这个 server 的**可见工具集**。否则过滤就是装饰:代理照样搜得到、
-                # 调得到被过滤掉的工具。
-                # 延迟导入:direct 要用本模块的 ToolInfo/qualified,顶层 import 会成环。
-                from .direct import select_tools
+    async def _ensure_tools(self, name: str, *, refresh: bool = False) -> None:
+        """确保**这一个** server 的工具元数据在缓存里。失败只记 note(不抛)。"""
+        client = await self.client(name)
+        if client is None or (not refresh and name in self._tools):
+            return
+        try:
+            listed = await client.list_tools()
+        except Exception as exc:
+            self._note(f"MCP server `{name}` 列工具失败:{type(exc).__name__}: {exc}")
+            return
+        # `includeTools` / `excludeTools` 在这里生效 —— **对代理也一样**:
+        # 它决定的是这个 server 的**可见工具集**。否则过滤就是装饰:代理照样搜得到、
+        # 调得到被过滤掉的工具。
+        # 延迟导入:direct 要用本模块的 ToolInfo/qualified,顶层 import 会成环。
+        from .direct import select_tools
 
-                self._tools[name] = select_tools(
-                    [ToolInfo(server=name, name=str(t_name),
-                              description=str(t_desc or ""), schema=t_schema or {})
-                     for t_name, t_desc, t_schema in listed],
-                    spec)
-            out.extend(self._tools[name])
-        return out
+        self._tools[name] = select_tools(
+            [ToolInfo(server=name, name=str(t_name),
+                      description=str(t_desc or ""), schema=t_schema or {})
+             for t_name, t_desc, t_schema in listed],
+            self._specs[name])
+
+    async def tools(self, *, refresh: bool = False) -> list[ToolInfo]:
+        """全部 active server 的工具。
+
+        **并发**连 + 列:串行的话 N 个 server 的启动时间会相加,而且一个连不上的会把
+        后面全部拖住(它的连接超时）。顺序按声明表固定 —— 输出稳定比“谁先返回”重要。
+        """
+        names = [n for n, spec in self._specs.items() if not spec.disabled]
+        await asyncio.gather(*(self._ensure_tools(n, refresh=refresh) for n in names))
+        return [info for n in names for info in self._tools.get(n, [])]
 
     async def tools_of(self, name: str) -> list[ToolInfo]:
-        """单个 server 的可见工具(过滤后)。直连注册用这个 —— 只要那一个 server。"""
-        return [info for info in await self.tools() if info.server == name]
+        """单个 server 的可见工具(过滤后)。
+
+        **只连那一个**:直连注册是一个 server 一个 server 问的,以前这里走 `tools()`
+        会把**全部** server 都拉起来(给 3 个 server 开 `directTools` = 启动时连全部)。
+        """
+        await self._ensure_tools(name)
+        return list(self._tools.get(name, []))
 
     async def call(self, server: str, tool: str, args: dict) -> str:
         """调一个工具。不可用时抛 `ManagerError`(可读 + 带上失败原因)。"""
@@ -168,9 +224,11 @@ class ServerManager:
             raise ManagerError(f"`{server}` 的 `{tool}` 调用失败:{type(exc).__name__}: {exc}") from exc
 
     async def aclose(self) -> None:
-        for name, client in list(self._clients.items()):
+        """关掉**全部**连接。先取出再清表 —— 清完就没人能再拿到它们(与 `role.py` 同一写法)。"""
+        clients = list(self._clients.items())
+        self._clients.clear()
+        for name, client in clients:
             try:
                 await client.aclose()
             except Exception as exc:                       # 关闭失败只记,不抛(已在收尾)
                 self._note(f"MCP server `{name}` 关闭失败:{type(exc).__name__}: {exc}")
-        self._clients.clear()

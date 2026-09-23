@@ -166,7 +166,9 @@ def test_fork_records_parent_session(tmp_path):
 
     assert child.parent_session == str(root.path)
     assert root.parent_session is None
-    assert store.get(child.id).parent_session == str(root.path)   # 真的落盘了
+    reloaded = store.get(child.id)
+    assert reloaded is not None, "fork 出来的会话应该能按 id 读回来"
+    assert reloaded.parent_session == str(root.path)   # 真的落盘了
 
 
 def test_modified_ts_prefers_entry_time_and_falls_back_to_header(tmp_path):
@@ -288,3 +290,43 @@ def test_create_still_writes_immediately(tmp_path):
     assert session.unflushed is False
     assert session.path.is_file()
     assert session.path.read_text(encoding="utf-8").strip().startswith('{"type": "session"')
+
+
+# ── 会话 id 会进文件名 → 必须挡住路径穿越 ──────────────────────
+
+def test_unsafe_session_id_is_rejected(tmp_path):
+    """`create(session_id=…)` 的 id **直接拼进** `<时间戳>_<id>.jsonl` → 挡住路径穿越。
+
+    回归:以前 `sid = session_id or _new_id()` 原样拼 —— `--session-id ../../evil`
+    会写到**会话目录之外**。这里选择报错而不是静默清洗:用户明确要一个句柄,
+    悄悄换成别的名字只会得到“我指定的 id 没生效”且毫无线索。
+    """
+    import pytest
+
+    store = _store(tmp_path)
+    before = sorted(p.name for p in store.root.iterdir())
+    for bad in ["../../evil", "a/b", ".", "..", ".hidden", "", "a b", "a\\b", "-x", "x\n"]:
+        with pytest.raises(ValueError, match="不合法"):
+            store.create("t", session_id=bad)
+    # 拒绝就是**什么都没发生** —— 一个字节都不该落盘
+    assert sorted(p.name for p in store.root.iterdir()) == before
+
+
+def test_safe_session_id_is_used_verbatim_and_stays_in_root(tmp_path):
+    """合法 id 原样使用,而且**没跑出会话目录**(就是上面那条要防的事)。"""
+    store = _store(tmp_path)
+    s = store.create("t", session_id="exact123")
+    assert s.id == "exact123"
+    assert s.path.parent == store.root
+    assert s.path.name.endswith("_exact123.jsonl")
+
+
+def test_generated_session_id_is_always_safe(tmp_path):
+    """自己生成的 id 必须永远过得了那道校验 —— 否则正常路径会被自己的守卫打死。"""
+    from qi_agent.session import _SAFE_ID
+
+    store = _store(tmp_path)
+    for _ in range(5):
+        s = store.create("t")
+        assert _SAFE_ID.match(s.id), s.id
+        assert s.path.parent == store.root

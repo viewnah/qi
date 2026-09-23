@@ -25,12 +25,21 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from . import paths
+
+
+#: 会话 id 的合法形状。它会**直接拼进文件名**(`<时间戳>_<id>.jsonl`),而 `--session-id`
+#: 是用户给的 —— 一个 `../../x` 会写到会话目录之外。所以限死成“一路文件名成分”:首字符
+#: 字母/数字(顺带排掉 `.` / `..` 与隐藏文件),其余允许点/下划线/连字符。我们自己生成的
+#: `_new_id()`(uuid hex)天然满足,所以这条收窄对正常路径没有影响。
+_SAFE_ID = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 
 
 def _now() -> str:
@@ -41,10 +50,32 @@ def _new_id() -> str:
     return uuid.uuid4().hex[:12]
 
 
-def _as_version(value: object) -> int:
-    """header 里的版本号容错:坏值当 2(已迁移过),不因为一行脏数据就报错。"""
+def _session_file_id(session_id: str | None) -> str:
+    """`create()` 用的 id:没给就新生成,给了就**校验**它能不能当文件名。
+
+    这里选**报错**而不是静默清洗:`--session-id` 是用户明确要一个句柄,把一个 `../x`
+    悄悄换成别的名字,现场会得到“我指定的 id 没生效”而且毫无线索。
+    """
+    if session_id is None:
+        return _new_id()
+    text = str(session_id)
+    if not _SAFE_ID.match(text):
+        raise ValueError(
+            f"会话 id 不合法:{text!r} —— 它要当文件名用,只允许字母/数字/点/下划线/连字符,"
+            "且不能以点开头")
+    return text
+
+
+def _as_version(value: Any) -> int:
+    """header 里的版本号容错:坏值当 2(已迁移过),不因为一行脏数据就报错。
+
+    形参是 **`Any` 而不是 `object`**:收的就是 `json.loads` 出来的任意值,而 `object`
+    静态上不能传给 `int()` —— 用 `object` 就得配一条抑制注释,而抑制只对 pyright 生效。
+    仓里同一个容错助手的三处兄弟(`llm.py` / `runtime.py` / `extensions.py`)都是 `Any`,
+    这里跟它们一致,不需要任何例外。
+    """
     try:
-        return int(value)          # type: ignore[arg-type]
+        return int(value)
     except (TypeError, ValueError):
         return 2
 
@@ -385,7 +416,7 @@ class SessionStore:
         `parent_session` = 这个会话从哪个文件分叉出来(pi header 的 `parentSession`)。
         只有 `/fork` / `/clone` 会传;会话选择器的树状(threaded)视图靠它串起来。
         """
-        sid = session_id or _new_id()
+        sid = _session_file_id(session_id)          # 校验:C 会进文件名,见 `_SAFE_ID`
         path = self.root / f"{time.strftime('%Y%m%dT%H%M%S')}_{sid}.jsonl"
         now = _now()
         header: dict = {"type": "session", "version": 2, "id": sid,
@@ -451,7 +482,6 @@ class SessionStore:
         session.unflushed = False
         session.migrated = False
         self.save(session)
-        return session
 
     @staticmethod
     def migrate(entries: list[dict]) -> bool:

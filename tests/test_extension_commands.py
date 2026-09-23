@@ -307,6 +307,42 @@ def _record(path: Path, payload: dict) -> None:
 
 
 @pytest.mark.asyncio
+async def test_tui_runs_sync_extension_commands_without_awaiting_none(tmp_path, monkeypatch):
+    """**同步** handler 也算数 —— `CommandHandler` 的契约是 `Any | Awaitable[Any]`。
+
+    回归:分发处以前无条件 `await handler(...)`。同步 handler 返回 `None` 时那句 await
+    抛 `TypeError: object NoneType can't be used in 'await' expression`,而它又正好被
+    “异常只提示”的 except 吃掉 —— 于是现场只剩一条红字“/某命令 执行失败”,
+    看不出是宿主把同步 handler 当异步调了(qi 自己的 `/mcp` 与 `/agents` 都是同步的)。
+
+    注意断的是 **`app._note`** 而不是 stub 的 notes:那条提示是 **TUI** 写的,
+    盯 stub 只能看到一个空列表(第一版就是这么写的,即使把修复回退也照样绿)。
+    """
+    from qi_agent.theme import load_palette
+    from qi_agent.tui import QiTui
+
+    _env(tmp_path, monkeypatch)
+    log = tmp_path / "calls.jsonl"
+    registry = CommandRegistry()
+    registry.add_command("syncprobe", lambda args, ctx: _record(log, {"args": args}),
+                         description="同步探针", source="probe-ext")
+    _tui_with_stub(monkeypatch, _TuiStub(registry, cwd=tmp_path))
+
+    app = QiTui(palette=load_palette("dark"))
+    async with app.run_test(size=(100, 30)) as pilot:
+        said: list[str] = []
+        app._note = lambda text, tone="dim": said.append(str(text))  # type: ignore[method-assign]
+        await pilot.pause(0.1)
+        app._command("/syncprobe 参数")
+        await app.workers.wait_for_complete()
+        await pilot.pause(0.05)
+
+    rows = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+    assert rows[0]["payload"]["args"] == "参数"        # handler 真的跑了
+    assert not [n for n in said if "执行失败" in n], said
+
+
+@pytest.mark.asyncio
 async def test_tui_refuses_to_let_extensions_shadow_reserved_commands(tmp_path, monkeypatch):
     """扩展注册 `/quit` 也不生效 —— 否则用户会被锁在界面里。"""
     from qi_agent.theme import load_palette

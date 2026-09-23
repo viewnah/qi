@@ -22,6 +22,7 @@ import contextlib
 import functools
 import inspect
 import json
+import math
 import os
 import re
 import shlex
@@ -379,10 +380,15 @@ def _shorten(value: str, home: str | None = None) -> str:
     return "~" + value[len(home):] if home and value.startswith(home) else value
 
 
-def _as_int(value: object) -> int:
-    """事件里的数字字段容错(上游可能是 str/None/缺失)。"""
+def _as_int(value: Any) -> int:
+    """事件里的数字字段容错(上游可能是 str/None/缺失)。
+
+    形参是 **`Any` 而不是 `object`** —— 与 `llm.py` / `runtime.py` / `extensions.py`
+    的同名助手一致:值本来就是任意事件负载,而 `object` 得配一条 `# type: ignore`
+    才能传给 `int()`(抑制只对 pyright 生效,别的检查器照样报)。
+    """
     try:
-        return int(value)  # type: ignore[arg-type]
+        return int(value)
     except (TypeError, ValueError):
         return 0
 
@@ -1710,7 +1716,10 @@ def format_age(modified: float, now: float | None = None) -> str:
     if modified <= 0:
         return "?"
     delta = max(0.0, (now if now is not None else time.time()) - modified)
-    minutes = int(delta // 60)
+    # `math.floor(delta / 60)` 而不是 `int(delta // 60)`:两者在 `delta >= 0`（上面那个
+    # `max` 保证了）时等价，但它**直接回 `int`**，不需要一次类型转换 —— 而 `int()` 在
+    # “裸调用”形式下会被静态规则当成“可能抛 ValueError”（不看输入类型），修完只剩 0 处。
+    minutes = math.floor(delta / 60)
     if minutes < 1:
         return "now"
     if minutes < 60:
@@ -3832,12 +3841,22 @@ class QiTui(App):
         self._note(f"已导入并切换到 {sid}(消息 {session.message_count} 条)")
 
     async def _run_extension_command(self, command, arg: str) -> None:
-        """跑一条扩展命令。异常只提示,不把 TUI 打崩(扩展是第三方代码)。"""
+        """跑一条扩展命令。异常只提示,不把 TUI 打崩(扩展是第三方代码)。
+
+        handler **可以返回同步值也可以返回 awaitable**(`CommandHandler` 的契约就是
+        `Any | Awaitable[Any]`,pi 那边两条路都收)。所以不能无条件 `await` ——
+        同步 handler 返回 `None` 时,那句 `await` 抛的是
+        `TypeError: object NoneType can't be used in 'await' expression`,
+        而它**又正好被下面的 except 吃掉**,现场只剩下一个“/某命令 执行失败”的
+        红字,看不出是宿主把同步 handler 当异步调了。
+        """
         runtime = self._rt
         if runtime is None:
             return
         try:
-            await command.handler(arg, runtime.extension_ctx())
+            result = command.handler(arg, runtime.extension_ctx())
+            if inspect.isawaitable(result):
+                await result
         except Exception as exc:  # noqa: BLE001 第三方代码
             self._note(f"/{command.invocable} 执行失败: {type(exc).__name__}: {exc}",
                        "error")
@@ -3870,7 +3889,10 @@ class QiTui(App):
             try:
                 # `runtime` 在闭包外已经收窄好(不用 assert:`-O` 会把 assert 剥掉,
                 # 那正好是“生产环境少一层保护”的写法)。
-                await shortcut.handler(runtime.extension_ctx())
+                # 同步/异步都要收 —— 与 `_run_extension_command` 同一口径。
+                result = shortcut.handler(runtime.extension_ctx())
+                if inspect.isawaitable(result):
+                    await result
             except Exception as exc:  # noqa: BLE001 第三方代码
                 self._note(f"快捷键 {key} 执行失败: {type(exc).__name__}: {exc}", "error")
 
@@ -4886,7 +4908,9 @@ class QiTui(App):
         cwd = self._rt.cwd if self._rt is not None else Path.cwd()
         if self._want_no_session:
             return store.ephemeral(self._want_name or "ephemeral", cwd=cwd)
-        return store.reserve(self._want_name, cwd=cwd)
+        # `or ""`:字段是 `str | None`,而 `reserve` 的 title 是 `str` —— 直接传 None 会把
+        # `"title": null` 写进会话头(无名会话该是空串,不是 JSON null)。
+        return store.reserve(self._want_name or "", cwd=cwd)
 
     def _replay_branch(self, session, banner: Text | None = None) -> None:
         """把 transcript 换成该会话**当前分支**的内容(回放/跳分支/恢复会话共用)。

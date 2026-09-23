@@ -85,7 +85,7 @@
   一个坏字节不该打死会话)。
 - **命令选择器 = pi 的 `showSelector()`**:pi 是把 `editorContainer` 的内容**换掉**,
   所以选择器与编辑器同宽、贴在同一条底线上(上面 transcript 不动、下面 footer 不动),
-  形状是「上下 `DynamicBorder` + accent bold 标题 + `→ ` 列表 + 键位提示」,**无底色无遮罩**。
+  形状是「上下 `DynamicBorder` + accent bold 标题 + `→` 列表 + 键位提示」,**无底色无遮罩**。
   qi 用 `EditorSlotPanel`(ModalScreen)做到同一形状:全宽、`align-vertical: bottom`、
   `margin-bottom` = footer 实际行数、`border-top/bottom: solid`、底色取 `$background`
   (= 探测到的终端底色,看不出“填色”但又盖住底下的编辑器)、backdrop 透明。
@@ -104,9 +104,12 @@
 - **分派行**:`● → <display_name> (source, 置信度)`,无底色,不加卡片。
 
 已知差异(Textual 与 pi 自研渲染器的边界,不做逐字节对齐):OSC133 zone 标记、
-代码块左侧 `│` 边线、图片/kitty 协议。`tuiMode` 在 `/settings` 里改要**重启**才生效
-(pi 能当场换渲染器);`/settings` 与资源面板仍是 inline 小 App,不跟随主界面模式;
-fullscreen 退出时**不重放 transcript**(pi 有 `fullscreenExitOutput: transcript|resume-hint`)。
+代码块左侧 `│` 边线、图片/kitty 协议。`tuiMode` 改完要**重启**才生效(pi 能当场换渲染器);
+`tuiMode` **不在 `/settings` 面板里** —— 面板只放值域有限的那几个键(见 settings.md §3),
+改渲染模式走 `qi config --set tuiMode` 或 `--tui-mode`。`/settings` 是主 TUI 里的模态面板
+(与 `/model` 同一套 `EditorSlotPanel` 外壳,占编辑器那一格);资源面板(`qi config` 里)仍是
+CLI 起的 inline 小 App —— 那里没有跑着的事件循环;fullscreen 退出时**不重放 transcript**
+(pi 有 `fullscreenExitOutput: transcript|resume-hint`)。
 
 ## 2. `/` 内部命令
 
@@ -292,13 +295,13 @@ qi 用 `priority=True` 抢过来以匹配 pi 语义(`ctrl+d` 非空时仍自己�
 | `escape` | 先退出重命名态 / 取消删除确认,再关面板 |
 
 版式与 pi 一致:一行一条(没有 Textual `OptionList` 的 `tall` 边框与 `$surface` 底),
-光标 `› `、选中行整行 `selectedBg` 底色,左侧名字按状态上色(当前 = accent、有名字 = warning),
+光标 `›`、选中行整行 `selectedBg` 底色,左侧名字按状态上色(当前 = accent、有名字 = warning),
 右侧 muted 的 `消息数 年龄`(范围 = 全部时再前置 cwd),放不下时左半优先、右侧收成 `…`。
 头部三行 = 标题(范围 + `名字:` + `排序:`)+ 范围指示(`◉ 当前目录 | ○ 全部`)+ 两行键位提示。
 
 **没起过名的会话显示第一句话**(pi 的 `firstMessage` 回落):老会话的默认标题 `tui`
 不算名字,所以那批会话现在是"按内容认"而不是一排同名条目(见 [sessions.md](sessions.md) §7)。
-树状排序按 header 的 `parentSession` 缩进(`└─ `/`├─ `,深度 > 0 时画 `│  ` 延续线)——
+树状排序按 header 的 `parentSession` 缩进(`└─`/`├─`,深度 > 0 时画 `│` 延续线)——
 `/fork` / `/clone` / `qi --fork` 建的会话都带这个字段。
 
 实现注记:Textual 的 **priority 绑定是从 App 往下检查**的(`reversed(_binding_chain)`),

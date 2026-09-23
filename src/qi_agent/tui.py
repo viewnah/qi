@@ -2681,7 +2681,7 @@ class QiTui(App):
     #model-hint { color: $primary; text-style: bold; }
     #panel-hints { color: $text-muted; }
     .panel-gap { height: 1; }
-    #model-list, #scoped-list { background: transparent; }
+    #model-list, #scoped-list, #settings-list { background: transparent; }
     /* 会话选择器的列表是**自己画的一列文本**(`Static`):pi 的列表没有边框、没有底色,
        选中行是整行 selectedBg。Textual 的 `OptionList` 自带 `tall $border-blurred`
        边框与整行高亮底 —— 那圈框就是以前 `/resume` 与 `/model` 不一致的来源。 */
@@ -4429,31 +4429,41 @@ class QiTui(App):
         self._note(f"已分享(私有 gist):{url} {copied}", "info")
 
     def _open_settings_panel(self) -> None:
-        """`/settings`:偏好面板。保存后写**用户级** settings,并把新值应用到当前界面。"""
-        from .settings import setting_choices, set_value
+        """`/settings`:偏好面板。保存后写**用户级** settings,并把新值应用到当前界面。
+
+        面板是占编辑器那一格的模态(`push_screen` + 回调,与 `/model`、`/scoped-models`
+        同一套外壳)—— **不能**再起一个独立 App:主界面的事件循环已经在跑,`App.run()`
+        内部的 `asyncio.run()` 必然抛 `RuntimeError: asyncio.run() cannot be called from
+        a running event loop`,命令一敲就报错。
+        """
+        from .settings import setting_choices
 
         rt = self._rt
         if rt is None:
             self._note("运行时不可用。", "error")
             return
-        try:
-            from .tui import run_settings_panel   # 同模块:留着是为了与其它面板同一写法
-        except Exception as exc:      # noqa: BLE001 textual 依赖问题 → 报清楚,不留死命令
-            self._note(f"面板不可用:{exc}", "error")
-            return
-        changed = run_settings_panel(setting_choices(rt.settings))
+        self.push_screen(SettingsPanel(setting_choices(rt.settings)),
+                         self._settings_panel_saved)
+
+    def _settings_panel_saved(self, changed: dict[str, str] | None) -> None:
+        """面板交回**改过的** `{键: 新值}`(取消或无改动 → None):落盘 + 应用到当前界面。"""
         if not changed:
             self._note("没有改动。", "info")
+            self._scroll_end()
+            return
+        rt = self._rt
+        if rt is None:
             return
         for key, value in changed.items():
             try:
                 set_value("user", key, parse_value(value), rt.cwd)
-            except SettingsError as exc:
+            except (OSError, SettingsError) as exc:   # 与 `_save_scoped_models` 同口径
                 self._note(f"{key} 没写进去:{exc}", "error")
                 continue
             setattr(rt.settings, key, parse_value(value))
             self._note(f"已保存 {key} = {value}(用户级 settings)", "info")
         self._apply_ui_settings()
+        self._scroll_end()
 
     # -- 凭证(`/login` `/logout`)------------------------------------------
     def _config_providers(self) -> list[str]:
@@ -5822,67 +5832,76 @@ def _open_session_ref(store: Any, ref: str) -> Any:
     return store.get(ref)
 
 
-class SettingsPanel(App[Any]):
+class SettingsPanel(EditorSlotPanel):
     """`/settings`:偏好面板(对齐 pi 的 `/settings`)。
+
+    占编辑器那一格的模态(`push_screen` + 回调)—— **不是**独立的小 App:主界面的
+    事件循环正在跑,`App.run()` 内部的 `asyncio.run()` 必然抛 `RuntimeError`,
+    `/settings` 一敲就报错(回归测试锁住:`tests/test_tui_style.py`)。
 
     只放**值域有限且已接线**的键(见 `settings.SETTING_CHOICES`)。数字/路径类不放 ——
     在 TUI 里敲数字与路径的体验比 `qi config --set` 差,让人去那边改更诚实。
 
-    enter/space **循环到下一个候选值**,`ctrl+s` 保存(写**用户级** settings,与 pi 的
-    `/settings` 一致 —— 它管的是"以后的默认"),`escape` 取消。面板不碰盘:它只交回
-    `{键: 新值}`,写盘由调用方做,所以取消时没有副作用。
+    enter/space **循环到下一个候选值**,`ctrl+s` 保存(交回**改过的** `{键: 新值}`),
+    `escape` 取消。面板不碰盘:写盘由调用方做(`QiTui._settings_panel_saved`),
+    所以取消时没有副作用。
     """
 
+    PANEL_TITLE = "设置"
+    HINTS = "↑↓ 选择 · enter/space 换下一个值 · ctrl+s 保存(写用户级 settings) · escape 取消"
+
     BINDINGS = [
-        Binding("escape", "cancel", "取消"),
-        Binding("ctrl+s", "save", "保存"),
+        *EditorSlotPanel.BINDINGS,               # escape 取消 / ↑↓ / j k
         Binding("enter", "pick", "下一个值", show=False),
         Binding("space", "pick", "下一个值", show=False),
+        Binding("ctrl+s", "save", "保存", show=False),
     ]
-
-    CSS = "#settings-box { padding: 1 2; height: auto; }"
 
     def __init__(self, rows: list[tuple[str, str]]) -> None:
         super().__init__()
-        self._rows = rows                       # (键, 当前值)
-        self._original = list(rows)         # 只交回**改过的**
-        self._chosen = {key: value for key, value in rows}
+        self._rows = list(rows)                  # (键, 当前值);换值就地改
+        self._original = dict(rows)              # 只交回**改过的**
+        self._index = 0
+        self._list = Static("", id="settings-list")
+        self._text = Text("")
 
-    def compose(self) -> ComposeResult:
-        from textual.widgets import SelectionList
-        from textual.widgets.selection_list import Selection
+    def rendered_text(self) -> Text:
+        """当前渲染出来的列表(诊断/测试用,与 `PickerScreen` 同形)。"""
+        return self._text
 
-        selections = [Selection(f"{key} = {value}", index, False)
-                      for index, (key, value) in enumerate(self._rows)]
-        with Vertical(id="settings-box"):
-            yield Static("设置:enter/space 换下一个值 · ctrl+s 保存(写用户级 settings) · "
-                         "escape 取消", id="settings-hint")
-            yield SelectionList[int](*selections, id="settings-list")
+    def compose_body(self) -> ComposeResult:
+        yield self._list
 
-    def on_selection_list_selected_changed(
-            self, event: "SelectionList.SelectedChanged[int]") -> None:
-        del event                                # 面板不用勾选:enter 是"换值"
+    def on_panel_ready(self) -> None:
+        self._paint()
+
+    def on_resize(self) -> None:
+        self._paint()
+
+    def _paint(self) -> None:
+        items = [Candidate(key, f"{key} = {value}") for key, value in self._rows]
+        self._text = pi_select_text(items, self._index, self.body_width(),
+                                    len(items), self.palette())
+        self._list.update(self._text)
+
+    def action_move(self, step: int) -> None:
+        if not self._rows:
+            return
+        self._index = (self._index + step) % len(self._rows)
+        self._paint()
 
     def action_pick(self) -> None:
-        from textual.widgets import SelectionList
-
-        widget = self.query_one("#settings-list", SelectionList)
-        index = widget.highlighted
-        if index is None or index >= len(self._rows):
+        """enter/space:当前行**循环到下一个候选值**(`next_choice` 管未知值原样返回)。"""
+        if not self._rows:
             return
-        key, _current = self._rows[index]
-        self._chosen[key] = next_choice(key, self._chosen[key])
-        label = f"{key} = {self._chosen[key]}"
-        self._rows[index] = (key, self._chosen[key])
-        widget.replace_option_prompt_at_index(index, label)
+        key, current = self._rows[self._index]
+        self._rows[self._index] = (key, next_choice(key, current))
+        self._paint()
 
     def action_save(self) -> None:
-        changed = {key: value for key, value in self._chosen.items()
-                   if dict(self._original).get(key) != value}
-        self.exit(changed or None)
-
-    def action_cancel(self) -> None:
-        self.exit(None)
+        changed = {key: value for key, value in self._rows
+                   if self._original.get(key) != value}
+        self.dismiss(changed or None)
 
 
 class ResourcePanel(App[Any]):
@@ -5966,16 +5985,6 @@ def skill_invocation(skill: Any, args: str) -> str:
     """
     head = f"按技能 `{skill.name}` 执行" + (f":{args}" if args else "。")
     return f"{head}\n\n{skill.path.read_text(encoding='utf-8')}"
-
-
-def run_settings_panel(rows: list[tuple[str, str]]) -> dict[str, str] | None:
-    """起偏好面板;返回**改过的** `{键: 新值}`(取消或无改动 → None)。
-
-    inline 小 App(与资源面板同理,不跟随主界面的 tuiMode)。
-    """
-    _reset_mouse_reporting()
-    _harden_inline_input()
-    return SettingsPanel(rows).run(inline=True, inline_no_clear=True, mouse=False)
 
 
 def run_resource_panel(items: list[tuple[str, str, str, bool]]) -> set[int] | None:

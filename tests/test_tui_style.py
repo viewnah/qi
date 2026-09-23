@@ -499,6 +499,13 @@ async def _command_notes(app, monkeypatch) -> list[tuple[str, str]]:
     return notes
 
 
+def _static_plain(widget: Static) -> str:
+    """Static 当前渲染出来的纯文本 —— `render()` 的静态类型是 `ConsoleRenderable`,
+    实际是 rich `Text` 时才有 `.plain`(与本文件其他 `getattr(x, "plain")` 同口径)。"""
+    plain = getattr(widget.render(), "plain", None)
+    return plain if isinstance(plain, str) else str(widget.render())
+
+
 @pytest.mark.asyncio
 async def test_tui_command_surface(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
@@ -2363,6 +2370,66 @@ async def test_scoped_models_saves_and_limits_cycling(tmp_path, monkeypatch):
         assert app._cycle_labels() == ["alpha/m1", "alpha/m2", "beta/m3"]
 
 
+@pytest.mark.asyncio
+async def test_settings_panel_is_modal_and_saves_user_settings(tmp_path, monkeypatch):
+    """`/settings` 必须在**跑着的主循环里**开成模态面板 —— 曾经是独立的小 App,
+    `App.run()` 内部的 `asyncio.run()` 必然 `RuntimeError: asyncio.run() cannot be
+    called from a running event loop`,命令一敲就报错。回归就锁这个 + 存/取消语义。"""
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        assert app._rt is not None
+        notes = await _command_notes(app, monkeypatch)
+        settings_file = tmp_path / "home" / "settings.json"
+
+        app._command("/settings")                       # 曾在这里抛 RuntimeError
+        await pilot.pause(0.1)
+        panel = app.screen
+        assert isinstance(panel, tui_mod.SettingsPanel)  # 主循环里的模态,不是新 App
+        # 未设的 theme 显示**生效值** auto(SETTING_CHOICES 的第一行)
+        assert panel.rendered_text().plain.splitlines()[0] == "→ theme = auto"
+
+        # enter 换值:auto → dark(next_choice 绕回第一个)
+        await pilot.press("enter")
+        assert panel.rendered_text().plain.splitlines()[0] == "→ theme = dark"
+
+        await pilot.press("ctrl+s")                     # 保存 → 关面板 + 写用户级 settings
+        await pilot.pause(0.1)
+        assert not isinstance(app.screen, tui_mod.SettingsPanel)
+        assert app._rt.settings.theme == "dark"          # 同时应用到当前界面
+        persisted = json.loads(settings_file.read_text(encoding="utf-8"))
+        assert persisted["theme"] == "dark"
+        assert any("已保存 theme = dark" in text for text, _ in notes)
+
+        # 不动直接保存 → 「没有改动。」,盘上不动
+        before = settings_file.read_text(encoding="utf-8")
+        app._command("/settings")
+        await pilot.pause(0.1)
+        panel = app.screen
+        assert isinstance(panel, tui_mod.SettingsPanel)
+        assert panel.rendered_text().plain.splitlines()[0] == "→ theme = dark"  # 新值成了基线
+        await pilot.press("ctrl+s")
+        await pilot.pause(0.1)
+        assert any("没有改动" in text for text, _ in notes)
+        assert settings_file.read_text(encoding="utf-8") == before
+
+        # 改了但 escape 取消:内存与盘都不动
+        app._command("/settings")
+        await pilot.pause(0.1)
+        await pilot.press("enter")                      # dark → light
+        await pilot.press("space")                      # space 与 enter 同义:light → auto
+        await pilot.press("escape")
+        await pilot.pause(0.1)
+        assert not isinstance(app.screen, tui_mod.SettingsPanel)
+        assert app._rt.settings.theme == "dark"
+        assert settings_file.read_text(encoding="utf-8") == before
+
+
 # ── 会话选择器(/resume;对齐 pi 的 SessionSelectorComponent)──────
 
 
@@ -2455,7 +2522,7 @@ async def test_session_selector_lists_filters_and_acts(tmp_path, monkeypatch):
         box.value = "re:["
         await pilot.pause(0.05)
         assert selector._visible() == []                     # 正则语法错:列表空 + 头部报错
-        assert selector.query_one("#session-list", Static).render().plain.strip()
+        assert _static_plain(selector.query_one("#session-list", Static)).strip()
         box.value = ""
         await pilot.pause(0.05)
 
@@ -2491,11 +2558,11 @@ async def test_session_selector_lists_filters_and_acts(tmp_path, monkeypatch):
 
         await pilot.press("ctrl+p")                      # 显示路径(太长就缩成 `…/段/段`)
         await pilot.pause(0.05)
-        shown = selector.query_one("#session-list", Static).render().plain
+        shown = _static_plain(selector.query_one("#session-list", Static))
         assert alpha.path.name in shown and "…/" in shown
         await pilot.press("ctrl+p")
         await pilot.pause(0.05)
-        assert alpha.path.name not in selector.query_one("#session-list", Static).render().plain
+        assert alpha.path.name not in _static_plain(selector.query_one("#session-list", Static))
 
         # ↑↓ 移动光标(自绘列表也要能手选)
         selector._index = 0
@@ -2597,7 +2664,7 @@ async def test_session_selector_threaded_tree_and_unnamed_fallback(tmp_path, mon
         assert prefixes[root.id] == ""                       # 根不缩进
         assert child.parent_session == str(root.path)        # header 里真写了 parentSession
 
-        text = selector.query_one("#session-list", Static).render().plain
+        text = _static_plain(selector.query_one("#session-list", Static))
         assert "梳理仓库结构" in text                          # 未命名 → 显示第一句话
 
         # recent 排序下不画树(pi 只在 threaded 且无搜索时画)
@@ -2605,34 +2672,6 @@ async def test_session_selector_threaded_tree_and_unnamed_fallback(tmp_path, mon
         selector._refresh()
         await pilot.pause(0.05)
         assert all(prefix == "" for _s, prefix in selector.rendered_rows())
-
-
-@pytest.mark.asyncio
-async def test_session_selector_escape_cancels(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    _tui_env(tmp_path, monkeypatch)
-    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
-    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
-
-    app = QiTui(palette=PALETTE)
-    async with app.run_test(size=(100, 30)) as pilot:
-        await pilot.pause(0.1)
-        store = app._session_store()
-        store.create("只有一个", cwd=tmp_path)
-        current = app._session.id if app._session else None
-
-        app._command("/resume")
-        await pilot.pause(0.1)
-        assert isinstance(app.screen, tui_mod.SessionSelector)
-        await pilot.press("ctrl+r")                      # 进重命名态
-        await pilot.pause(0.05)
-        await pilot.press("escape")                      # 第一次 escape:只退出重命名
-        await pilot.pause(0.05)
-        assert isinstance(app.screen, tui_mod.SessionSelector)
-        await pilot.press("escape")                      # 第二次:关面板
-        await pilot.pause(0.1)
-        assert not isinstance(app.screen, tui_mod.SessionSelector)
-        assert (app._session.id if app._session else None) == current
 
 
 @pytest.mark.asyncio

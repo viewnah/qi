@@ -529,12 +529,21 @@ async def test_tui_command_surface(tmp_path, monkeypatch):
         app._command("/session")
         assert "会话: " in notes[-1][0] and "deepseek/deepseek-v4.1-flash" in notes[-1][0]
 
+        # 还没落盘的会话(懒建:一句话都没聊)**没有文件可导出** —— 要说得清楚,
+        # 而不是抛一个 `[Errno 2] No such file`(用户看不到所以然)。
+        # 这一条必须在 `/name` **之前**:命名会立刻把文件写出来(见下)。
+        assert app._session is not None and app._session.unflushed is True
+        app._command("/export")
+        assert "还没落盘" in notes[-1][0]
+
         assert app._rt is not None
         app._rt.cwd = Path("/tmp/short")          # tmp_path 太长会被 footer 截断(pi 同款)
         app._command("/name 我的会话")
         assert "我的会话" in notes[-1][0]
         assert app._session is not None and app._session.title == "我的会话"
         assert "我的会话" in app.footer_text.plain      # 名字进 footer(对齐 pi)
+        assert app._session.unflushed is False, \
+            "命名即落盘:一个名字总得有文件可落(`/new` 或退出才不会连名字一起丢)"
 
         app._command("/copy")                # 还没有回答 → 底部状态行提示,不进 transcript
         assert app._status == "还没有回答可复制"
@@ -560,11 +569,6 @@ async def test_tui_command_surface(tmp_path, monkeypatch):
 
         app._command("/changelog")
         assert "CHANGELOG" in notes[-1][0]
-
-        # 还没落盘的会话(懒建:一句话都没聊)没有文件可导出 —— 要说得清楚,
-        # 而不是抛一个 `[Errno 2] No such file`(用户看不到所以然)
-        app._command("/export")
-        assert "还没落盘" in notes[-1][0]
 
         # 真聊一轮(落盘)之后再导出就正常了
         app._session_store().append(app._session, {
@@ -2747,6 +2751,53 @@ async def test_session_selector_lists_filters_and_acts(tmp_path, monkeypatch):
         await pilot.pause(0.1)
         assert not isinstance(app.screen, tui_mod.SessionSelector)
         assert app._session is not None and app._session.id == zeta.id
+
+
+@pytest.mark.asyncio
+async def test_name_survives_new_and_resume(tmp_path, monkeypatch):
+    """`/name` 要真的留住:起名 → `/new` → `/resume` 还能按名字找到这个会话。
+
+    用户的原话:“我 name 会话了之后,新建会话然后 /resume 之前的会话,名称没变”。
+    根因不在 `/resume`:`/name` 打在一个**预留中**(还没第一条回答、因此还没有文件)的
+    会话上时,`set_title` 只改了内存与 header,文件一个字节都没写 —— 界面却已经报了
+    “会话名已设为 X”。`/new` 丢掉那个对象之后,名字连会话一起没了,`/resume` 里只能
+    看到更早的那个会话(名字当然“没变”)。
+    """
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        named = app._session
+        assert named is not None and named.unflushed is True     # 裸启动:预留,没文件
+
+        notes = await _command_notes(app, monkeypatch)
+        app._command("/name 我的会话")
+        await pilot.pause(0.1)
+        assert "我的会话" in notes[-1][0]
+        assert named.path.is_file(), "命名即落盘 —— 一个名字总得有文件可落"
+        assert named.unflushed is False
+        assert named.title == "我的会话"
+        # (footer 里那行名字的渲染由 `/name` 那条用例锁着:它把 cwd 缩短到 `/tmp/short`,
+        #  否则这么长的 tmp_path 会先把名字截掉)
+
+        app._command("/new")                                     # 新会话(又是预留)
+        await pilot.pause(0.1)
+        assert app._session is not None and app._session.id != named.id
+
+        app._command("/resume")
+        await pilot.pause(0.15)
+        selector = app.screen
+        assert isinstance(selector, tui_mod.SessionSelector)
+        assert [(s.id, s.title) for s in selector._visible()] == [(named.id, "我的会话")]
+
+        await pilot.press("enter")                               # 恢复它
+        await pilot.pause(0.2)
+        assert app._session is not None and app._session.id == named.id
+        assert app._session.title == "我的会话"                   # 名字真的回来了
 
 
 @pytest.mark.asyncio

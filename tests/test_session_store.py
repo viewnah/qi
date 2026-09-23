@@ -292,6 +292,52 @@ def test_create_still_writes_immediately(tmp_path):
     assert session.path.read_text(encoding="utf-8").strip().startswith('{"type": "session"')
 
 
+def test_naming_a_reserved_session_flushes_it(tmp_path):
+    """给**预留中**的会话起名会立刻落盘 —— 一个名字总得有文件可落。
+
+    用户报的 bug:`/name` 之后 `/new`(或退出),名字连会话一起消失 —— 而界面刚说过
+    "会话名已设为 X"。根因:`set_title` 的 docstring 承诺"内存 + header + **落盘**三处一起改",
+    但对 `unflushed` 的会话那个 `save()` 是空操作(文件推迟到第一条回答),于是名字只活在
+    内存里。与 `qi -n <名字>`(走 `create()`,立刻落文件)同一条取舍:命名是**显式**意图,
+    不适用"没回答就不留文件"那条 —— 那条防的是**无意的**空会话。
+    """
+    import json
+
+    store = _store(tmp_path)
+    session = store.reserve("", cwd=tmp_path)
+    assert not session.path.exists()
+
+    store.set_title(session, "我的会话")
+
+    assert session.unflushed is False
+    assert session.path.is_file()
+    header = json.loads(session.path.read_text(encoding="utf-8").splitlines()[0])
+    assert header["title"] == "我的会话"
+    reloaded = store.get(session.id)                  # 真的读得回来(不是只在内存里对)
+    assert reloaded is not None and reloaded.title == "我的会话"
+    assert [s.title for s in store.list()] == ["我的会话"]
+
+
+def test_naming_keeps_the_question_you_had_already_typed(tmp_path):
+    """起名会把**已经攒下的** entry 一起写出 —— 只问不答的那句话也不丢。
+
+    命名之后这个会话就真的存在了,那它身上已有的内容(用户的问题、启动阶段的 model /
+    级别 entry)当然要一起留住 —— 这正是 `flush()` 存在的理由。
+    """
+    store = _store(tmp_path)
+    session = store.reserve("", cwd=tmp_path)
+    store.append(session, {"type": "message", "role": "user", "content": "问了句就被打断"})
+    assert not session.path.exists()                  # 还没回答 → 仍然没文件
+
+    store.set_title(session, "半截会话")
+
+    assert session.path.is_file()
+    reloaded = store.get(session.id)
+    assert reloaded is not None
+    assert [e.get("content") for e in reloaded.branch()
+            if e.get("type") == "message"] == ["问了句就被打断"]
+
+
 # ── 会话 id 会进文件名 → 必须挡住路径穿越 ──────────────────────
 
 def test_unsafe_session_id_is_rejected(tmp_path):

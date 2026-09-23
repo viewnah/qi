@@ -468,11 +468,15 @@ class SessionStore:
                        entries=[header], version=2, unflushed=True)
 
     def flush(self, session: Session) -> None:
-        """把一个 `unflushed` 的会话写出来(第一条 assistant 回答到达时调)。幂等。
+        """把一个 `unflushed` 的会话写出来(第一条 assistant 回答到达时,或用户给它改了名)。幂等。
 
         用 `"x"`(独占创建,即 `O_EXCL`)而不是 `"w"`:`unflushed` 期间**不该有**文件,
         真有就说明路径撞了 —— 那种情况宁可报错,也不要静默覆盖掉另一个会话
         (用户的会话是**不可再生**的数据)。
+
+        两个调用点,语义都是"这个会话从此算真的存在了":
+          - `_persist`:出现了第一条 assistant 回答(懒建的正路);
+          - `set_title`:用户**给它起了名** —— 见那里的注释。
         """
         if session.ephemeral or not session.unflushed:
             return
@@ -609,7 +613,8 @@ class SessionStore:
         if session.ephemeral:
             return
         if session.unflushed:
-            # 有 assistant 回答了吗?有就现在把**全部** entries 一次性写出(含 header)
+            # 有 assistant 回答了吗?有就现在把**全部** entries 一次性写出(含 header)。
+            # （另一个出口是 `set_title`:用户显式命名——见那里的注释。）
             if not _has_assistant(session):
                 return
             self.flush(session)
@@ -662,7 +667,8 @@ class SessionStore:
             return
         if session.unflushed:
             # 还没落过盘的会话:整文件重写就等于**把它提前建出来了** —— 那是 `flush` 的活。
-            # 这里只可能来自"改标题"这类操作;让 `flush` 一次写全(下次 append 也会带走)。
+            # `set_title` 自己要落盘也走 `flush()`(命名是显式意图);所以这里的其余来路
+            # 本来也不该写出文件,留着它当保险。
             return
         with session.path.open("w", encoding="utf-8") as fh:
             for e in session.entries:
@@ -687,7 +693,13 @@ class SessionStore:
         标题在会话文件里有**两份**:`session.title`(运行时读的)与 header entry 的
         `title`(磁盘上那份真相)。只改一份就会出现"列表里是新名、重开又变回旧的" ——
         所以收进一个方法,别在两处各写一遍(改名端点与自动命名都走它)。
-        """
+
+        **预留中(`unflushed`)的会话会因此立刻落盘**(`flush()`):命名是一个显式动作,
+        一个名字总得有文件可落 —— 与 `qi -n <名字>` / `create()` 同一个取舍。
+        以前这里回落到 `save()` 的"跳过"分支(文件推迟到第一条回答),于是
+        `/name` 之后 `/new`(或退出)会连**会话带名字**一起消失,而界面刚说过
+        "会话名已设为 X" —— 用户的原话就是"我 name 会话了之后,新建会话然后 `/resume`
+        之前的会话,名称没变"。"""
         header = (session.entries[0]
                   if session.entries and session.entries[0].get("type") == "session"
                   else None)
@@ -698,7 +710,10 @@ class SessionStore:
         if session.ephemeral:
             return                      # 内存会话:内存与 header 都改了,没有文件要写
         try:
-            self.save(session)
+            if session.unflushed:
+                self.flush(session)
+            else:
+                self.save(session)
         except OSError:
             # 写盘失败就把内存**回滚**:否则会出现"列表里是新名、磁盘上还是旧名"，
             # 刷新一次标题就变回去 —— 那是最难查的一类不一致。

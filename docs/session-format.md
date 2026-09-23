@@ -230,7 +230,7 @@ web 端同理:每轮开跑前 `WebState.bind()`(`bind_session` + `start_session`
 | | `ephemeral` | `unflushed` | 什么时候出现 | 行为 |
 | --- | --- | --- | --- | --- |
 | **已落盘** | False | False | `create()` / `--fork` / 从磁盘读入 | 正常追加/重写 |
-| **预留** | False | True | 裸 `qi` 启动、`/new`(`reserve()`) | entries 照常攒;**`append` 只在出现第一条 assistant 时 `flush()`** |
+| **预留** | False | True | 裸 `qi` 启动、`/new`(`reserve()`) | entries 照常攒;**`append` 只在出现第一条 assistant 时 `flush()`**;`set_title`(改名)也立刻 `flush()` —— 见下 |
 | **内存** | True | — | `--no-session`(`ephemeral()`) | 永不写盘(append/save/set_title 全跳过) |
 
 **为什么要"预留"而不是"启动就建文件"**:本机真实事故 —— `~/.qi/agent/sessions/` 攒了
@@ -250,8 +250,17 @@ web 端同理:每轮开跑前 `WebState.bind()`(`bind_session` + `start_session`
 **只问不答不落盘**:判据是"有没有 assistant 回答"(`_has_assistant`),不是"有没有 entry"。
 一个没有回答的会话在 `/resume` 列表里没有价值,而文件一出现就会进列表。
 
+**改名会立刻落盘(唯一一个「没有回答也写文件」的口子)**:`/name`(以及扩展的
+`ctx.setSessionName` / 会话选择器的 `ctrl+r`)走 `set_title()`,而它承诺"内存 + header +
+落盘三处一起改" —— 打在一个**预留中**的会话上时,那个 `save()` 曾经是空操作(文件推迟到第一条
+回答),于是名字只活在内存里:`/name` 之后 `/new`(或退出)会连**会话带名字**一起消失,
+而界面刚说过"会话名已设为 X"。所以命名一律 `flush()`:`create()` 那条"显式意图立刻落盘"的
+规矩同样适用于"我给这个会话起了名" —— 一个名字总得有文件可落(`qi -n <名字>` 本来就立刻落盘)。
+自动命名不会走这条路:它在回合末尾才落标题,而那会儿第一条 assistant 回答已经把会话写出去了。
+
 **显式创建照旧立即落盘**:`-c` / `--session` / `--fork` / `-n` / `--session-id` /
 web 的 `POST /api/sessions` 都走 `create()` —— 那是调用方明确要的东西,懒建只针对"什么都没说"。
+
 - **取上下文在用户消息落盘之前**(`history = self._history(session)` 在前,`append` 在后)。
   反过来写,本轮输入会在上下文里出现**两次**(两条一样的 user)。
 - **思考先于回答落盘**:思考产生在这条助手消息之前,顺序反了回放就成了"先回答、再思考"。

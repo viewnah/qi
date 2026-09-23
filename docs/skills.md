@@ -35,8 +35,8 @@ description: 审代码时按这份清单逐项检查;涉及并发、错误处理
 | 5 | `<git根>/.qi/skills/` | `qi-project` | qi 私有,项目级 |
 | 6 | project `settings.json` 的 `skills[]` | `settings-project` | 追加路径,相对 `<git根>/.qi` 解析 |
 
-第 1、2、4、5 层的**具体目录**之所以这样排,是为了跟 pi 的发现规则对齐,再叠上 qi 自己的私有层
-(`~/.qi/...` 与 `<git根>/.qi/...`)。跨工具目录(`.agents`)与 qi 私有目录的区别不只是名字:
+第 1、2、4、5 层的**具体目录**按"跨工具层与 qi 私有层交替"排列(跨工具的 `.agents` 与私有的
+`~/.qi` / `<git根>/.qi` 各占两层)。跨工具目录(`.agents`)与 qi 私有目录的区别不只是名字:
 **跨工具目录只认 `<name>/SKILL.md` 这种结构,不接受根目录下散着的 `*.md`**(见 §2)。
 
 两条容易踩的:
@@ -51,19 +51,6 @@ description: 审代码时按这份清单逐项检查;涉及并发、错误处理
 ## 2. 一个技能根的扫描规则
 
 对每个来源目录:
-
-### 3.1 强制加载:`/skill:<名>`
-
-渐进披露的另一面是"模型不一定去读"(提示词里只有一行描述)。TUI 里可以自己把它叫起来:
-
-```text
-/skill:brave-search           # 加载并执行该技能
-/skill:pdf-tools extract      # 带参数(作为技能的入参)
-```
-
-它把 SKILL.md **全文**提交给模型,效果与用户手贴内容等价,只是不用手抄 —— pi 的同一句话是
-"use prompting or `/skill:name` to force it"。`settings.enableSkillCommands`(默认 `true`)关掉后
-这批命令不存在。
 
 - **含 `SKILL.md` 的目录即技能,不再向内递归** —— 也就是说技能目录里可以再放参考文件,不会
   被误当成子技能。
@@ -124,28 +111,14 @@ description: 审代码时按这份清单逐项检查;涉及并发、错误处理
 `--no-skills` 与 `--skill` 的组合语义是刻意的:"把自动发现的都关掉,只跑我指定的这一个" ——
 调试某个技能时最常用的姿势。
 
-## 6. 角色私有技能(归 qi-agents)
+## 6. 强制加载:`/skill:<名>`
 
-角色(agent)可以有**自己的**技能目录:`<角色目录>/skills/<名>/SKILL.md`。它与顶层六层是两回事:
+渐进披露的另一面是"模型不一定去读"(提示词里只有一行描述)。TUI 里可以自己把它叫起来:
 
-- **单层**:只扫 `skills/<名>/SKILL.md`,不递归、不接受根级 `*.md`;
-- **同一角色内同名直接报错**;
-- 只在跑那个角色时可见。
+```text
+/skill:brave-search           # 加载并执行该技能
+/skill:pdf-tools extract      # 带参数(作为技能的入参)
+```
 
-这部分语义归 **qi-agents** 扩展(`runtime` 里那条途径),core 只提供不认角色的 `scan_skills()`。见
-[agent-config.md](agent-config.md) 与 [extensions.md](extensions.md) §7。
-
-## 7. 与 pi 的对应
-
-| | pi | qi |
-| --- | --- | --- |
-| 发现规则 | `~/.agents/skills` + 项目 `.agents/skills`(递归、含 SKILL.md 即技能) | 同构(第 1、4 层) |
-| 私有层 | 无 | **多 4 层**:`~/.qi/agent/skills`、`<git根>/.qi/skills`、以及两侧 `settings.skills[]` |
-| 注入方式 | `<available_skills>` + 渐进披露 | 同(共用同一形态) |
-| `--skill` / `--no-skills` | 有 | 同,且组合语义一致(`--no-skills` 不影响 `--skill`) |
-| 同层同名 | 报错 | 同 |
-| 跨层同名 | 高优先覆盖 | 同 |
-
-**照 pi 写会错的地方**:qi 的层数与顺序不同(§1 那张表),跨工具目录不接受根级 `*.md`,而 qi 的私有
-层接受且相对路径按各自基准解析。要判断一个技能实际会不会被加载,以 `top_level_skill_dirs()` 的
-顺序为准。
+它把 SKILL.md **全文**提交给模型,效果与用户手贴内容等价,只是不用手抄。`settings.enableSkillCommands`(默认 `true`)关掉后
+这批命令不存在。

@@ -1,8 +1,8 @@
 # Web 能力设计(宿主 + UI 插件)
 
-> ⚠️ **v3 归属变更**:整个 web(HTTP 宿主 + AG-UI 桥 + UI 资源)要**拆成独立官方 pip 包 `qi-web`**,core 不内置、不默认装 —— 不装时 `qi web` 这条子命令不存在。本文的 **API 契约 / AG-UI 事件 / 安全规则仍然有效**,变的是「谁提供它」。见 [extensions.md §6](../docs/extensions.md)。
+> ⚠️ **v3 归属变更**:整个 web(HTTP 宿主 + AG-UI 桥 + UI 资源)要**拆成独立官方 pip 包 `qi-web`**,core 不内置、不默认装 —— 不装时 `qi web` 这条子命令不存在。本文的 **API 契约 / AG-UI 事件 / 安全规则仍然有效**,变的是「谁提供它」。见 [extensions-design.md](extensions-design.md)。
 >
-> 状态:设计定稿(v2 实现)。相关文档:[plugins.md](plugins.md)(插件机制)、[tools.md](../docs/tools.md)(ToolCatalog)。参照物:pi 的 RPC 模式、pi-web(独立 Web 应用)、hikqin(宿主形态)。
+> 状态:设计定稿(v2 实现)。相关文档:[plugins.md](plugins.md)(插件机制)、[how-qi-works.md](../docs/how-qi-works.md)(ToolCatalog)。参照物:pi 的 RPC 模式、pi-web(独立 Web 应用)、hikqin(宿主形态)。
 >
 > **参照物事实核对(2026-09,对已装包实测,不是转述)**——这一节存在的原因是本文早先
 > 把 pi-web 写成了「子进程 + JSONL-RPC」,实测不对:
@@ -1704,7 +1704,7 @@ npm run build
 **未知名报错**(不静默跳过 —— 声明了却指不到东西,就是"这个 agent 以为自己有 github、其实没有",
 比启动失败难查得多)。例外:`import` 校验传 `mcp_table=None`,那时"要装到哪"未知,只校验形状。
 
-> 顺带把 `docs/agent-config.md §8` 与 `README` 里那句 `[mcp.servers]` 改成了真实位置 ——
+> 顺带把当时的 `docs/agent-config.md`(该文件已删除)§8 与 `README` 里那句 `[mcp.servers]` 改成了真实位置 ——
 > 文档之前描述的是一个不存在的实现。
 
 #### (2) 设置页的 MCP 节

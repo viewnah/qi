@@ -1,7 +1,7 @@
 # qi-mcp
 
 qi 的 MCP 支持。形状**照搬 [`pi-mcp-adapter`](https://pi.dev/packages/pi-mcp-adapter)**
-(见 `docs/extensions.md` E25)。
+(见 `design/extensions-design.md` 的 E25)。
 
 ## 为什么默认只给一个代理工具
 

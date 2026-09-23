@@ -42,7 +42,7 @@ code-analyst/
 | test-runner | 跑测试并汇报 | read, ls, find, grep, bash |
 
 > 后四个原本是 qi 仓库自己的 `.qi/agents/`(本地 dogfood 角色)。P-E4c 把 core 里的
-> “角色”概念整体移出之后,它们先搬到这里当样例(见 docs/extensions.md E15);
+> “角色”概念整体移出之后,它们先搬到这里当样例(见 design/extensions-design.md 的 E15);
 > qi-agents 扩展落地后可以再搬回 `.qi/agents/` 作为该扩展的实测样例。
 
 路由回归集:`tests/router_cases.yaml`(输入 → 期望 agent)。

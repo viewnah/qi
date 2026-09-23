@@ -20,7 +20,7 @@
 tokens > contextWindow - reserveTokens        →  压
 ```
 
-- **`reserveTokens` 是留给模型回答的余量**(默认 16384,pi 默认值),所以阈值不是窗口本身。
+- **`reserveTokens` 是留给模型回答的余量**(默认 16384),所以阈值不是窗口本身。
 - **预算口径是"重建后的上下文 + 基座提示词",不是原始 entry 之和**:
   `messages_tokens(_history(session)) + estimate_tokens(base_prompt)`。
   用原始 entry 求和会把**已经压掉的内容再算一遍** —— 于是压完还超,反复压。
@@ -52,7 +52,7 @@ tokens > contextWindow - reserveTokens        →  压
 ### 单个 turn 就超预算:split turn
 
 如果切点落在一个 turn 中间(前面还有 `user` 消息),说明**这一个回合本身就超了预算**。这时做
-**split turn**(pi 同款):
+**split turn**:
 
 1. 历史部分照常摘要;
 2. 这个 turn 的**前缀**(从 turn 起点到切点)单独摘要一次;
@@ -79,7 +79,7 @@ tokens > contextWindow - reserveTokens        →  压
 
 ## 4. 摘要怎么回到上下文
 
-`_history()` 的装配规则(pi 语义):
+`_history()` 的装配规则:
 
 ```text
 [system 提示词]
@@ -134,21 +134,9 @@ tokens > contextWindow - reserveTokens        →  压
 | 摘要模型试图调工具 | 抛错(见 §3) |
 | `settings.compaction` 值非法 | 回落到默认,不报错 |
 
-## 8. 与 pi 的对应
+## 8. 扩展能干预压缩吗
 
-| | pi | qi |
-| --- | --- | --- |
-| 阈值公式 | `contextWindow - reserveTokens` | 同 |
-| 默认值 | `reserve 16384` / `keepRecent 20000` | 同 |
-| 切点 | turn 边界或 assistant,**不在 tool 上** | 同 |
-| split turn | 有 | 同 |
-| 摘要格式 | 同一套 7 段结构 | 同(提示词直接移植) |
-| 摘要进上下文的方式 | `system \| summary \| kept 消息` | 同位置,但摘要用 **user** 角色(理由见 §4) |
-| `custom`(叙述/思考) | 无此类型 | **压缩时当它不可见** —— 因为 `_history()` 本来就不读它,保持一致,不额外发明规则 |
-
-## 9. 扩展能干预压缩吗
-
-能,三个事件(见 [extensions.md](extensions.md) §3.1)。压缩**只有一个入口**
+能,三个事件(见 [extensions.md](extensions.md) §4)。压缩**只有一个入口**
 (`QiRuntime.compact_session`:TUI 的 `/compact` 与自动压缩都走它),所以三个事件都在那一处发:
 
 | 事件 | 时机 | 契约 |

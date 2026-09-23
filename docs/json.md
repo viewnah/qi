@@ -20,7 +20,7 @@ qi --mode json "总结这个仓库" | jq -r 'select(.kind=="text") | .text'
 | 键 | 类型 | 说明 |
 | --- | --- | --- |
 | `kind` | string | 事件类型(见 §2) |
-| `agent` | string \| null | 产出该事件的运行单元名(core 默认 `general`,装了 qi-agents 后可能是角色名) |
+| `agent` | string \| null | 产出该事件的运行单元名(core 是固定名 `general`;子运行会用自己的名字) |
 | `tool` | string \| null | 仅工具事件有值 |
 | `text` | string | 该事件的主文本;没有则为 `""` |
 | `data` | object | 结构化补充信息;没有则为 `{}` |
@@ -56,10 +56,10 @@ qi --mode json "总结这个仓库" | jq -r 'select(.kind=="text") | .text'
 | `kind` | 状态 |
 | --- | --- |
 | `dispatch` | v3 取消 auto 分派后不再产生。`cli.py` / `tui.py` / qi-web 仍**读取**它以便旧会话回放 |
-| `opening` | 角色的开场白已改由 qi-agents 用自定义 entry 表达 |
+| `opening` | 不再发射(旧会话里仍有,前端读取以正确回放) |
 
 > **扩展之间的事件(`api.events`)不在这条流里。** 那是扩展对扩展的频道,与这里的宿主事件是
-> 两套 API(见 [extensions.md](extensions.md) §3.2)。
+> 两套 API(见 [extensions.md](extensions.md) §5)。
 
 ## 3. 两个必须知道的坑
 
@@ -110,16 +110,3 @@ for line in proc.stdout:
 
 **读到不认识的 `kind` 时跳过即可,不要报错** —— 这与 qi 各处一致的原则相同(旧会话里也有已废弃
 的类型,新版本仍要能回放)。
-
-## 6. 与 pi 的对应
-
-| | pi | qi |
-| --- | --- | --- |
-| 形状 | 事件流(JSONL) | 同 |
-| 用途 | 脚本 / 上游服务 | 同 |
-| stdout 纯净 | 是 | 是(提示走 stderr) |
-| 事件名 | pi 的命名 | qi 自己的(见 §2);`dispatch`/`opening` 是 qi 遗留 |
-
-**与 pi 的差别集中在事件清单本身**:qi 有 `compaction_start`/`compaction_end`、`thinking_delta`
-这类 pi 没有(或命名不同)的事件,`dispatch`/`opening` 则是 qi 去掉 auto 分派后留下的兼容读取面。
-消费端应当**按 §2 的表实现,并对未知 `kind` 容忍**,而不是照 pi 的清单写死。

@@ -2,7 +2,7 @@
 
 qi 的**角色系统**扩展:角色发现 + 角色选择 + `subagent` 委派。
 
-它原本住在 core 里(P-E4c 移出,见 `docs/extensions.md` §E14/E15)。现在 core 只认识运行单元
+它原本住在 core 里(P-E4c 移出,见 `design/extensions-design.md` 的 E14/E15)。现在 core 只认识运行单元
 `{name, prompt, tools}`,「角色」这个概念由本扩展提供 —— 只用 qi 的公开扩展面,core 一行不用改。
 
 ## 装

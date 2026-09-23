@@ -1,4 +1,4 @@
-"""qi-mcp:qi 的 MCP 支持(形状照搬 `pi-mcp-adapter`,见 docs/extensions.md E25)。
+"""qi-mcp:qi 的 MCP 支持(形状照搬 `pi-mcp-adapter`,见 design/extensions-design.md 的 E25)。
 
 分五个切片做,全部落地:
 

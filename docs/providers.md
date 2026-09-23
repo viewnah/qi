@@ -1,7 +1,7 @@
 # 供应商与凭证
 
 qi 通过 litellm 调各家模型。**provider 的声明**(baseUrl / api / 模型清单)写在 `models.json`,格式与
-分层见 [model-config.md](model-config.md);本文讲**凭证**:从哪来、怎么解析、怎么排查。
+分层见 [models.md](models.md);本文讲**凭证**:从哪来、怎么解析、怎么排查。
 
 **事实源:`src/qi_agent/auth.py` + `config.py` + `paths.py`。**
 
@@ -78,8 +78,7 @@ TUI 里 `/login` 的 provider 选择器列出**全部**预置(带 `(无凭证 ·
 或 `$VAR`·`$(命令)` 引用 / 免密钥的 `ollama`)才会进清单 —— 没登录就不该在切换列表里看到它
 (想登录就去 `/login`)。`models.json` 里**显式写过**的 provider **没有豁免**:写了 `apiKey`
 却解析不出来(环境变量没导出、命令跑不通),就是“用不了”—— “我刚把 mimo logout 了,
-它怎么还在 `/scoped-models` 里”就是这个豁免造成的。这条与 pi 同口径:pi 的清单是
-`modelRuntime.getAvailableSnapshot()`,没凭证的 provider 一个模型都不在里面。
+它怎么还在 `/scoped-models` 里”就是这个豁免造成的。**清单口径**:没凭证的 provider 一个模型都不在里面。
 
 `qi doctor` 与 `qi --list-models` 是**诊断面**,照列全量并标 `缺密钥`(唯一例外:`--list-models`
 仍列**当前默认模型**那个 provider —— 否则你看不出自己缺的是哪把钥匙)。
@@ -110,8 +109,7 @@ qi init --preset deepseek,moonshot --local   # 多个 / 写进项目 .qi/models.
 预置了什么:**baseUrl + api + 约定环境变量名 + 模型清单**,每个模型都带两个数 ——
 
 - `contextWindow` = 上下文窗口(最大**输入**);
-- `maxTokens` = 该模型的最大**输出** tokens(pi `docs/models.md` 里这个字段就是这个语义,
-  qi 会把它作为请求的 `max_tokens` 上限发出去)。
+- `maxTokens` = 该模型的最大**输出** tokens(qi 会把它作为请求的 `max_tokens` 上限发出去)。
 
 **两个数都从厂商自己的文档/模型页核过**(表中括号里就是),核不到的模型**干脆不收** ——
 猜一个 `maxTokens` 会让请求要么被拒要么悄悄截断,比没有这一条更糟。想补别的模型:
@@ -119,7 +117,7 @@ qi init --preset deepseek,moonshot --local   # 多个 / 写进项目 .qi/models.
 
 `reasoning` **故意不预置**:这些模型多数**默认就带思考**,而 `reasoning_effort` 是否被各家
 OpenAI 兼容端点接受并不一致。默认不带参最不容易 400;想开就给该模型加 `"reasoning": true`
-(provider 拒收时 qi 会自动去掉并提示一次,见 [tui.md](tui.md) §2)。
+(provider 拒收时 qi 会自动去掉并提示一次,见 [slash-commands.md](slash-commands.md))。
 
 覆盖规矩(**不静默改用户写过的东西**):provider 段缺什么补什么(`api` / `baseUrl` / `apiKey`),
 已有值不动;模型按 id 追加缺的,同 id 已存在则原样保留(你手调过的 `reasoning` / `contextWindow`
@@ -156,7 +154,7 @@ qi init --refresh deepseek --local   # 写项目 .qi/models.json
 **`↻ Refresh model list (GET /models)`**(与 `＋ Add a model` 同级,共用
 `_refresh_entry_models`):失败只报错、回菜单不中断 init。
 
-> 为什么挂在 `qi init` 下:`qi models` 子命令在本仓是**故意删掉的**(对齐 pi —— 列清单用
+> 为什么挂在 `qi init` 下:`qi models` 子命令在本仓是**故意删掉的**(列清单用
 > `--list-models`),所以“刷新模型清单”跟 `--preset` 一样留在 `qi init` 这个“把 provider / 模型
 > 写进 `models.json`”的家族里。`qi doctor` 与 `--list-presets` 的输出里都会提示这条。
 
@@ -239,13 +237,14 @@ shell 注入面。代价是**不能直接写 `!cat a | jq -r .key`**(管道会�
 - 写入时 `chmod 0600`(Windows 上无 posix 权限,忽略失败)。
 - **文件损坏或不是对象 → 当作空**(`{}`),不报错、不影响启动。凭证读不出来时表现为"缺密钥",
   而不是把 qi 挡在门外。
-- 只存 `type: api_key` 这一种。**qi 没有 OAuth**(见 §6)。
+- 只存 `type: api_key` 这一种。**qi 没有 OAuth(订阅登录)** —— 凭证层只有 API key,所以用订阅
+  额度(Claude Pro/Max、Copilot、Codex 等)的用户必须换成 API key,否则跑不通。
 
 ## 5. 命令行
 
 | 命令 | 作用 |
 | --- | --- |
-| `qi auth login <provider>` | **输入可见**地写入 API key(auth store);TUI 里的 `/login` 是**遮罩**输入(见 [tui.md](tui.md) §2) |
+| `qi auth login <provider>` | **输入可见**地写入 API key(auth store);TUI 里的 `/login` 是**遮罩**输入(见 [slash-commands.md](slash-commands.md)) |
 | `qi auth logout <provider>` | 删除该 provider 的凭证 |
 | `qi auth list` | 列出 auth store 里**有凭证**的 provider |
 | `qi auth print-api-key <provider>` | 打印解析到的 key(用于喂给别的工具) |
@@ -255,7 +254,7 @@ shell 注入面。代价是**不能直接写 `!cat a | jq -r .key`**(管道会�
 | `qi --list-models` | 列出 provider / 模型,并显示每个 provider 的凭证状态 |
 | `qi doctor` | 逐个 provider 打印凭证状态(`OK` / `缺密钥`)+ 来源 |
 
-`qi auth print-bearer-token` 接受 `--no-refresh` 参数(为了与 pi 的命令面一致),但 qi 没有 OAuth,
+`qi auth print-bearer-token` 接受 `--no-refresh` 参数(为兼容既有命令面),但 qi 没有 OAuth,
 所以**它是空操作**。
 
 ## 6. 环境变量总表
@@ -267,7 +266,7 @@ qi 自己识别的变量分两类。
 | 变量 | 作用 |
 | --- | --- |
 | `QI_CONFIG_DIR` | 名字空间根(默认 `~/.qi`)。仅用于推导默认路径与迁移 |
-| `QI_AGENT_HOME` | **agent 目录本身**(默认 `~/.qi/agent`)。全部用户级状态的挂载点:`settings.json` / `models.json` / `auth.json` / `sessions` / `skills` / `agents` / `extensions`。语义同 pi 的 `PI_CODING_AGENT_DIR` |
+| `QI_AGENT_HOME` | **agent 目录本身**(默认 `~/.qi/agent`)。全部用户级状态的挂载点:`settings.json` / `models.json` / `auth.json` / `sessions` / `skills` / `agents` / `extensions` |
 | `QI_AGENT_CONFIG` | **直接指定 `models.json` 文件**(优先于项目 / 全局路径) |
 | `QI_THEME` | `dark` / `light` / `auto`,覆盖 `settings.theme`(见 [themes.md](themes.md)) |
 
@@ -280,24 +279,10 @@ qi 自己识别的变量分两类。
 | `QI_PROVIDER` / `QI_MODEL` | 当前模型 |
 | `QI_REASONING_LEVEL` | 当前思考级别 |
 
-它们由 `Runtime._session_env()` 生成、`merged_env()` 注入(对齐 pi 的
-`exposeSessionEnvironment`),**先删后填**所以不会从父进程继承。细节见 [tools.md](tools.md) §3.1。
+它们由 `Runtime._session_env()` 生成、`merged_env()` 注入,**先删后填**所以不会从父进程继承。细节见 [environment-variables.md](environment-variables.md)。
 
 `models.json` 的完整查找顺序是 `QI_AGENT_CONFIG` → `<项目>/.qi/models.json` → `~/.qi/agent/models.json`,
-细节见 [model-config.md](model-config.md)。
+细节见 [models.md](models.md)。
 
 > `QI_AGENT_HOME` 指向的是**目录本身**,不是它的父目录 —— 拿它去拼 `agent/settings.json` 会得到
 > `…/agent/agent/settings.json`。这是这个变量最常见的误用。
-
-## 7. 与 pi 的差异
-
-| | pi | qi |
-| --- | --- | --- |
-| 凭证来源顺序 | auth store → 约定环境变量 → `models.json` 引用 | **同** |
-| `apiKey` 值语法 | `!cmd` / `$ENV` / 转义 | **同**(`!cmd` 同样不走 shell) |
-| 订阅登录(Claude Pro/Max、Copilot、Codex、xAI) | **支持**(OAuth,带刷新) | **不支持** —— 只有 API key。`print-bearer-token` 与 `--no-refresh` 为兼容 pi 命令面而存在,语义是空操作 |
-| auth store 结构 | `type` 支持多种(含 OAuth 凭证) | 只有 `type: api_key` |
-| 云 provider(Azure / Bedrock / Vertex / Cloudflare) | 有独立章节 | 走 litellm 通用 provider 配置,没有专门文档 |
-
-**没有 OAuth 的直接后果**:用订阅额度(而非 API key)的用户在 qi 上跑不通,必须换成 API key。
-要补这块,需要的是 auth store 的 `type` 扩展 + 刷新逻辑 —— 现在没有,所以本文不描述不存在的机制。

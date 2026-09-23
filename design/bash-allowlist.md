@@ -3,7 +3,7 @@
 > 状态:**已实施**。本文记录 qi bash 策略的一次变更——删掉"命令首词只读白名单",与 pi 对齐为
 > **无命令级过滤**——并保留 pi 的设计取向作为对照。
 > 文件名 `bash-allowlist.md` 是历史名(变更前本文叫《bash 白名单设计与 pi 对照》)。
-> 相关:[tools.md](../docs/tools.md) §4(bash 策略)、[overview.md §5 安全总原则](overview.md)。
+> 相关:[security.md](../docs/security.md)(bash 的边界)、[overview.md §5 安全总原则](overview.md)。
 > pi 侧结论取自本机安装的 `@earendil-works/pi-coding-agent` **v0.85.1** 的 `docs/`、`examples/`
 > 与打包产物(未实跑,见 §6)。
 

@@ -1,6 +1,6 @@
 # 开发与测试
 
-面向要改 qi 本身的人。用户手册在 [index.md](index.md);**内部设计与决策记录在 [PLAN.md](../design/PLAN.md)**
+面向要改 qi 本身的人。用户手册在 [docs/index.md](../docs/index.md);**其余设计与决策记录在 [PLAN.md](PLAN.md)**
 (那是给改动者看的,不是手册)。
 
 ## 1. 拉起来
@@ -45,7 +45,7 @@ uv run qi --mode json "你好"   # 改完想看一眼事件流时最快
 uv run pytest -q                      # 等价写法
 ```
 
-**qi 没有 `test.sh`**(pi 有 `./test.sh`,照那个敲会失败)—— 上面就是唯一入口。
+**qi 没有 `test.sh`** —— 上面就是唯一入口(别去敲不存在的包装脚本)。
 
 ### 默认不装载"本机真装的扩展"
 
@@ -84,7 +84,7 @@ pytestmark = pytest.mark.real_extensions      # 只对这类文件生效
 仓库不是 uv workspace,所以没有安装声明可依。
 
 **约定:不为工具链的问题改产品代码。** 分析器偶尔会对新装的 editable 包报旧判定(会话内缓存了
-环境/路径);记录在 [extensions.md](extensions.md) §11 的实测表里。处理原则是**等分析器重启再复核**,
+环境/路径);记录在 [extensions-design.md](extensions-design.md) 的实测表里。处理原则是**等分析器重启再复核**,
 而不是加 `# type: ignore` 或改运行期代码。
 
 ## 5. 仓库布局
@@ -102,8 +102,8 @@ tests/               # pytest
 ```
 
 判据很简单:**只有 `src/qi_agent/` 进 wheel**;`docs/` 目前也不进(要把手册随包发布得改
-`[tool.hatch.build.targets.wheel]`)。**扩展的手册归扩展自己**(各自的 README),core 的 `docs/`
-只在 [extensions.md §6](extensions.md) 留指针。
+`[tool.hatch.build.targets.wheel]`)。**扩展的手册归扩展自己**(各自的 README);core 的 `docs/` 只讲机制,
+不复述任何扩展自己的用法。
 
 ## 6. 改完自检
 
@@ -115,16 +115,3 @@ uv run qi doctor                                 # 冒烟:配置/凭证/扩展/�
 
 改到文档时,顺手确认链接没断:`docs/docs.json` 的 `navigation` 每一条 path 都必须真实存在
 (它是导航清单,也是"文档还缺哪几篇"的账本;补完一篇就从 `planned` 移进 `navigation`)。
-
-## 7. 与 pi 的对应
-
-| | pi | qi |
-| --- | --- | --- |
-| 环境准备 | `npm install` + `npm run build` | `uv sync`(+ 三个扩展 `pip install -e`) |
-| 从源码跑 | `./pi-test.sh` | `uv run qi …` |
-| 测试入口 | `./test.sh`(非 LLM)/ `npm test` | **`.venv/bin/python -m pytest`**(没有 `test.sh`) |
-| 包结构 | monorepo:`packages/*`,锁步发版 | 单包 core + `extensions/*` 三个独立包(锁步 `0.1.0`) |
-| 设计记录 | `AGENTS.md` + `CHANGELOG.md` | `design/`(PLAN、决策记录、变更记录) |
-
-差异最大的一行是**测试入口**:qi 没有包装脚本,`pytest` 就是入口。写进文档是为了避免有人照 pi 的
-习惯敲 `./test.sh` 之后以为仓库坏了。

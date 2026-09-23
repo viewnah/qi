@@ -1,128 +1,112 @@
-# 使用指南
+# 在终端里用 qi
 
-按**任务**组织。要按选项字母查全部命令面,看 [cli.md](cli.md);本文只讲"想做什么 → 敲什么"。
+交互形态的用法。一次性与脚本化用法在 [命令行](cli.md);斜杠命令清单在 [斜杠命令](slash-commands.md);
+键位在 [键位](keybindings.md)。
 
-## 1. 三种运行形态
-
-| 形态 | 命令 | stdout | 什么时候用 |
-| --- | --- | --- | --- |
-| 交互 TUI | `qi` / `qi "问题"` | 界面 | 边看边改、要看过程 |
-| 无头一次 | `qi -p "问题"` | **只有答案** | 脚本里要结果(进度走 stderr,`--verbose` 才显示) |
-| 事件流 | `qi --mode json "问题"` | 一行一个 JSON 事件 | 喂给上层程序 —— [json.md](json.md) |
-
-两个容易记错的点:
-
-- **不带 `-p`、`--mode text` = 进 TUI**(没有 `qi tui` 这种子命令,裸 `qi` 就是界面)。
-- **`--mode json` 隐含无头**:就算不加 `-p` 也不进 TUI。
-
-`qi "问题"` 与 `qi` 的区别只有一条:前者进界面后立刻把这句话作为首条消息发出。
-
-## 2. 会话
-
-默认每次 `qi` 都开新会话。
-
-| 想做 | 命令 |
-| --- | --- |
-| 接着**最近**一条 | `qi -c` / `--continue` |
-| 指定某条(支持 id 或文件名前缀) | `qi --session <id\|前缀>` |
-| 从某条分叉出新会话 | `qi --fork <id\|前缀>` |
-| 先起个名 | `qi -n "给这个会话起的名"` |
-| **不落盘**(临时跑一把) | `qi --no-session`(内存会话,不产生文件) |
-| 把会话导出成 JSONL | `qi --export out.jsonl`(可配 `--session`;省略则导最近一条,导出后**不跑模型**) |
-
-管理(在仓库里有子命令,不必记路径):
+## 输入第一句
 
 ```bash
-qi -r                   # 浏览并选择恢复(重命名 / 删除也在那个选择器里,对齐 pi)
+qi                      # 进界面,什么都不发
+qi "分析这个仓库"        # 进界面,并把这句话作为首条消息发出
 ```
 
-会话文件在哪、格式是什么、用量怎么算(以及为什么 `context_tokens` 不是各轮相加)见
-[sessions.md](sessions.md) 与 [session-format.md](session-format.md)。
+- `@path` 把文件内容带进第一条消息(`@xx` 会补全路径:装了 `fd` 走全树搜索,否则只扫当前目录一层)。
+- `enter` 提交,`shift+enter` / `ctrl+j` 换行;输入框最多 8 行。
+- `↑` / `↓` 在空编辑器或行首时翻输入历史(首次进入留住草稿,手动改动即退出)。
+- **选项写在消息之前**(`qi -nt "问题"`):顶层选项在遇到消息后不再解析。
 
-## 3. 上下文与思考
+## 看它怎么干活
 
-**上下文变长会自动压缩,不用管** —— 超过 `contextWindow - reserveTokens` 时,旧消息被压成一段结构化
-摘要再继续。阈值与保留量可调(`settings.json` 的 `compaction`),机制见 [compaction.md](compaction.md)。
+transcript 从下往上长,底部固定是「编辑器 + 上下边框 + footer」。footer 最多三行:
 
-| 想做 | 怎么做 |
+```text
+~/Desktop/qi (master) • 会话名          ← cwd(+git 分支)(+会话名)
+↑12k ↓678 1.2%/1.0M (auto)   deepseek/v4.1 • medium   ← token 统计 + 模型与思考级别
+排队 2 / 扩展状态 / 瞬时提示            ← 只在这些内容时出现
+```
+
+- 工具调用是一块带底色的卡片(标题 = `read <path>`,输出按工具截断);`ctrl+o` 展开 / 折叠。
+- 思考内容与回答**分开流式**(灰色斜体),`ctrl+t` 随时隐藏 / 显示。
+- 压缩与分支摘要在回放里显示成底色块(`[compaction]` / `[branch]`),`ctrl+o` 展开看摘要。
+- 正在跑时上边框内嵌 `Working` spinner;`escape` 中断(协作式:未执行的工具补"已中断"结果、半截回答照常落盘)。
+
+## 改变方向
+
+| 操作 | 行为 |
 | --- | --- |
-| 现在压一次 | TUI 里 `/compact`(也可带一段"重点压什么"的说明) |
-| 换思考级别 | `--thinking off\|minimal\|low\|medium\|high\|xhigh\|max`;或在 TUI 里 `shift+tab` 轮转 |
-| 看这轮用了多少 | TUI 状态行 / TUI 里回放会话;口径见 [sessions.md](sessions.md) §5 |
-| 关掉自动压缩 | `settings.json` 写 `"compaction": {"enabled": false}`(手动 `/compact` 仍可用) |
+| 回合中 `enter` | **steer**:排队,当前回合结束后立刻作为下一回合发出 |
+| 回合中 `alt+enter` | **follow-up**:排队,排在所有 steer 之后 |
+| `escape` | 中止当前轮;有排队消息就退回编辑器 |
+| `alt+up` | 取回排队消息(多条按 steer → follow-up 拼回编辑器) |
 
-**非法思考级别会以退出码 2 报错**(不会静默退回默认),因为打错了字却"看起来生效了"最难查。
+排队消息会以 dim 行写进 transcript(带"当前回合结束后发送"/"follow-up"标签),不会静默丢。
+**命令(`/x`)与 bash(`!x`)例外:回合进行中也立即执行** —— 否则 `/quit`、`/tree` 这类按不下去。
+`/new` 清空队列;队列只存在当前进程里,不落盘。
 
-## 4. 资源与扩展
+## 换模型与设置
 
-| 想做 | 命令 |
+| 想换 | 怎么做 |
 | --- | --- |
-| 额外加载一个技能(可重复,叠加) | `qi --skill <路径>` |
-| 关掉技能的**自动发现** | `qi --no-skills` / `-ns`(`--skill` 仍生效) |
-| 临时试用一个扩展目录 | `qi -e <目录>` / `--extension`(仅本进程,`scope=temporary`) |
-| 给扩展声明过的**旗标**传值 | `qi --ext name=value`(也可直接写 `--name=value`) |
-| 看装了哪些扩展 | `qi list` |
-| 列已装 / 声明是否一致 | `qi list` 或 `qi doctor` 的"包声明"一节 |
+| 模型 | `/model`(选择器)或 `ctrl+l`;`ctrl+p` / `ctrl+shift+p` 在 `/scoped-models` 圈定的清单里轮换 |
+| 思考级别 | `/thinking` 或 `shift+tab` 循环(off → minimal → … → max);`--thinking <级别>` 只本次运行 |
+| 偏好(主题 / 交互开关) | `/settings` 面板(`enter` 换值、`ctrl+s` 保存到**用户级** settings) |
+| 本次运行的模型 | `qi --provider <名> --model <provider/模型>:<级别>` |
 
-`--no-skills` 与 `--skill` 的组合是刻意的:**"把自动发现的都关掉,只跑我指定的这个"** ——
-调试单个技能时最常用。
+**切换会落盘**:换模型写一条 `model_change`、换级别写一条 `thinking_level_change`,所以**下次打开这条会话
+仍用当时的模型与级别**(CLI 显式给的 `--model` / `--thinking` 优先)。还原前会检查凭证:provider 已经没密钥
+时退回默认并在启动提示里说明,不会拿着注定 401 的模型继续跑。
 
-`--ext` 与 `-e/--extension` 不是一回事:`--ext` 传的是**旗标值**(`name=value`),`-e` 传的是
-**一个扩展目录**。装扩展的完整方式(含 `settings.packages` 声明层)见 [cli.md](cli.md) §4。
+思考级别经 litellm 的 `reasoning_effort` 下发(`minimal` / `low` / `medium` / `high`);`xhigh` / `max`
+收敛为 `high`。只有模型在 `models.json` 里声明 `reasoning: true` 时才带参。provider 拒收时自动去掉参数
+重试并提示一次。**默认 `medium`**。
 
-## 5. 信任项目
+## 接着还是重开
 
-项目里的 `.qi/` 可能包含**可执行代码**(扩展),所以默认**不信任**:
-
-| 命令 | 作用 |
+| 想做的事 | 怎么做 |
 | --- | --- |
-| `qi -a` / `--approve` | 信任本项目(加载项目级扩展) |
-| `qi -na` / `--no-approve` | 明确不信任 |
+| 接着最近一条 | `qi -c` |
+| 指定某条 | `qi --session <id\|前缀\|路径>` |
+| 浏览 / 恢复 / 重命名 / 删除 | `/resume`(或 `qi -r` 直接进选择器;`tab` 切"当前目录 ↔ 全部") |
+| 从某条分叉出新会话 | `/fork [序号\|id]`(把那条消息放回编辑器)、`/clone`、`qi --fork <id>` |
+| 跳到本会话的别的节点继续 | `/tree`(同文件内开分支;被放弃的那段会压成 `branch_summary` 挂过去) |
+| 不落盘地跑一把 | `qi --no-session`(内存会话) |
 
-`settings.json` 里的 `defaultProjectTrust` 可取 `ask`(默认)/ `always` / `never`;`ask` 目前**等价于
-不信任**(交互询问尚未实现),所以不想每次加 `-a`,就写 `"defaultProjectTrust": "always"`。
+**裸 `qi` 与 `/new` 走懒建**:会话对象立刻就有,但**文件推迟到第一条助手回答**才出现 ——"进来看看就退出"
+不会在会话目录里留下空文件。`/session` 看当前会话信息(ID / 文件 / cwd / 消息数 / 分支点 / 模型 / 用量)。
 
-**未信任时挡的是项目级扩展**;项目级**技能**与 `AGENTS.md` **不挡**(它们算文本指令)。这条界线与
-后果见 [security.md](security.md) §2。
+## 跑一条终端命令
 
-## 6. 出问题时先跑这几个
+| 写法 | 行为 |
+| --- | --- |
+| `!<命令>` | 执行 shell;输出以「上下 `─` + `$ cmd` + 输出」块展示,并把「命令 + 输出」落成一条 user 消息供后续回合参考 |
+| `!!<命令>` | 同样执行,但**不进上下文**(块边框变 dim,标题标出) |
+
+这是**你亲手敲的**操作:`!` 命令不经任何过滤(与模型走 `bash` 工具是两回事,见 [security.md](security.md))。
+
+## 复制、导出、分享
+
+| 操作 | 命令 |
+| --- | --- |
+| 复制最后一条回答 | `/copy` 或 `ctrl+x`(剪贴板走 OSC 52) |
+| 导出会话 | `/export [file]` 或 `qi --export out.jsonl`(按扩展名:`.html` → 自包含 HTML(只含当前分支),其余 → 原始 JSONL) |
+| 导入会话 | `/import <file>` |
+| 分享 | `/share` —— 传成**私有** GitHub gist 并复制链接(token 见 [providers.md](providers.md)) |
+
+## 调整终端
+
+- **渲染模式**:`fullscreen`(qi 默认)= 进备用屏、qi 拥有视口,滚轮只在界面内滚;**`regular`** = 不占全屏,
+  滚动交给终端。改 `settings.tuiMode` 或 `--tui-mode <regular|fullscreen>`;改完要**重启**(`--tui-mode` 只覆盖当次)。
+- **配色**:`dark` / `light` / `auto`(探测终端背景色);`QI_THEME=light qi`。见 [themes.md](themes.md)。
+- **版式**:`editorPaddingX` / `outputPad` / `autocompleteMaxVisible` 在 settings 里调。
+
+## 出问题时
 
 ```bash
-qi doctor                       # 配置 / 凭证 / 扩展 / 包声明,一次全报
-qi doctor | grep -A3 包声明      # 只看扩展声明与已装是否一致
-qi --list-models                # provider / 模型 / 凭证状态
-qi config --json                # 合并后的设置(含来自哪几个文件)
-qi --verbose -p "问题"           # 无头模式下也看进度(走 stderr,不污染 stdout)
+qi doctor                  # 配置 / 凭证 / 扩展 / 包声明,一次全报(并给出可复制的修复命令)
+qi config --json           # 合并后的设置(含来自哪几个文件)
+qi --list-models           # provider / 模型 / 凭据状态
+qi --verbose -p "问题"      # 无头模式下也看进度(stderr,不污染 stdout)
 ```
 
-`qi doctor` 的凭证一节会给出**来源**(`auth(...)` / `env:XXX` / `config:...`),所以"我明明设了
-环境变量"这类问题能直接看出来是"没读到"还是"读到了但为空"。
-
-## 7. 几个完整场景
-
-```bash
-# 脚本里拿答案(不要进度、不要 TUI)
-qi -p "把 CHANGELOG 里最近 10 条整理成一句话"
-
-# 拿结构化事件喂给上层(比如统计工具调用)
-qi --mode json "跑一遍测试" | jq -r 'select(.kind=="tool_end") | .data.status' | sort | uniq -c
-
-# 只在本次运行里试用一个正在开发的扩展目录
-qi -e ~/src/my-ext "试一下你的新工具"
-
-# 调试单个技能(关掉其它技能的自动发现)
-qi --no-skills --skill ./my-skill/SKILL.md "用这个技能做事"
-
-# 换个模型跑同一句话(不改进默认配置)
-qi --thinking high -p "这个 bug 的根因是什么"
-
-# 项目里第一次跑(信任它,以加载项目级扩展)
-qi -a "这个仓库的测试怎么跑"
-```
-
-## 8. 与 pi 的对应
-
-命令行形态**刻意与 pi 对齐**:裸命令进 TUI、`-p` 无头、`-c` 续会话、`--session` / `--fork` / `-n`、
-`--mode json`、`-e <path>`、`--ext`、`-a`。差异集中在 qi 多出来的部分(扩展声明层、`qi list`、
-信任不记忆)。要按 pi 的习惯敲命令通常能work,遇到不认识的就 `qi --help` —— **不要照 pi 的
-`docs/cli.md` 抄 qi 的选项**(两者并不完全一致)。
+`qi doctor` 的凭证一节会给出**来源**(`auth(...)` / `env:XXX` / `config:...`)——
+"我明明设了环境变量"这类问题能直接看出是"没读到"还是"读到了但为空"。

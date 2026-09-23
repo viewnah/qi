@@ -394,7 +394,7 @@ async def connect(spec: ServerSpec) -> Client:
     if spec.transport == "http":
         return await connect_http(spec)
     if spec.transport == "sse":
-        # 旧 HTTP+SSE —— **明确不做**(docs/extensions.md §7.5),但要说清楚是哪一个。
+        # 旧 HTTP+SSE —— **明确不做**(design/extensions-design.md 的 E21),但要说清楚是哪一个。
         # 否则用户手里只有一份 `"type": "sse"` 的 mcp.json,而报错只说“未实现”。
         raise ManagerError(
             f"MCP server `{spec.name}`:传输 `sse`(旧 HTTP+SSE)尚未实现 —— "

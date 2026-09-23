@@ -1,11 +1,11 @@
 # 扩展的安装与声明
 
 > 装扩展 = 调 pip(或放一个目录);qi **不做**这件事,只做「**声明层 + 比对**」。
-> 相关:[cli.md](cli.md) §4(命令速查)、[extensions.md](extensions.md)(扩展机制与 API)、[settings.md](settings.md)(`packages` / `extensions` 字段)。
+> 相关:[cli.md](cli.md)(命令速查)、[extensions.md](extensions.md)(扩展机制与 API)、[settings.md](settings.md)(`packages` / `extensions` 字段)。
 
 ## 1. 谁负责跱这一步
 
-`qi install` **存在**(对齐 pi),但它只是**帮你跱一步**:调一次 pip,然后把声明写进
+`qi install` **存在**,但它只是**帮你跱一步**:调一次 pip,然后把声明写进
 `settings.packages`。**它不替代“想清楚装到哪个环境”这件事** —— 三种目标环境的行为真的不同:
 
 1. **目标环境有三种**:qi 自己的 venv、`uv tool` 托管的环境、只读的系统解释器(Homebrew / 系统 Python)。
@@ -14,7 +14,7 @@
 2. **`uv tool` 会整个重建环境**。uv 文档的原话:tool 环境 "may be upgraded via `uv tool upgrade`,
    or **re-created entirely** via subsequent `uv tool install`"。所以 pip 装进去的扩展**会被抹掉**
    —— 声明还在,`qi doctor` 会把它报出来(这正是“声明层”存在的意义)。
-3. **`remove` 不卸包**(与 pi 同义):它只从声明里移除,并把 `pip uninstall` 命令给你。
+3. **`remove` 不卸包**:它只从声明里移除,并把 `pip uninstall` 命令给你。
    装/卸包是 pip 的事,声明是你的事。
 4. **声明与实装始终是两件事**:声明说"这个环境该有什么",实装由 pip 决定。所以 `qi list` /
    `qi doctor` 永远做**两个方向**的比对 —— 即使你用的是 `qi install`。
@@ -148,7 +148,7 @@ tool 重建后补回
 ## 7. 边界
 
 - 这是**声明与实装的比对**,不是依赖求解器:qi 不去读每个扩展的 `requires()` 算冲突树。
-  那件事在**装载时**按「扩展有没有把宿主写进依赖」单独报(见 [extensions.md §5.5](extensions.md))。
+  那件事在**装载时**按「扩展有没有把宿主写进依赖」单独报(见 [extensions.md §10](extensions.md))。
 - **目录通道的 PEP 723 声明**:`# /// script` 里的 `dependencies` 目前只用于上面那条宿主依赖检查;
   `qi doctor` 还**不**据它去查"这些依赖装齐了没有"。
 - `settings.packages`(包声明)与 `settings.extensions`(资源路径)是**两件事**:

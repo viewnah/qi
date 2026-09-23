@@ -1,7 +1,8 @@
 # qi 总设计:架构总览、决策索引与运行时布局
 
 > **这是设计记录,不是手册。** 现行行为以 [docs/](../docs/index.md) 手册为准;阶段计划与验收在
-> [PLAN.md](PLAN.md);扩展机制的设计与决策在 [extensions-design.md](extensions-design.md)。
+> [PLAN.md](PLAN.md);扩展机制的设计与决策在 [extensions-design.md](extensions-design.md);
+> 与上游 pi 的逐节对照在 [pi-alignment.md](pi-alignment.md)。
 >
 > 本文由根 README 拆出(2026-09):README 只留安装与快速开始,这里保留**架构总览、既定决策索引、
 > 技术选型、运行时目录布局、安全总原则**。表中标 **v1** 的行是重构前的形状(保留用于对照,**勿据此
@@ -46,18 +47,18 @@ core 移除:core 只认 `RunSpec`,而且 `AgentRunner` **不再自己拼 prompt*
 | MCP | 全局 `~/.qi/agent/mcp.json` + 项目 `.qi/mcp.json`(项目覆盖全局)+ 角色私有 `mcp.json`;角色能不能用由它的 `tools:` 里写什么决定(**默认拒绝**) | [qi-mcp README](../extensions/qi-mcp/README.md) |
 | 数据源 | 设计上住在 agent `data_sources.json`(私有,凭证 env);**v3 无实现**(没有消费它的扩展) | [agent-config-design.md §9](agent-config-design.md) |
 | 导入导出 | import = 拷贝 + 复用装载校验器 + 明文凭证扫描;export 产物可直接 import。**v3 未实现** | [agent-config-design.md §10](agent-config-design.md) |
-| 工具 | 代码全局注册 ToolCatalog;**`tools` 三态**:省略或 `*` = 全部,名单 = allowlist;未知名报错 | [tools.md](../docs/tools.md) |
-| 内置工具 | **8 个** + `clarify`:read / ls / find / grep / write / edit(diff 精确)/ bash(真 bash)/ powershell(仅 Windows) | [tools.md §2](../docs/tools.md) |
-| 模型 | 全局 `models.json`:`defaultProvider` / `defaultModel`;v1 的 `routerProvider`(分派用)随 Dispatcher 一起取消;角色可以用 `model:` 覆盖 | [model-config.md](../docs/model-config.md) |
+| 工具 | 代码全局注册 ToolCatalog;**`tools` 三态**:省略或 `*` = 全部,名单 = allowlist;未知名报错 | [how-qi-works.md](../docs/how-qi-works.md) |
+| 内置工具 | **8 个** + `clarify`:read / ls / find / grep / write / edit(diff 精确)/ bash(真 bash)/ powershell(仅 Windows) | [how-qi-works.md](../docs/how-qi-works.md) |
+| 模型 | 全局 `models.json`:`defaultProvider` / `defaultModel`;v1 的 `routerProvider`(分派用)随 Dispatcher 一起取消;角色可以用 `model:` 覆盖 | [models.md](../docs/models.md) |
 | 插件 → 扩展 | pip 包(entry point `qi.extensions`)+ 本地目录双通道;`register(api)`:工具 / 事件 / 命令 / 旗标 / 能力交接整套面(P-E1 改名) | [extensions.md](../docs/extensions.md) · [plugins.md](plugins.md) |
-| 运行 | **单 agent**(core 不分派);多 agent 走 **agent-as-tool**(qi-agents);P-E4c 取消 auto 与 `--agent` | [cli.md](../docs/cli.md) · [extensions.md §7](../docs/extensions.md) |
+| 运行 | **单 agent**(core 不分派);多 agent 走 **agent-as-tool**(qi-agents);P-E4c 取消 auto 与 `--agent` | [cli.md](../docs/cli.md) · [extensions-design.md](extensions-design.md) |
 | 命令 | 参数尽量对齐 pi:`qi [-p\|-c\|…] [--] [@files…] [msg…]` + 子命令 | [cli.md](../docs/cli.md) |
 | Web | HTTP 宿主 + UI 都在 **qi-web** 扩展里(core 不内置);`qi web` 由扩展注册;不做外置 RPC 桥 | [web.md](web.md) · [qi-web README](../extensions/qi-web/README.md) |
 | 配置形态 | 模型配置 = JSON `models.json`(分层:env → 项目 → 用户);应用设置与声明 = `settings.json` | [settings.md](../docs/settings.md) |
 | 会话 | JSONL 每会话文件(entry 带 `type`);位置:**全局 `~/.qi/agent/sessions/`** | [sessions.md](../docs/sessions.md) · [session-format.md](../docs/session-format.md) |
 | Dispatcher | v1:auto 分派(信号分层 L1 规则 / L2 embedding / L3 Router / L4 兜底 + `@` 点名,每轮重路由)。**v3 整体取消** | [dispatcher.md](dispatcher.md) |
-| bash 策略 | **无命令级过滤**(对齐 pi);限制靠角色 `tools:` 白名单、CLI 的 `-t`/`-xt`/`-nt`/`-nbt`,或容器/VM;文件工具路径限会话目录 | [tools.md §4](../docs/tools.md) · [bash-allowlist.md](bash-allowlist.md) |
-| clarify / denylist | `clarify` 是通用小工具(有前端时**真问人**);`disallowed_tools` 是角色级 denylist(支持通配) | [tools.md](../docs/tools.md) |
+| bash 策略 | **无命令级过滤**(对齐 pi);限制靠角色 `tools:` 白名单、CLI 的 `-t`/`-xt`/`-nt`/`-nbt`,或容器/VM;文件工具路径限会话目录 | [security.md](../docs/security.md) · [bash-allowlist.md](bash-allowlist.md) |
+| clarify / denylist | `clarify` 是通用小工具(有前端时**真问人**);`disallowed_tools` 是角色级 denylist(支持通配) | [how-qi-works.md](../docs/how-qi-works.md) |
 
 ## 3. 技术选型
 
@@ -87,7 +88,7 @@ core 移除:core 只认 `RunSpec`,而且 `AgentRunner` **不再自己拼 prompt*
     ├── settings.json       # 默认模型 / skills 追加路径 / theme / packages 声明 …
     ├── models.json         # providers / 模型(格式对齐 pi)
     ├── auth.json           # 凭证(0600,按 provider)
-    ├── SYSTEM.md           # 可选:整体替换默认基座(见 system-prompt.md §3 副作用)
+    ├── SYSTEM.md           # 可选:整体替换默认基座(见 [configuration.md](../docs/configuration.md) 的「换掉或追加系统提示词」)
     ├── AGENTS.md           # 可选:全局项目上下文(注入 <project_context>)
     ├── skills/<name>/      # 全局技能(qi 私有)
     ├── agents/<name>/      # 全局角色        —— 读它的扩展:qi-agents
@@ -111,20 +112,20 @@ core 移除:core 只认 `RunSpec`,而且 `AgentRunner` **不再自己拼 prompt*
 > 提示词的两个入口不要混:`SYSTEM.md` **整体替换**默认基座(项目 > 全局 > 代码内默认);
 > `AGENTS.md` / `CLAUDE.md`(全局 `~/.qi/agent/` + 项目根及各级祖先,止于 git 根)则作为
 > `<project_context>` **追加**。两者与角色层、技能、工作目录的推出顺序见
-> [system-prompt.md](../docs/system-prompt.md)。
+> [configuration.md](../docs/configuration.md)。
 
 ## 5. 安全总原则
 
 - **bash 不筛命令**(对齐 pi):内置 bash 以 qi 进程权限执行任意命令。要收紧只有三条路 ——
   角色 `tools:` 里**只列需要的工具**(白名单)、本次运行用 CLI 收窄(`-nt` 全禁 / `-nbt` 只留
-  扩展工具 / `-t` 白名单 / `-xt` 排除,见 [cli.md §1](../docs/cli.md)),或把进程放进容器/VM。
+  扩展工具 / `-t` 白名单 / `-xt` 排除,见 [cli.md](../docs/cli.md)),或把进程放进容器/VM。
   进程内的半吊子过滤容易被误当成安全边界,这是**故意不做**的(要摘整类工具就用
   `disallowed_tools` / `-xt`,而不是去筛工具内部的子命令)
 - 内容(技能 / 第三方角色)是**可执行指令**:先审后装,导入时提示
 - **扩展代码 = 全权限**:仅可信源。项目级 `.qi/extensions/` 的**信任门控已实现**
   (`settings.defaultProjectTrust` = `ask`/`always`/`never`,`-a` / `-na` 单次表态);
   `ask` 的**交互式询问未实现**,所以它现在保守判**不信任**(fail-safe = 不加载)。项目级**角色**
-  与 `.agents/skills` 的门控**尚未实现** —— 见 [extensions.md §5.3](../docs/extensions.md)
+  与 `.agents/skills` 的门控**尚未实现** —— 见 [extensions.md §2](../docs/extensions.md)
 - 凭证三源:auth store(`~/.qi/agent/auth.json`,0600,按 provider)→ 约定环境变量 →
   `models.json` 的 `apiKey` 引用;配置文件与导入包**零明文**(导入时扫描)
 - Web / 远程暴露需显式开启 + 鉴权(默认只绑回环)

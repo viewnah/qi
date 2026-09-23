@@ -44,7 +44,7 @@ qi init -y --provider deepseek --model deepseek-chat \
     --base-url https://api.deepseek.com/v1 --api openai-completions --api-key sk-xxx
 ```
 
-> 更细的字段与手工写法见 [model-config.md](model-config.md);凭证的解析顺序、`apiKey` 的
+> 更细的字段与手工写法见 [models.md](models.md);凭证的解析顺序、`apiKey` 的
 > `!command` / `$ENV` 写法见 [providers.md](providers.md)。
 
 ## 3. 验一下
@@ -59,13 +59,13 @@ qi doctor
 这一步别跳过——"配了但没生效"几乎都能在这里一眼看出来(尤其是凭证:显示 `缺失(env:OPENAI_API_KEY(未设置))`
 这种带括号说明的,就是"找到了来源但值为空")。
 
-## 4. 跑起来
+## 4. 给它一个任务
 
 三种形态,按用途选:
 
 ```bash
 qi                          # 交互界面(TUI)。裸 `qi` 就是这个
-qi "分析这个仓库"            # 进 TUI,并把这句话作为首条消息发出(对齐 pi 的 `pi "问题"`)
+qi "分析这个仓库"            # 进 TUI,并把这句话作为首条消息发出
 qi -p "分析这个仓库"         # 无头一次执行,只输出答案(脚本用)
 qi --mode json "分析这个仓库" # 事件流(一行一个 JSON 对象),给管道/上游服务用
 ```
@@ -81,17 +81,28 @@ qi --mode json "分析这个仓库" # 事件流(一行一个 JSON 对象),给管
 | --- | --- |
 | 下次接着这条会话 | `qi -c`(最近一条)或 `qi --session <id>` —— [sessions.md](sessions.md) |
 | 换模型 / 换思考级别 | TUI 里换,或 `--thinking <级别>` —— [tui.md](tui.md) |
-| 让它按某个角色干活 | 装 **qi-agents** 扩展 —— [agent-config.md](agent-config.md) |
 | 加自己的技能 | 写 `SKILL.md` 放进 `~/.qi/agent/skills/` —— [skills.md](skills.md) |
-| 改系统提示词 | 写 `.qi/SYSTEM.md`(**整体替换**默认基座,注意副作用) —— [system-prompt.md](system-prompt.md) |
+| 改系统提示词 | 写 `.qi/SYSTEM.md`(**整体替换**默认基座,注意副作用) —— [configuration.md](configuration.md) |
 | 写扩展 | [extensions.md](extensions.md) |
 | 换个配色 | `qi config --set theme=dark` 或 `QI_THEME=light qi` —— [themes.md](themes.md) |
+
+## 怎么定制 qi
+
+按"想做的最小的事"挑:
+
+| 想做 | 用 |
+| --- | --- |
+| 让它按我的偏好干活(渲染模式、压缩、思考级别…) | [设置](settings.md) / [配置](configuration.md) |
+| 给它一份按需加载的检查清单 | [技能](skills.md) |
+| 加自己的工具 / 命令 / 事件钩子 | [写扩展](extensions.md) |
+| 换配色 | [主题](themes.md) |
+| 打包分发上面这些 | [扩展的安装与声明](packages.md) |
 
 ## 6. 零配置也能跑什么
 
 裸 core **不带角色**:它就是一个 agent,一份**代码内默认基座提示词**,加上内置工具
-(read / ls / find / grep / write / edit / bash / powershell)。所以不装任何扩展也能正常干活 ——
-角色、MCP、Web UI 都是**可选扩展**(`qi-mcp` / `qi-agents` / `qi-web`)。
+(read / ls / find / grep / write / edit / bash / powershell / clarify)。所以不装任何扩展也能正常干活 ——
+其余能力(角色、MCP、Web UI 等)都以**扩展**形式单独提供,手册随各自的包走。
 
 装上扩展后 `qi doctor` 的"扩展"一节会列出它们;`qi list` 会把**已装**与 `settings.packages` 里
-**声明**的扩展做双向比对(声明了没装 / 装了没声明),见 [cli.md](cli.md) §4。
+**声明**的扩展做双向比对(声明了没装 / 装了没声明),见 [cli.md](cli.md)。

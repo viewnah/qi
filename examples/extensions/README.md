@@ -17,6 +17,6 @@
 
 ## 相关文档
 
-- `docs/extensions.md` —— 完整 API、中间件链语义、信任门控、决策记录(E1–E25)
+- `docs/extensions.md` —— 怎么写扩展(工具 / 事件 / 命令 / UI / 渲染 / 依赖);决策编号见 `design/extensions-design.md`
 - `docs/settings.md` —— `settings.json` 里的 `extensions[]` / `defaultProjectTrust`
 - `qi doctor` —— 装了哪些扩展、各自注册了什么、有没有依赖警告

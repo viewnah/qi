@@ -4,7 +4,7 @@ qi 的 **Web UI** 扩展:HTTP 宿主(REST + SSE)+ AG-UI 桥 + 官方界面。
 
 它原本住在 core(`src/qi_agent/web/`,1762 行);P-E5 ③ 按"**core 一点不留**"的决定搬出来 ——
 core 不再拖 fastapi/uvicorn,`qi web` 这个入口也由本扩展自己提供(经 core 的
-`registerCliCommand` 面)。见 `docs/extensions.md` E25 / §6。
+`registerCliCommand` 面)。见 `design/extensions-design.md` 的 E25。
 
 ## 装
 

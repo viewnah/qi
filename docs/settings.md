@@ -1,7 +1,7 @@
 # 设置(`settings.json`)
 
-> 文件位置与字段名**对齐 pi**,便于两边共享同一套认知。
-> 读写入口:`qi config`(见 [cli.md](cli.md) §5);扩展声明在 `settings.packages` 与 `settings.extensions`(见 [extensions.md](extensions.md) §5.5)。
+> 文件位置、分层与合并规则见下。
+> 读写入口:`qi config`(见 [cli.md](cli.md));扩展声明在 `settings.packages` 与 `settings.extensions`(见 [extensions.md](extensions.md) §10)。
 
 ## 1. 位置与分层
 
@@ -10,13 +10,13 @@
 ~/.qi/agent/settings.json        全局
 ```
 
-配对关系与 pi 一致:全局比项目深一层(`~/.pi/agent/` ↔ `<项目>/.pi/`),因为全局侧是
+配对关系:全局比项目深一层(`~/.qi/agent/` ↔ `<项目>/.qi/`),因为全局侧是
 "全部用户级状态的挂载点"。`QI_AGENT_HOME` 指向的就是全局 agent 目录本身。
 
 ## 2. 合并规则
 
 - 键级**深合并**:项目覆盖全局;嵌套对象递归合并。
-- **数组整体替换**(不逐项合并)—— 与 pi 一致,避免"想删一项却删不掉"。
+- **数组整体替换**(不逐项合并)—— 避免"想删一项却删不掉"。
 - 未知字段原样保留(`extra=allow`),方便扩展与前后版本共存。
 - 文件损坏/JSON 非法 → 启动报错(不静默降级),`qi doctor` 会指出具体文件。
 
@@ -39,38 +39,37 @@
 | `defaultProvider` | string | — | 默认 provider(**唯一来源**;`models.json` 里的同名键不参与) |
 | `defaultModel` | string | — | 默认模型 id,同上;缺任一项则启动失败并给出迁移命令 |
 | `sessionDir` | string | — | 会话目录;相对路径按**各自 settings.json 所在目录**解析,支持 `~`;项目优先于全局 |
-| `shellPath` | string | — | `bash` 用哪个 shell(对齐 pi);空 = 按平台解析:`shellPath` → Windows 上 Git Bash 已知路径 → PATH 的 bash → `/bin/bash` → `sh`。指向不存在的文件会直接报错(不静默回退)。见 [tools.md](tools.md) §2 |
+| `shellPath` | string | — | `bash` 用哪个 shell;空 = 按平台解析:`shellPath` → Windows 上 Git Bash 已知路径 → PATH 的 bash → `/bin/bash` → `sh`。指向不存在的文件会直接报错(不静默回退)。见 [how-qi-works.md](how-qi-works.md) |
 | `defaultProjectTrust` | string | `ask` | 项目信任:`ask`(默认,现保守判**不信任**)/ `always` / `never`。**只从用户级读** —— 项目级写了会被忽略并提示(仓库不能自称可信) |
 | `skills` | string[] | `[]` | 追加技能路径;支持 glob、`~`、相对路径与排除项(见 §4) |
-| `skillsEnabled` | boolean | `true` | qi 扩展:关闭技能自动发现(等价 pi 的 `--no-skills` CLI 开关) |
-| `enableSkillCommands` | boolean | `true` | 把技能注册成 `/skill:<名>` 命令(pi 同名) —— 技能平时只进描述,这条是**强制加载全文**的入口。关掉则这批命令不存在 |
-| `doubleEscapeAction` | string | `tree` | 空编辑器连按两次 `escape`:`tree`(默认)/`fork`/`none`;非法值按 `tree`。见 [tui.md](tui.md) §2 |
+| `skillsEnabled` | boolean | `true` | qi 扩展:关闭技能自动发现(等价 `--no-skills` CLI 开关) |
+| `enableSkillCommands` | boolean | `true` | 把技能注册成 `/skill:<名>` 命令 —— 技能平时只进描述,这条是**强制加载全文**的入口。关掉则这批命令不存在 |
+| `doubleEscapeAction` | string | `tree` | 空编辑器连按两次 `escape`:`tree`(默认)/`fork`/`none`;非法值按 `tree`。见 [slash-commands.md](slash-commands.md) |
 | `hideThinkingBlock` | boolean | `false` | 启动时不展示思考块(`ctrl+t` 仍可切换) |
-| `editorPaddingX` | number | `1` | 编辑器左右内边距(pi 默认 `0`,qi 视觉基线用 `1`) |
-| `outputPad` | number | `1` | 助手输出的左侧缩进(pi 默认 1;`0` = 顶格) |
-| `autocompleteMaxVisible` | number | `5` | 补全面板最多显示几行(pi 默认 5;候选本身不裁,面板内滚动) |
-| `tuiMode` | string | `fullscreen` | TUI 渲染模式:`fullscreen`(qi 默认)= 备用屏、qi 拥有视口,滚轮只滚 transcript;`regular` = inline(不占全屏、滚动交给终端)。非法/缺失值按 `fullscreen`。**qi 默认与 pi 不同**(pi 默认 `regular`)—— 理由见 [tui.md](tui.md) §1。启动时读;改完要重启(不想重启就用 `--tui-mode`) |
+| `editorPaddingX` | number | `1` | 编辑器左右内边距(qi 视觉基线用 `1`) |
+| `outputPad` | number | `1` | 助手输出的左侧缩进(`0` = 顶格) |
+| `autocompleteMaxVisible` | number | `5` | 补全面板最多显示几行(候选本身不裁,面板内滚动) |
+| `tuiMode` | string | `fullscreen` | TUI 渲染模式:`fullscreen`(qi 默认)= 备用屏、qi 拥有视口,滚轮只滚 transcript;`regular` = inline(不占全屏、滚动交给终端)。非法/缺失值按 `fullscreen`。理由见 [usage.md](usage.md)。启动时读;改完要重启(不想重启就用 `--tui-mode`) |
 
-### 仅存储(预留,尚未参与行为)
+### 收下但按实际状态落地
 
-这些字段按 pi 的名字收下并原样保留,但 v1 还没有对应实现,写进去**不会生效**:
+这些字段都收下;下表逐条说明落地状态(**写了会不会生效**):
 
-| 字段 | pi 中的用途 | qi 现状 |
+| 字段 | 用途 | 现状 |
 | --- | --- | --- |
-| `theme` | 主题名(dark/light/auto) | TUI 已接:自动探测终端背景(OSC 11),失败落 dark;`QI_THEME` 可覆盖。见 [tui.md](tui.md) §1 |
-| `branchSummary` | 分支摘要:/tree 跳转时被放弃那段要不要压成摘要;`skipPrompt: true` = **不问也不摘要** | **已接**(`skipPrompt`):默认**先问一句**,默认答案「不摘要」;无前端时同样不摘要(pi 的 defaults to no summary)。`reserveTokens` **未接** —— qi 的摘要预算固定,不加不生效的旋钮 |
-| `thinkingBudgets` | 每个思考级别的 token 预算;Anthropic/Google/Bedrock 原生用,OpenAI 兼容形态要靠每模型的 `compat.thinkingTokenBudgetField` | **部分已接**:**只对 Anthropic 形态**生效(litellm 只在那里有对应参数),且**不配就不带**(pi 另有内置默认表,qi 不抄);钳制到至少留 1024 token 给答案。OpenAI 兼容那半不做 —— qi 没有 compat 层 |
+| `theme` | 主题名(dark/light/auto) | TUI 已接:自动探测终端背景(OSC 11),失败落 dark;`QI_THEME` 可覆盖。见 [usage.md](usage.md) |
+| `branchSummary` | 分支摘要:/tree 跳转时被放弃那段要不要压成摘要;`skipPrompt: true` = **不问也不摘要** | **已接**(`skipPrompt`):默认**先问一句**,默认答案「不摘要」;无前端时同样不摘要。`reserveTokens` **未接** —— qi 的摘要预算固定,不加不生效的旋钮 |
+| `thinkingBudgets` | 每个思考级别的 token 预算;Anthropic/Google/Bedrock 原生用,OpenAI 兼容形态要靠每模型的 `compat.thinkingTokenBudgetField` | **部分已接**:**只对 Anthropic 形态**生效(litellm 只在那里有对应参数),且**不配就不带**;钳制到至少留 1024 token 给答案。OpenAI 兼容那半不做 —— qi 没有 compat 层 |
 | `modelThinkingLevels` | `{}` | 按模型的思考级别:`{"provider/模型": "high"}`(也认裸模型 id)。四级优先:`--thinking` > `--model provider/id:<级别>` > 这里 > `defaultThinkingLevel`;换模型时自动采纳,但本会话显式设过(`/thinking`)就不覆盖 |
-| `defaultThinkingLevel` | 默认思考级别 | 已接:`off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`;**不配默认 `medium`**(对齐 pi 的 `DEFAULT_THINKING_LEVEL`);TUI `shift+tab` 可运行时切换(`--thinking` 可覆盖)。见 [tui.md](tui.md) §2 |
+| `defaultThinkingLevel` | 默认思考级别 | 已接:`off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`;**不配默认 `medium`**;TUI `shift+tab` 可运行时切换(`--thinking` 可覆盖)。见 [slash-commands.md](slash-commands.md) |
 | `enabledModels` | 模型轮换(Ctrl+P) | 已接:`/scoped-models` 勾选后写回（全局设置）；空 = 轮换 models.json 里全部。已记进 settings 但**现已不可用**的条目(provider 删了 / 凭证没了)在面板里画成删除线 + `[unavailable]`,取消勾选才移出 |
 | `quietStartup` | 隐藏启动头 | 已接:不写 banner(含快捷键提示);启动提示(会话不存在之类)仍会出 |
-| `defaultProjectTrust` | `ask`/`always`/`never` | 项目信任尚未实现(`-a` 未落地) |
-| `defaultTools` | 初始内置工具集 | **已接**:只挑**内置**那一档(pi 同义),扩展装的工具照旧全留 —— 所以 `[]` = "不要内置、只留扩展"(与"没配"是两件事)。`--tools` / `-t` 等 CLI 旗标**压过**它 |
-| `compaction` | `{enabled, reserveTokens(默认 16384), keepRecentTokens(默认 20000)}` | 已接:超 `contextWindow - reserveTokens` 自动压缩;`/compact` 手动压缩。见 [tui.md](tui.md) §2 |
-| `retry.provider` | `{timeoutMs, maxRetries}` | **已接**(请求级,对齐 pi 的 `getProviderRetrySettings`):→ litellm 的 `timeout`(秒)/ `num_retries`。pi 用毫秒、litellm 用秒,代码里换算。这是**唯一**该管请求超时的地方 —— agent 层不再套 `asyncio.timeout`(旧行为会把整轮打成“执行超时”) |
-| `retry.enabled` / `retry.maxRetries` / `retry.baseDelayMs` | 回合级重试 | 未接(pi 有:失败回合退避重试)。已接的只是上面的 `retry.provider.*`;pi 的 `retry.provider.maxRetryDelayMs` 无对应 litellm 参数,也未映射 |
-| `packages` | **扩展声明层**:这个环境该装哪些扩展 | **已接**:`qi list` / `qi doctor` 读它做「声明了没装 / 装了没声明」的双向比对,并输出可复制的装法。qi **不替你调 pip**(理由见 [extensions.md §5.5](extensions.md)),所以这里只是声明 |
-| `extensions` | 额外扩展路径 | **已接**(P-E1):每一条可以是扩展目录的**父目录**,也可以直接指向**单个扩展目录**(对齐 pi);支持 `!排除` / `-排除`(见 §4);项目级那份受信任门控 |
+| `defaultTools` | 初始内置工具集 | **已接**:只挑**内置**那一档,扩展装的工具照旧全留 —— 所以 `[]` = "不要内置、只留扩展"(与"没配"是两件事)。`--tools` / `-t` 等 CLI 旗标**压过**它 |
+| `compaction` | `{enabled, reserveTokens(默认 16384), keepRecentTokens(默认 20000)}` | 已接:超 `contextWindow - reserveTokens` 自动压缩;`/compact` 手动压缩。见 [slash-commands.md](slash-commands.md) |
+| `retry.provider` | `{timeoutMs, maxRetries}` | **已接**(请求级):→ litellm 的 `timeout`(秒)/ `num_retries`。毫秒→秒在代码里换算。这是**唯一**该管请求超时的地方 —— agent 层不再套 `asyncio.timeout`(旧行为会把整轮打成“执行超时”) |
+| `retry.enabled` / `retry.maxRetries` / `retry.baseDelayMs` | 回合级重试 | 未接(失败回合退避重试)。已接的只是上面的 `retry.provider.*`;`maxRetryDelayMs` 无对应 litellm 参数,未映射 |
+| `packages` | **扩展声明层**:这个环境该装哪些扩展 | **已接**:`qi list` / `qi doctor` 读它做「声明了没装 / 装了没声明」的双向比对,并输出可复制的装法。qi **不替你调 pip**(理由见 [extensions.md §11](extensions.md)),所以这里只是声明 |
+| `extensions` | 额外扩展路径 | **已接**(P-E1):每一条可以是扩展目录的**父目录**,也可以直接指向**单个扩展目录**;支持 `!排除` / `-排除`(见 §4);项目级那份受信任门控 |
 
 > 上表是**诚实清单**:写在文档里的是"已收下但未生效",避免用户以为写了就有效。
 
@@ -117,19 +116,15 @@
 ## 5. 与技能发现的关系
 
 `settings.json` 的 `skills` 只是技能来源之一,完整优先级与发现规则见
-[agent-config.md](agent-config.md) §5。
+[skills.md](skills.md) §1。
 
-## 6. `models-store.json`(pi 有,qi 没有)
+## 6. `models-store.json`:qi 不使用
 
-pi 的 `~/.pi/agent/models-store.json` 不是用户配置,而是**远程模型目录缓存**:
-被 `withRemoteCatalog()` 包装的内置 provider 会去 `GET <catalogBaseUrl>/api/models/providers/<id>`
-拉模型清单,按 provider 存 `{models, checkedAt, lastModified, etag}`,用 `If-None-Match`
-做 304 重验证,4 小时节流,`PI_OFFLINE` 时跳过;启动时叠加在内置清单之上。
+模型清单全部来自静态配置(`models.json` 加 litellm 的模型表),qi **没有**远程模型目录缓存 ——
+`~/.qi/agent/models-store.json` 这个文件不存在,也不需要存在。
 
-- 它只对**内置 provider** 生效。自定义 provider(`models.json` 里手写的)永远没有条目,
-  所以那份文件通常是 `{}` —— 这是正常状态。
-- **qi 不引入这个文件**:模型清单来自静态 `models.json`(加 litellm 的模型表),
-  qi 没有 pi.dev 那样的远程目录服务端,照抄只会多一个永远为 `{}` 的文件。
+后果只有一条:新模型不会自己出现。`qi init --refresh <名>` 是拿厂商 `/models` 接口对齐本地清单的
+入口(见 [providers.md](providers.md) §2.1)。
 
 ## 7. `qi config` 速查
 

@@ -33,7 +33,7 @@
 | `title` | 会话标题 |
 | `created_at` | `YYYY-MM-DDTHH:MM:SS`(本地时区) |
 | `cwd` | 会话工作目录(绝对路径)。旧会话可能没有 → 首次使用时由 `ensure_cwd()` 回填并整文件重写 |
-| `parentSession` | 本会话从哪个会话文件分叉出来(**只有** `/fork` `/clone` / `qi --fork` 会写,pi 同名字段)。会话选择器的树状视图按它缩进;老会话没有这个键 |
+| `parentSession` | 本会话从哪个会话文件分叉出来(**只有** `/fork` `/clone` / `qi --fork` 会写)。会话选择器的树状视图按它缩进;老会话没有这个键 |
 
 > **标题有两处**:`Session.title`(运行时读的)与 header entry 的 `title`(磁盘上的真相)。
 > 只改一处会出现「列表里是新名、重开又变回旧的」,所以改名统一走 `SessionStore.set_title()`
@@ -41,7 +41,7 @@
 >
 > **空标题与历史默认名 `tui` 都算「没有名字」**(`SessionStore`/`has_title()` 同一口径):
 > 自动命名据此决定要不要起标题,会话选择器据此决定显示标题还是**回落第一句话**
-> (`Session.display_label`,pi 的 `firstMessage` 同款)。见 [sessions.md](sessions.md) §7。
+> (`Session.display_label`:没名字就显示第一句话)。见 [sessions.md](sessions.md) §7。
 
 ## 3. entry 的公共字段
 
@@ -87,7 +87,7 @@ qi 目前**写入** 8 类,另有 1 类**只读**。
 | `compaction` | `compaction.compact()` → `Runtime.compact_session()` | `summary` · `firstKeptEntryId` · `tokensBefore` · `usage` | 一次压缩的产物;`firstKeptEntryId` 决定窗口起点 |
 | `branch_summary` | `Runtime.summarize_branch_for_jump()` | `summary` · `fromId` · `usage` | `/tree` 跳分支时,把「被放弃的那段」压成摘要挂到新位置 |
 | `model_change` | `Runtime.set_model()` → `SessionStore.set_context_setting()` | `provider` · `model_id` | **设置类**:记录"这时换成了哪个模型"。续会话时按它还原(见 §6.1);`_history()` 不读它 |
-| `thinking_level_change` | `Runtime.set_thinking_level()` | `thinking_level` | **设置类**:同上,记思考级别。只在级别**真的变了**时才写(pi 的 `isChanging`) |
+| `thinking_level_change` | `Runtime.set_thinking_level()` | `thinking_level` | **设置类**:同上,记思考级别。只在级别**真的变了**时才写 |
 | `dispatch` | **无人写**(遗留) | `agent` · `display_name` · `confidence` · `reasoning` · `source` | v3 取消 auto 分派后不再产生;`cli.py` / `tui.py` / qi-web 仍**读取**它,以便旧会话能正确回放 |
 
 `custom` 的两个来源形状不同,`source` 字段是区分点:
@@ -122,30 +122,30 @@ qi 目前**写入** 8 类,另有 1 类**只读**。
 
 ### 6.1 设置类 entry:模型与思考级别
 
-`model_change` / `thinking_level_change`(pi 同名两类)走的是**同一条取舍**:
+`model_change` / `thinking_level_change` 走的是**同一条取舍**:
 
 - **不进上下文** —— `_history()` 只读 `message`,所以切换模型不会往提示词里加任何东西。
 - **不在 `/tree` 默认视图里显示** —— 每一行都重复一遍"模型: x/y"只会淹没对话;
-  `all` 过滤档仍能看到它们(pi 的 `isSettingsEntry` 也是这个口径)。
+  `all` 过滤档仍能看到它们。
 - **但要在文件里** —— 两个理由:
   1. **续会话时按它还原**。`Runtime.bind_session()` 读当前分支上最后一条同类 entry
      (`session.context_settings()`),把模型与级别恢复过来,而不是回 settings 默认
-     (pi 的 `getSessionContextSettings` + `restoredModel`)。
-     还原前先问一句"拿得到 key 吗"(`resolve_key(...).ok`,对应 pi 的 `hasConfiguredAuth`):
+     (恢复失败就退回默认)。
+     还原前先问一句"拿得到 key 吗"(`resolve_key(...).ok`):
      provider 还在、但密钥已删时**退回默认 + 记一条 note**,而不是发一次注定 401 的请求。
      CLI 显式给的 `--model` / `--thinking` 是当次覆盖,**优先级高于**会话里记的旧值。
   2. **时间线上留下事实**。回放/诊断里能看出"这一轮开始换的模型",而不是只有结果没有原因。
 
 **为什么 agent 看不见切换动作**:换模型是**界面状态**,不作为消息进对话 —— 所以 agent
 "知道自己现在是什么"却"不知道刚才换过"。要让它能自查,走会话环境变量
-(`QI_PROVIDER` / `QI_MODEL` …),见 [tools.md](tools.md) §3.1。
+(`QI_PROVIDER` / `QI_MODEL` …),见 [environment-variables.md](environment-variables.md)。
 
 **写入时机**(三处,都由 `Runtime` 收口,所以两个入口 —— TUI 的 `/model` 与扩展的
 `api.setModel` —— 不会一个漏写一个重写):
 
 | 时机 | 写什么 |
 | --- | --- |
-| 新会话绑定时 | 起点两条(pi:只在**新**会话写 `appendModelChange`) |
+| 新会话绑定时 | 起点两条(只在**新**会话写) |
 | 换模型 / 换级别 | 各自的 entry;**同值不重写**(否则每次启动都加两行) |
 | 换模型触发级别自动调整 | 那条 `thinking_level_change` 也写(它是一次真实的切换) |
 
@@ -184,8 +184,8 @@ bind,续会话时界面读到的是 restore **之前**的模型。表现是"foot
 web 端同理:每轮开跑前 `WebState.bind()`(`bind_session` + `start_session`),而
 `POST /api/model` 只做同步的 `bind_session`(换一次模型不该顺手派发 `session_start`)。
 
-**命名差异**:pi 是驼峰 `modelId`,qi 用本地约定 `model_id`(与 `custom_type` /
-`agent_id` / `duration_ms` 一致)。语义相同、键名不同,读 pi 会话时注意。
+**键名约定**:设置类 entry 的键是 `model_id`(本仓 entry 一律 snake_case,与 `custom_type` /
+`agent_id` / `duration_ms` 一致)。
 
 ## 7. 封顶(会话文件不无界增长)
 
@@ -203,7 +203,7 @@ web 端同理:每轮开跑前 `WebState.bind()`(`bind_session` + `start_session`
 链、补 `id`、把 header 的 `version` 改成 2(`SessionStore.migrate()`)。
 
 - **读路径不写文件**:TUI 里的会话列表之类的只读操作不会改动老会话。
-- 首次写入(`append` / `save`)时才会整文件落盘 —— 与 pi「加载时迁移」等价。
+- 首次写入(`append` / `save`)时才会整文件落盘(加载阶段只在内存里迁移)。
 - `migrated` 标志就是为此存在:它让 `append()` 知道"必须重写"(见 §1)。
 
 ## 9. 写路径与落盘顺序的不变量
@@ -235,17 +235,16 @@ web 端同理:每轮开跑前 `WebState.bind()`(`bind_session` + `start_session`
 
 **为什么要"预留"而不是"启动就建文件"**:本机真实事故 —— `~/.qi/agent/sessions/` 攒了
 3000+ 个只有一行的空会话,全部来自"进来看一眼就走"。同一根因在 web 端也有(见
-[design/web.md](../design/web.md) §18.28 的"懒创建"),pi 的做法是 `newSession()` 只算路径、
-`flushed=false`,真写盘在第一条 assistant 回答(它的 `_persist`)。
+[design/web.md](../design/web.md) §18.28 的"懒创建")。
 
-**为什么留住会话对象、只懒文件**:pi 的 `SessionManager` 构造时就 `newSession()`,
+**为什么留住会话对象、只懒文件**:构造时就 `newSession()`,
 于是"当前会话"这个不变量始终成立 —— 历史、用量、扩展的 `ctx.session_manager`、`/session`
 信息行、回合链路都照常工作。若改成"启动时没有会话",下游每一处都要判 None,而那些判空迟早漏一个。
 
 **落盘用独占创建、拒绝覆盖**:`flush()` 以 `"x"`(即 `O_EXCL`)打开文件 —— 预留期间**不该**
 存在文件,真有就说明路径撞了。会话是不可再生的用户数据,宁可报错也不能静默盖掉别人的会话。
 (一次 `write` 写出全部 entry;中途崩溃会留下一个截断的文件,这与 `save()` 的风险相同,
-这里没有额外加 fsync/临时文件 —— 对齐 pi 的 `_persist`,不为一个极罕见的窗口加一层复杂度。)
+这里没有额外加 fsync/临时文件 —— 不为一个极罕见的窗口加一层复杂度。)
 
 **只问不答不落盘**:判据是"有没有 assistant 回答"(`_has_assistant`),不是"有没有 entry"。
 一个没有回答的会话在 `/resume` 列表里没有价值,而文件一出现就会进列表。

@@ -1,7 +1,7 @@
 """最小扩展示例:一份 `extension.py`,把主要的面各用几行走一遍。
 
 **这就是"照着写"的起点** —— 复制这个目录、改名字、删掉你不要的部分即可。完整的 API 与
-设计取舍见 `docs/extensions.md`;这里只演示形状,不解释为什么。
+设计取舍见 `design/extensions-design.md`;这里只演示形状,不解释为什么。
 
 放哪儿(两处之一):
 
@@ -59,7 +59,7 @@ def register(api: Any) -> None:
 
     # ── 3. CLI 子命令(终端里输入)──────────────────────────
     # handler 收**命令名之后的原始 argv**,返回退出码。扩展自己解析自己的参数 ——
-    # core 不把 typer/click 的解析结果交给你(见 docs/extensions.md E19)。
+    # core 不把 typer/click 的解析结果交给你(见 design/extensions-design.md 的 E19)。
     def on_cli(argv: list[str]) -> int:
         import sys
 

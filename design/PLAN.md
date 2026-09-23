@@ -1,6 +1,7 @@
 # qi:开发计划与未决清单
 
 > 总设计见 [overview.md](overview.md)。本文只放**怎么干**(阶段/验收)与**开工前要拍板的事**。
+> 与上游 pi 的逐节对照(原 `docs/` 各页的「与 pi 的对应」小节)汇总在 [pi-alignment.md](pi-alignment.md)。
 > **v3 扩展化重构(进行中)的完整设计在 [extensions.md](../docs/extensions.md)**,阶段表见本文 §3。
 
 ## 1. 项目目录结构(可打包 wheel)与打包设计
@@ -142,10 +143,12 @@ testpaths = ["tests"]
 | 内容 | 详见 | 状态 |
 | --- | --- | --- |
 | HTTP 宿主 `qi web` + 官方 UI 插件(SSE) | web.md | 宿主与**参考 UI 已可运行**(web.md §14);UI 拆包未做 |
-| headless RPC(`--mode rpc`,给 IDE/外部客户端) | cli.md / web.md §5 | 未做(内置宿主让 web 不需要它) |
-| bash 审批细化 / 路径防越界 / HITL | tools.md §4 | 未做(SSE 已预留 `action.required` 位) |
-| 导入 adapter(Claude agent 卡 / SKILL.md) | agent-config.md §10 | 未做 |
-| 打包导出 zip、registry/市场 | agent-config.md §10 | 未做 |
+| headless RPC(`--mode rpc`,给 IDE/外部客户端) | web.md §5 / 未决 C3 | 未做(内置宿主让 web 不需要它) |
+| TUI 里改 `tuiMode` 立即换渲染模式(不重启) | — | 未做(启动时读 `settings.tuiMode`;`--tui-mode` 只覆盖当次) |
+| TUI 斜杠命令面 | [slash-commands.md](../docs/slash-commands.md) | **无待补**:pi 的 23 条内置命令已全部对齐,`PLANNED_COMMANDS` 是空集合;后续命令走扩展 `registerCommand` |
+| bash 审批细化 / 路径防越界 / HITL | 未决 C5([how-qi-works.md §4](../docs/how-qi-works.md) 的边界) | 未做(SSE 已预留 `action.required` 位) |
+| 导入 adapter(Claude agent 卡 / SKILL.md) | agent-config-design.md §10 | 未做 |
+| 打包导出 zip、registry/市场 | agent-config-design.md §10 | 未做 |
 
 ## 5. 未决清单与决策状态
 
@@ -173,7 +176,7 @@ testpaths = ["tests"]
 | A8 | 全局目录层级 | `~/.qi/agent/` ↔ `<项目>/.qi` 配对(对齐 pi 的 `~/.pi/agent` ↔ `.pi`);旧扁平布局启动时自动迁移(不覆盖);`QI_AGENT_HOME` = agent 目录、`QI_CONFIG_DIR` = 名字空间根 |
 | A9 | 设置文件 | `settings.json` 两级深合并、数组整体替换;默认模型只属于 settings(`models.json` 里已不读取);字段清单与“仅存储未生效”清单见 [settings.md](../docs/settings.md);`qi config` 读写 |
 | A10 | 顶层技能 | 六级来源(低→高):`~/.agents/skills` → `~/.qi/agent/skills` → user `settings.skills` → 项目 `.agents/skills` 祖先链 → `<git根>/.qi/skills` → project `settings.skills`;agent 自带者最高;同层同名报错、跳层覆盖;排除项作用于整个发现集 |
-| A11 | 系统提示词 | 默认基座**代码内**(`system_prompt.py`,按解析后的工具集生成「可用工具 / 指南」+ **手册索引**);`SYSTEM.md` **整体替换**默认基座(项目 > 全局);之后动态追加 `<project_context>`(AGENTS.override.md > AGENTS.md > AGENTS.MD > CLAUDE.md > CLAUDE.MD,全局 + 祖先链至 git 根)→ `<available_skills>` XML(无 `read`/`bash` 则不注入)→ cwd → `--append-system-prompt`。角色层与数据源**不在 core**(归 qi-agents / 提供方扩展)。详见 [system-prompt.md](../docs/system-prompt.md) |
+| A11 | 系统提示词 | 默认基座**代码内**(`system_prompt.py`,按解析后的工具集生成「可用工具 / 指南」+ **手册索引**);`SYSTEM.md` **整体替换**默认基座(项目 > 全局);之后动态追加 `<project_context>`(AGENTS.override.md > AGENTS.md > AGENTS.MD > CLAUDE.md > CLAUDE.MD,全局 + 祖先链至 git 根)→ `<available_skills>` XML(无 `read`/`bash` 则不注入)→ cwd → `--append-system-prompt`。角色层与数据源**不在 core**(归 qi-agents / 提供方扩展)。详见 [configuration.md](../docs/configuration.md) |
 | A12 | 轮次 / 超时 / 中断 | **对齐 pi:runner 里既不设轮次上限,也不套回合级请求超时** —— 循环是 `while True`,退出靠模型不再调工具 / 中止 / 嵌入方谓词 `stop_after`(pi 的 `shouldStopAfterTurn` 同形,默认 `None` = 不限)。**qi 自己从不传谓词**(pi-coding-agent 也从不实现那个钩子):交互式靠 `escape` / 客户端断开,无头靠 `SIGTERM`/`SIGHUP` → `kill_live_children()` + `exit(143/129)`(对齐 pi 的 `killTrackedDetachedChildren`)。请求级超时与重试归 **provider 层**(`settings.json` 的 `retry.provider.timeoutMs` / `maxRetries` → litellm `timeout` / `num_retries`;对齐 pi 的 `getProviderRetrySettings`)。中断是**协作式**(`abort.py` 的 `AbortSignal`):未执行的 tool_call 补“已中断”结果、半截回答照常落盘、照常发 `agent_end`(data 带 `aborted`);TUI `escape` 宽限 3s 后 `cancel_all()` 兜底;硬取消(`CancelledError`,含 SIGINT/ASGI 取消)也先落盘再抛 |
 
 ### 仍待定(v2 + 实现期)
@@ -181,10 +184,11 @@ testpaths = ["tests"]
 - C1:SSE vs WebSocket(先 SSE)
 - C2:import adapter(Claude/SKILL.md)— v2
 - C3:headless RPC 协议细节 — v2
-- C4:扩展工具名前缀/冲突策略 — **v3 并入 qi-mcp / qi-agents 的工具命名约定**(见 extensions.md §6/§7);v1 的「db 插件」形态取消
+- C5:工具审批 / 确认交互形态(破坏性操作的**交互前钩子**,即 HITL;与上表「bash 审批细化」、SSE 的 `action.required` 同位)— v2
+- C4:扩展工具名前缀/冲突策略 — **v3 并入 qi-mcp / qi-agents 的工具命名约定**(见 design/extensions-design.md 的 E22);v1 的「db 插件」形态取消
 - **litellm 的 ~6.8s import**(2026-09 实测,热缓存 3 次稳定)— 拖累每一次 `qi -p` 的首次响应,也是 v3 选「子 agent 进程内」的量化依据(子进程 = 6.8s × N);待查瘦身开关或 provider 直连。见 [extensions-design.md §11.6](extensions-design.md)
 - 会话 JSONL entry 类型表具体字段(P3 定稿)
-- ~~qi 自身文档索引注入~~ → **已落地**:`docs/` 经 force-include 进 wheel(`qi_agent/docs/`),默认基座末尾注入由 `docs.json` 生成的索引;`--append-system-prompt` 也一并接上(见 [system-prompt.md §6](../docs/system-prompt.md))
+- ~~qi 自身文档索引注入~~ → **已落地**:`docs/` 经 force-include 进 wheel(`qi_agent/docs/`),默认基座末尾注入由 `docs.json` 生成的索引;`--append-system-prompt` 也一并接上(见 [configuration.md §6](../docs/configuration.md))
 - 回合级重试(pi 的 `retry.enabled` / `maxRetries` / `baseDelayMs`:失败回合退避重试)未接;已接的是 provider 层的 `retry.provider.timeoutMs` / `maxRetries`(见 settings.md)。pi 的 `retry.provider.maxRetryDelayMs` 无对应 litellm 参数,也未映射
 - Router prompt 模板细节(dispatcher.md 草案之上微调)
 

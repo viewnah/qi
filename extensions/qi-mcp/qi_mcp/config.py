@@ -61,7 +61,7 @@ KNOWN_FIELDS = (
 )
 
 #: Agent Plugins 1.0 的 `type` → 本扩展的传输名。**只列真能跑的那两个**:
-#: `sse`(旧 HTTP+SSE)认得出来但连接时会明确报未实现(与 docs/extensions.md §7.5
+#: `sse`(旧 HTTP+SSE)认得出来但连接时会明确报未实现(与 design/extensions-design.md 的 E21
 #: 「旧 SSE 不做」一致),不在这里映射成一个假的可跑传输。
 #:
 #: 没进这张表的 `type` 原样当传输名用 —— 于是 `"type": "http"` 这种生态简写能直接用,

@@ -1,111 +1,69 @@
-# 安全模型
+# 安全地运行
 
-qi 能执行任意命令、读写任意文件、并且**装进来的扩展就是任意代码**。本文不承诺一个沙箱 —— 它讲清
-**有哪些闸门、哪些地方没有闸门**,以及你应该把边界画在哪里。
+qi 能执行任意命令、读写任意文件,而**装进来的扩展就是任意代码**。本文讲清**有哪些闸门、哪些地方没有闸门**,
+以及边界应该画在哪。qi **不提供进程内沙箱** —— 真隔离见 [隔离运行](containerization.md)。
 
-**事实源:`settings.py` 的 `resolve_project_trust()` / `runtime.py` 的信任判定与扩展发现。**
-
-## 1. 先分清什么会"执行"
+## 先分清什么会"执行"
 
 | 种类 | 是什么 | 未信任项目时 |
 | --- | --- | --- |
 | **扩展**(extension) | **可执行代码**,与 qi 同进程、同一棵依赖树、全权限 | **挡住**(不扫项目目录) |
 | **技能**(skill) | **文本指令**:描述 + 正文,模型按需读取并照做 | **不挡** |
 | **项目上下文**(`AGENTS.md` 等) | **文本指令**,整篇进系统提示词 | **不挡** |
-| **`bash` 工具** | 全权子进程(无命令级过滤,见 §3) | 与信任无关(它就是个工具) |
-| **MCP server** | 独立进程,由扩展拉起(见 [extensions.md](extensions.md) §7.5) | 取决于拉起它的扩展是否加载 |
+| **`bash` 工具** | 全权子进程(无命令级过滤) | 与信任无关(它就是个工具) |
 
-**界线画在"可执行 vs 文本"上。** 这是一条有意的界线,不是遗漏 —— 但它意味着:**信任门控并不能
-阻止一个恶意仓库通过 `AGENTS.md` 或 `.agents/skills/**/SKILL.md` 影响模型行为**(它们会进提示词,
-或指导模型去执行命令)。这一侧没有任何自动闸门,只能靠你自己看。
+界线画在"**可执行 vs 文本**"上。所以信任门控**不能**阻止一个恶意仓库通过 `AGENTS.md` 或
+`.agents/skills/**/SKILL.md` 影响模型行为 —— 那一侧没有任何自动闸门,只能靠你自己看。
 
-## 2. 信任门控(唯一自动闸门)
+## 项目信任
 
-`settings.json` 的 `defaultProjectTrust` 取三个值:
+项目级 `.qi/` 可能含可执行代码,所以默认**不信任**:
 
-| 值 | 含义 |
+| 值 / 命令 | 含义 |
 | --- | --- |
-| `ask` | **默认值**。语义是"问用户",但**交互式询问尚未实现**,所以现在**保守判不信任**(fail-safe = 不执行) |
-| `always` | 直接信任 |
-| `never` | 直接不信任 |
+| `qi -a` / `--approve` | 信任本项目(**本次运行**),加载项目级扩展 |
+| `qi -na` / `--no-approve` | 明确不信任;两个同给报错(退出码 2) |
+| `settings.defaultProjectTrust` | `ask`(默认)/ `always` / `never`。**只从用户级读** —— 项目级写了会被忽略并提示 |
 
-优先级:**CLI 显式表态(`-a` / `-na`)> `project_trust` 事件(用户级/CLI 扩展可投票)> `trust.json` 的按目录决定 > `settings.defaultProjectTrust`**(**只从用户级 settings 读**)。
+优先级:**CLI 显式表态 > `project_trust` 事件(用户级 / `-e` 扩展可投票)> `trust.json` 的按目录决定 >
+`defaultProjectTrust`**。
 
-> `project_trust` 是 **async** 事件,所以信任判定发生在**首次会话绑定时**而不是构造期:
-> 构造期按 fail-closed 先装用户级与 entry point 那半(它们与项目信任无关,而且正好是「有
-> 投票权」的那些),决定下来后再补装项目级。扩展抛异常只记 note,不影响常规解析;
-> 给了 `-a`/`-na` 时不发(用户当场的指令优先于程序化策略)。
+- `ask` 在**没有界面**时(`qi -p`)**保守判不信任**:跳过项目级资源,并在 stderr 提示用 `-a`。CI 必须显式信任。
+- **按目录记住决定**:TUI 里 `/trust`(连带上一层)、`/trust no`、`/trust forget`,存 `~/.qi/agent/trust.json`
+  —— **写在用户 home,不碰仓库里任何文件**(仓库不能为自己背书)。写完当前会话不重载,重启后生效。
+- 判定结果与理由会进启动提示(`qi doctor` 也显示),例如
+  `未信任项目(defaultProjectTrust=ask(无 UI;用 -a 信任)):.qi/extensions/ 未加载`。
 
-> **项目级写 `defaultProjectTrust` 会被忽略,并打一条提示。** 信任决定不能由仓库自己声明 ——
-> 否则仓库只要提交一行 `"defaultProjectTrust": "always"` 就能让自己的任意代码跑起来,
-> 而这正是这道门控要防的事(这个漏洞真存在过,已修;回归见 `tests/test_trust_scope.py`)。
-> pi 同样是这个模型:它的信任决定存在用户 home 里(`trust.json`),不在仓库里。
+**未信任时不加载**:<项目>`/.qi/extensions/` 与项目级 `settings.json` 的 `extensions[]`(只挡项目那一份)。
+**仍然生效**:项目级技能(`.agents/skills/`、`<git根>/.qi/skills/`)、项目上下文(`AGENTS.md` 等)、
+项目级 settings 的普通字段(`defaultTools`、`theme`…)。细目见 [configuration.md](configuration.md)。
 
-```bash
-qi -a     # / --approve    信任本项目(加载项目级扩展)
-qi -na    # / --no-approve 明确不信任
-```
+## bash 的边界
 
-判定结果与理由会记在启动提示里(`qi doctor` 也会显示),例如:
-`未信任项目(defaultProjectTrust=ask(无 UI;用 -a 信任)):.qi/extensions/ 未加载;用 qi -a 信任`
+**qi 没有命令级过滤**:不筛子命令、不拦重定向、不做只读白名单 —— `bash` 能跑任何东西。这是**刻意的**,
+理由与四种绕过写法见 [bash-allowlist.md](../design/bash-allowlist.md)。
 
-### 未信任时**不**加载的东西
+限制手段只有两档:
 
-- `<项目>/.qi/extensions/`(项目级扩展目录)
-- 项目级 `settings.json` 的 `extensions[]` 里声明的路径
-  (只挡项目那一份;用户级的照常)
+1. **工具级收窄**:`-t` 严格白名单 / `-xt` 排除 / `-nt` 全禁 / `-nbt` 只去内置;`settings.defaultTools` 只挑内置那档。
+   想"连 bash 都不给"就别把 `bash` 列进白名单。见 [cli.md](cli.md)。
+2. **把 qi 放进容器 / VM / 受限用户**(唯一真边界):见 [containerization.md](containerization.md)。
 
-### 未信任时**仍然**生效的东西
+其它约定与现状:
 
-- **项目级技能**:`.agents/skills/` 与 `<git根>/.qi/skills/`(见 [skills.md](skills.md) §1)
-- **项目上下文**:`AGENTS.md` / `AGENTS.override.md` / `CLAUDE.md` 等
-- 项目级 `settings.json` 的普通字段(`defaultTools`、`theme` 等)
+- 文件工具的路径限制在**会话工作目录**内(`read` / `ls` / `find` / `grep` / `write` / `edit`),**bash 不受限**。
+- `bash` / `powershell` 的子进程 stdin 是 `DEVNULL`(读不到 TUI 的按键);超时按**进程组**回收。
+- TUI 里 `!` 手动命令不经任何过滤 —— 那是你亲手敲的,不算模型越权。
+- **没有工具级审批弹窗**(那类 workflow 属于扩展或外部工具)。破坏性操作的交互前钩子(HITL)**未做**,
+  见 [PLAN.md](../design/PLAN.md) 的 v2 清单。
 
-> **按目录记住决定(`/trust`)** —— 与 pi 同形:`~/.qi/agent/trust.json`,按**规范目录**存,
-> 查的时候走**祖先链**(当前或父目录上最近的那条先生效),`-a` / `-na` 仍然最高。
-> TUI 里 `/trust` 记住「信任这个目录」(**连带上一层**,与 pi 同)、`/trust no` 记不信任、
-> `/trust forget` 忘掉。**写在用户 home,不碰仓库里任何文件** —— 仓库不能为自己背书。
-> 写完**当前会话不重载**(项目级资源已按旧决定加载/跳过),重启后生效。
+## 配置文件里的命令
 
-## 3. `bash` 工具没有命令级过滤
+`models.json` 的 `apiKey` 支持 `!command`(执行命令取 stdout)。它**不走 shell**(`shlex` 拆参 + `shell=False`),
+只在你写的那份配置被解析时求值 —— 属于**你的配置信任域**,与 `auth.json` 同级;扩展或模型内容**无法**触发它。
+三种写法见 [models.md](models.md)。
 
-与 pi 对齐、并且是**刻意**的:qi **没有**"命令首词白名单"这类过滤,`bash` 能跑任何东西。
+## 报漏洞 / 上报问题
 
-- 变更记录与"为什么删掉白名单"见 [bash-allowlist.md](../design/bash-allowlist.md)(含与 pi 的
-  对照、以及四种可绕过写法 —— 那些正是删掉它的理由)。
-- **没有工具级审批弹窗**(pi 也不内置;那类 workflow 属于扩展/外部工具)。
-- 文件工具的相对路径基于会话工作目录,但这是**约定**,不是沙箱:通过 `bash` 可以走到任何地方。
-
-**所以真正的隔离只能在 qi 之外做**:容器、VM、受限用户、或只读挂载。见
-[PLAN.md](../design/PLAN.md) 里 `containerization` 相关的取舍记录。
-
-## 4. 配置文件里的命令
-
-`models.json` 的 `apiKey` 支持 `!command`(执行命令取 stdout)。它的求值**只发生在解析你自己写的
-配置时**,且 `shell=False`(无 shell 注入面)。细节与三种写法见 [providers.md](providers.md) §3。
-
-这条边界的准确表述是:它属于**你的配置信任域**,与 `auth.json` 同级 —— 扩​展或模型内容**无法**
-触发它。
-
-## 5. Web 宿主(qi-web)
-
-`qi-web` 是独立扩展,默认只绑回环地址;**跨回环必须显式指定 hostname 且设置访问口令**,否则拒绝
-启动(而不是"提醒一下继续跑")。规则与 API 契约在 [web.md](../design/web.md) §3/§4。
-
-它的安全面与 TUI 不同:HTTP 宿主会把同一台机器上的会话暴露给网络,所以"只回环 + 口令"是硬要求。
-手册(未来的 `docs/web.md`)待写,现在的权威描述在 design 目录。
-
-## 6. 与 pi 的对应
-
-| | pi | qi |
-| --- | --- | --- |
-| 扩展/技能/项目上下文的分野 | 扩展=代码,技能与上下文=文本 | 同 |
-| 未信任时挡什么 | 项目级扩展与项目级配置 | 同(项目级扩展) |
-| 信任决定是否记住 | **记住**(`~/.pi/agent/trust.json`,可整目录继承) | **记住**(`~/.qi/agent/trust.json`;`/trust`,同样走祖先链) |
-| 交互式询问 | 启动时询问是否信任该目录 | **未实现**(`ask` 保守判不信任) |
-| `bash` 命令级过滤 | 无 | 无 |
-| 工具级审批弹窗 | 不内置 | 不内置 |
-| 凭证命令 `!cmd` | 有,不走 shell | 同 |
-
-**照 pi 写会错的地方**:pi 的信任是"记住 + 询问",qi 的信任是"每次表态或写死 `always`";
-所以文档不能说"qi 会问你一次并记住"。
+qi 目前没有专门的安全上报渠道;设计层面的取舍记录在 [design/](../design)(尤其
+[bash-allowlist.md](../design/bash-allowlist.md) 与 [PLAN.md](../design/PLAN.md) 的 containerization 条目)。

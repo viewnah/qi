@@ -30,6 +30,9 @@
     qi init --refresh <provider>        # GET {baseUrl}/models,把实际可用的 id 并进 models.json
     qi init --refresh-all               # 所有已配置(有凭证)的 provider
 
+交互流里同一条入口:`qi init` → `--- Add Models ---` 菜单选
+`↻ Refresh model list (GET /models)`(与 `＋ Add a model` 同级,失败只报错不中断)。
+
 `refresh` **只加不删**:接口回来的新 id 追加进去(带 qi 的默认 ctx/max,厂商文档里有就自己补),
 本地有、接口没返回的**保留并报出来**(厂商可能只是没列全,不该替用户删配置)。
 
@@ -113,11 +116,21 @@ PRESETS: dict[str, Preset] = {
         label="小米 MiMo",
         base_url="https://api.xiaomimimo.com/v1",
         api_key_env="MIMO_API_KEY",
-        # MiMo 模型页:上下文窗口 1M / 最大输出 128K
-        models=(PresetModel("mimo-v2.5-pro", 1_048_576, 131_072),
-                PresetModel("mimo-v2.5", 1_048_576, 131_072)),
+        # MiMo 模型页 + list-models(2026-09 核):现役文本模型是 v2.6 系列,
+        # 上下文 1M(=1048576)/ 最大输出 128K(=131072);`flash` 官方定位“高智能、
+        # 低成本”(默认),`pro` 是旗舰。**旧的 `mimo-v2.5` / `mimo-v2.5-pro` 官方公告
+        # 2026-10-21 10:00 下线**(建议切新版),所以种子只放 v2.6 —— 下线公告:
+        # https://mimo.mi.com/docs/zh-CN/quick-start/summary/model
+        # `mimo-v2.6-pro-ultraspeed` = pro 的**速度档**(官方定位强实时场景,限流是
+        # “定制服务,联系平台”),同样 1M / 128K —— id、规格都核到了,一并收进种子。
+        models=(PresetModel("mimo-v2.6-flash", 1_048_576, 131_072),
+                PresetModel("mimo-v2.6-pro", 1_048_576, 131_072),
+                PresetModel("mimo-v2.6-pro-ultraspeed", 1_048_576, 131_072)),
         note="订阅套餐(Token Plan)是另一个域名:`https://token-plan-cn.xiaomimimo.com/v1`,"
-             "Key 形如 `tp-…`(按量付费的 Key 形如 `sk-…`,两者不可混用)",
+             "Key 形如 `tp-…`(按量付费的 Key 形如 `sk-…`,两者不可混用);"
+             "`mimo-v2.5` / `mimo-v2.5-pro` 官方公告 2026-10-21 10:00 下线,"
+             "新模型是 `mimo-v2.6-*`(`qi init --refresh mimo` 拉全量);"
+             "其中 `mimo-v2.6-pro-ultraspeed` 是速度档,限流为定制服务(调前先问平台)",
     ),
     "moonshot": Preset(
         provider="moonshot",

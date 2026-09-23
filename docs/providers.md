@@ -89,6 +89,11 @@ qi init --preset deepseek       # 写进 models.json,并把它的第一个模型
 qi init --preset deepseek,moonshot --local   # 多个 / 写进项目 .qi/models.json
 ```
 
+**交互流里也看得到这批**:`qi init` 的 provider 选择器把**没物化的预置**全列出来
+(标 `[预置]`,排在已有 provider 之后、`＋ 新建 provider` 之前),选中即走 `apply_presets`
+物化(baseUrl / apiKey 引用 / 模型清单先备好,下面几问回车即保留);没选中的预置不写盘。
+新建时敲个预置名、或 `-y --provider deepseek`,同样先物化 —— 否则写出的 provider 没有 baseUrl。
+
 “缺凭证”的告警口径只算**在用**的 provider(`models.json` 里写过的 + 默认/路由模型那个)——
 预置那十家只是目录,不会让“凭证全部就绪”永远不成立。
 
@@ -114,7 +119,7 @@ OpenAI 兼容端点接受并不一致。默认不带参最不容易 400;想开�
 | --- | --- | --- |
 | `deepseek` | `https://api.deepseek.com` | **`deepseek-flash`**(= V4.1 Flash)、`deepseek-v4-pro`(均 1M / 384K) |
 | `dashscope` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | **`qwen3.7-plus`**(官方推荐:均衡 + 完整工具调用)、`qwen3.8-max`、`qwen3.8-flash`(均 1M / 128K) |
-| `mimo` | `https://api.xiaomimimo.com/v1` | **`mimo-v2.5-pro`**、`mimo-v2.5`(均 1M / 128K) |
+| `mimo` | `https://api.xiaomimimo.com/v1` | **`mimo-v2.6-flash`**(官方定位:高智能、低成本,排第一)、`mimo-v2.6-pro`、`mimo-v2.6-pro-ultraspeed`(速度档;均 1M / 128K;旧的 `mimo-v2.5*` **2026-10-21 下线**) |
 | `moonshot` | `https://api.moonshot.cn/v1` | **`kimi-k3`**(1M / 128K)、`kimi-k2.7-code`(256K / 32K) |
 | `zhipu` | `https://open.bigmodel.cn/api/paas/v4` | **`glm-5.2`**(1M / 128K)、`glm-4.7`(200K / 128K) |
 | `minimax` | `https://api.minimax.cn/v1` | **`MiniMax-M3`**(1M / 128K) |
@@ -136,6 +141,10 @@ qi init --refresh deepseek,moonshot
 qi init --refresh-all                # 所有已配置(有凭证)的 provider
 qi init --refresh deepseek --local   # 写项目 .qi/models.json
 ```
+
+交互流里有同一条入口:`qi init` → `--- Add Models ---` 菜单选
+**`↻ Refresh model list (GET /models)`**(与 `＋ Add a model` 同级,共用
+`_refresh_entry_models`):失败只报错、回菜单不中断 init。
 
 > 为什么挂在 `qi init` 下:`qi models` 子命令在本仓是**故意删掉的**(对齐 pi —— 列清单用
 > `--list-models`),所以“刷新模型清单”跟 `--preset` 一样留在 `qi init` 这个“把 provider / 模型
@@ -169,6 +178,9 @@ qi init --refresh deepseek --local   # 写项目 .qi/models.json
   与各家的官方 id 不同;
 - `mimo`:按量付费用 `api.xiaomimimo.com`,订阅套餐(Token Plan)是
   `https://token-plan-cn.xiaomimimo.com/v1` 且 Key 前缀不同 —— 两家 token 不能混用;
+  另外 `mimo-v2.5` / `mimo-v2.5-pro` 官方公告 **2026-10-21 10:00 下线**(种子已切到
+  `mimo-v2.6-flash` / `mimo-v2.6-pro` / `mimo-v2.6-pro-ultraspeed` —— ultraspeed 是速度档,
+  限流为定制服务,调它之前先问平台);
 - `zhipu`:`GLM-5.3` 官方页面写着「API 即将上线」(Bailian 已可调),所以种子里是线上可用的
   `GLM-5.2`;上线后 `qi init --refresh zhipu` 拉一下就有;
 - `hunyuan`:腾讯已把混元迁到 **TokenHub**(`https://tokenhub.tencentmaas.com/v1`,Key 也从

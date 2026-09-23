@@ -164,9 +164,13 @@ qi -ne | -nc                                  # 关扩展发现 / 关 AGENTS.md 
 > 那是个该被修的状态,由 `qi doctor` 报出来并告诉你该写什么(pi 也一样:它的
 > `pi config` 只看 `packages` 与本地目录)。
 
-**`qi init`** —— 流程:`Provider Configuration`(选已有/新建 → Base URL → API 类型 → API Key,
-直接写 `auth.json`)→ `Add Models`(`Add a model?` 循环)→ `Activate LLM Model`(选 provider →
-选 model,写默认模型)。上下键选择 + 可见输入;已有凭证回车保留。
+**`qi init`** —— 流程:`Provider Configuration`(选 provider → Base URL → API 类型 → API Key,
+直接写 `auth.json`)→ `Add Models`(**`Models` 菜单三选一循环**:`＋ Add a model` /
+`↻ Refresh model list`(`GET /models`,只加不删,等价 `--refresh`)/ `✓ Done`)→
+`Activate LLM Model`(选 provider →
+选 model,写默认模型)。上下键选择 + 可见输入;已有凭证回车保留。选择器里三种都在:
+**已有**(`[✓]`/`[✗]`)、**预置**(标 `[预置]`,选中即物化进 `models.json`,没选中的不写盘)、
+**新建**(永远排最后;敲预置名同样套用预置)。
 完整用法与示例见 [model-config.md §7](model-config.md#7-qi-init-用法)。
 不想手写时用 `--list-presets` / `--preset <名>` 走预置(见
 [providers.md §2.1](providers.md#21-预置-providerqi-init---preset))。

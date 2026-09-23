@@ -583,17 +583,47 @@ def _cmd_export(session_id: str, out: Path) -> None:
     console.print(f"[green]已导出 {session.path} → {out}[/green]")
 
 
+def _refresh_entry_models(provider: str, entry: dict, *,
+                          timeout: float = 20.0) -> bool:
+    """`GET {baseUrl}/models` 并进 `entry`,报告新增与本地多出的(**只加不删**),返回成败。
+
+    `qi init --refresh <名字>` 和交互流 Models 菜单的「↻ Refresh model list」
+    **共用这一条**:预置是离线种子,模型 id 会漂(DeepSeek 改名、MiMo v2.5 → v2.6),
+    以厂商接口为准。接口不返回 `contextWindow` / `maxTokens`,新条目先只写 id,
+    精确的两个数照厂商文档在 `models.json` 里补。
+    """
+    from .model_catalog import CatalogError, fetch_model_ids, merge_model_ids
+
+    rk = resolve_key(provider, str(entry.get("apiKey") or ""), AuthStore())
+    if not rk.ok:
+        console.print(f"[red]{provider}: 拿不到 API key[/red] {rk.describe()} —— "
+                      f"`qi auth login {provider}` 或设约定环境变量")
+        return False
+    try:
+        ids = fetch_model_ids(str(entry.get("baseUrl") or ""), rk.key, timeout=timeout)
+    except CatalogError as exc:
+        console.print(f"[red]{provider}: 拉取失败[/red] {escape(str(exc))}")
+        return False
+    added, stale = merge_model_ids(entry, ids)
+    console.print(f"[green]{provider}[/green]: 接口返回 {len(ids)} 个模型;"
+                  f"新增 {len(added)}"
+                  + (":" + ", ".join(added) if added else ""))
+    if stale:
+        console.print(f"  [dim]本地有但接口没返回(保留,不替你删):"
+                      f"{', '.join(stale)}[/dim]")
+    return True
+
+
 def _refresh_models(names: str, *, all_providers: bool, local: bool,
                     timeout: float = 20.0) -> None:
     """从 provider 的 `/models` 接口拉模型列表,并进 `models.json`(**只加不删**)。
 
     为什么要这条:预置表是**离线种子**,而模型 id 会漂(如 DeepSeek 从
     `deepseek-v4-flash` 换成 `deepseek-flash`)—— 以厂商接口为准最省事。
-    接口不返回 `contextWindow` / `maxTokens`,新加的条目先用 qi 的默认值,
-    要精确就照厂商文档在 `models.json` 里补。
+    接口不返回 `contextWindow` / `maxTokens`,新加的条目先写 id(两个数用 qi 默认值),
+    要精确就照厂商文档在 `models.json` 里补。拉取/合并本身在 `_refresh_entry_models`
+    (交互流的「Refresh model list」共用同一条)。
     """
-    from .model_catalog import CatalogError, fetch_model_ids, merge_model_ids
-
     try:
         cfg, _files = load_config()
     except ConfigError as exc:
@@ -629,19 +659,6 @@ def _refresh_models(names: str, *, all_providers: bool, local: bool,
 
     for name in wanted:
         prov = cfg.providers[name]
-        rk = resolve_key(name, prov.apiKey, store)
-        if not rk.ok:
-            console.print(f"[red]{name}: 拿不到 API key[/red] {rk.describe()} —— "
-                          f"`qi auth login {name}` 或设约定环境变量")
-            failures.append(name)
-            continue
-        try:
-            ids = fetch_model_ids(prov.baseUrl or "", rk.key, timeout=timeout)
-        except CatalogError as exc:
-            console.print(f"[red]{name}: 拉取失败[/red] {escape(str(exc))}")
-            failures.append(name)
-            continue
-
         raw = (data.setdefault("providers", {})).get(name)
         if isinstance(raw, dict):
             entry = raw
@@ -658,13 +675,8 @@ def _refresh_models(names: str, *, all_providers: bool, local: bool,
                                ("apiKey", prov.apiKey)):
                 if value and not entry.get(key):
                     entry[key] = value
-        added, stale = merge_model_ids(entry, ids)
-        console.print(f"[green]{name}[/green]: 接口返回 {len(ids)} 个模型;"
-                      f"新增 {len(added)}"
-                      + (":" + ", ".join(added) if added else ""))
-        if stale:
-            console.print(f"  [dim]本地有但接口没返回(保留,不替你删):"
-                          f"{', '.join(stale)}[/dim]")
+        if not _refresh_entry_models(name, entry, timeout=timeout):
+            failures.append(name)
 
     if not failures:
         _strip_legacy_defaults(data)
@@ -1414,13 +1426,25 @@ def _provider_labels(providers: dict) -> list[tuple[str, str]]:
 
 
 def _select_existing_provider(providers: dict, default_provider: str | None) -> str | None:
-    """选已有 provider;返回 None 表示要新建。"""
+    """选 provider;返回 None 表示要新建。
+
+    三种都列在一张单子里:**已有**(models.json 里写着的,带 `[✓]`/`[✗]`)、
+    **预置**(还没物化的,标 `[预置]` —— 选中即 `apply_presets` 写进 models.json)、
+    **新建**(永远排最后)。预置不列出来的话,`qi init` 对零配置的新用户就只剩
+    「手抄 baseUrl」一条路 —— 那正是预置表想省掉的事。
+    """
+    from .presets import preset_names
+
     pairs = _provider_labels(providers)
-    labels = [p[0] for p in pairs] + ["＋ 新建 provider"]
-    names = [p[1] for p in pairs]
-    default = names.index(default_provider) if default_provider in names else len(names)
+    preset_only = [name for name in preset_names() if name not in providers]
+    labels = ([p[0] for p in pairs]
+              + [f"{name} [预置]" for name in preset_only]
+              + ["＋ 新建 provider"])
+    names: list[str | None] = [p[1] for p in pairs] + preset_only + [None]
+    default = names.index(default_provider) if default_provider in names else len(names) - 1
     idx = prompt.select("选择 provider", labels, default=default)
-    return names[idx] if idx < len(names) else None
+    chosen = names[idx]
+    return chosen if chosen is not None else None
 
 
 def _configure_provider(provider: str, entry: dict) -> None:
@@ -1438,31 +1462,60 @@ def _configure_provider(provider: str, entry: dict) -> None:
     api_index = next((i for i, a in enumerate(api_options) if a == api_current), 0)
     entry["api"] = SUPPORTED_APIS[prompt.select("API 类型", api_options, default=api_index)]
 
-    # 凭证:可见输入;已有则回车保留(QwenPaw 的 [set] 语义)
-    suffix = f" [{'set' if current_key else 'not set'}, 回车保留]" if current_key else ""
-    key = prompt.text(f"{provider} API key", suffix=suffix, required=not current_key)
+    # 凭证:可见输入;已有则回车保留(QwenPaw 的 [set] 语义)。
+    # apiKey 是环境变量引用(`$DEEPSEEK_API_KEY`,预置的默认形态)时允许回车跳过 ——
+    # 已经 export 了就不用再粘一遍,空值也照样解析得出 key。
+    env_ref = entry.get("apiKey")
+    env_name = env_ref[1:] if isinstance(env_ref, str) and env_ref.startswith("$") else ""
+    if current_key:
+        suffix = " [set, 回车保留]"
+    elif env_name:
+        suffix = f"  [回车跳过,用 ${env_name}]"
+    else:
+        suffix = ""
+    key = prompt.text(f"{provider} API key", suffix=suffix,
+                      required=not current_key and not env_name)
     if key:
         store.set_key(provider, key)
         current_key = key
-    summary = f"[green]✓[/green] {provider} — API Key: {escape(_mask(current_key))}"
+    shown = _mask(current_key) if current_key else (
+        f"${env_name}(环境变量)" if env_name else "(未设置)")
+    summary = f"[green]✓[/green] {provider} — API Key: {escape(shown)}"
     if entry.get("baseUrl"):
         summary += f", Base URL: {escape(entry['baseUrl'])}"
     console.print(summary)
 
 
 def _add_models_interactive(provider: str, entry: dict) -> None:
-    """QwenPaw 风格的 Add a model? 循环;每个模型含 qi 参数(有默认值)。"""
-    models: list = entry.setdefault("models", [])
-    console.print(f"\n[bold]--- Add Models ---[/bold]")
-    if models:
-        console.print(f"Current models for {provider}:")
-        for m in models:
-            if isinstance(m, dict) and m.get("id"):
-                console.print(f"  - {m.get('name') or m['id']} ({m['id']})")
-    else:
-        console.print(f"No models configured for {provider}.")
+    """QwenPaw 的 Add Models 段:一张**同级**菜单 —— 添加 / 刷新 / 完成,循环。
 
-    while prompt.confirm("Add a model?", default=not models):
+    `↻ Refresh model list` 就是 `qi init --refresh <名字>` 的那条路(共用
+    `_refresh_entry_models`):预置种子会落后厂商接口,在交互流里就地能对齐,
+    不用退出去再敲命令。失败只报错,回到菜单不中断 init。
+    """
+    models: list = entry.setdefault("models", [])
+
+    def show() -> None:
+        console.print("\n[bold]--- Add Models ---[/bold]")
+        if models:
+            console.print(f"Current models for {provider}:")
+            for m in models:
+                if isinstance(m, dict) and m.get("id"):
+                    console.print(f"  - {m.get('name') or m['id']} ({m['id']})")
+        else:
+            console.print(f"No models configured for {provider}.")
+
+    actions = ["＋ Add a model", "↻ Refresh model list (GET /models)", "✓ Done"]
+    show()
+    while True:
+        # 没模型默认「添加」、已有模型默认「完成」—— 跟原来 `Add a model?` 的是/否同语义
+        idx = prompt.select("Models", actions, default=0 if not models else 2)
+        if idx == 2:
+            return
+        if idx == 1:
+            _refresh_entry_models(provider, entry)
+            show()
+            continue
         mid = prompt.text("Model identifier", required=True)
         name = prompt.text("Model display name", default=mid).strip() or mid
         reasoning = prompt.confirm("Supports reasoning (扩展思考)?", default=False)
@@ -1477,6 +1530,7 @@ def _add_models_interactive(provider: str, entry: dict) -> None:
         else:
             models.append(new)
         console.print(f"[green]✓[/green] Model '{escape(name)}' ({escape(mid)}) added.")
+        show()
 
 
 def _activate_llm(providers: dict, current: tuple[str | None, str | None]) -> tuple[str, str]:
@@ -1548,6 +1602,8 @@ def _write_models(target_dir: Path, target_file: Path, data: dict) -> None:
 
 def _init_interactive(local: bool) -> None:
     """QwenPaw 风格:Provider Configuration → Add Models → Activate LLM Model。"""
+    from .presets import apply_presets, get_preset
+
     target_dir = project_home() if local else global_home()
     target_file = target_dir / MODELS_FILE_NAME
     data = load_models_file(target_file)
@@ -1557,13 +1613,21 @@ def _init_interactive(local: bool) -> None:
     console.print(f"Working dir: {target_dir}")
     console.print("\n[bold]=== LLM Provider Configuration ===[/bold]")
     console.print("[bold]--- Provider Configuration ---[/bold]")
+    console.print("[dim]标 [预置] 的是 qi 内置预置(全表 `qi init --list-presets`);"
+                  "选中即写进 models.json,之后归你改[/dim]")
     while True:
         provider = _select_existing_provider(providers, current[0])
         if provider is None:
             provider = prompt.text("Provider name", required=True)
-            entry = providers.setdefault(provider, {})
-        else:
-            entry = providers[provider]
+        # 选中的是预置(或新建时敲了个预置名)→ 先物化:baseUrl / apiKey 引用 / 模型
+        # 都有默认值,下面几问回车即保留。
+        preset = get_preset(provider) if provider else None
+        if preset is not None and preset.provider not in providers:
+            apply_presets(data, [preset.provider])
+            provider = preset.provider
+            console.print(f"[dim]已套用预置 {preset.provider}({preset.label});"
+                          f"下面回车即保留预置值[/dim]")
+        entry = providers.setdefault(provider, {})
         _configure_provider(provider, entry)
         _add_models_interactive(provider, entry)
         if not prompt.confirm("Configure another provider?", default=False):
@@ -1580,6 +1644,8 @@ def _init_noninteractive(*, provider: str | None, model: str | None, base_url: s
                          api: str | None, api_key: str | None, api_key_env: str | None,
                          reasoning: bool | None, context_window: int | None,
                          max_tokens: int | None, local: bool) -> None:
+    from .presets import apply_presets, get_preset
+
     target_dir = project_home() if local else global_home()
     target_file = target_dir / MODELS_FILE_NAME
     data = load_models_file(target_file)
@@ -1591,6 +1657,15 @@ def _init_noninteractive(*, provider: str | None, model: str | None, base_url: s
         console.print("[red]-y 模式需要 --provider(或先用交互模式配置)。[/red]")
         raise typer.Exit(code=2)
     provider = provider.strip()
+
+    # provider 名对得上预置就先物化(同 `--preset`):否则 `-y --provider deepseek`
+    # 会写出一个没有 baseUrl 的 provider,拿到手就是坏的。
+    preset = get_preset(provider)
+    if preset is not None:
+        provider = preset.provider
+        if provider not in providers:
+            apply_presets(data, [provider])
+            console.print(f"[dim]已套用预置 {provider}({preset.label})[/dim]")
 
     entry: dict = dict(providers.get(provider) or {})
     if base_url:

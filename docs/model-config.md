@@ -133,30 +133,35 @@ Working dir: ~/.qi
 
 === LLM Provider Configuration ===
 --- Provider Configuration ---
-? 选择 provider                       # 上下键:已有 provider(带 [✓]/[✗])+ ＋ 新建
+? 选择 provider                       # 上下键:已有([✓]/[✗])+ 预置([预置])+ ＋ 新建
   ❯ deepseek [✓]
+    moonshot [预置]                    # 没物化的预置都列出来;选中即写进 models.json
     ＋ 新建 provider
-Provider name: <新 provider 名>       # 仅新建时
+Provider name: <新 provider 名>       # 仅新建时(敲预置名也会自动套用预置)
 Base URL (OpenAI-compatible endpoint): <必填>
 ? API 类型                            # 上下键
   ❯ openai-completions
     openai-responses
     anthropic-messages
     google-generative-ai
-<provider> API key: <可见输入>          # 已有凭证回车保留
+<provider> API key: <可见输入>          # 已有凭证回车保留;预置是 `$ENV` 引用时可回车跳过
 ✓ deepseek — API Key: sk-d...45, Base URL: https://api.deepseek.com/v1
 
 --- Add Models ---
 Current models for deepseek:          # 或 No models configured
   - DeepSeek Chat (deepseek-chat)
-? Add a model?                        # 上下键;已有模型时默认「否」
+? Models                              # 上下键;没模型时默认「＋ Add a model」,已有模型默认「✓ Done」
+  ❯ ＋ Add a model
+    ↻ Refresh model list (GET /models)   # = `qi init --refresh` 那条,只加不删
+    ✓ Done
 Model identifier: deepseek-chat
 Model display name [deepseek-chat]:
 ? Supports reasoning (扩展思考)?
 contextWindow [128000]:
 maxTokens [16384]:
 ✓ Model 'deepseek-chat' (deepseek-chat) added.
-? Add a model?                        # 循环
+  - DeepSeek Chat (deepseek-chat)                    # 每步动作后重打一遍当前列表
+? Models                              # 循环;选「✓ Done」进下一步
 
 ? Configure another provider?         # 上下键,默认「否」
 
@@ -175,9 +180,13 @@ maxTokens [16384]:
 要点:
 
 - 全程**上下键选择**,只有 provider 名 / Base URL / 模型 id / API Key 等必填项才手动输入。
+- **预置 provider 直接列在选择器里**(标 `[预置]`,见 [providers.md §2.1](providers.md#21-预置-providerqi-init---preset)):
+  选中即 `apply_presets` 物化进 `models.json`(baseUrl / apiKey 引用 / 模型清单都有默认值,
+  下面几问回车即保留);没选中的预置不会写进文件。新建时敲预置名同样会套用预置。
+- `-y --provider <预置名>` 也先物化 —— 否则写出的 provider 没有 `baseUrl`。
 - `Base URL` 必填;已有 provider 的 `Base URL` / `API 类型` 直接回车保留。
-- `API Key` **可见输入**(不隐藏),方便确认复制成功;已有凭证回车保留。
-- `Add a model?` 循环逐个添加模型,含 `name` / `reasoning` / `contextWindow` / `maxTokens`,后三者有默认值回车即接受(已有模型默认「否」)。
+- `API Key` **可见输入**(不隐藏),方便确认复制成功;已有凭证回车保留;`apiKey` 是 `$ENV` 引用(预置的默认形态)时可回车跳过,已有环境变量就不必再粘一遍。
+- `Models` 菜单**三选一、同级循环**:`＋ Add a model`(含 `name` / `reasoning` / `contextWindow` / `maxTokens`,后三者有默认值回车即接受)、`↻ Refresh model list`(= [`qi init --refresh`](providers.md#23-种子会过时--以接口为准):`GET {baseUrl}/models` **只加不删**,预置种子落后于厂商时就地对齐,失败只报错不中断)、`✓ Done`。没模型时默认「添加」,已有模型默认「Done」(与原来 `Add a model?` 的是/否同语义)。
 - 最后 `Activate LLM Model` 把 `defaultProvider` / `defaultModel` 写进 `settings.json`(不再进 `models.json`)。
 - 写盘:`models.json`(provider + 模型)、`settings.json`(默认模型)、`auth.json`(API key,0600)。
 - `-l` 写入项目 `<项目>/.qi/models.json`(否则全局 `~/.qi/`)。

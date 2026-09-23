@@ -356,7 +356,8 @@ def test_mimo_preset_is_present():
     assert preset.base_url == "https://api.xiaomimimo.com/v1"
     assert preset.api_key_env == "MIMO_API_KEY"
     assert DEFAULT_API_KEY_ENV["mimo"] == "MIMO_API_KEY"
-    assert [m.id for m in preset.models] == ["mimo-v2.5-pro", "mimo-v2.5"]
+    assert [m.id for m in preset.models] == ["mimo-v2.6-flash", "mimo-v2.6-pro",
+                                             "mimo-v2.6-pro-ultraspeed"]
     assert preset.models[0].context_window == 1_048_576
     assert preset.models[0].max_output == 131_072
     assert "token-plan-cn.xiaomimimo.com" in preset.note
@@ -377,7 +378,7 @@ def test_every_preset_model_carries_both_numbers():
     ("volcengine", ["doubao-seed-evolving", "doubao-seed-2-1-pro-260628"]),
     ("hunyuan", ["hy4-preview", "hy3"]),                     # 已迁到 TokenHub
     ("qianfan", ["ernie-5.1", "ernie-5.0"]),                 # 5.1 是最新
-    ("mimo", ["mimo-v2.5-pro", "mimo-v2.5"]),
+    ("mimo", ["mimo-v2.6-flash", "mimo-v2.6-pro", "mimo-v2.6-pro-ultraspeed"]),
     ("moonshot", ["kimi-k3", "kimi-k2.7-code"]),
     ("minimax", ["MiniMax-M3"]),
     ("stepfun", ["step-3.7-flash"]),

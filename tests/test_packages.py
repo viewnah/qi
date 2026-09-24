@@ -34,6 +34,10 @@ def test_normalize_name_is_pep503():
     ("local:/tmp/ext", "local", "ext"),
     ("/tmp/my-ext", "local", "my-ext"),
     ("file:/tmp/other", "local", "other"),
+    # 本地归档是 **pip 通道**(pip 能直接装 wheel/sdist),不是目录通道
+    ("/tmp/qi_mcp-0.1.1.tar.gz", "pip", "qi-mcp"),
+    ("/tmp/qi_mcp-0.1.1-py3-none-any.whl", "pip", "qi-mcp"),
+    ("pip:/tmp/qi_mcp-0.1.1.tar.gz", "pip", "qi-mcp"),
     ("qi-mcp @ git+https://example.invalid/x", "pip", "qi-mcp"),
 ])
 def test_parse_declaration_forms(spec, channel, name):

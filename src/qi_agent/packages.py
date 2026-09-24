@@ -32,6 +32,34 @@ from .registry import EXTENSION_ENTRY_FILE, EXTENSION_ENTRY_POINT_GROUP, HOST_DI
 _PIP_PREFIX = "pip:"
 _LOCAL_PREFIX = "local:"
 
+#: pip 能直接装的**本地归档**。它们是** pip 通道**,不是目录通道 ——
+#: 目录通道会去找 `<归档>/extension.py`(归档是个文件,必然失败)。
+_ARCHIVE_SUFFIXES = (".tar.gz", ".tar.bz2", ".tgz", ".whl", ".zip")
+
+
+def _path_of(spec: str) -> str:
+    """`file:` 前缀去掉的本地路径(仅用于取名字/判后缀)。"""
+    return spec[len("file:"):] if spec.startswith("file:") else spec
+
+
+def _looks_like_archive(spec: str) -> bool:
+    """路径是不是一个 pip 能装的归档(wheel / sdist)。"""
+    return _path_of(spec).lower().endswith(_ARCHIVE_SUFFIXES)
+
+
+def _archive_name(spec: str) -> str:
+    """本地归档 → 归一前的包名(从文件名取)。
+
+    `qi_mcp-0.1.1.tar.gz` 与 `qi_mcp-0.1.1-py3-none-any.whl` 都取第一个 `-` 前那段
+    (PEP 625 的归一名字不含 `-`,只用 `.`/`_`)。取不到就退回文件名本身。
+    """
+    base = Path(_path_of(spec)).name
+    for suffix in _ARCHIVE_SUFFIXES:
+        if base.lower().endswith(suffix):
+            base = base[: -len(suffix)]
+            break
+    return base.split("-")[0] or base
+
 
 def normalize_name(name: str) -> str:
     """PEP 503 归一:大小写与 `-_.` 视为等价。
@@ -132,8 +160,12 @@ def parse_declaration(entry: Any, source: str) -> DeclaredPackage | None:
                                extensions=_extension_filter(declared_extensions))
     if spec.startswith(_PIP_PREFIX):
         spec = spec[len(_PIP_PREFIX):].strip()
-    # 裸路径也算目录通道:`/abs/path`、`./rel`、`~/x`
+    # 裸路径也算目录通道:`/abs/path`、`./rel`、`~/x` —— 但**归档文件走 pip 通道**:
+    # `qi install ./qi_mcp-0.1.1.tar.gz` 是“装这个包”,不是“找 ./...tar.gz/extension.py”。
     if spec.startswith(("/", "./", "../", "~")) or spec.startswith("file:"):
+        if _looks_like_archive(spec):
+            return DeclaredPackage(spec=original, name=normalize_name(_archive_name(spec)),
+                                   channel="pip", source=source, requirement=spec)
         name = Path(spec.removeprefix("file:")).name or spec
         return DeclaredPackage(spec=spec, name=normalize_name(name),
                                channel="local", source=source)

@@ -102,6 +102,17 @@ def test_install_local_directory_does_not_touch_pip(tmp_path, monkeypatch, pip):
     assert _packages(home / "settings.json") == [f"local:{ext.resolve()}"]
 
 
+def test_install_local_archive_goes_through_pip(tmp_path, monkeypatch, pip):
+    """本地归档(.whl / .tar.gz)走 pip —— 它没有 extension.py,不是目录通道。"""
+    home = _env(tmp_path, monkeypatch)
+    archive = tmp_path / "qi_mcp-0.1.1.tar.gz"
+    archive.write_bytes(b"not a real sdist")
+    res = runner.invoke(app, ["install", str(archive)])
+    assert res.exit_code == 0, res.output
+    assert pip.calls == [["install", str(archive)]]
+    assert _packages(home / "settings.json") == [str(archive)]
+
+
 def test_install_local_directory_without_entry_is_rejected(tmp_path, monkeypatch, pip):
     _env(tmp_path, monkeypatch)
     empty = tmp_path / "empty"

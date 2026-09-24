@@ -410,6 +410,22 @@ def project_trust_default(settings: QiSettings) -> str:
     return value if value in ("ask", "always", "never") else "ask"
 
 
+def project_declared_default_trust(cwd: Path | None = None) -> str | None:
+    """项目级 `settings.json` **原始文件**里显式写的 `defaultProjectTrust`(没写 → None)。
+
+    为什么不能直接读解析后的 `QiSettings`:那个字段默认值就是 `"ask"`,`getattr` 分不出
+    “没写”与“写了 ask” —— 会把**任何**有 `.qi/settings.json` 的仓库都误报成“仓库自称可信”。
+    """
+    for path, scope in settings_file_candidates(cwd):
+        if scope != "project":
+            continue
+        if not path.is_file():
+            return None
+        value = read_json(path).get("defaultProjectTrust")
+        return str(value).strip() if value is not None else None
+    return None
+
+
 def resolve_project_trust(settings: QiSettings | None, *,
                           approve: bool | None = None,
                           has_ui: bool = False,

@@ -60,7 +60,7 @@ from .session import (MODEL_CHANGE, THINKING_LEVEL_CHANGE, Session, SessionStore
 from .titling import suggest_title
 from .settings import (default_tools, extension_dirs, load_settings, load_settings_by_scope,
                        branch_summary_skip_prompt, model_thinking_level,
-                       resolve_project_trust, session_dir)
+                       project_declared_default_trust, resolve_project_trust, session_dir)
 from .tools import ToolContext, register_builtin_tools
 from .tools.shell import session_env
 
@@ -282,8 +282,7 @@ class QiRuntime:
         #: 与 `_level_pins` 分开:那是会话级的,这个是**整场运行**的。
         #: 命令行给的值是当次显式覆盖,不该被会话里记的旧值顶掉(与 `_model_pinned` 对称)。
         self._level_pinned_cli = False
-        declared_by_repo = (getattr(scopes.get("project"), "defaultProjectTrust", None)
-                            or "").strip()
+        declared_by_repo = project_declared_default_trust(self.cwd) or ""
         if declared_by_repo:
             # 不静默:一个仓库自称可信是值得报警的事
             self.notes.append(

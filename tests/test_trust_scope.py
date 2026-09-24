@@ -70,6 +70,17 @@ def test_repo_cannot_declare_itself_trusted(tmp_path, monkeypatch):
     assert any("defaultProjectTrust" in n and "已忽略" in n for n in rt.notes), rt.notes
 
 
+def test_project_settings_without_the_key_does_not_warn(tmp_path, monkeypatch):
+    """回归:`QiSettings.defaultProjectTrust` 的默认值就是 `"ask"`,不能用 getattr 判“写没写”。
+
+    否则**任何**有 `.qi/settings.json` 的仓库(哪怕只是写了 `packages`)都会被误报成
+    “项目 settings 里写了 defaultProjectTrust=ask”。
+    """
+    project = _env(tmp_path, monkeypatch, user={}, project={"packages": ["qi-mcp"]})
+    rt = _runtime(project)
+    assert not any("已忽略" in n for n in rt.notes), rt.notes
+
+
 def test_user_level_always_still_trusts(tmp_path, monkeypatch):
     """正当路径不能被误伤:用户在**自己家里**表态就生效。"""
     project = _env(tmp_path, monkeypatch, user={"defaultProjectTrust": "always"})

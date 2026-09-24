@@ -38,7 +38,7 @@ qi --export out.html                # 导出会话后退出
 | `-p`, `--print` | 跑完退出,**只把最终答案写 stdout** |
 | `--mode text` | 文本输出;**stdin/stdout 都是终端时仍进界面**(要一次执行就配 `-p`) |
 | `--mode json` | 输出事件流(一行一个 JSON,**隐含无头**)→ [json.md](json.md) |
-| `--mode rpc` | **未实现**:传了会明确报错(见 [PLAN.md](../design/PLAN.md) 的 v2 清单) |
+| `--mode rpc` | **未实现**:传了会明确报错 |
 | `--export <file>` | 导出会话:`.html` → 自包含 HTML,其余 → 原始 JSONL |
 
 **选项写在消息之前**(`qi -nt "问题"`,不是 `qi "问题" -nt`):顶层选项在遇到消息后不再解析 —— 写反了会报错并提示怎么改。

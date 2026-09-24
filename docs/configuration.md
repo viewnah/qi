@@ -80,7 +80,6 @@ AGENTS.override.md > AGENTS.md > AGENTS.MD > CLAUDE.md > CLAUDE.MD
 ```
 
 **动态块不受影响**:项目上下文、技能清单、手册索引、工作目录照旧追加 —— 不是"整条提示词只剩你的文件"。
-(实现细节见 [design/internals.md](../design/internals.md)。)
 
 ## qi 没有的配置项
 

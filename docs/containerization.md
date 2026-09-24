@@ -76,5 +76,4 @@ qi 只需要能连到模型 provider。要收紧就在容器/防火墙层限制�
 
 ## 与其它页面的关系
 
-- [security.md](security.md):有哪些闸门、哪些地方没有闸门;信任门控挡什么。
-- [bash-allowlist.md](../design/bash-allowlist.md):为什么不做命令白名单(以及它为什么不是边界)。
+- [安全地运行](security.md):有哪些闸门、哪些地方没有闸门;信任门控挡什么。

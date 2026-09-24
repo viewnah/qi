@@ -101,9 +101,3 @@ def register(api):
 ```
 
 配色请走主题的语义键(别写死 `#rrggbb`),否则换主题时你的组件不会跟着变 —— 见 [themes.md](themes.md)。
-
-## 与其它页面的关系
-
-- 扩展整体的写法(工具、事件、命令、旗标、依赖)见 [extensions.md](extensions.md)。
-- 键位与编辑器行为见 [keybindings.md](keybindings.md)。
-- 实现细节(Textual 的 priority / 焦点坑)见 [design/internals.md](../design/internals.md)。

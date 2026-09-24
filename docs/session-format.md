@@ -234,8 +234,7 @@ web 端同理:每轮开跑前 `WebState.bind()`(`bind_session` + `start_session`
 | **内存** | True | — | `--no-session`(`ephemeral()`) | 永不写盘(append/save/set_title 全跳过) |
 
 **为什么要"预留"而不是"启动就建文件"**:本机真实事故 —— `~/.qi/agent/sessions/` 攒了
-3000+ 个只有一行的空会话,全部来自"进来看一眼就走"。同一根因在 web 端也有(见
-[design/web.md](../design/web.md) §18.28 的"懒创建")。
+3000+ 个只有一行的空会话,全部来自"进来看一眼就走"。web 端也有同一个根因(懒创建)。
 
 **为什么留住会话对象、只懒文件**:构造时就 `newSession()`,
 于是"当前会话"这个不变量始终成立 —— 历史、用量、扩展的 `ctx.session_manager`、`/session`

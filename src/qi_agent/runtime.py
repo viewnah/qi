@@ -66,7 +66,7 @@ from .tools.shell import session_env
 
 
 #: core 里那个**唯一**的运行单元的标签(事件归属 + 会话 entry 的 `agent_id`)。
-#: 角色概念整体交给 qi-agents(E1.1/E15),所以 core 只需要一个固定名字。
+#: 角色概念整体交给扩展(E1.1/E15),所以 core 只需要一个固定名字。
 #: 选 "qi" 而不是 "general":基座提示词的身份就是 qi,而且它不再是“兼底角色”。
 CORE_AGENT_NAME = "qi"
 
@@ -478,21 +478,18 @@ class QiRuntime:
 
     # ── 工具上下文(每个会话独立) ──
     def _has_agent_support(self) -> bool:
-        """这个运行里有没有「角色」这件事。
+        """这个运行里有没有「能读角色目录的东西」。
 
-        判据用**行为**而不是包名:qi-agents 的全部工作就是注册 `subagent` 工具,
-        而它的名字随安装通道而变(entry point 叫 `agents`、目录通道叫目录名)。
+        判据只用**行为**:有没有扩展注册了 `subagent` 工具。core **不认任何包名** ——
+        没有「官方扩展」这回事;谁提供角色支持由装载结果说了算,而不是由 core 里一张名单。
         """
-        if "subagent" in self.catalog.names:
-            return True
-        return any(str(name).replace("_", "-") in {"agents", "qi-agents"}
-                   for name in (self.extensions or ()))
+        return "subagent" in self.catalog.names
 
     def _note_missing_agent_support(self) -> None:
         """有角色目录、但没有能读它的扩展 → 说一句(否则那些文件静默无效)。
 
-        与 design/extensions-design.md 的迁移清单同源:`.qi/agents/` 归 qi-agents,
-        core 不读它。未信任的项目目录也有可能读不到 —— 但那种情况另有提示
+        core 不读 `.qi/agents/`,也**不假定谁该读它** —— 只说"没有任何扩展接手",
+        并给通用装法 `qi install`。未信任的项目目录也有可能读不到 —— 但那种情况另有提示
         (信任门控自己会说),这里只说"扩展不在"。
         """
         if self._has_agent_support():
@@ -505,13 +502,13 @@ class QiRuntime:
             return
         listed = "、".join(str(root) for root in found)
         self.notes.append(
-            f"检测到角色目录({listed})但没装读它的扩展:`qi-agents` 未加载 —— "
-            f"这些角色不会被使用(装法:`pip install qi-agents`,然后 `qi doctor` 确认)")
+            f"检测到角色目录({listed})但没有任何扩展读取它 —— 这些角色不会被使用"
+            "(装一个能读它们的扩展:`qi install <扩展>`,再用 `qi doctor` 确认)")
 
     def _tool_ctx(self, agent_name: str) -> ToolContext:
         """工具上下文。
 
-        v3 里没有 `data_sources` 了 —— 数据源实例住在 agent 目录里,而 agent 归 qi-agents
+        v3 里没有 `data_sources` 了 —— 数据源实例住在 agent 目录里,而 agent 归读它的扩展
         (E15/E18:它会把作用域交给提供该配置种类的扩展自己去读)。
         """
         return ToolContext(agent_name=agent_name, workdir=self.workdir,
@@ -874,7 +871,7 @@ class QiRuntime:
         """本回合实际启用的工具名。
 
         覆盖(`setActiveTools`)优先;没有覆盖时就是 catalog 里的全部。
-        v3 里 agent 不再声明 `tools`(角色归 qi-agents),所以这里不再需要 unit 参数 ——
+        v3 里 agent 不再声明 `tools`(角色归扩展),所以这里不再需要 unit 参数 ——
         需要收窄的场景就是 `setActiveTools`,那一条路径已经独立。
         覆盖里已经不在 catalog 的名字会被滤掉(`setActiveTools` 允许先写名字、
         工具随后才注册)。
@@ -1668,7 +1665,7 @@ class QiRuntime:
 
         返回 `(system_prompt, 注入的消息)`。
 
-        **角色层不在 core 里**:qi-agents 通过这个钩子把角色说明拼进来(它返回的
+        **角色层不在 core 里**:读角色的扩展通过这个钩子把角色说明拼进来(它返回的
         `system_prompt` 会链式生效)。core 只拼「基座 + 项目上下文 + 技能 + cwd」。
 
         注入的消息(pi 的 `{message: …}`)收字符串或 `{"content": …}`。按 pi 的语义它是
@@ -1706,10 +1703,11 @@ class QiRuntime:
         """处理一轮用户输入,产出事件。
 
         **`agent_override` 已不再有任何作用(P-E4c 遗留)**:它此前是"这一轮直派哪个
-        agent"的入口,而 core 收窄成单 agent 之后角色归 qi-agents(靠 `before_agent_start`
+        agent"的入口,而 core 收窄成单 agent 之后角色归扩展(靠 `before_agent_start`
         改提示词,E14)—— 流水线里没有任何地方读它了。参数留着不删是为了让旧调用点
         (qi-web 曾用它)不因签名变化而崩,但**它不会生效、也不报错**,所以:
-        要"以某个角色跑"请用 qi-agents 的 `--ext agent=<名>`,或自己挂 `before_agent_start`。
+        要"以某个角色跑"请用读了角色的那个扩展提供的入口(如它注册的 `--ext`),
+        或自己挂 `before_agent_start`。
         (web 端正是栽在这里 —— 界面显示着角色、提示词里却没有;见 docs/extensions.md §6.1。)
 
         `source` 进 `input` 事件的 payload(交互式 / 无头 / rpc)—— 扩展据此决定
@@ -1775,7 +1773,7 @@ class QiRuntime:
         async for event in self._maybe_auto_compact(session):
             yield event
         # 单 agent:core 不认识“角色”,所以这里没有分派 —— 就一个固定的运行单元。
-        # 角色(qi-agents)通过 `before_agent_start` 改提示词参与(§1.1),
+        # 角色(读角色的扩展)通过 `before_agent_start` 改提示词参与(§1.1),
         # 而不是让 core 去选一个 agent。下面直接选上下文、落 user 消息。
         # 顺序要紧:先取上下文(不含本轮),再把 user 消息立即落盘。
         # 旧实现把 user 写在回合**结束后**,于是运行中刷新/断线就看不到自己说了什么;

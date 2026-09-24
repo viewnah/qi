@@ -739,7 +739,7 @@ def doctor() -> None:
         for line in ext_lines:
             console.print(f"  {line}")
     else:
-        console.print("[dim]扩展:无(pip install qi-agents / qi-mcp / qi-web)[/dim]")
+        console.print("[dim]扩展:无(用 `qi install <来源>` 装,如 `qi install qi-mcp`)[/dim]")
     for warning in ext_warnings:
         console.print(f"  [yellow]⚠ {escape(warning)}[/yellow]")
 
@@ -901,25 +901,58 @@ def _cmd_list_models(search: str | None = None) -> None:
 # ── 装 / 卸 / 更新(对齐 pi;判决 C 已撑销)──────────────────
 
 
-def _run_pip(args: list[str]) -> int:
-    """跑一次 pip,把命令**先打出来**。
+def _in_uv_tool_env() -> bool:
+    """当前解释器是不是 `uv tool` 建的 —— 那种 venv 里**没有 pip**。
 
-    为什么先打:目标是哪个解释器只有用户知道 —— 打出来他才能看出"装错环境了",
-    也能直接照拄。失败时补上 `uv tool install --with` 那条出路(只读解释器 / uv tool
-    环境里 pip 会自己报错,而那时用户需要知道另一条路)。
+    uv tool 会在工具根目录(`sys.prefix`,venv 根)放 `uv-receipt.toml`。
+    别用 `Path(sys.executable).resolve()`:`bin/python` 是指向系统解释器的**符号链接**,
+    resolve 会把它解到 venv 外面,判定就永远不成立(真踩过)。
+    """
+    return (Path(sys.prefix) / "uv-receipt.toml").is_file()
+
+
+def _has_pip() -> bool:
+    """当前解释器里能不能 `-m pip`(uv tool / 没 seed 的 venv 通常没有)。"""
+    import importlib.util
+
+    return importlib.util.find_spec("pip") is not None
+
+
+def _installer_cmd(args: list[str]) -> list[str] | None:
+    """pip 子命令 → 真正要跑的 argv;返回 None 表示照旧走 `python -m pip`。
+
+    uv tool 的 venv 不带 pip(uv 自己解 wheel,不 seed pip),所以那里改走 uv 的安装器:
+    `uv pip <sub> --python <sys.executable>` —— **目标仍是 qi 自己的解释器**,只是不需要
+    pip。装到哪没变(`sys.executable` 就是 qi 运行的环境),变的只是执行器。
+    非 uv 环境(或没装 uv)维持原样,行为不变。
+    """
+    uv = shutil.which("uv")
+    if uv and (_in_uv_tool_env() or not _has_pip()):
+        return [uv, "pip", args[0], "--python", sys.executable, *args[1:]]
+    return None
+
+
+def _run_pip(args: list[str]) -> int:
+    """跑一次安装,把命令**先打出来**。
+
+    目标是 qi 自己的解释器(`sys.executable`),所以不会装到 cwd 的项目 venv。
+    为什么先打:打出来才能看出"装到哪个环境了",也能直接照拄。
+    uv tool / 无 pip 的环境(见 `_installer_cmd`)换 uv 的安装器,目标不变。
+    失败时补上 `uv tool install --with` 那条出路 —— 它写进 uv 的托管依赖,
+    环境重建/升级后不会被抹掉。
     """
     import shlex
     import subprocess
 
-    cmd = [sys.executable, "-m", "pip", *args]
+    cmd = _installer_cmd(args) or [sys.executable, "-m", "pip", *args]
     console.print("[dim]$ " + " ".join(shlex.quote(c) for c in cmd) + "[/dim]")
     try:
         code = subprocess.call(cmd)
     except OSError as exc:
-        err_console.print(f"[red]起不了 pip:{escape(str(exc))}[/red]")
+        err_console.print(f"[red]起不了安装器:{escape(str(exc))}[/red]")
         return 1
     if code != 0:
-        err_console.print(f"[red]pip 退出码 {code}[/red]")
+        err_console.print(f"[red]安装失败(退出码 {code})[/red]")
         err_console.print(f"[dim]如果目标是只读解释器或 uv tool 环境,改用:"
                           f"`uv tool install {HOST_DISTRIBUTION} --with <包>`[/dim]")
     return code
@@ -1015,6 +1048,10 @@ def install(source: str = typer.Argument(..., help="包名 / requirement / 本�
     where = "项目" if local else "全局"
     console.print(f"[green]已写入{where} settings.packages:[/green] {escape(declaration.spec)}")
     console.print("[dim]`qi doctor` 会确认它真的能被宿主加载[/dim]")
+    if declaration.channel == "pip" and _in_uv_tool_env():
+        # pip/uv 就地装的东西不在 uv 的托管依赖里,重建就丢 —— 把"不丢"的那条打出来。
+        console.print(f"[dim]要在 uv tool 重建/升级后也保留,改用:"
+                      f"`{install_hints(declaration.spec)[-1]}`[/dim]")
 
 
 @app.command("remove")
@@ -1047,6 +1084,76 @@ def uninstall(source: str = typer.Argument(..., help="同 remove"),
               local: bool = typer.Option(False, "--local", "-l")) -> None:
     """`remove` 的别名(pi 三个名字都有)。"""
     remove(source, local)
+
+
+@app.command("sync")
+def sync(dry_run: bool = typer.Option(False, "--dry-run",
+                                      help="只列出要补装什么,不实际安装")) -> None:
+    """按 `settings.packages` 对账:把**声明了但没装**的扩展补回来(qi 版的 `uv sync`)。
+
+    声明是唯一事实来源,环境按它重建。**只补不删** —— 与 `qi remove` 同口径:
+    卸包不归 qi 管,多余的只报告(`qi list` / `qi doctor` 也能看到)。
+
+    - pip 声明 → 跑一次安装(uv tool 环境里自动走 uv 的安装器,装进 qi 自己的环境);
+    - local 声明 → 目录不存在 / 没有 `extension.py` 时报告(目录通道没有"安装"这回事)。
+
+    这**不是**启动时自动补装:它只在显式调用时动环境。
+    """
+    try:
+        report = package_report(Path.cwd())
+    except SettingsError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(code=2) from exc
+
+    if not report.declared and not report.unparsed:
+        console.print("[dim]settings.packages 里没有声明,没有可同步的东西[/dim]")
+        return
+    if report.consistent and not report.unparsed:
+        console.print(f"[green]已与 settings.packages 一致[/green]"
+                      f"({len(report.installed)} 个扩展)")
+        return
+
+    failed: list[str] = []
+    filled = 0
+    for decl in report.missing:
+        if decl.channel == "local":
+            target = _local_path(decl.spec)
+            if (target / "extension.py").is_file():
+                console.print(f"[dim]{escape(decl.spec)}:目录在,不用装[/dim]")
+            else:
+                err_console.print(f"[red]目录声明找不到(没有 extension.py):"
+                                  f"{escape(decl.spec)}[/red]")
+                failed.append(decl.spec)
+            continue
+        requirement = _pip_requirement(decl.spec)
+        if dry_run:
+            console.print(f"[dim]会补装: {escape(requirement)}[/dim]")
+            continue
+        console.print(f"[green]补装[/green] {escape(requirement)} [dim]({decl.source})[/dim]")
+        if _run_pip(["install", requirement]) == 0:
+            filled += 1
+        else:
+            failed.append(decl.spec)
+
+    # 认不出的声明必须印 —— 否则会是“声明了但看起来没声明”,比报错难诊断得多
+    for bad in report.unparsed:
+        err_console.print(f"[yellow]⚠ 无法解析的声明:[/yellow] {escape(bad)}")
+        err_console.print("    [dim]用 `名字 @ URL` 写法才认得出名"
+                          "(如 qi-mcp @ git+https://host/repo)[/dim]")
+
+    if dry_run:
+        return
+    if failed:
+        err_console.print(f"[red]同步未完成({len(failed)} 条失败)[/red]")
+        raise typer.Exit(code=1)
+    if filled:
+        console.print(f"[green]已补装 {filled} 个扩展(重启 qi 后生效)[/green]")
+    else:
+        console.print("[green]无需补装[/green]")
+    if report.undeclared:      # 只提示,不替用户写声明(那是 `qi install` 的事)
+        names = "、".join(item.name for item in report.undeclared)
+        console.print(f"[dim]已装但未声明({len(report.undeclared)}): {escape(names)}"
+                      " —— 写进 settings.packages 才能在重建后补回[/dim]")
 
 
 @app.command("update")
@@ -1951,12 +2058,6 @@ def _discover_cli_commands(cwd: Path | None = None) -> CliCommandRegistry:
     return registry
 
 
-#: 官方扩展提供的 CLI 子命令 → 提供它的包。
-#: 与 design/extensions-design.md 的迁移清单同源:core 不内置它们,所以这份名单必须写在 core 里 ——
-#: 否则"没装那个扩展的人"永远只能看到 `No such command`,而不知道要装什么。
-_OFFICIAL_EXTENSION_COMMANDS = {"web": "qi-web"}
-
-
 def _reject_unimplemented_flags(*, prompt_template, no_prompt_templates, theme_file,
                                 use_theme, no_themes, mode) -> None:
     """接受 pi 有、qi **还没有对应功能**的旗标,但明确报出来(退出码 2)。
@@ -2035,24 +2136,6 @@ def _open_session(store: Any, ref: str) -> Any:
         if opened is not None:
             return opened
     return store.get(ref)
-
-
-def _hint_missing_extension_command(argv: list[str]) -> None:
-    """`qi <官方扩展子命令>` 但那个扩展没装 → 报装法(而不是 `No such command`)。
-
-    代价故意压到零:只有 `argv[0]` 命中那份小名单时才去发现扩展命令表(那步要装载)。
-    """
-    if not argv or argv[0].startswith("-") or argv[0] in _core_subcommand_names():
-        return
-    package = _OFFICIAL_EXTENSION_COMMANDS.get(argv[0])
-    if package is None or _discover_cli_commands().find(argv[0]) is not None:
-        return
-    err_console.print(f"[red]`qi {argv[0]}` 需要 **{package}** 扩展(这条子命令由它提供,"
-                      f"core 不内置)。[/red]")
-    for hint in install_hints(f"pip:{package}"):
-        err_console.print(f"  [dim]{escape(hint)}[/dim]")
-    err_console.print("[dim]装完用 `qi doctor` 确认宿主真的收到了它。[/dim]")
-    raise typer.Exit(code=2)
 
 
 def _dispatch_extension_command(argv: list[str]) -> bool:
@@ -2182,8 +2265,6 @@ def main() -> None:
             console.print(f"  {src} → {dst}")
     # pi 的短旗标先展开再交给 typer(见 `normalize_short_flags`)
     sys.argv = [sys.argv[0], *normalize_short_flags(list(sys.argv[1:]))]
-    # 「装了但没装那个扩展」的官方子命令:先给装法,别让 typer 报 No such command
-    _hint_missing_extension_command(list(sys.argv[1:]))
     # 扩展子命令要在 typer 之前认出来(它的子命令表是静态的)
     if _dispatch_extension_command(list(sys.argv[1:])):
         return

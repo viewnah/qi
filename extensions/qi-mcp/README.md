@@ -12,7 +12,7 @@ qi 的 MCP 支持。形状**照搬 [`pi-mcp-adapter`](https://pi.dev/packages/pi
 ## 装
 
 ```bash
-pip install qi-mcp        # 或 -e ./extensions/qi-mcp(开发)
+qi install qi-mcp        # 或 -e ./extensions/qi-mcp(开发)
 ```
 
 装完 `qi` 下次启动自动发现它(entry point `qi.extensions`)。

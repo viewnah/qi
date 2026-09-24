@@ -234,3 +234,137 @@ def test_update_with_no_direction_is_an_error(tmp_path, monkeypatch, pip):
     _env(tmp_path, monkeypatch)
     res = runner.invoke(app, ["update", "--extensions", "--force"])
     assert res.exit_code == 0, res.output          # --extensions 给了方向 → 正常
+
+
+# ── 安装器选择:uv tool 环境没有 pip ───────────────────────────────────
+#
+# 目标位置始终是 `sys.executable`(qi 自己的解释器),这里只锁"用哪个执行器":
+# uv tool / 无 pip 的环境走 `uv pip <sub> --python <sys.executable>` —— 目标不变,
+# 只是不需要 pip。非 uv 环境维持 `python -m pip`。
+
+
+def _fake_uv(monkeypatch, path: str = "/usr/bin/uv") -> None:
+    monkeypatch.setattr(cli_mod.shutil, "which",
+                        lambda name: path if name == "uv" else None)
+
+
+def test_in_uv_tool_env_detects_the_receipt(tmp_path, monkeypatch):
+    root = tmp_path / "tools" / "qi-coding-agent"
+    root.mkdir(parents=True)
+    monkeypatch.setattr(cli_mod.sys, "prefix", str(root))
+    assert not cli_mod._in_uv_tool_env()
+    (root / "uv-receipt.toml").write_text("[tool]\n", encoding="utf-8")
+    assert cli_mod._in_uv_tool_env()
+
+
+def test_installer_cmd_uses_uv_in_a_uv_tool_env(tmp_path, monkeypatch):
+    root = tmp_path / "tools" / "qi-coding-agent"
+    root.mkdir(parents=True)
+    (root / "uv-receipt.toml").write_text("[tool]\n", encoding="utf-8")
+    py = root / "bin" / "python"
+    monkeypatch.setattr(cli_mod.sys, "prefix", str(root))
+    monkeypatch.setattr(cli_mod.sys, "executable", str(py))
+    _fake_uv(monkeypatch)
+
+    cmd = cli_mod._installer_cmd(["install", "qi-mcp"])
+    assert cmd == ["/usr/bin/uv", "pip", "install", "--python", str(py), "qi-mcp"]
+
+
+def test_installer_cmd_falls_back_to_uv_when_pip_is_missing(monkeypatch):
+    """不是 uv tool,但这个解释器里没有 pip —— 也走 uv(否则只能失败)。"""
+    monkeypatch.setattr(cli_mod, "_in_uv_tool_env", lambda: False)
+    monkeypatch.setattr(cli_mod, "_has_pip", lambda: False)
+    _fake_uv(monkeypatch)
+    cmd = cli_mod._installer_cmd(["install", "x"])
+    assert cmd[:3] == ["/usr/bin/uv", "pip", "install"]
+
+
+def test_installer_cmd_keeps_pip_when_it_is_available(monkeypatch):
+    monkeypatch.setattr(cli_mod, "_in_uv_tool_env", lambda: False)
+    monkeypatch.setattr(cli_mod, "_has_pip", lambda: True)
+    _fake_uv(monkeypatch)
+    assert cli_mod._installer_cmd(["install", "x"]) is None
+
+
+def test_run_pip_actually_calls_uv_when_selected(monkeypatch):
+    seen: list[list[str]] = []
+    monkeypatch.setattr(cli_mod, "_installer_cmd", lambda args: ["/usr/bin/uv", "pip", *args])
+    monkeypatch.setattr("subprocess.call", lambda cmd: seen.append(list(cmd)) or 0)
+    assert cli_mod._run_pip(["install", "qi-mcp"]) == 0
+    assert seen == [["/usr/bin/uv", "pip", "install", "qi-mcp"]]
+
+
+def test_install_hints_durable_command_in_uv_tool_env(tmp_path, monkeypatch, pip):
+    """uv tool 里装完要提醒 `--with` 那条 —— pip/uv 就地装的会被环境重建抹掉。"""
+    _env(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli_mod, "_in_uv_tool_env", lambda: True)
+    res = runner.invoke(app, ["install", "qi-mcp"])
+    assert res.exit_code == 0, res.output
+    assert "uv tool install qi-coding-agent --with" in res.output
+
+
+# ── sync:按声明对账(qi 版 `uv sync`,只补不删)──────────────────────
+
+
+def _env_pkgs(tmp_path, monkeypatch, packages: list[str]) -> Path:
+    home = _env(tmp_path, monkeypatch)
+    (home / "settings.json").write_text(
+        json.dumps({"defaultProvider": "ollama", "defaultModel": "x",
+                    "packages": packages}), encoding="utf-8")
+    return home
+
+
+def test_sync_installs_missing_declared_packages(tmp_path, monkeypatch, pip):
+    _env_pkgs(tmp_path, monkeypatch, ["qi-mcp"])
+    res = runner.invoke(app, ["sync"])
+    assert res.exit_code == 0, res.output
+    assert pip.calls == [["install", "qi-mcp"]], "缺失的声明要被补装"
+    assert "已补装" in res.output
+
+
+def test_sync_keeps_the_declaration_untouched(tmp_path, monkeypatch, pip):
+    """sync 只装包,不该改 settings.packages(写声明是 `qi install` 的事)。"""
+    home = _env_pkgs(tmp_path, monkeypatch, ["pip:qi-mcp>=0.2"])
+    assert runner.invoke(app, ["sync"]).exit_code == 0
+    assert pip.calls == [["install", "qi-mcp>=0.2"]]
+    assert _packages(home / "settings.json") == ["pip:qi-mcp>=0.2"]
+
+
+def test_sync_without_declarations_is_a_noop(tmp_path, monkeypatch, pip):
+    _env(tmp_path, monkeypatch)
+    res = runner.invoke(app, ["sync"])
+    assert res.exit_code == 0, res.output
+    assert pip.calls == []
+    assert "没有声明" in res.output
+
+
+def test_sync_dry_run_does_not_install(tmp_path, monkeypatch, pip):
+    _env_pkgs(tmp_path, monkeypatch, ["qi-mcp"])
+    res = runner.invoke(app, ["sync", "--dry-run"])
+    assert res.exit_code == 0, res.output
+    assert pip.calls == [], "--dry-run 只说不做"
+    assert "会补装" in res.output
+
+
+def test_sync_failure_is_a_nonzero_exit(tmp_path, monkeypatch, pip):
+    _env_pkgs(tmp_path, monkeypatch, ["qi-mcp"])
+    pip.codes.append(1)
+    res = runner.invoke(app, ["sync"])
+    assert res.exit_code == 1
+    assert "同步未完成" in res.output
+
+
+def test_sync_reports_local_declaration_without_extension(tmp_path, monkeypatch, pip):
+    _env_pkgs(tmp_path, monkeypatch, [f"local:{tmp_path / 'nope'}"])
+    res = runner.invoke(app, ["sync"])
+    assert res.exit_code == 1
+    assert "找不到" in res.output
+    assert pip.calls == [], "目录通道没有'安装'这回事"
+
+
+def test_sync_reports_unparsable_declaration(tmp_path, monkeypatch, pip):
+    _env_pkgs(tmp_path, monkeypatch, ["git+https://host/repo"])
+    res = runner.invoke(app, ["sync"])
+    assert res.exit_code == 0, res.output
+    assert "无法解析" in res.output
+    assert pip.calls == []

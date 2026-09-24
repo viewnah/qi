@@ -133,10 +133,15 @@ qi --tools read,grep,find,ls -p "审查这个项目"
 qi install <来源> [-l]      # 调 pip + 写进 settings.packages;本地目录只登记(不调 pip)
 qi remove <来源> [-l]       # 只从声明里移除(不卸包),并把 pip uninstall 命令打出来
 qi uninstall <来源> [-l]    # 同 remove
+qi sync [--dry-run]         # 按 settings.packages 对账:补装「声明了但没装」的(只补不删)
 qi update [来源|self] [--self|--extensions|--all|--extension <来源>|--force]
 qi list                     # 列出已装扩展,并与声明双向比对
 qi doctor                   # 诊断(含「声明了没装」的可复制装法)
 ```
+
+`qi sync` 是 qi 版的 `uv sync`:声明是唯一事实来源,环境按它重建 —— 把 `settings.packages` 里
+**声明了但没装**的扩展补回来(uv tool 环境里自动走 uv 的安装器),但**不卸载**多余的东西。
+它不是启动时自动补装,只在显式调用时动环境;`--dry-run` 只列要装什么。
 
 `qi update` 默认只更 qi 自己;`--models` 在 qi **无意义**(模型全在 `models.json` 里自己维护,它只说明这一点然后退出)。
 `qi install` 每次都先把要跑的 pip 命令打出来 —— 目标环境(自家 venv / `uv tool` / 只读解释器)的行为真的不同,

@@ -12,7 +12,7 @@
 | 形态 | 入口 | 适合 |
 | --- | --- | --- |
 | **目录形态** | `<项目>/.qi/extensions/<名>/extension.py` 或 `~/.qi/agent/extensions/<名>/extension.py` | 自己用、快速试;**项目级要在信任的项目里才装载** |
-| **包形态** | `pyproject.toml` 里声明 `qi.extensions` entry point,`pip install` 之后自动发现 | 要发布/共享(三个官方扩展都是这种) |
+| **包形态** | `pyproject.toml` 里声明 `qi.extensions` entry point,装进 qi 后自动发现 | 要发布/共享(仓库里的三个扩展都是这种) |
 | **临时形态** | `settings.json` 的 `extensions: ["/路径"]` | 开发调试(不写进扩展目录) |
 
 ## 相关文档

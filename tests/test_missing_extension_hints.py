@@ -1,11 +1,11 @@
-"""缺失扩展时的两条提示(对齐 design/extensions-design.md 的迁移清单)。
+"""缺失扩展时的提示。
 
-以前这两种情况都是**静默失效**:
+以前这种情况是**静默失效**:
 
-* `<项目>/.qi/agents/<名>/agent.md` 摆在那里,但没装 qi-agents —— 文件毫无作用,一声不响;
-* `qi web` —— typer 只报 `No such command 'web'`,不告诉你 `pip install qi-web` 就有。
+* `<项目>/.qi/agents/<名>/agent.md` 摆在那里,但没有任何扩展读它 —— 文件毫无作用,一声不响。
 
-两条都属于"该说出来的话":用户看得见的东西(一个目录、一条命令)与它实际的效果不一致。
+它属于"该说出来的话":用户看得见的东西(一个目录)与它实际的效果不一致。core 不假定
+谁该读这些角色 —— 没有"官方扩展"这回事 —— 只说"没有任何扩展接手",并给通用的 `qi install`。
 """
 
 from __future__ import annotations
@@ -16,12 +16,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-import pytest  # noqa: E402
-from typer import Exit  # noqa: E402
-
 from qi_agent import cli as cli_mod  # noqa: E402
 from qi_agent import paths  # noqa: E402
-from qi_agent.cli import _OFFICIAL_EXTENSION_COMMANDS, main  # noqa: E402
+from qi_agent.cli import main  # noqa: E402
 
 _MODELS = json.dumps({"providers": {"ollama": {"api": "openai-completions",
                                                "models": [{"id": "x"}]}}})
@@ -57,19 +54,19 @@ def _runtime(tmp_path, monkeypatch):
 
 
 def _agent_notes(runtime) -> list[str]:
-    return [n for n in runtime.notes if "qi-agents" in n]
+    return [n for n in runtime.notes if "角色目录" in n]
 
 
-# ── 角色目录在、扩展不在 ─────────────────────────────────────────────
+# ── 角色目录在、没有扩展读它 ─────────────────────────────────────────
 
 
 def test_agents_dir_without_the_extension_is_reported(tmp_path, monkeypatch):
-    """默认(conftest 把 entry point 桩成空)= 没装 qi-agents。"""
+    """默认(conftest 把 entry point 桩成空)= 没有任何扩展读角色目录。"""
     _write_role(tmp_path / "proj" / ".qi" / paths.AGENTS_DIR_NAME, "scout")
     runtime = _runtime(tmp_path, monkeypatch)
     assert _agent_notes(runtime), runtime.notes
     assert "不会被使用" in _agent_notes(runtime)[0]
-    assert "pip install qi-agents" in _agent_notes(runtime)[0], "要给出装法"
+    assert "qi install" in _agent_notes(runtime)[0], "要给出通用装法"
 
 
 def test_global_agents_dir_counts_too(tmp_path, monkeypatch):
@@ -98,7 +95,7 @@ def test_empty_agents_dir_means_no_note(tmp_path, monkeypatch):
 
 
 def test_agents_dir_with_the_extension_is_quiet(tmp_path, monkeypatch):
-    """装了 qi-agents(`subagent` 工具在)就不再提示。"""
+    """有扩展注册了 `subagent`(即 `_has_agent_support()` 为真)就不再提示。"""
     from qi_agent.runtime import QiRuntime
 
     _write_role(tmp_path / "proj" / ".qi" / paths.AGENTS_DIR_NAME, "scout")
@@ -107,38 +104,18 @@ def test_agents_dir_with_the_extension_is_quiet(tmp_path, monkeypatch):
     (project / ".git").mkdir(parents=True, exist_ok=True)
 
     class _WithSubagent(QiRuntime):
-        def _has_agent_support(self) -> bool:      # 模拟装上了 qi-agents
+        def _has_agent_support(self) -> bool:      # 模拟有扩展注册了 subagent
             return True
 
     runtime = _WithSubagent(cwd=project, approve_project=True)
     assert _agent_notes(runtime) == []
 
 
-# ── 官方扩展子命令缺扩展 ─────────────────────────────────────────────
-
-
-def test_official_command_table_covers_qi_web():
-    assert _OFFICIAL_EXTENSION_COMMANDS.get("web") == "qi-web"
-
-
-def test_qi_web_without_the_extension_prints_install_hint(monkeypatch, capsys):
-    monkeypatch.setattr(sys, "argv", ["qi", "web"])
-    monkeypatch.setattr(cli_mod.paths, "ensure_layout", lambda: [])
-
-    def _must_not_run(*_a, **_k):
-        raise AssertionError("提醒之后不该继续进 typer")
-
-    monkeypatch.setattr(cli_mod, "app", _must_not_run)
-    with pytest.raises(Exit) as excinfo:
-        main()
-    assert excinfo.value.exit_code == 2
-    err = capsys.readouterr().err
-    assert "qi-web" in err and "pip install" in err, err
-    assert "No such command" not in err
+# ── 扩展子命令 ───────────────────────────────────────────────────────
 
 
 def test_other_commands_are_untouched(monkeypatch):
-    """非官方子命令(= 正常启动)不该被这道闸门碰。"""
+    """普通启动不该被任何闸门碰。"""
     seen: list[list[str]] = []
     monkeypatch.setattr(sys, "argv", ["qi", "-p", "hi"])
     monkeypatch.setattr(cli_mod.paths, "ensure_layout", lambda: [])

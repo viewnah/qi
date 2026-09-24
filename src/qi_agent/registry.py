@@ -308,8 +308,8 @@ def discover_extensions(catalog: ToolCatalog, capabilities: CapabilityRegistry,
                 # **entry point 直接指向可调用对象是标准写法**(`包:register`):
                 # 这时 `load()` 返回的就是那个函数,不是模块。
                 #
-                # 这里**不能静默跳过**:静默跳过会让"官方扩展装了却不生效"变得完全不可见
-                # —— 三个官方扩展的 entry point 全是 `包:register` 形态,而这条 bug 正是
+                # 这里**不能静默跳过**:静默跳过会让"扩展装了却不生效"变得完全不可见
+                # —— 仓库里那几个扩展的 entry point 全是 `包:register` 形态,而这条 bug 正是
                 # 被 `qi doctor`(它什么也没列出来)抓出来的。
                 if callable(module):
                     register = module

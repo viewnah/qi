@@ -34,7 +34,7 @@ hello/
 ```
 
 一个扩展就是一个目录 + 一个 `extension.py`(里面必须有 `register(api)`)。
-包形态(要发到 PyPI 那种)见 `extensions/` 下的三个官方扩展:它们用
+包形态(要发到 PyPI 那种)见 `extensions/` 下的三个扩展:它们用
 `pyproject.toml` 的 `qi.extensions` entry point 声明入口,目录里放一个真正的 Python 包。
 
 ## 想抄更完整的

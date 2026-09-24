@@ -309,7 +309,7 @@ qi-agents(唯一知道角色目录的人)
 
 ### A1. 兼容与迁移(一刀切)
 
-已定:不保留"官方扩展自动装载"。`qi web`、`.qi/agents/`、`mcp.json` 都要求**显式装扩展**。
+已定:不保留"扩展自动装载"。`qi web`、`.qi/agents/`、`mcp.json` 都要求**显式装扩展**。
 
 #### A1.1 具体后果清单
 
@@ -357,7 +357,7 @@ qi-agents(唯一知道角色目录的人)
 | E22 | MCP 工具命名 | **`mcp__<server>__<tool>`**(Claude Code 约定),角色白名单支持 `mcp__<server>__*` 通配。理由:不撞名、可前缀过滤,且“角色只拿某 server 的工具”只能靠通配写 |
 | E23 | MCP 的接口归属 | qi-mcp 的接口(配置层级 / scope 交接 / 工具命名)**全属 qi 自己的决定**,不照搬任何现成形状 |
 | E24 | MCP 工具的暴露方式 | **代理兜底 + 白名单驱动直连**。主会话只给一个 `mcp` 代理工具(~200 token);角色的 `tools:` 里写了 `mcp__github__*` → 对**那个角色**直连匹配的工具、**且不给代理**;没写任何 mcp 条目 → 该角色**完全没有** MCP 访问。**否掉了“代理默认 + `directTools`”**:代理能调**任何** server 的工具,于是角色的 `tools:` 白名单限制不了 MCP —— 而“角色 = 精确的工具范围”是本仓的核心语义,白名单形同虚设是最忌的半对齐。**代价**:两种模式并存 **→ 已由 E25 取代** |
-| E25 | qi-mcp 的形状与依赖方向(取代 E20/E24) | **qi-agents 直接依赖 qi-mcp;agent 层的 MCP 发现归 qi-agents**。理由:① agent 目录是 qi-agents 的**自包含包**,包主人认识包成员不是泄漏;② E24 的白名单顾虑在新形状下**前提消失**(角色的 server 集合本就按需注册);③ 少一层自造协议。代价:`pip install qi-agents` 会拖上 MCP 栈;角色 `tools:` 对 MCP 的语义与内置工具不一致(要写进角色文档) |
+| E25 | qi-mcp 的形状与依赖方向(取代 E20/E24) | **qi-agents 直接依赖 qi-mcp;agent 层的 MCP 发现归 qi-agents**。理由:① agent 目录是 qi-agents 的**自包含包**,包主人认识包成员不是泄漏;② E24 的白名单顾虑在新形状下**前提消失**(角色的 server 集合本就按需注册);③ 少一层自造协议。代价:`qi install qi-agents` 会拖上 MCP 栈;角色 `tools:` 对 MCP 的语义与内置工具不一致(要写进角色文档) |
 | E26 | 扩展 API 的命名与参数形状 | **snake_case 是正式名,驼峰是别名**(两者绑定同一个函数对象,`api.registerTool is api.register_tool`);**参数形状两边都收**(options 对象与关键字写法)。事件名、`ctx` 成员名、`ctx.ui` 方法名同样双名。事件 payload 的**键名仍用 snake_case**、不发 `type` 判别字段(见 §12)。理由:两套写法都成立,外来扩展不必改写;代价只是多一层薄别名。**已知尾巴**:`deliver_as` 取值用 `follow_up`/`next_turn`,驼峰别名 `followUp`/`nextTurn` 也认 |
 | E27 | `executionMode` 的并发语义 | **逐工具声明,默认顺序(不声明 = 与以前逐字节一致)**;**相邻**的 `"parallel"` 工具并成一批并发跑,一个顺序工具把批次**打断**(顺序工具永不与并行工具重叠);**并发安全由声明方负责**(写 `"parallel"` 等于说“我的实现是并发安全的”,qi 不做文件变更队列);事件与上下文顺序**仍然确定**(先发完整批 `tool_execution_start`,再按声明序发 end / 结果 / 消息);**没有 session 级默认值**(不先提一个空旋钮)。配套:内部 `AgentEvent(kind="tool_start"/"tool_end")` 现在**必须带 `tool_call_id`** —— 并发时 TUI 工具卡片与 runtime 落盘靠它配对(以前都是单个槽位) |
 | E28 | 模型/思考级别切换的**可观测性与持久化** | **三条一起做,缺一条就是半对齐**:① 落盘 `model_change` / `thinking_level_change` 两个**设置类** entry(`SessionStore.set_context_setting`,同值不重写、只在新会话写起点);② bash/powershell 注入 `QI_SESSION_ID` / `QI_SESSION_FILE` / `QI_PROVIDER` / `QI_MODEL` / `QI_REASONING_LEVEL`(**先删后填**,子运行按自己的模型填);③ `Runtime.bind_session()` 按 entry 还原模型与级别。**为什么必须有**:换模型是**界面状态**、不作为消息进上下文,所以在此之前 agent 既感知不到切换、重启后又丢回去(第一轮对话里 agent 凭记忆答错模型,就是这个洞的表现)。**两处 qi 自己的取舍**:键名用 snake_case `model_id`(本仓约定);还原前多一道 `resolve_key(...).ok` 检查,没凭证就回落默认 + 记 note,而不是发一次注定 401 的请求。**新增的接线**:`bind_session()` —— 换模型/换级别发生在**回合外**,而 `_active_session` 只在一个回合内有效。契约见 [session-format.md §6.1](../docs/session-format.md);测试 `tests/test_session_model_entries.py` 20 项 + `tests/test_shell.py` 4 项 + `tests/test_tui_model_restore.py` 2 项(**TUI 启动路径**:footer 的模型/级别必须与 runtime 真正在用的那个一致 —— `_select_session()` 走的是**同步** bind,不能只靠 `session_start` 那个 async worker) |

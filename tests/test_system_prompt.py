@@ -147,6 +147,15 @@ def test_guidelines_follow_available_tools() -> None:
         assert "结论先行,简明扼要" in build_guidelines(names)
 
 
+def test_guidelines_route_extension_installs_through_qi_install() -> None:
+    """有 shell 才提示装扩展 —— 而且只认 `qi install`,不认裸 pip / uv。"""
+    with_bash = build_guidelines(["read", "bash"])
+    line = next(g for g in with_bash if "qi install" in g)
+    assert "pip install" in line and "uv add" in line
+    # 没有 shell 就执行不了安装命令 —— 不注入,免得诱导模型调不存在的工具
+    assert not [g for g in build_guidelines(["read"]) if "qi install" in g]
+
+
 def test_default_base_prompt_never_claims_bash_is_readonly() -> None:
     """防回归:bash 白名单已删除(见 design/bash-allowlist.md),提示词不得再声称只读。
 

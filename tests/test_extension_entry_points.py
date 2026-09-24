@@ -1,8 +1,8 @@
 """entry point 的两种形态 + **不再静默跳过**。
 
-这条是从一个真 bug 来的:三个官方扩展的 entry point 都写成 `包:register`(`qi_mcp:register`),
+这条是从一个真 bug 来的:仓库里三个扩展的 entry point 都写成 `包:register`(`qi_mcp:register`),
 于是 `ep.load()` 返回的是**函数**而不是模块;而 loader 用 `getattr(module, "register", None)`
-找入口,拿不到就 `continue` —— **静默跳过**。结果是"装了官方扩展却什么也不发生",
+找入口,拿不到就 `continue` —— **静默跳过**。结果是"装了扩展却什么也不发生",
 而这在测试里看不见:**之前的假 EP 都返回模块**,所以一直没暴露。
 
 它最终是被 `qi doctor` 抓出来的(三个扩展装着,扩展一节却是空的)。
@@ -51,7 +51,7 @@ def _module_ep(tmp_path: Path, name: str = "probe"):
 
 
 def _callable_ep(name: str = "probe"):
-    """形态二(**官方扩展用的**):entry point 指向 `包:register`,返回的是函数本身。"""
+    """形态二(**仓库里的扩展用的**):entry point 指向 `包:register`,返回的是函数本身。"""
     module = type(sys)(name)
     exec(compile(BODY, "<ep>", "exec"), module.__dict__)
     ep = type("EP", (), {"name": name, "load": staticmethod(lambda: module.register),
@@ -73,7 +73,7 @@ def test_module_form_is_loaded(monkeypatch, tmp_path):
 
 
 def test_callable_form_is_loaded(monkeypatch, tmp_path):
-    """**官方扩展就是这一种** —— 修 bug 前它被静默跳过。"""
+    """**仓库里的扩展就是这一种** —— 修 bug 前它被静默跳过。"""
     names, catalog = _discover(monkeypatch, [_callable_ep()], tmp_path)
     assert names == ["probe"], "可调用入口被跳过了(这正是那个 bug)"
     assert "probe" in catalog.names
@@ -87,14 +87,14 @@ def test_an_entry_point_without_register_is_loud(monkeypatch, tmp_path):
 
 
 def test_the_real_extensions_use_the_callable_form():
-    """**守约定**:三个官方扩展的 entry point 必须能被 load 成可调用对象。
+    """**守约定**:三个扩展的 entry point 必须能被 load 成可调用对象。
 
     这条断言的是**打包约定**本身 —— 它能提前抓住"entry point 写成了别的形状"。
     """
     available = {ep.name: ep for ep in metadata.entry_points(group="qi.extensions")}
     ours = {k: v for k, v in available.items() if k in ("agents", "mcp", "web")}
     if not ours:
-        pytest.skip("三个官方扩展没装成 editable(本机未安装时跳过)")
+        pytest.skip("三个扩展没装成 editable(本机未安装时跳过)")
     for name, ep in ours.items():
         loaded = ep.load()
         assert callable(loaded), f"{name} 的 entry point 加载出来的不是可调用对象:{loaded!r}"

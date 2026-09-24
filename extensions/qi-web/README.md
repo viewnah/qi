@@ -9,7 +9,7 @@ core 不再拖 fastapi/uvicorn,`qi web` 这个入口也由本扩展自己提供(
 ## 装
 
 ```bash
-pip install qi-web        # 或 -e ./extensions/qi-web(开发)
+qi install qi-web        # 或 -e ./extensions/qi-web(开发)
 ```
 
 装完 `qi web` 才有这条子命令 —— 没装时它不是"报错",而是**不存在**(core 里已经没有它了)。

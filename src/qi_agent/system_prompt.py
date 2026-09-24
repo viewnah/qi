@@ -10,7 +10,7 @@ pi 的默认 prompt 是**代码内字符串 + 运行时拼接**;qi v1 曾把基�
 3. 无论走哪条分支,后面统一追加:**项目上下文**(AGENTS.md 等)→ **技能清单**(XML)
    → **当前工作目录**。
 
-P-E4c 起 core **不再追加角色层与数据源** —— 两者都是“角色”的概念,归 qi-agents
+P-E4c 起 core **不再追加角色层与数据源** —— 两者都是“角色”的概念,归读角色的扩展
 (E1.1/E15):角色说明由它通过 `before_agent_start` 拼进来(那个钩子的返回值是链式的),
 数据源实例住在角色目录里。默认基座的身份描述也因此不再宣称“多 agent”。
 
@@ -32,7 +32,7 @@ if TYPE_CHECKING:                                  # 只为类型标注,避免�
 
 DEFAULT_IDENTITY = (
     "你是运行在 qi 框架中的 AI 助手。qi 是一个编码 agent 框架:默认单 agent 干活;"
-    "装了 qi-agents 扩展后可以按某个角色运行,也能把任务委派给别的角色。"
+    "装了提供角色能力的扩展后可以按某个角色运行,也能把任务委派给别的角色。"
 )
 
 DEFAULT_ENVIRONMENT = """环境:
@@ -73,6 +73,12 @@ def build_guidelines(tool_names: Sequence[str], tools: Sequence[Tool] = ()) -> l
             add("用 PowerShell 做文件操作:列目录、搜索、找文件")
         else:
             add("用 bash 做文件操作:列目录、搜索、找文件")
+    if {"bash", "powershell"} & has:
+        # 装扩展的入口只有一个:`qi install` —— 它固定装进 qi 自己的解释器环境。
+        # 裸 pip / uv 会落到系统 Python 或项目 .venv,那是装的"另一个环境"。
+        add("装 qi 扩展用 `qi install <来源>`(如 `qi install qi-mcp`),"
+            "它会装进 qi 自己的环境;不要用裸 `pip install` / `uv add`,"
+            "那会装到别的环境。装完要重启 qi 才会加载。")
     for tool in tools:
         for line in tool.prompt_guidelines:
             add(line)
@@ -250,7 +256,7 @@ def build_system_prompt(base_prompt: str | None = None, *,
         `AGENTS.md`(`context_files=[]` 表示显式不注入)。
       - `skills`:**顶层**技能(六层来源,见 loader)。
 
-    **没有“角色层”与“数据源”** —— 两者都是 agent 的概念,归 qi-agents(E1.1/E15):
+    **没有“角色层”与“数据源”** —— 两者都是 agent 的概念,归读角色的扩展(E1.1/E15):
     角色说明由它通过 `before_agent_start` 拼进来(那个钩子的返回值是链式的),数据源
     实例也在 agent 目录里。core 只负责“基座 + 项目上下文 + 技能 + cwd”。
     """

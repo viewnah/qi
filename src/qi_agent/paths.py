@@ -25,8 +25,8 @@ MODELS_FILE_NAME = "models.json"
 AUTH_FILE_NAME = "auth.json"
 SETTINGS_FILE_NAME = "settings.json"
 SYSTEM_FILE_NAME = "SYSTEM.md"
-#: 角色定义文件名。core **不读**它(qi-agents 读);这里只用来判「有没有角色目录」,
-#: 好在没装 qi-agents 时说一句(见 `QiRuntime._note_missing_agent_support`)。
+#: 角色定义文件名。core **不读**它(由读角色的扩展读);这里只用来判「有没有角色目录」,
+#: 好在没有任何扩展接手时说一句(见 `QiRuntime._note_missing_agent_support`)。
 AGENT_FILE_NAME = "agent.md"
 SESSIONS_DIR_NAME = "sessions"
 AGENTS_DIR_NAME = "agents"

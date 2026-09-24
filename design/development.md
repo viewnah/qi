@@ -16,7 +16,7 @@ uv sync
 `uv sync` 会把 **qi 本体装成 editable**(`.venv/lib/python3.12/site-packages/_editable_impl_qi_agent.pth`)
 并装上 dev 依赖(`pytest` / `pytest-asyncio`)。
 
-**三个官方扩展要单独装**——它们各自是独立 pip 包,而仓库**没有配 uv workspace**(故意的:core 不该
+**三个扩展要单独装**——它们各自是独立 pip 包,而仓库**没有配 uv workspace**(故意的:core 不该
 默认拖上 MCP / FastAPI 那些依赖):
 
 ```bash
@@ -52,7 +52,7 @@ uv run pytest -q                      # 等价写法
 `tests/conftest.py` 里有一个 autouse 夹具,把 `qi.extensions` 这组 entry point **stub 成空**。
 理由写在那里的注释里,值得抄一遍:
 
-> 三个官方扩展一旦 `pip install -e` 装上(开发机上很常见),entry point 就会在每个测试的 runtime
+> 三个扩展一旦 `pip install -e` 装上(开发机上很常见),entry point 就会在每个测试的 runtime
 > 里被装载 —— 于是**测试结果取决于这台机器上装了什么**。那种漂移最难查:同一条测试在你这里是
 > 绿的、在 CI 上也是绿的,只是因为它们测的不是同一件事。
 
@@ -146,7 +146,7 @@ uv build --out-dir dist && uv build extensions/qi-mcp --out-dir dist \
 - **打 tag 发布**:`git tag v0.1.0 && git push origin v0.1.0` → 构建 + 发布到 **PyPI**;
 - **手动触发**:Actions → publish → Run workflow,两个输入:
   - `target`:`testpypi`(默认,试跑)/ `pypi`;
-  - `packages`:**`core`(默认,只发 `qi-coding-agent`)** / `all`(连三个官方扩展一起发)。
+  - `packages`:**`core`(默认,只发 `qi-coding-agent`)** / `all`(连三个扩展一起发)。
     选 `core` 时版本检查只核 core(四个锁步那条不适用);扩展还没发布时保持默认。
 - **action 全部按 commit SHA 固定**(发布 job 持有 PyPI 权限,不吃可变 tag),并关掉 uv 缓存
   (`cache-poisoning`)、`checkout` 不带 git 凭证(`persist-credentials: false`);

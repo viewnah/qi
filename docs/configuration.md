@@ -25,7 +25,7 @@ qi 的配置分**用户级**与**项目级**两层。
 | `<agent-dir>/extensions/` | 用户级[扩展](extensions.md),一目录一个扩展 |
 | `<agent-dir>/SYSTEM.md` | **整体替换**默认基座(见下) |
 | `<agent-dir>/AGENTS.md`(或 `AGENTS.override.md` / `CLAUDE.md`) | 跨工作目录的用户指令 |
-| `<agent-dir>/agents/`、`<agent-dir>/mcp.json` | **官方扩展自己的目录**:角色(qi-agents)与 MCP server(qi-mcp)—— 没装对应扩展就是普通目录 |
+| `<agent-dir>/agents/`、`<agent-dir>/mcp.json` | **扩展的约定目录**:角色与 MCP server —— **core 不读它们**,由扩展接手;没有任何扩展读时就是普通目录 |
 
 ## 项目 `.qi` 目录
 
@@ -36,7 +36,7 @@ qi 的配置分**用户级**与**项目级**两层。
 | `.qi/SYSTEM.md` | **整体替换**本项目里的基座 |
 | `.qi/extensions/` | 项目级扩展(**信任后才加载**) |
 | `.qi/skills/` | 项目级技能 |
-| `.qi/agents/`、`.qi/mcp.json` | 同上:官方扩展自己的目录与声明 |
+| `.qi/agents/`、`.qi/mcp.json` | 同上:扩展的约定目录与声明 |
 
 `SYSTEM.md` 有项目级就用项目级(同名文件**不合并**)。
 

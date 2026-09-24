@@ -115,7 +115,8 @@ def test_discover_declared_reads_both_scopes_project_wins(tmp_path, monkeypatch)
 
 def test_install_hints_are_copy_pasteable():
     hints = install_hints("pip:qi-mcp")
-    assert any("-m pip install" in h and "qi-mcp" in h for h in hints)
+    # 首选 qi install(它自己会挑安装器、写声明),不再直接给裸 pip 命令
+    assert any(h == 'qi install "qi-mcp"' for h in hints)
     assert any(h.startswith(f"uv tool install {HOST_DISTRIBUTION} --with") for h in hints)
     # 通道前缀必须剥掉,否则用户复制到的是一条跑不通的命令
     assert all("pip:" not in h for h in hints)

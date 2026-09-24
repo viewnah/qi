@@ -146,7 +146,7 @@ def serve(argv: list[str]) -> int:
         from .app import create_app
     except ImportError as exc:               # fastapi/uvicorn 是**本扩展**的依赖
         err_console.print(f"[red]缺少 web 依赖:[/red] {escape(str(exc))}")
-        err_console.print("  安装: [bold]pip install qi-web[/bold]")
+        err_console.print("  安装: [bold]qi install qi-web[/bold]")
         return 2
 
     password = args.password or os.environ.get("QI_WEB_PASSWORD") or None

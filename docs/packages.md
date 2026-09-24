@@ -1,16 +1,18 @@
 # 扩展的安装与声明
 
-> 装扩展 = 调 pip(或放一个目录);qi **不做**这件事,只做「**声明层 + 比对**」。
+> 装扩展 = 装一个 pip 包,或放一个目录;`qi install` 帮你做这一步,`qi doctor` / `qi list` 负责「声明层 + 比对」。
 > 相关:[cli.md](cli.md)(命令速查)、[extensions.md](extensions.md)(扩展机制与 API)、[settings.md](settings.md)(`packages` / `extensions` 字段)。
 
 ## 1. 谁负责跱这一步
 
-`qi install` **存在**,但它只是**帮你跱一步**:调一次 pip,然后把声明写进
+`qi install` **存在**,但它只是**帮你跱一步**:调一次安装器,然后把声明写进
 `settings.packages`。**它不替代“想清楚装到哪个环境”这件事** —— 三种目标环境的行为真的不同:
 
 1. **目标环境有三种**:qi 自己的 venv、`uv tool` 托管的环境、只读的系统解释器(Homebrew / 系统 Python)。
-   qi 每次都把要跑的命令**先打出来**,所以你能看出装到了哪里;只读解释器下 pip 会自己报错,
-   qi 把输出原样给你并补上 `uv tool install qi-coding-agent --with <包>` 那条出路。
+   目标始终是 **qi 自己的解释器**(`sys.executable`),所以不会装到 cwd 的项目 venv。
+   `uv tool` 的环境里**没有 pip**(uv 自己解 wheel,不 seed pip),qi 会自动改用 uv 的安装器
+   (`uv pip install --python <sys.executable>`,目标不变)。qi 每次都把要跑的命令**先打出来**;
+   只读解释器下安装器会自己报错,qi 把输出原样给你并补上 `uv tool install qi-coding-agent --with <包>` 那条出路。
 2. **`uv tool` 会整个重建环境**。uv 文档的原话:tool 环境 "may be upgraded via `uv tool upgrade`,
    or **re-created entirely** via subsequent `uv tool install`"。所以 pip 装进去的扩展**会被抹掉**
    —— 声明还在,`qi doctor` 会把它报出来(这正是“声明层”存在的意义)。
@@ -61,21 +63,22 @@
 
 ## 4. 两条装法,失效面不同
 
-`qi doctor` / `qi list` 会把两条都打出来,**不替你选**:
+`qi doctor` / `qi list` 会把两条都打出来,**不替你选**。嫌两条麻烦就直接 `qi sync` ——
+它按 `settings.packages` 把缺的装回来:
 
 ```bash
-# ① 直接装进 qi 所在的那个解释器(最直接)
-/path/to/venv/bin/python -m pip install "qi-mcp>=0.2"
+# ① 装进 qi 自己的解释器环境(uv tool 环境里自动改用 uv 的安装器)
+qi install "qi-mcp>=0.2"
 
 # ② 写进 uv tool 的托管依赖(uv tool 重建 / 升级后仍然在 —— 推荐)
 uv tool install qi-coding-agent --with "qi-mcp>=0.2"
 ```
 
-| | ① 直接 pip | ② uv 托管依赖 |
+| | ① `qi install` | ② uv 托管依赖 |
 | --- | --- | --- |
-| 装到哪 | `sys.executable` 对应的环境 | uv 的 tool 环境 |
+| 装到哪 | qi 自己的解释器环境(`sys.executable`;uv tool 环境里自动走 `uv pip --python <sys.executable>`) | uv 的 tool 环境 |
 | uv tool 重建后 | **丢**(声明还在,所以 `qi doctor` 会把它报出来) | 保留 |
-| 只读解释器 | 失败(pip 自己报错) | 可行 |
+| 只读解释器 | 失败(安装器自己报错) | 可行 |
 | 适合 | 自己管 venv 的人 | 用 `uv tool` 装 qi 的人 |
 
 ## 5. 怎么读输出
@@ -110,7 +113,7 @@ tool 重建后补回
 └───────────┴──────┴───────┴─────────────────────────────┴────────┘
 包声明:
   ✗ 声明了但没装: pip:qi-todo (settings:user)
-      /…/bin/python3 -m pip install "qi-todo"
+      qi install "qi-todo"
       uv tool install qi-coding-agent --with "qi-todo"
   ⚠ 无法解析的声明: git+https://host/repo
       用 `名字 @ URL` 写法才认得出名(如 qi-mcp @ git+https://host/repo)

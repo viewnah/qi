@@ -21,7 +21,6 @@ uv tool、pipx 那些环境分支要处理,也没有半途失败的中间态。
 from __future__ import annotations
 
 import re
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable
@@ -416,15 +415,15 @@ def _abs(path: Path) -> Path:
 def install_hints(spec: str) -> list[str]:
     """一条声明的**可复制**装法。
 
-    两条出路都给出,因为它们的失效面不同:直接 pip 装进 qi 的 venv 最直接,但
-    `uv tool install` 重建环境时会丢;写进 uv 的托管依赖则升级不丢。不选边 ——
-    用户才知道自己是怎么装的。
+    首选 `qi install`:它把包装进 qi 自己的解释器环境(uv tool 环境里自动改用 uv 的
+    安装器),并写回 `settings.packages`。第二条是 uv 的托管依赖 —— 环境重建/升级也不丢。
+    不选边:用户才知道自己是怎么装的。
     """
     if spec.startswith(_LOCAL_PREFIX):
         spec = spec[len(_LOCAL_PREFIX):].strip()
     if spec.startswith(_PIP_PREFIX):
         spec = spec[len(_PIP_PREFIX):].strip()
     return [
-        f'{sys.executable} -m pip install "{spec}"',
+        f'qi install "{spec}"',
         f'uv tool install {HOST_DISTRIBUTION} --with "{spec}"',
     ]

@@ -8,7 +8,7 @@ qi 的**角色系统**扩展:角色发现 + 角色选择 + `subagent` 委派。
 ## 装
 
 ```bash
-pip install qi-agents            # 或 -e ./extensions/qi-agents(开发)
+qi install qi-agents            # 或 -e ./extensions/qi-agents(开发)
 ```
 
 它会一并装上 **qi-mcp**(E25 定的硬依赖)—— 角色自带的 MCP server 由 qi-mcp 负责连与注册。

@@ -265,7 +265,7 @@ pi 的 `ToolDefinition.executionMode` 是 `"sequential" | "parallel"`(默认顺�
 - 信任模型:pi 同样把信任决定存在用户 home 里(`trust.json`)、不在仓库里 —— qi「项目级 `defaultProjectTrust` 会被忽略」是同一个模型。
 - hook 粒度:**采用 pi 的粒度,不超出**(per-prompt `before_agent_start` + 通知型 `turn_start`)。
 - 依赖契约:公开 import 白名单是 pi 的 `## Available Imports` 的对应物;**禁止钉宿主版本**这条 —— pi 用 `peerDependencies` + `"*"`,Python 没有 peer,所以 qi 改成「明文规定 + 装载时报」。
-- `qi install` 对齐 pi 的 `pi install <source> [-l]`;`remove`/`uninstall` 只移除声明、不卸包,与 pi 同义。
+- `qi install` 对齐 pi 的 `pi install <source> [-l]`;`remove`/`uninstall` 也**真卸包**(先从指定作用域删声明,无别的作用域声明时才卸),与 pi 同义。
 
 ### 11.7 决策记录里被移出手册的上游对照(原 §10 各行)
 
@@ -353,6 +353,6 @@ pi 的 `~/.pi/agent/models-store.json` 不是用户配置,而是**远程模型�
 | `compaction.md` | `reserveTokens` 16384「pi 默认值」;「split turn(pi 同款)」;「`_history()` 的装配规则(pi 语义)」 |
 | `skills.md` | 层序说明「为了跟 pi 的发现规则对齐,再叠上 qi 自己的私有层」;`/skill:` 段尾「pi 的同一句话是 "use prompting or `/skill:name` to force it"」 |
 | `quickstart.md` | `qi "分析这个仓库"` 注释「对齐 pi 的 `pi "问题"`」 |
-| `packages.md` | 「`qi install` 存在(对齐 pi)」;「`remove` 不卸包(与 pi 同义)」 |
+| `packages.md` | 「`qi install` 存在(对齐 pi)」;「`remove`/`uninstall` 真卸包(与 pi 同义)」 |
 | `usage.md` | `qi -r` 注释「对齐 pi」 |
 | `development.md` | 「qi 没有 `test.sh`(pi 有 `./test.sh`,照那个敲会失败)」 |

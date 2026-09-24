@@ -159,15 +159,55 @@ def test_install_does_not_record_when_pip_fails(tmp_path, monkeypatch, pip):
 # ── remove / uninstall ─────────────────────────────────────────────────
 
 
-def test_remove_drops_the_declaration_and_hints_uninstall(tmp_path, monkeypatch, pip):
+def test_remove_drops_declaration_and_uninstalls(tmp_path, monkeypatch, pip):
+    """移除声明 = **真卸包**(对齐 pi);不再只打印 pip uninstall 命令。"""
     home = _env(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli_mod, "_installed_dist_version", lambda name: "1.0")
     (home / "settings.json").write_text(
         json.dumps({"packages": ["qi-mcp", "qi-agents"]}), encoding="utf-8")
     res = runner.invoke(app, ["remove", "qi-mcp"])
     assert res.exit_code == 0, res.output
     assert _packages(home / "settings.json") == ["qi-agents"]
-    assert "uninstall" in res.output and "qi-mcp" in res.output   # 只移除声明;卸包给命令
-    assert pip.calls == [], "remove 不调 pip(与 pi 同义)"
+    assert pip.calls == [["uninstall", "-y", "qi-mcp"]]
+    assert "已卸载" in res.output
+
+
+def test_remove_keeps_package_when_another_scope_declares_it(tmp_path, monkeypatch, pip):
+    """pip 只有一个环境:另一作用域还声明着,就只删声明、留包。"""
+    home = _env(tmp_path, monkeypatch)
+    (home / "settings.json").write_text(json.dumps({"packages": ["qi-mcp"]}), encoding="utf-8")
+    (tmp_path / ".qi").mkdir(exist_ok=True)
+    (tmp_path / ".qi" / "settings.json").write_text(
+        json.dumps({"packages": ["qi-mcp"]}), encoding="utf-8")
+    res = runner.invoke(app, ["remove", "qi-mcp"])
+    assert res.exit_code == 0, res.output
+    assert _packages(home / "settings.json") == []
+    assert pip.calls == [], "project 还声明着,不该卸包"
+    assert "仍被 project" in res.output
+
+
+def test_remove_force_uninstalls_despite_other_scope(tmp_path, monkeypatch, pip):
+    home = _env(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli_mod, "_installed_dist_version", lambda name: "1.0")
+    (home / "settings.json").write_text(json.dumps({"packages": ["qi-mcp"]}), encoding="utf-8")
+    (tmp_path / ".qi").mkdir(exist_ok=True)
+    (tmp_path / ".qi" / "settings.json").write_text(
+        json.dumps({"packages": ["qi-mcp"]}), encoding="utf-8")
+    res = runner.invoke(app, ["remove", "qi-mcp", "--force"])
+    assert res.exit_code == 0, res.output
+    assert pip.calls == [["uninstall", "-y", "qi-mcp"]]
+
+
+def test_remove_project_scope(tmp_path, monkeypatch, pip):
+    _env(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli_mod, "_installed_dist_version", lambda name: "1.0")
+    (tmp_path / ".qi").mkdir(exist_ok=True)
+    (tmp_path / ".qi" / "settings.json").write_text(
+        json.dumps({"packages": ["qi-mcp"]}), encoding="utf-8")
+    res = runner.invoke(app, ["remove", "-l", "qi-mcp"])
+    assert res.exit_code == 0, res.output
+    assert _packages(tmp_path / ".qi" / "settings.json") == []
+    assert pip.calls == [["uninstall", "-y", "qi-mcp"]]
 
 
 def test_remove_unknown_is_a_nonzero_exit(tmp_path, monkeypatch, pip):
@@ -179,9 +219,11 @@ def test_remove_unknown_is_a_nonzero_exit(tmp_path, monkeypatch, pip):
 
 def test_uninstall_is_an_alias(tmp_path, monkeypatch, pip):
     home = _env(tmp_path, monkeypatch)
+    monkeypatch.setattr(cli_mod, "_installed_dist_version", lambda name: "1.0")
     (home / "settings.json").write_text(json.dumps({"packages": ["qi-mcp"]}), encoding="utf-8")
     assert runner.invoke(app, ["uninstall", "qi-mcp"]).exit_code == 0
     assert _packages(home / "settings.json") == []
+    assert pip.calls == [["uninstall", "-y", "qi-mcp"]]
 
 
 # ── update ─────────────────────────────────────────────────────────────
@@ -379,3 +421,16 @@ def test_sync_reports_unparsable_declaration(tmp_path, monkeypatch, pip):
     assert res.exit_code == 0, res.output
     assert "无法解析" in res.output
     assert pip.calls == []
+
+
+def test_installer_cmd_strips_yes_for_uv_uninstall(tmp_path, monkeypatch):
+    """`uv pip uninstall` 不问也不收 `-y` —— 转成 uv 时要剥掉(pip 那条要留着)。"""
+    root = tmp_path / "tools" / "qi-coding-agent"
+    root.mkdir(parents=True)
+    (root / "uv-receipt.toml").write_text("[tool]\n", encoding="utf-8")
+    monkeypatch.setattr(cli_mod.sys, "prefix", str(root))
+    monkeypatch.setattr(cli_mod.sys, "executable", str(root / "bin" / "python"))
+    _fake_uv(monkeypatch)
+    cmd = cli_mod._installer_cmd(["uninstall", "-y", "qi-mcp"])
+    assert cmd == ["/usr/bin/uv", "pip", "uninstall", "--python",
+                   str(root / "bin" / "python"), "qi-mcp"]

@@ -84,6 +84,10 @@ class DeclaredPackage:
     #: 照 `docs/settings.md` 的 packages 一节)。`[]` = 这个包**不贡献扩展**;
     #: 键缺失(`None`)= 不过滤(全部加载)。`qi config` 的"关掉"就是写 `[]`。
     extensions: list[str] | None = None
+    #: 这条包被**哪些作用域**声明(`("user",)` / `("user", "project")`)。`source` 只记
+    #: **生效**那层(近者胜);这里保留全部 —— 报告才能显示"用户级也声明了",
+    #: 卸载也才能知道"删掉这层后还有没有人要它"。
+    scopes: tuple[str, ...] = ()
 
     @property
     def contributes_extensions(self) -> bool:
@@ -98,7 +102,7 @@ class InstalledExtension:
     name: str
     channel: str                  # pip | local
     origin: str                   # dist 名(带版本)或 extension.py 路径
-    scope: str                    # user / project / temporary
+    scope: str                    # env(pip,共享环境) / user / project / temporary
     version: str | None = None
 
 
@@ -195,13 +199,18 @@ def discover_declared(cwd: Path | None = None) -> tuple[list[DeclaredPackage], l
     等于“声明了但看起来没声明”,比报错难诊断得多。
 
     按作用域各自解析(不是合并后的数组),理由同 `settings.extension_dirs()`:
-    合并会让一侧的声明落到另一侧的基准上。
+    合并会让一侧的声明落到另一侧的基准上。**每条声明的 `scopes` 记下全部声明过它的
+    作用域** —— `source` 只记生效那层,但“用户级也声明了”这个事实不能丢(卸载时要用)。
     """
+    from dataclasses import replace
+
     from .settings import load_settings_by_scope
 
     scopes = load_settings_by_scope(cwd)      # 坏设置就直接抛:调用方必须报出来
 
-    out: dict[str, DeclaredPackage] = {}
+    order: list[str] = []                     # 保持“user 先、project 覆盖”的首次出现序
+    effective: dict[str, DeclaredPackage] = {}
+    declaring: dict[str, list[str]] = {}
     unparsed: list[str] = []
     for scope in ("user", "project"):        # 先远后近,project 覆盖 user
         settings = scopes.get(scope)
@@ -211,9 +220,43 @@ def discover_declared(cwd: Path | None = None) -> tuple[list[DeclaredPackage], l
             decl = parse_declaration(entry, f"settings:{scope}")
             if decl is None:
                 unparsed.append(str(entry))
-            else:
-                out[decl.name] = decl
-    return list(out.values()), unparsed
+                continue
+            if decl.name not in effective:
+                order.append(decl.name)
+            effective[decl.name] = decl
+            if scope not in declaring.setdefault(decl.name, []):
+                declaring[decl.name].append(scope)
+    return [replace(effective[name], scopes=tuple(declaring[name])) for name in order], unparsed
+
+
+def declared_pip_extensions(cwd: Path | None = None, *,
+                            project_trusted: bool = False) -> dict[str, bool] | None:
+    """已声明的 pip 分发名 → 是否贡献扩展(`extensions != []`)。
+
+    这是 **pip 通道的装载门**:entry point 只有在 `settings.packages` 里声明过才加载
+    (对齐 pi —— 声明是事实来源,装了但没声明不会被装载)。目录通道不走这里。
+
+    项目覆盖用户;项目级声明只在 `project_trusted` 时计入(它能让项目决定装载什么)。
+    读设置失败返回 `None`(= 不知道),调用方据此**不过滤** —— 宁可多装,也别让一份
+    坏设置把所有扩展都关掉。
+    """
+    from .settings import load_settings_by_scope
+
+    try:
+        scopes = load_settings_by_scope(cwd)
+    except Exception:      # noqa: BLE001 读设置失败在别处会报;这里只当“不知道”
+        return None
+    out: dict[str, bool] = {}
+    for scope in ("user", "project"):
+        if scope == "project" and not project_trusted:
+            continue
+        settings = scopes.get(scope)
+        for entry in getattr(settings, "packages", None) or []:
+            decl = parse_declaration(entry, f"settings:{scope}")
+            if decl is None or decl.channel != "pip":
+                continue
+            out[decl.name] = decl.contributes_extensions
+    return out
 
 
 def _dir_extensions(root: Path, scope: str) -> list[InstalledExtension]:
@@ -249,7 +292,9 @@ def discover_installed(cwd: Path | None = None, *, project_trusted: bool = False
         out.append(InstalledExtension(
             name=normalize_name(dist_name), channel="pip",
             origin=f"{dist_name} {version}" if version else str(dist_name),
-            scope="user", version=version))
+            # pip 装进的是**同一个解释器环境** —— 没有“项目那份 / 全局那份”。scope 是
+            # **声明**层的事(`DeclaredPackage.scopes`);这里如实记 `env`,不假装 user。
+            scope="env", version=version))
 
     if project_trusted:
         out += _dir_extensions(paths.project_home(cwd) / paths.EXTENSIONS_DIR_NAME, "project")

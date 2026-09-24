@@ -16,8 +16,9 @@
 2. **`uv tool` 会整个重建环境**。uv 文档的原话:tool 环境 "may be upgraded via `uv tool upgrade`,
    or **re-created entirely** via subsequent `uv tool install`"。所以 pip 装进去的扩展**会被抹掉**
    —— 声明还在,`qi doctor` 会把它报出来(这正是“声明层”存在的意义)。
-3. **`remove` 不卸包**:它只从声明里移除,并把 `pip uninstall` 命令给你。
-   装/卸包是 pip 的事,声明是你的事。
+3. **`remove` / `uninstall` 真卸包**(对齐 pi):先从指定作用域删声明,若没有别的作用域
+   还声明它,就用安装器把包装卸掉;还有别的作用域声明着就只删声明、留包(除非 `--force`)
+   —— pip 只有一个环境,包是共享的。
 4. **声明与实装始终是两件事**:声明说"这个环境该有什么",实装由 pip 决定。所以 `qi list` /
    `qi doctor` 永远做**两个方向**的比对 —— 即使你用的是 `qi install`。
 
@@ -52,12 +53,15 @@
 
 | 通道 | 位置 |
 | --- | --- |
-| pip | entry point 组 `qi.extensions`(`importlib.metadata`) |
+| pip | entry point 组 `qi.extensions`(`importlib.metadata`);**只有 `settings.packages` 声明过的才会装载** |
 | 目录 | `~/.qi/agent/extensions/<名>/extension.py`、项目 `.qi/extensions/<名>/extension.py` |
 | 附加 | `qi -e <dir>`、`settings.extensions[]` |
 
-> **未信任的项目目录不扫** —— 与装载路径同一条门控。否则未信任项目的 `.qi/extensions/`
-> 会让报告显得"已装",而实际一个都没加载。
+> **pip 通道的声明是装载门** —— 对齐 pi:`settings.packages` 是事实来源。`pip` 装了但没声明的
+> 扩展(`qi list` 会列在「已装但未声明」)**不会被加载**,写进声明才生效。
+>
+> **未信任的项目目录不扫**,项目级声明也不计入 —— 与装载路径同一条门控。否则未信任项目的
+> `.qi/extensions/` 会让报告显得"已装",而实际一个都没加载。
 
 同名去重:entry point 先到先得。
 
@@ -155,4 +159,4 @@ tool 重建后补回
 - **目录通道的 PEP 723 声明**:`# /// script` 里的 `dependencies` 目前只用于上面那条宿主依赖检查;
   `qi doctor` 还**不**据它去查"这些依赖装齐了没有"。
 - `settings.packages`(包声明)与 `settings.extensions`(资源路径)是**两件事**:
-  前者是"这个环境该装什么",后者是"到哪里去找扩展目录"。
+  前者既决定这个环境该装什么,**也是 pip 通道的装载门**(声明了才加载),后者是"到哪里去找扩展目录"。

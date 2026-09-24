@@ -350,20 +350,15 @@ def _normalize_dist(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name or "").strip().lower()
 
 
-def _dist_without_extensions(cwd: Path | None) -> set[str]:
-    """声明里写了 `extensions: []` 的**包名**(归一)—— 它们的 entry point 不加载。
+def _declared_pip_gate(cwd: Path | None, project_trusted: bool) -> dict[str, bool] | None:
+    """pip 通道的**装载门**:已声明的分发名 → 是否贡献扩展;`None` = 不过滤。
 
-    这是 pi 的 packages 对象形态(`docs/settings.md` 的 packages 一节)在 qi 的落点:
-    目录扩展用列表里的否定项关,而 **pip 装进来的包没有路径可否定**,所以按包名关。
-    `discover_declared` 已经做过项目覆盖用户那层合并,所以这里就是最终结果。
+    对齐 pi:声明(`settings.packages`)是事实来源 —— **装了但没声明的 entry point 不加载**。
+    目录通道不走这里(它靠目录在不在)。读设置失败返回 `None`(fail-open)。
     """
-    from .packages import discover_declared
+    from .packages import declared_pip_extensions
 
-    try:
-        declared, _unparsed = discover_declared(cwd)
-    except Exception:      # noqa: BLE001 读设置失败在别处会报;这里只是过滤
-        return set()
-    return {d.name for d in declared if d.channel == "pip" and not d.contributes_extensions}
+    return declared_pip_extensions(cwd, project_trusted=project_trusted)
 
 
 def _resolve(path: Path) -> Path:
@@ -416,8 +411,9 @@ def _iter_extension_loaders(cwd: Path | None,
     # (`settings_exclude_paths` 的 docstring 早就这么写了,但扩展这边一直没接上 ——
     #  于是 `"extensions": ["-~/.qi/agent/extensions/foo"]` 是个**静默空操作**。)
     excluded = _excluded_extension_paths(cwd, project_trusted) if discovered else set()
-    # pip 包没有路径可否定 —— 它们的"关掉"是对象形态里的 `extensions: []`(pi 的做法)
-    disabled_dists = _dist_without_extensions(cwd) if discovered else set()
+    # pip 包没有路径可否定:它们的"关掉"是对象形态里的 `extensions: []`(pi 的做法),
+    # 而且**没声明的根本不加载**(声明是事实来源 —— 对齐 pi)
+    declared_pips = _declared_pip_gate(cwd, project_trusted) if discovered else None
     # (目录, 是否允许该目录本身就是扩展, scope, 是否**显式**给出)。内建目录:项目那一档受信任门控
     roots: list[tuple[Path, bool, str, bool]] = []
     if discovered:
@@ -460,9 +456,12 @@ def _iter_extension_loaders(cwd: Path | None,
         # 包通道的来源靠 distribution 定位;拿不到就留空(dist_info 缺失等)
         dist = getattr(ep, "dist", None)
         dist_name = getattr(dist, "name", None) if dist is not None else None
-        if dist_name and _normalize_dist(dist_name) in disabled_dists:
-            # 声明里写了 `extensions: []` —— 这个包不贡献扩展(它可能还在贡献别的)
-            continue
+        if dist_name and declared_pips is not None:
+            # 声明是事实来源:没声明过 → 不加载;声明了 `extensions: []` → 也不加载。
+            # (`dist_name` 拿不到就 fail-open —— 不是我们的包/元数据缺,别乱关。)
+            key = _normalize_dist(dist_name)
+            if key not in declared_pips or not declared_pips[key]:
+                continue
         seen.add(name)
         path = str(getattr(dist, "_path", "") or "") if dist is not None else ""
         yield name, ep.load, {"path": path, "scope": "user", "origin": "package",

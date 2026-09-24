@@ -822,7 +822,12 @@ def _print_package_report(report) -> None:
     if report.undeclared:
         names = "、".join(item.name for item in report.undeclared)
         console.print(f"  [dim]已装但未声明({len(report.undeclared)}): {escape(names)}"
-                      " —— 写进 settings.packages 才能在 uv tool 重建后补回[/dim]")
+                      " —— pip 扩展**只有声明了才会加载**;写进 settings.packages 才生效"
+                      "(也是 uv tool 重建后能补回的依据)[/dim]")
+    multi = [d for d in report.declared if len(d.scopes) > 1]
+    for decl in multi:      # 同名同时写在两处:项目生效,但用户级也声明了
+        console.print(f"  [dim]{escape(decl.name)} 被多级声明({' + '.join(decl.scopes)})"
+                      ",以项目级为准[/dim]")
 
 
 @app.command("list")
@@ -928,6 +933,10 @@ def _installer_cmd(args: list[str]) -> list[str] | None:
     """
     uv = shutil.which("uv")
     if uv and (_in_uv_tool_env() or not _has_pip()):
+        if args and args[0] == "uninstall":
+            # `uv pip uninstall` 不问也不收 `-y` —— 剥掉它(pip 那条留着,不然会卡问).
+            rest = [a for a in args[1:] if a not in ("-y", "--yes")]
+            return [uv, "pip", "uninstall", "--python", sys.executable, *rest]
         return [uv, "pip", args[0], "--python", sys.executable, *args[1:]]
     return None
 
@@ -1009,6 +1018,22 @@ def _declared_for(scope: str) -> list[str]:
     return [str(item) for item in (getattr(found, "packages", None) or [])]
 
 
+def _installed_dist_version(name: str) -> str | None:
+    """环境里装没装这个 dist(装了返回版本)。"""
+    import importlib.metadata as metadata
+
+    try:
+        return metadata.version(name)
+    except metadata.PackageNotFoundError:
+        return None
+
+
+def _scopes_declaring(name: str) -> list[str]:
+    """哪些作用域的 `settings.packages` 声明了这个名字(归一后)。"""
+    return [scope for scope in ("user", "project")
+            if any(_declaration_name(s) == name for s in _declared_for(scope))]
+
+
 @app.command("install")
 def install(source: str = typer.Argument(..., help="包名 / requirement / 本地目录"),
             local: bool = typer.Option(False, "--local", "-l",
@@ -1056,34 +1081,64 @@ def install(source: str = typer.Argument(..., help="包名 / requirement / 本�
 
 @app.command("remove")
 def remove(source: str = typer.Argument(..., help="包名 / 本地目录(与 install 同一个来源)"),
-           local: bool = typer.Option(False, "--local", "-l", help="只从项目设置里移除")) -> None:
-    """从 `settings.packages` 里移除一条声明(**不卸包** —— 与 pi 同义)。
+           local: bool = typer.Option(False, "--local", "-l", help="只从项目设置里移除"),
+           force: bool = typer.Option(False, "--force",
+                                      help="即使别的作用域还声明它,也把包卸掉")) -> None:
+    """移除声明;没有别的作用域还声明它时**连包一起卸**(对齐 pi)。
 
-    pi 的 `remove` 只动设置;真要卸包它不替你决定。qi 同口径:移除时把
-    `pip uninstall` 命令打出来,跑不跑由你。
+    `uninstall` 是同义别名。只在**指定的作用域**(默认 user)删声明;若另一个作用域
+    还声明着同一个包,就保留包(除非 `--force`)—— pip 只有一个环境,包是共享的。
+    目录通道(`local:`)没有包可卸,只移除声明。
     """
     from .packages import normalize_name, parse_declaration
 
     scope = "project" if local else "user"
     declaration = parse_declaration(_as_declaration(source), "cli:remove")
-    target = declaration.name if declaration is not None else normalize_name(Path(source).name)
+    if declaration is not None:
+        target, channel = declaration.name, declaration.channel
+    else:
+        target, channel = normalize_name(Path(source).name), "pip"
+
     specs = _declared_for(scope)
     kept = [s for s in specs if _declaration_name(s) != target]
-    if len(kept) == len(specs):
-        err_console.print(f"[yellow]{scope} 的 settings.packages 里没有 {escape(source)}[/yellow]")
+    removed = len(kept) != len(specs)
+    if removed:
+        _write_declared(scope, kept)
+        console.print(f"[green]已从{scope}声明里移除 {escape(source)}[/green]")
+    else:
+        console.print(f"[yellow]{scope} 的 settings.packages 里没有 {escape(source)}[/yellow]")
+
+    if channel == "local":
+        if not removed:
+            raise typer.Exit(code=1)
+        return
+
+    still = [sc for sc in _scopes_declaring(target) if sc != scope]
+    if still and not force:
+        console.print(f"[dim]{escape(target)} 仍被 {still[0]} 作用域声明 —— 只删声明,包保留"
+                      "(要连包一起卸:`qi uninstall --force`)[/dim]")
+        return
+    installed = _installed_dist_version(target)
+    if not removed and installed is None:
+        err_console.print(f"[yellow]声明里没有 {escape(source)},环境里也没装[/yellow]")
         raise typer.Exit(code=1)
-    _write_declared(scope, kept)
-    console.print(f"[green]已从{scope}声明里移除 {escape(source)}[/green]")
-    if declaration is not None and declaration.channel == "pip":
-        console.print("[dim]包本体还在环境里。真卸掉:"
-                      f"{sys.executable} -m pip uninstall {escape(_pip_requirement(declaration.spec))}[/dim]")
+    if installed is None:
+        return      # 声明删了,环境里本来也没装 —— 没有要卸的
+
+    console.print(f"[dim]卸载 {escape(target)}[/dim]")
+    code = _run_pip(["uninstall", "-y", target])
+    if code != 0:
+        raise typer.Exit(code=code)
+    console.print(f"[green]已卸载 {escape(target)}[/green]")
 
 
 @app.command("uninstall")
 def uninstall(source: str = typer.Argument(..., help="同 remove"),
-              local: bool = typer.Option(False, "--local", "-l")) -> None:
+              local: bool = typer.Option(False, "--local", "-l"),
+              force: bool = typer.Option(False, "--force",
+                                         help="即使别的作用域还声明它,也把包卸掉")) -> None:
     """`remove` 的别名(pi 三个名字都有)。"""
-    remove(source, local)
+    remove(source, local, force)
 
 
 @app.command("sync")

@@ -131,13 +131,17 @@ qi --tools read,grep,find,ls -p "审查这个项目"
 
 ```sh
 qi install <来源> [-l]      # 调 pip + 写进 settings.packages;本地目录只登记(不调 pip)
-qi remove <来源> [-l]       # 只从声明里移除(不卸包),并把 pip uninstall 命令打出来
-qi uninstall <来源> [-l]    # 同 remove
+qi remove <来源> [-l] [--force]   # 移除声明;没有别的作用域还声明它,就连包一起卸
+qi uninstall <来源> [-l] [--force] # 同 remove(别名)
 qi sync [--dry-run]         # 按 settings.packages 对账:补装「声明了但没装」的(只补不删)
 qi update [来源|self] [--self|--extensions|--all|--extension <来源>|--force]
 qi list                     # 列出已装扩展,并与声明双向比对
 qi doctor                   # 诊断(含「声明了没装」的可复制装法)
 ```
+
+`qi remove` / `qi uninstall` **真卸包**(对齐 pi):先从指定作用域删声明,若**没有别的作用域**
+还声明它,就用安装器把包装卸掉(pip / uv,与 `qi install` 同一套);还有别的作用域声明着就只
+删声明、留包(除非 `--force`)—— pip 只有一个环境,包是共享的。
 
 `qi sync` 是 qi 版的 `uv sync`:声明是唯一事实来源,环境按它重建 —— 把 `settings.packages` 里
 **声明了但没装**的扩展补回来(uv tool 环境里自动走 uv 的安装器),但**不卸载**多余的东西。

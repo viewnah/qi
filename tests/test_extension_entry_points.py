@@ -98,3 +98,46 @@ def test_the_real_extensions_use_the_callable_form():
     for name, ep in ours.items():
         loaded = ep.load()
         assert callable(loaded), f"{name} 的 entry point 加载出来的不是可调用对象:{loaded!r}"
+
+
+# ── 声明是事实来源:没声明的 pip 扩展不装载 ────────────────────────────
+#
+# 对齐 pi:`settings.packages` 决定 pip 通道装载什么。装了但没声明 → 不装载
+# (报告里仍会出现,列在「已装但未声明」,提示去声明)。
+
+
+def _dist_ep(name: str = "probe", dist_name: str = "qi-probe"):
+    """形态二 + **带 dist 元数据**:走“声明了才装载”的那道门。"""
+    module = type(sys)(name)
+    exec(compile(BODY, "<ep>", "exec"), module.__dict__)
+    dist = type("Dist", (), {"name": dist_name, "_path": ""})()
+    return type("EP", (), {"name": name, "load": staticmethod(lambda: module.register),
+                           "dist": dist})()
+
+
+def _declare(packages: list) -> None:
+    import json
+
+    from qi_agent import paths
+
+    agent = paths.global_home()
+    agent.mkdir(parents=True, exist_ok=True)
+    (agent / "settings.json").write_text(
+        json.dumps({"packages": packages}), encoding="utf-8")
+
+
+def test_undeclared_pip_extension_is_not_loaded(monkeypatch, tmp_path):
+    names, _ = _discover(monkeypatch, [_dist_ep()], tmp_path)
+    assert names == [], "装了但没声明的 pip 扩展不该被装载"
+
+
+def test_declared_pip_extension_is_loaded(monkeypatch, tmp_path):
+    _declare(["qi-probe"])
+    names, catalog = _discover(monkeypatch, [_dist_ep()], tmp_path)
+    assert names == ["probe"] and "probe" in catalog.names
+
+
+def test_declared_with_empty_extensions_is_not_loaded(monkeypatch, tmp_path):
+    _declare([{"source": "qi-probe", "extensions": []}])
+    names, _ = _discover(monkeypatch, [_dist_ep()], tmp_path)
+    assert names == [], "对象形态里的 extensions: [] = 关掉"

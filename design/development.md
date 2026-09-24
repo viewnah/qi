@@ -26,6 +26,11 @@ pip install -e extensions/qi-agents -e extensions/qi-mcp -e extensions/qi-web
 
 不装也能跑测试(见 §3);但要在开发机上**手工验证扩展行为**,这三个装上是必须的。
 
+> **还要声明它们才会加载** —— pip 通道的 entry point 只有在 `settings.packages` 里
+> 声明过才装载(对齐 pi)。editable 装完再把名字写进 `~/.qi/agent/settings.json`(或项目
+> `.qi/settings.json`)的 `packages`,例如 `"packages": ["qi-mcp", "qi-agents", "qi-web"]`;
+> `qi list` 会把没声明的列在「已装但未声明」。
+
 ## 2. 从源码跑
 
 ```bash

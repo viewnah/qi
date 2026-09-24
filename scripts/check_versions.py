@@ -2,8 +2,9 @@
 """发布前的一致性检查:core 与三个官方扩展必须**锁步同版本**。
 
 ```bash
-python3 scripts/check_versions.py              # 只比四个包的 version
-TAG=v0.1.0 python3 scripts/check_versions.py   # 顺便核 tag 与版本一致
+python3 scripts/check_versions.py                  # 四个包必须同版本
+python3 scripts/check_versions.py --only core      # 只发 core 时:只核 core
+TAG=v0.1.0 python3 scripts/check_versions.py       # 顺便核 tag 与版本一致
 ```
 
 为什么要有这一步:`qi-agent`(发行名 `qi-coding-agent`)、`qi-mcp`、`qi-agents`、`qi-web`
@@ -19,8 +20,9 @@ import tomllib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
+CORE = REPO / "pyproject.toml"
 TARGETS = [
-    REPO / "pyproject.toml",
+    CORE,
     REPO / "extensions" / "qi-mcp" / "pyproject.toml",
     REPO / "extensions" / "qi-agents" / "pyproject.toml",
     REPO / "extensions" / "qi-web" / "pyproject.toml",
@@ -33,8 +35,15 @@ def project_of(path: Path) -> dict:
 
 
 def main() -> int:
+    """`--only core` = 只发 core 的路径(跳过"四个锁步"这条,只核 core 自己的版本 + tag)。"""
+    args = sys.argv[1:]
+    only_core = bool(args) and args[-1].lower() in {"core", "qi-coding-agent"}
+    targets = [CORE] if only_core else TARGETS
+    if only_core:
+        print("(--only core:只核 core;四个包锁步这条本次不适用)\n")
+
     found: list[tuple[str, str, Path]] = []
-    for path in TARGETS:
+    for path in targets:
         if not path.is_file():
             print(f"缺少 {path.relative_to(REPO)}", file=sys.stderr)
             return 1

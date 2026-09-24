@@ -144,7 +144,12 @@ uv build --out-dir dist && uv build extensions/qi-mcp --out-dir dist \
 `.github/workflows/publish.yml`:
 
 - **打 tag 发布**:`git tag v0.1.0 && git push origin v0.1.0` → 构建 + 发布到 **PyPI**;
-- **手动试跑**:Actions → publish → Run workflow → 选 `testpypi`,先发 TestPyPI 验证;
+- **手动触发**:Actions → publish → Run workflow,两个输入:
+  - `target`:`testpypi`(默认,试跑)/ `pypi`;
+  - `packages`:**`core`(默认,只发 `qi-coding-agent`)** / `all`(连三个官方扩展一起发)。
+    选 `core` 时版本检查只核 core(四个锁步那条不适用);扩展还没发布时保持默认。
+- **action 全部按 commit SHA 固定**(发布 job 持有 PyPI 权限,不吃可变 tag),并关掉 uv 缓存
+  (`cache-poisoning`)、`checkout` 不带 git 凭证(`persist-credentials: false`);
 - 用的是 **Trusted Publishing(OIDC)**,不需要 API token —— 但要在两处各配一次 publisher:
 
 | 索引 | Publisher 配置 |

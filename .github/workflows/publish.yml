@@ -7,6 +7,9 @@ name: publish
 #   - push tag `v*`  → 发布到 PyPI(正式)
 #   - workflow_dispatch → 手选 testpypi / pypi(试跑用 testpypi)
 #
+# `packages` 默认只发 core(qi-coding-agent)。要连三个官方扩展一起发,把它切成 `all` ——
+# 那要求 PyPI 上四个发行名都配好了 trusted publisher(扩展还没发时就保持 core)。
+#
 # 首次发布前要在 PyPI / TestPyPI 各配一次 **Trusted Publisher**(不需要 API token):
 #   Owner: viewnah · Repository: qi · Workflow: publish.yml · Environment: pypi(或 testpypi)
 # 本文件用 OIDC(id-token)发布,所以两个 job 都声明了 `environment`。
@@ -19,6 +22,11 @@ on:
         type: choice
         options: [testpypi, pypi]
         default: testpypi
+      packages:
+        description: 发哪些包(core = 只发 qi-coding-agent;all = 连三个官方扩展)
+        type: choice
+        options: [core, all]
+        default: core
   push:
     tags: ["v*"]
 
@@ -30,26 +38,40 @@ jobs:
     name: 校验 + 构建
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+        with:
+          persist-credentials: false      # 构建阶段用不到 git 凭证,别把它写进产物
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+        with:
+          enable-cache: false             # 发布 job 不开缓存(缓存投毒在这里代价最高)
 
-      - name: 版本一致性(core 与三个扩展锁步;tag 触发时顺带核 tag)
+      - name: 版本一致性(发 core 时只核 core;发 all 时要求四个锁步;tag 触发时顺带核 tag)
         env:
           TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
-        run: python3 scripts/check_versions.py
+          PACKAGES: ${{ inputs.packages || 'core' }}
+        run: |
+          if [ "$PACKAGES" = "all" ]; then
+            python3 scripts/check_versions.py
+          else
+            python3 scripts/check_versions.py --only core
+          fi
 
-      - name: 构建四个 distribution
+      - name: 构建(按 packages 选择)
+        env:
+          PACKAGES: ${{ inputs.packages || 'core' }}
         run: |
           uv build --out-dir dist
-          uv build extensions/qi-mcp    --out-dir dist
-          uv build extensions/qi-agents --out-dir dist
-          uv build extensions/qi-web    --out-dir dist
+          if [ "$PACKAGES" = "all" ]; then
+            uv build extensions/qi-mcp    --out-dir dist
+            uv build extensions/qi-agents --out-dir dist
+            uv build extensions/qi-web    --out-dir dist
+          fi
 
       - name: 产物清单
         run: ls -l dist
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: dist
           path: dist/
@@ -63,11 +85,11 @@ jobs:
     permissions:
       id-token: write                      # OIDC 信任发布,不用 token
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           name: dist
           path: dist
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
           packages-dir: dist/
@@ -84,10 +106,10 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
           name: dist
           path: dist
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # release/v1
         with:
           packages-dir: dist/

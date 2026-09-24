@@ -444,3 +444,36 @@ def test_installer_cmd_strips_yes_for_uv_uninstall(tmp_path, monkeypatch):
     cmd = cli_mod._installer_cmd(["uninstall", "-y", "qi-mcp"])
     assert cmd == ["/usr/bin/uv", "pip", "uninstall", "--python",
                    str(root / "bin" / "python"), "qi-mcp"]
+
+
+# ── qi list:声明写在哪一级 ────────────────────────────────────────────
+
+
+def test_list_shows_the_declaring_scope(tmp_path, monkeypatch):
+    """`声明` 列要能看出用户级还是项目级 —— 否则和「来源·env」混在一起看不出写在哪。"""
+    from qi_agent.packages import DeclaredPackage, InstalledExtension, PackageReport
+
+    report = PackageReport(
+        installed=[InstalledExtension("qi-mcp", "pip", "qi-mcp 0.1.1", "env")],
+        declared=[DeclaredPackage("qi_mcp-0.1.1.tar.gz", "qi-mcp", "pip",
+                                  "settings:project", requirement="qi_mcp-0.1.1.tar.gz",
+                                  scopes=("project",))],
+    )
+    monkeypatch.setattr(cli_mod, "package_report", lambda cwd=None: report)
+    res = runner.invoke(app, ["list"])
+    assert res.exit_code == 0, res.output
+    assert "是(project)" in res.output
+
+
+def test_list_shows_both_scopes_when_declared_twice(tmp_path, monkeypatch):
+    from qi_agent.packages import DeclaredPackage, InstalledExtension, PackageReport
+
+    report = PackageReport(
+        installed=[InstalledExtension("qi-mcp", "pip", "qi-mcp 0.1.1", "env")],
+        declared=[DeclaredPackage("qi-mcp", "qi-mcp", "pip", "settings:project",
+                                  scopes=("user", "project"))],
+    )
+    monkeypatch.setattr(cli_mod, "package_report", lambda cwd=None: report)
+    res = runner.invoke(app, ["list"])
+    assert res.exit_code == 0, res.output
+    assert "是(user + project)" in res.output

@@ -842,14 +842,19 @@ def list_extensions() -> None:
         console.print("[dim]没有已装扩展,settings.packages 里也没有声明。[/dim]")
         console.print(f"[dim]装法:uv tool install {HOST_DISTRIBUTION} --with qi-mcp[/dim]")
         return
-    declared_names = {item.name for item in report.declared}
+    declared_by = {item.name: item for item in report.declared}
     table = Table(title="扩展")
     table.add_column("扩展"); table.add_column("通道"); table.add_column("版本")
     table.add_column("来源"); table.add_column("声明")
     for item in report.installed:
+        decl = declared_by.get(item.name)
+        if decl is None:
+            mark = "否"
+        else:
+            # 声明**写在哪一级**(user = `~/.qi/agent/settings.json`;project = `<git根>/.qi/settings.json`)
+            mark = f"是({' + '.join(decl.scopes)})" if decl.scopes else "是"
         table.add_row(item.name, item.channel, item.version or "—",
-                      f"{item.origin} · {item.scope}",
-                      "是" if item.name in declared_names else "否")
+                      f"{item.origin} · {item.scope}", mark)
     for decl in report.missing:            # 声明了却加载不到 —— 单独一行,不混进已装列表
         table.add_row(decl.name, decl.channel, "—", f"{decl.spec} · {decl.source}", "未安装")
     console.print(table)

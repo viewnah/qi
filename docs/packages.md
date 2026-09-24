@@ -88,41 +88,48 @@ uv tool install qi-coding-agent --with "qi-mcp>=0.2"
 
 ## 5. 怎么读输出
 
-装好了但没声明(这份环境里三个扩展都是 editable 装进来的):
+装好了但没声明(这份环境里三个扩展都是 pip 装进来的):
 
 ```text
 $ qi list
-                            扩展
-┏━━━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━┓
-┃ 扩展      ┃ 通道 ┃ 版本  ┃ 来源                   ┃ 声明 ┃
-┡━━━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━┩
-│ qi-mcp    │ pip  │ 0.1.0 │ qi-mcp 0.1.0 · user    │ 否   │
-│ qi-agents │ pip  │ 0.1.0 │ qi-agents 0.1.0 · user │ 否   │
-│ qi-web    │ pip  │ 0.1.0 │ qi-web 0.1.0 · user    │ 否   │
-└───────────┴──────┴───────┴────────────────────────┴──────┘
-  已装但未声明(3): qi-mcp、qi-agents、qi-web —— 写进 settings.packages 才能在 uv
-tool 重建后补回
+                           扩展
+┏━━━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━┓
+┃ 扩展      ┃ 通道 ┃ 版本  ┃ 来源                  ┃ 声明 ┃
+┡━━━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━┩
+│ qi-mcp    │ pip  │ 0.1.0 │ qi-mcp 0.1.0 · env    │ 否   │
+│ qi-agents │ pip  │ 0.1.0 │ qi-agents 0.1.0 · env │ 否   │
+│ qi-web    │ pip  │ 0.1.0 │ qi-web 0.1.0 · env    │ 否   │
+└───────────┴──────┴───────┴───────────────────────┴──────┘
+  已装但未声明(3): qi-mcp、qi-agents、qi-web —— pip 扩展只有声明了才会加载;
+写进 settings.packages 才生效(也是 uv tool 重建后能补回的依据)
 ```
 
-声明里有一条装不上、还有一条认不出时(`packages: ["pip:qi-todo", "qi-agents", "git+https://host/repo"]`):
+> **两个「作用域」别混**:`来源` 列的 `· env` 说的是**装在哪** —— pip 扩展都装进 qi 的
+> **同一个解释器环境**,所以固定是 `env`(没有“项目一份 / 全局一份”)。`声明` 列才是
+> **哪一级 `settings.packages` 写了它**:`user` = `~/.qi/agent/settings.json`,
+> `project` = `<git 根>/.qi/settings.json`(`qi install -l` 写的就是后者)。
+
+声明里有一条装不上、一条认不出,并且同一个包两级都声明时:
 
 ```text
                                扩展
-┏━━━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┓
-┃ 扩展      ┃ 通道 ┃ 版本  ┃ 来源                        ┃ 声明   ┃
-┡━━━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━┩
-│ qi-mcp    │ pip  │ 0.1.0 │ qi-mcp 0.1.0 · user         │ 否     │
-│ qi-agents │ pip  │ 0.1.0 │ qi-agents 0.1.0 · user      │ 是     │
-│ qi-web    │ pip  │ 0.1.0 │ qi-web 0.1.0 · user         │ 否     │
-│ qi-todo   │ pip  │ —     │ pip:qi-todo · settings:user │ 未安装 │
-└───────────┴──────┴───────┴─────────────────────────────┴────────┘
+┏━━━━━━━━━━━┳━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━┓
+┃ 扩展      ┃ 通道 ┃ 版本  ┃ 来源                        ┃ 声明               ┃
+┡━━━━━━━━━━━╇━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━┩
+│ qi-mcp    │ pip  │ 0.1.0 │ qi-mcp 0.1.0 · env          │ 否                 │
+│ qi-agents │ pip  │ 0.1.0 │ qi-agents 0.1.0 · env       │ 是(user + project) │
+│ qi-web    │ pip  │ 0.1.0 │ qi-web 0.1.0 · env          │ 否                 │
+│ qi-todo   │ pip  │ —     │ pip:qi-todo · settings:user │ 未安装             │
+└───────────┴──────┴───────┴─────────────────────────────┴────────────────────┘
 包声明:
   ✗ 声明了但没装: pip:qi-todo (settings:user)
       qi install "qi-todo"
       uv tool install qi-coding-agent --with "qi-todo"
   ⚠ 无法解析的声明: git+https://host/repo
       用 `名字 @ URL` 写法才认得出名(如 qi-mcp @ git+https://host/repo)
-  已装但未声明(2): qi-mcp、qi-web —— 写进 settings.packages 才能在 uv tool 重建后补回
+  已装但未声明(2): qi-mcp、qi-web —— pip 扩展只有声明了才会加载;
+写进 settings.packages 才生效(也是 uv tool 重建后能补回的依据)
+  qi-agents 被多级声明(user + project),以项目级为准
 ```
 
 四类信息各自的含义:

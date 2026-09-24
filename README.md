@@ -64,6 +64,31 @@ qi doctor                   # 校验配置与凭证
 **零配置也能跑**:基座提示词在代码里,不写任何配置就是一个能用的单 agent。
 逐步说明见[快速开始](docs/quickstart.md)。
 
+## 扩展
+
+qi 的能力可以按需加装 —— 命令、快捷键、工具、事件钩子、终端 UI 组件都走同一套扩展机制。
+**core 不内置、也不默认装**,裸 qi 就是一个能用的单 agent。
+
+```bash
+qi install <来源> [-l]  # 装:调 pip(本地目录只登记)+ 把声明写进 settings.packages(带 -l 写项目)
+qi list                 # 看装了哪些(含目录通道),并与声明双向比对
+qi doctor               # 「声明了没装」「装了没声明」都报出来,并给出可复制的装法
+qi remove <来源>        # 只移除声明(不卸包),并把 pip uninstall 命令打出来
+qi -e <目录>            # 本次运行临时加载一个扩展目录(TUI 与无头都生效,只本进程)
+```
+
+手工放目录也行:用户级 `~/.qi/agent/extensions/<名>/extension.py`,项目级 `.qi/extensions/<名>/extension.py`
+(项目级**未信任不加载**;入口文件名固定)。
+
+三条要点:
+
+* **装到哪**:进的是 **qi 所在的那个解释器环境**(不是当前项目的 venv)—— `uv tool install` 会重建环境,
+  所以**声明**要写在 `settings.packages` 里,重建后用 `qi doctor` 发现并补回。
+* **声明与实装是两件事**:`settings.packages` 说"这个环境该装什么",`settings.extensions` 说"到哪里找扩展目录";
+  `qi list` / `qi doctor` 永远做**两个方向**的比对。
+* **扩展就是任意代码**:只装可信来源。写一个扩展见[写扩展](docs/extensions.md)与[终端 UI 组件](docs/tui.md);
+  装法与声明层的完整写法见[扩展的安装与声明](docs/packages.md)。
+
 ## 权限与沙箱
 
 qi **不内置**限制文件系统 / 进程 / 网络 / 凭证访问的权限系统 —— 它默认以启动它的那个用户与进程的权限运行,

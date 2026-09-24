@@ -21,13 +21,9 @@ qi --version            # → qi 0.1.0
 
 首次运行会创建 `~/.qi/agent/`(用户级状态都挂在这里:配置、会话、技能、扩展)。
 
-**要改 qi 本身 / 跑测试**才需要源码:克隆仓库 → `uv sync` → `uv run qi …`,步骤见
-[design/development.md](../design/development.md)。三个官方扩展(qi-mcp / qi-agents / qi-web)
-**还没发到 PyPI**,现在从源码装:
+**要改 qi 本身 / 跑测试**才需要源码:克隆仓库 → `uv sync` → `uv run qi …`(editable,改完立即生效)。
 
-```bash
-pip install -e extensions/qi-mcp -e extensions/qi-agents -e extensions/qi-web
-```
+扩展是**独立包**(core 不内置、不默认装),装法与声明层见 [packages.md](packages.md)。
 
 ## 2. 配一个模型
 

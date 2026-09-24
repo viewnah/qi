@@ -3,14 +3,14 @@
 [![PyPI](https://img.shields.io/pypi/v/qi-coding-agent)](https://pypi.org/project/qi-coding-agent/)
 [![Python](https://img.shields.io/pypi/pyversions/qi-coding-agent)](https://pypi.org/project/qi-coding-agent/)
 
-**用 Python 写的编码 agent 框架**。给它一个目标和一个工作目录,它会读文件、跑命令、改内容,一步步把任务做完。
+**用 Python 写的编码 agent 框架**,是 [pi-coding-agent](https://github.com/earendil-works/pi) 的 **Python 实现** ——
+同一套形态与用法,换到 Python 生态。
 
-**core 就是单 agent**:会话(JSONL + 分支树)、工具循环、系统提示词、CLI 与 TUI、压缩、认证都在里面;
-角色 / MCP / Web 这类增值功能全部走**扩展**,不塞进 core。
+**core 就是单 agent**:会话(JSONL + 分支树)、工具循环、系统提示词、CLI 与 TUI、压缩、认证都在里面,
+还带一个扩展宿主。给它一个目标和一个工作目录,它会读文件、跑命令、改内容,一步步把任务做完。
 
-> **发行名是 [`qi-coding-agent`](https://pypi.org/project/qi-coding-agent/)** —— PyPI 上的
-> `qi-agent` 属于**别的项目**,别装错;import 包名仍是 `qi_agent`、命令仍是 `qi`。
-> `qi-mcp` / `qi-agents` / `qi-web` 是三个独立官方扩展包(各自带手册,**尚未发布到 PyPI**)。
+> **发行名是 [`qi-coding-agent`](https://pypi.org/project/qi-coding-agent/)** —— PyPI 上的 `qi-agent`
+> 属于**别的项目**,别装错;import 包名是 `qi_agent`,命令是 `qi`。
 
 ## 装
 
@@ -24,19 +24,7 @@ qi --version
 qi doctor                           # 冒烟:配置 / 凭证 / 扩展 / 包声明,一次全报
 ```
 
-**官方扩展**按需装(core 不内置、不默认装),它们**还在源码里**(尚未发 PyPI):
-
-```bash
-pip install -e extensions/qi-mcp -e extensions/qi-agents -e extensions/qi-web
-qi doctor                           # 「声明了但没装」「装了但没声明」都在这里报出来,并给出装法
-```
-
-装法(自家 venv / `uv tool` / 只读解释器)与声明层(`settings.packages`)的差别见
-[docs/packages.md](docs/packages.md);要**改 qi 本身**、跑测试,见
-[design/development.md](design/development.md)。
-
-> `uv tool` 用户注意:`uv tool install` / `upgrade` 会**重建**工具环境,把 pip 装进去的扩展抹掉 ——
-> 声明写进 `settings.packages`,重建后用 `qi doctor` 发现并补回。
+要改 qi 本身、跑测试:克隆仓库 → `uv sync` → `uv run qi …`(editable 安装,改完立即生效)。
 
 ## 快速开始
 
@@ -75,28 +63,18 @@ qi init -y --provider my-proxy --model my-model \
 | 给它一份按需加载的检查清单 | 一个含 `SKILL.md` 的目录 | [技能](docs/skills.md) |
 | 加自己的工具 / 命令 / 事件钩子 | `extension.py` 里的 `register(api)` | [写扩展](docs/extensions.md) · [终端 UI 组件](docs/tui.md) |
 | 换配色 | `theme`、`QI_THEME` | [主题](docs/themes.md) |
-| 装 / 声明 / 分发扩展 | `qi install`、`settings.packages` | [扩展的安装与声明](docs/packages.md) |
+| 安装、声明、分发扩展 | `qi install`、`settings.packages` | [扩展的安装与声明](docs/packages.md) |
 
 可跑的样例:[`examples/extensions/hello/`](examples/extensions/hello/) —— 一份 `extension.py` 把主要的面各走一遍。
-
-## 官方扩展
-
-| 扩展 | 提供什么 | 手册 |
-| --- | --- | --- |
-| `qi-agents` | 角色(`agent.md`)+ 委派子任务 | [README](extensions/qi-agents/README.md) |
-| `qi-mcp` | MCP server 接入(代理工具 / 直连工具) | [README](extensions/qi-mcp/README.md) |
-| `qi-web` | HTTP 宿主 + 官方 Web UI | [README](extensions/qi-web/README.md) |
-
-装完之后:`qi list` 看装了哪些、`qi doctor` 看声明与实装是否一致。
 
 ## 安全
 
 三条要知道的(完整模型见 [docs/security.md](docs/security.md)):
 
 - **`bash` 不筛命令**:内置 bash 以 qi 进程权限执行任意命令 —— 所谓"半沙箱"最容易被误当成安全边界。
-  要收紧就用工具白名单(`-t` / `-xt` / `-nt` / `-nbt`、`settings.defaultTools`,或角色 `tools:`),
+  要收紧就用工具白名单(`-t` / `-xt` / `-nt` / `-nbt`、`settings.defaultTools`),
   要真边界就**把 qi 放进容器 / VM / 受限用户**([docs/containerization.md](docs/containerization.md))。
-- **扩展就是任意代码,角色正文是仓库控制的提示词**:只装可信来源。项目级 `.qi/extensions/` **未信任不加载**
+- **扩展就是任意代码**:只装可信来源。项目级 `.qi/extensions/` **未信任不加载**
   (`qi -a` 信任、`-na` 拒绝;没表态时看 `settings.defaultProjectTrust`,`ask` 在无头下保守判不信任)。
 - **凭证三源**:auth store(`~/.qi/agent/auth.json`,0600)→ 约定环境变量 → `models.json` 的 `apiKey` 引用;
   配置文件与导出包**零明文**([docs/providers.md](docs/providers.md))。
@@ -107,15 +85,10 @@ qi init -y --provider my-proxy --model my-model \
 | --- | --- |
 | [docs/index.md](docs/index.md) | **手册**:开始 / 指南(运行 · 定制 · 构建)/ 参考 |
 | [docs/how-qi-works.md](docs/how-qi-works.md) | agent loop、上下文、会话、工具、信任 —— 先读这一页 |
-| [design/overview.md](design/overview.md) | 总设计:架构总览、既定决策索引、技术选型、目录布局、安全总原则 |
-| [design/PLAN.md](design/PLAN.md) | 开发计划、阶段表、未决清单 |
-| [design/pi-alignment.md](design/pi-alignment.md) | 与上游 pi 的逐节对照(设计口径,不进手册) |
-| [design/development.md](design/development.md) | 怎么跑源码 / 测试 / 静态检查 / 仓库布局 |
-| [extensions/](extensions/) | 官方扩展与各自的手册 |
 | [examples/](examples/) | 教学样例(不自动加载) |
 
-**两轨边界**:`docs/` 写给**使用者与模型**(随 wheel 发布,索引会注入提示词);`design/` 写给**改动者**
-(不进 wheel、不注入提示词)。扩展的手册归**扩展自己**,core 的 `docs/` 只讲机制。
+`docs/` 是唯一的手册:它随 wheel 一起发布,索引会注入提示词;**正文不塞进上下文** ——
+模型按需用 `read` 打开。
 
 ## 许可
 

@@ -28,21 +28,38 @@ qi doctor                           # 冒烟:配置 / 凭证 / 扩展 / 包声�
 
 ## 快速开始
 
+第一次用,**在界面里两步**就能跑起来:
+
 ```bash
-qi init                 # 引导:选 provider → 加模型 → 设为默认(写 models.json + settings.json + auth.json)
-qi init --list-presets  # 看内置的预置 provider(国产为主:deepseek / qwen / kimi / glm / minimax …)
-qi init --preset deepseek   # 一条命令物化预置并设为默认(只补缺、幂等)
-qi doctor               # 校验配置与凭证
+qi                      # 裸 qi 就是界面(装完直接敲)
 ```
 
-三种跑法:
+进去之后:
+
+```text
+/login                  # 选 provider(预置都在列表里)→ 遮罩输入 API key → 写 ~/.qi/agent/auth.json
+/model                  # 选模型(只列解析得出凭证的;刚才没有模型时 /login 会顺带选中第一个)
+```
+
+然后直接说你要做什么。三种跑法:
 
 ```bash
-qi                      # 交互界面(裸 qi 就是界面)
+qi                      # 交互界面
 qi "分析这个仓库"        # 进界面,并把这句话作为首条消息发出
 qi -p "分析这个仓库"     # 无头一次:stdout 只有答案(进度走 stderr)
 qi --mode json "…"      # 事件流:一行一个 JSON,喂给上层程序
 ```
+
+想**在命令行里把 provider 与模型配好**(脚本 / CI / 不想进界面):
+
+```bash
+qi init                     # 引导:选 provider → 加模型 → 设为默认
+qi init --list-presets      # 看内置的预置 provider(国产为主:deepseek / qwen / kimi / glm / minimax …)
+qi init --preset deepseek   # 一条命令物化预置并设为默认(只补缺、幂等)
+qi doctor                   # 校验配置与凭证
+```
+
+全部斜杠命令见[斜杠命令](docs/slash-commands.md)。
 
 **零配置也能跑**:基座提示词在代码里,不写任何配置就是一个能用的单 agent。
 逐步说明见[快速开始](docs/quickstart.md)。

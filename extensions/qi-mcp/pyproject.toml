@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "qi-mcp"
-version = "0.2.1"
+version = "0.3.0"
 description = "qi 的 MCP 支持:两层 mcp.json 声明表 + 一个 mcp 代理工具 + lazy server"
 readme = "README.md"
 requires-python = ">=3.12"

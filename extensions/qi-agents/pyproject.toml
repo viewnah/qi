@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "qi-agents"
-version = "0.2.1"
+version = "0.3.0"
 description = "qi 的角色系统扩展:角色发现 + 角色选择 + subagent 工具(进程内受管子运行)"
 readme = "README.md"
 requires-python = ">=3.12"

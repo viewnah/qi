@@ -114,6 +114,10 @@ async def test_login_command_is_usable_without_a_model(tmp_path, monkeypatch):
         assert app._model.provider == "deepseek"
         assert "deepseek" in app.footer_text.plain
         assert "no-model" not in app.footer_text.plain
+        # 对齐 pi:登录时“还没有模型”会顺手存成**全局默认**(不然重启又是 no-model)
+        saved = json.loads((tmp_path / "home" / "settings.json").read_text(encoding="utf-8"))
+        assert saved["defaultProvider"] == "deepseek"
+        assert saved["defaultModel"] == "deepseek-chat"
 
 
 @pytest.mark.asyncio
@@ -145,6 +149,10 @@ async def test_login_works_on_a_totally_fresh_install(tmp_path, monkeypatch):
         assert app._model is not None
         assert app._model.provider == "deepseek"
         assert "deepseek" in app.footer_text.plain
+        # 预置兜底时也一样:登录后写出一份带默认模型的 settings
+        saved = json.loads((home / "settings.json").read_text(encoding="utf-8"))
+        assert saved["defaultProvider"] == "deepseek"
+        assert saved.get("defaultModel")
 
 
 def test_headless_runtime_still_requires_a_default_model(tmp_path, monkeypatch):

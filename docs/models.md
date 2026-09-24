@@ -33,6 +33,9 @@ qi 通过 litellm 调各家模型。provider 与模型定义都在 `models.json`
 - **TUI 里换模型**:`/model`(或 `ctrl+l`)选择器里 `enter` 只换**本会话**(落一条 `model_change`,
   续接这条会话才还原);按 **`ctrl+s`** 则连**默认一起改** —— 写回 `settings.json` 的
   `defaultProvider` / `defaultModel`,下次**新会话**就是它(对齐 pi 的 `app.models.save`)。
+- **登录时顺手定默认**:`/login <provider>` 时如果**还没有模型**,qi 会选中该 provider 的
+  第一个模型并**写成全局默认**(对齐 pi 的 `completeProviderAuthentication` 用 `persist: true`)
+  —— 所以第一次登录后重启也还是它。已经有模型时不洗掉当前选择(只提示“当前模型不变”)。
 
 ## 接本地模型
 

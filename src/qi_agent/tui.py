@@ -4754,6 +4754,9 @@ class QiTui(App):
             self._note(f"{provider} 在 models.json 里没有模型;加一个再用 /model 选。", "warning")
             return
         self._switch_model(provider, models[0])
+        # 对齐 pi:登录时若**还没有模型**,顺手把它存成**全局默认** —— 否则重启(新会话)
+        # 又是 no-model。pi 的 `completeProviderAuthentication` 也是 `persist: true`。
+        self._persist_default_model(provider, models[0])
 
     async def _logout_flow(self, arg: str) -> None:
         """`/logout [provider]`:删 `auth.json` 里的凭证(无参先给选择器,对齐 pi)。"""

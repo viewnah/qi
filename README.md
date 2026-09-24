@@ -59,8 +59,9 @@ qi **不内置**限制文件系统 / 进程 / 网络 / 凭证访问的权限系�
 | --- | --- |
 | [docs/index.md](docs/index.md) | 手册总入口:开始 / 指南(运行 · 定制 · 构建)/ 参考 |
 | [docs/how-qi-works.md](docs/how-qi-works.md) | agent loop、上下文、会话、工具、信任 —— 先读这一页 |
+| [docs/cli.md](docs/cli.md) | 命令行:全部选项与行为(输出 / 模型 / 会话 / 工具 / 资源 / 凭证 …) |
+| [docs/slash-commands.md](docs/slash-commands.md) | TUI 里的斜杠命令(模型与设置 / 会话与上下文 / 导出 / 运行时) |
 | [docs/extensions.md](docs/extensions.md) | 写扩展:工具、事件、命令、终端 UI 组件 |
-| [examples/](examples/) | 教学样例(不自动加载) |
 
 手册随 wheel 发布,索引会注入提示词;**正文不塞进上下文** —— 模型按需用 `read` 打开。
 

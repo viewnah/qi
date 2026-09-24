@@ -9,9 +9,6 @@
 **core 就是单 agent**:会话(JSONL + 分支树)、工具循环、系统提示词、CLI 与 TUI、压缩、认证都在里面,
 还带一个扩展宿主。给它一个目标和一个工作目录,它会读文件、跑命令、改内容,一步步把任务做完。
 
-> **发行名是 [`qi-coding-agent`](https://pypi.org/project/qi-coding-agent/)** —— PyPI 上的 `qi-agent`
-> 属于**别的项目**,别装错;import 包名是 `qi_agent`,命令是 `qi`。
-
 ## 装
 
 前置:**Python ≥ 3.12**。
@@ -23,8 +20,6 @@ uv tool install qi-coding-agent     # 推荐:装成全局命令,独立环境
 qi --version
 qi doctor                           # 冒烟:配置 / 凭证 / 扩展 / 包声明,一次全报
 ```
-
-要改 qi 本身、跑测试:克隆仓库 → `uv sync` → `uv run qi …`(editable 安装,改完立即生效)。
 
 ## 快速开始
 
@@ -42,13 +37,6 @@ qi                      # 交互界面(裸 qi 就是界面)
 qi "分析这个仓库"        # 进界面,并把这句话作为首条消息发出
 qi -p "分析这个仓库"     # 无头一次:stdout 只有答案(进度走 stderr)
 qi --mode json "…"      # 事件流:一行一个 JSON,喂给上层程序
-```
-
-不用交互时:
-
-```bash
-qi init -y --provider my-proxy --model my-model \
-    --base-url https://my-proxy.internal/v1 --api openai-completions --api-key sk-xxx
 ```
 
 **零配置也能跑**:基座提示词在代码里,不写任何配置就是一个能用的单 agent。

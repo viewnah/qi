@@ -160,3 +160,28 @@ def test_headless_runtime_still_requires_a_default_model(tmp_path, monkeypatch):
     project = _env(tmp_path, monkeypatch)
     with pytest.raises(ConfigError):
         QiRuntime(cwd=project)                         # has_ui 默认 False
+
+
+@pytest.mark.asyncio
+async def test_login_refuses_a_pasted_warning_instead_of_a_key(tmp_path, monkeypatch):
+    """误把一段中文提示粘进密钥框:入口就拒绝,不落盘、不选中模型。
+
+    落盘的后果是**很晚**才以 `InternalServerError: 'ascii' codec …` 暴露。
+    """
+    _env(tmp_path, monkeypatch)
+
+    app = tui_mod.QiTui(palette=PALETTE, approve_project=True)
+
+    async def fake_screen(screen):
+        return "检测到角色目录(/x)但没有任何扩展读取它 —— 这些角色不会被使用"
+
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.3)
+        app.await_screen = fake_screen                 # type: ignore[method-assign]
+        app._command("/login deepseek")
+        await app.workers.wait_for_complete()
+        await pilot.pause(0.2)
+
+        assert app._model is None, "拒绝之后不该选中任何模型"
+        assert "没保存" in _log_text(app)
+        assert not (tmp_path / "home" / "auth.json").exists(), "被拒的值不该落盘"

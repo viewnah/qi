@@ -118,13 +118,35 @@ class ResolvedKey:
     key: str | None        # None = 未找到
     source: str
     ok: bool
+    #: 密钥**明显不像密钥**的原因(`key_problem()` 给的),否则 None。
+    #: 保留 `ok=True`(密钥来源存在、provider 仍可被选中),但请求前会据此报清楚。
+    problem: str | None = None
 
     def describe(self) -> str:
         if self.source == "none":
             return "无需密钥(本地 provider)"
+        if self.problem:
+            return f"无效:{self.problem}({self.source})"
         if self.ok:
             return f"{self.source}({self.key[:6]}…)" if self.key else self.source
         return f"缺失({self.source})"
+
+
+def key_problem(key: str) -> str | None:
+    """显然不能当 API key 的值 → 一句人话(否则 None)。
+
+    HTTP 头只能装 ASCII,所以含非 ASCII 的密钥一定会在请求时炸成
+    `'ascii' codec can't encode …: InternalServerError` —— 而那时离“输入”已经很远了。
+    空白/换行同理(真密钥里不会有空格)。最常见的来源是**误粘贴**:把一段提示/日志
+    粘进了密钥输入框。所以宁在入口就拦下。
+    """
+    if not key or not key.strip():
+        return "是空的"
+    if any(ord(ch) > 127 for ch in key):
+        return "含非 ASCII 字符(多半是把别的内容粘贴进来了)"
+    if any(ch.isspace() for ch in key):
+        return "含空白字符"
+    return None
 
 
 class AuthStore:
@@ -155,6 +177,14 @@ class AuthStore:
             os.chmod(self.path, 0o600)
 
     def set_key(self, provider: str, key: str) -> None:
+        """存一个 API key。**显然不是密钥的值直接拒绝**(`ValueError`)。
+
+        在入口拦(而不是等到请求时):非 ASCII / 带空格的密钥不可能是真的,而它一旦落盘,
+        失败会拖到某个回合才以 `InternalServerError: 'ascii' codec …` 的形式暴露。
+        """
+        problem = key_problem(key)
+        if problem:
+            raise ValueError(f"{provider} 的 API key {problem}")
         data = self.load()
         data[provider] = {"type": "api_key", "key": key}
         self.save(data)
@@ -196,18 +226,24 @@ def resolve_key(provider: str, api_key_ref: str | None = None,
     1. auth store → 2. 约定环境变量 → 3. provider apiKey 引用。
     """
     store = store or AuthStore()
+
+    def _found(key: str, source: str) -> ResolvedKey:
+        # 来源存在 → `ok=True`(provider 仍可被选中);但“不像密钥”要在 `problem` 里留下,
+        # 让请求前能报“你的 key 有问题”,而不是拖到 HTTP 头编码失败。
+        return ResolvedKey(key=key, source=source, ok=True, problem=key_problem(key))
+
     stored = store.get(provider)
     if stored:
-        return ResolvedKey(key=stored, source="auth", ok=True)
+        return _found(stored, "auth")
     default_env = DEFAULT_API_KEY_ENV.get(provider)
     if default_env:
         value = os.environ.get(default_env)
         if value:
-            return ResolvedKey(key=value, source=f"env:{default_env}", ok=True)
+            return _found(value, f"env:{default_env}")
     if api_key_ref:
         value = resolve_value(api_key_ref)
         if value:
-            return ResolvedKey(key=value, source=f"config:{api_key_ref}", ok=True)
+            return _found(value, f"config:{api_key_ref}")
         return ResolvedKey(key=None, source=f"config:{api_key_ref}(未解析)", ok=False)
     if default_env:
         return ResolvedKey(key=None, source=f"env:{default_env}(未设置)", ok=False)

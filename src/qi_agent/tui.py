@@ -3298,7 +3298,10 @@ class QiTui(App):
         return self._editor_component_factory
 
     def _append(self, widget) -> None:
-        log = self.query_one("#log", VerticalScroll)
+        try:
+            log = self.query_one("#log", VerticalScroll)
+        except (NoMatches, ScreenStackError):
+            return                  # 卸载竞态:worker 在 teardown 之后才报错,没地方可写
         if len(log.children):
             log.mount(Blank())
         log.mount(widget)
@@ -4725,6 +4728,9 @@ class QiTui(App):
             store.set_key(provider, key)
         except OSError as exc:                 # 读/写盘失败(权限、只读 home…)
             self._note(f"写凭证失败: {exc}", "error")
+            return
+        except ValueError as exc:              # 显然不是密钥(误粘贴)→ 入口就拦
+            self._note(f"没保存:{exc}。重新 `/login` 粘贴正确的 API key。", "error")
             return
         self._note(f"已保存 {provider} 的 API key → {store.path}(0600)", "info")
         if provider in self._preset_providers():

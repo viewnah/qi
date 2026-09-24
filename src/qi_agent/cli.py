@@ -1388,7 +1388,11 @@ def auth_login(provider: str = typer.Argument(...)) -> None:
     provider = provider.strip().lower()
     key = prompt.text(f"{provider} API key", required=True)
     store = AuthStore()
-    store.set_key(provider, key)
+    try:
+        store.set_key(provider, key)
+    except ValueError as exc:              # 显然不是密钥(误粘贴)→ 入口就拦
+        err_console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(code=2) from exc
     console.print(f"[green]已保存 {provider} 到 {store.path}(0600): [/green]{escape(_mask(key))}")
 
 
@@ -1657,8 +1661,13 @@ def _configure_provider(provider: str, entry: dict) -> None:
     key = prompt.text(f"{provider} API key", suffix=suffix,
                       required=not current_key and not env_name)
     if key:
-        store.set_key(provider, key)
-        current_key = key
+        try:
+            store.set_key(provider, key)
+        except ValueError as exc:              # 显然不是密钥(误粘贴)
+            console.print(f"[red]{escape(str(exc))}[/red]")
+            key = ""
+        else:
+            current_key = key
     shown = _mask(current_key) if current_key else (
         f"${env_name}(环境变量)" if env_name else "(未设置)")
     summary = f"[green]✓[/green] {provider} — API Key: {escape(shown)}"
@@ -1860,7 +1869,11 @@ def _init_noninteractive(*, provider: str | None, model: str | None, base_url: s
 
     store = AuthStore()
     if api_key:
-        store.set_key(provider, api_key)
+        try:
+            store.set_key(provider, api_key)
+        except ValueError as exc:              # 显然不是密钥(误粘贴)
+            err_console.print(f"[red]{escape(str(exc))}[/red]")
+            raise typer.Exit(code=2) from exc
     elif api_key_env:
         entry["apiKey"] = f"${api_key_env}"
     elif not entry.get("apiKey") and not store.get(provider):

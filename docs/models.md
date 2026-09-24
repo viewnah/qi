@@ -143,4 +143,5 @@ models.json:  $QI_AGENT_CONFIG(env 指定文件,最高)
 | 模型不在 `/model` 或 `ctrl+p` 清单里 | 清单只列**解析得出凭证**的 provider —— 跑 `qi --list-models` 看 `credential` 列 |
 | "我明明设了环境变量" | `qi doctor` 会给出凭证**来源**(`auth(...)` / `env:XXX` / `config:...`),区分"没读到"与"读到了但为空" |
 | provider 拒收 `reasoning_effort` | qi 会自动去掉参数重试并在 footer 提示一次;也可把该模型的 `reasoning` 改成 `false` |
+| 回合失败出现 `'ascii' codec can't encode` | **API key 里有非 ASCII 字符**(多半是把一段中文提示误粘进了密钥框)。现在 qi 在请求前就报“API key 含非 ASCII 字符(来源:…)”;修:`qi auth list` 看来源 → 重新 `qi auth login <provider>` / 改环境变量 / 改 `models.json` 的 `apiKey` |
 | 相容端点返回 4xx | 先确认 `api` 形态选对(`openai-completions` vs `openai-responses` vs `anthropic-messages`) |

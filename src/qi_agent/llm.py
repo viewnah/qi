@@ -315,6 +315,30 @@ def _as_int(value: Any, default: int = 0) -> int:
         return default
 
 
+class ProviderAuthError(RuntimeError):
+    """凭证侧可解释的失败(密钥不像密钥 / 请求头装不下)。
+
+    存在的理由:底层 litellm 把这种错误包成
+    `InternalServerError: … 'ascii' codec can't encode …`,**看不出是 API key 的问题**。
+    在请求前/请求时把它翻成一句直接指向凭证的话。
+    """
+
+
+def friendly_provider_error(exc: Exception) -> Exception:
+    """把 provider 侧那句只有工程师看得懂的底层错误,翻成带下一步动作的。
+
+    命中 `'ascii'/'latin-1' codec can't encode`:HTTP 头/URL 装不下这个值 —— 最常见的就是
+    API key 里混入了非 ASCII 字符(把一段中文提示误粘贴进了密钥框)。
+    """
+    text = str(exc)
+    if "'ascii' codec can't encode" in text or "'latin-1' codec can't encode" in text:
+        return ProviderAuthError(
+            "请求头里有非 ASCII 字符(HTTP 头只能是 ASCII)—— 最常见的是 **API key 里混入了"
+            "中文/全角字符**(比如误把一段提示粘进了密钥框)。检查 `qi auth list`、对应的"
+            "环境变量(如 `DEEPSEEK_API_KEY`)、以及 `models.json` 里的 `apiKey` 来源。")
+    return exc
+
+
 class LiteLLMClient:
     """基于 litellm 的实现。spec 来自 resolve_model()(经 resolve_key 取 key)。"""
 
@@ -389,6 +413,13 @@ class LiteLLMClient:
     def _base_kwargs(self, messages: list[ChatMessage], tools: list[dict] | None,
                      temperature: float | None) -> dict:
         """chat 与 astream 共用的请求参数(避免两处漂移)。"""
+        if self._resolved.problem:
+            # 在发请求**之前**就报 —— 否则要拖到 litellm 拼 `Authorization: Bearer …`
+            # 时以 `'ascii' codec can't encode` 暴露,看不出是 key 的问题。
+            raise ProviderAuthError(
+                f"{self.spec.provider} 的 API key {self._resolved.problem}"
+                f"(来源:{self._resolved.source})。HTTP 头只能是 ASCII,这个值发不出去 —— "
+                f"重新登录(如 `qi auth login {self.spec.provider}`)或修正该来源。")
         kwargs: dict = {
             "model": self.model_name,
             "messages": [m.to_dict() for m in messages],
@@ -467,7 +498,7 @@ class LiteLLMClient:
             resp = await litellm.acompletion(**kwargs)
         except Exception as exc:
             if not self._consider_reasoning_rejection(exc):
-                raise
+                raise friendly_provider_error(exc) from exc
             # 去掉 reasoning_effort 重试一次(用户只想调级别,不该因此整轮失败)
             kwargs = await self._prepare_headers(
                 await self._prepare_request(self._base_kwargs(messages, tools, temperature)))
@@ -522,6 +553,9 @@ class LiteLLMClient:
             try:
                 return await self._open_stream(messages, tools, temperature, with_usage)
             except Exception as exc:  # noqa: BLE001 打开流失败:逐项降级
+                friendly = friendly_provider_error(exc)
+                if isinstance(friendly, ProviderAuthError):
+                    raise friendly from exc      # 凭证问题不该被当成“参数不被接受”吞掉
                 if self._consider_reasoning_rejection(exc):
                     continue
                 if with_usage:
@@ -582,10 +616,10 @@ class LiteLLMClient:
                     yield LLMDelta(text=text)
                 for tc in getattr(delta_obj, "tool_calls", None) or []:
                     merge_tool_call_delta(merged, tc)
-        except Exception:
+        except Exception as exc:
             # 首片就失败 → 可安全降级;已吐过字/思考 → 不能重试(会重复输出)
             if content_seen:
-                raise
+                raise friendly_provider_error(exc) from exc
             self._stream_broken = True
             async for delta in chat_as_stream(self, messages, tools, temperature):
                 yield delta

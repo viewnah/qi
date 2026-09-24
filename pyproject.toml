@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "qi-coding-agent"
-version = "0.2.0"
+version = "0.2.1"
 description = "编码 agent 框架:单 agent core + 扩展(MCP / 多 agent / web)"
 keywords = ["agent", "coding-agent", "cli", "tui", "llm", "mcp"]
 readme = "README.md"

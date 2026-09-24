@@ -15,4 +15,4 @@ import os
 # 开关语义见 litellm/litellm_core_utils/get_model_cost_map.py。
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"

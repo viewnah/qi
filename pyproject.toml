@@ -49,6 +49,9 @@ packages = ["src/qi_agent"]
 # 手册跟包一起走:提示词里要报出**实际**路径(`paths.docs_dir()`),模型才能自己读。
 # 只打 `docs/`;`design/` 是写给改动者的,不进 wheel、不注入提示词。
 "docs" = "qi_agent/docs"
+# 移植自 pi 的素材(themes / 压缩提示词)要随包带上它们的 MIT 声明 —— 这是 MIT 的要求,
+# 只放在仓库根目录对**装包的用户**不算"随附"。
+"THIRD_PARTY_NOTICES.md" = "qi_agent/THIRD_PARTY_NOTICES.md"
 
 [tool.pytest.ini_options]
 markers = [

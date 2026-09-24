@@ -14,6 +14,10 @@
 
 qi 的差异:`custom`(助手叙述)在 qi 里**不进上下文**(见 runtime._history),所以压缩也当它
 不可见 —— 与上下文语义保持一致,不额外发明规则。
+
+> **许可**:下面的四个提示词文本(`SUMMARIZATION_SYSTEM_PROMPT` / `SUMMARIZATION_PROMPT` /
+> `UPDATE_SUMMARIZATION_PROMPT` / `TURN_PREFIX_SUMMARIZATION_PROMPT`)**逐字移植自 pi**
+> (MIT,Copyright (c) 2025 Mario Zechner)—— 改措辞前先看仓库根的 `THIRD_PARTY_NOTICES.md`。
 """
 
 from __future__ import annotations

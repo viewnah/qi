@@ -109,4 +109,6 @@ qi **不内置**限制文件系统 / 进程 / 网络 / 凭证访问的权限系�
 
 ## 许可证
 
-MIT(见 [LICENSE](LICENSE))。
+MIT(见 [LICENSE](LICENSE))。qi 里有两处素材移植自上游 pi(两份内置调色板与压缩/分支摘要的提示词),
+它们的 MIT 声明与许可全文见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md);
+**qi 与 pi 的维护者没有隶属关系**,也不是官方移植。

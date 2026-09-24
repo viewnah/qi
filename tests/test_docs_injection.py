@@ -165,14 +165,20 @@ def test_cli_append_flag_reaches_the_runtime(fake_runtime):
 
 
 def test_wheel_force_includes_docs():
-    """手册必须跟包一起走:提示词报的路径得在用户机器上真实存在。"""
+    """手册与第三方声明都必须跟包一起走。
+
+    手册:提示词报的路径得在用户机器上真实存在。
+    声明:移植自 pi 的素材(themes / 压缩提示词)在 MIT 下要求"随附版权声明与许可全文" ——
+    只放仓库根目录对**装包的用户**不算随附。
+    """
     text = (REPO / "pyproject.toml").read_text(encoding="utf-8")
     section = text.split("[tool.hatch.build.targets.wheel.force-include]", 1)
     assert len(section) == 2, "wheel 少了 force-include 段"
     body = section[1].split("\n[", 1)[0]
     mappings = [line.strip() for line in body.splitlines()
                 if line.strip() and not line.strip().startswith("#")]
-    assert mappings == ['"docs" = "qi_agent/docs"'], mappings
+    assert mappings == ['"docs" = "qi_agent/docs"',
+                        '"THIRD_PARTY_NOTICES.md" = "qi_agent/THIRD_PARTY_NOTICES.md"'], mappings
 
 
 def test_docs_json_matches_the_manuals_on_disk():

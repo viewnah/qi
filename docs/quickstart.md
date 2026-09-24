@@ -16,7 +16,7 @@ uv tool install qi-coding-agent     # 推荐:装上 `qi` 命令,独立环境
 ```
 
 ```bash
-qi --version            # → qi 0.1.0
+qi --version            # → qi 0.1.1
 ```
 
 首次运行会创建 `~/.qi/agent/`(用户级状态都挂在这里:配置、会话、技能、扩展)。
@@ -32,6 +32,10 @@ qi 不内置任何 provider 就必须先配一个能用的模型。交互式引�
 ```bash
 qi init
 ```
+
+还没配就想先看看界面也没关系:直接 `qi` 会照常进 TUI,并提示用 `/login` 登录一个
+provider(或退出后在终端跑 `qi init`)。`/login` 只解决凭证;provider/模型清单不在
+`models.json` 里时仍要 `qi init` 补上。
 
 它会走三步(样式复刻 QwenPaw 的 `init`):**选 provider**(已有 / 新建 → Base URL → API 类型 → API Key)
 → **Add Models**(`Add a model?` 循环,含 reasoning / contextWindow / maxTokens)

@@ -57,7 +57,7 @@ from .llm import (DEFAULT_THINKING_LEVEL, THINKING_LEVELS, LiteLLMClient, Thinki
                   normalize_thinking_level)
 from .loader import LoadError
 from .registry import ToolCatalog
-from .runtime import MAX_TOOL_ENTRY_CHARS, QiRuntime
+from .runtime import MAX_TOOL_ENTRY_CHARS, QiRuntime, no_model_selected_message
 from .session import Session, SessionStore, has_title
 from .settings import (DEFAULT_TUI_MODE, TUI_MODES, SettingsError, double_escape_action,
                        next_choice, parse_value, set_value, tui_mode as resolve_tui_mode)
@@ -3096,6 +3096,11 @@ class QiTui(App):
             # `--ext` 打错属致命:tui 没法给退出码,至少用红色说清楚旗标没生效
             for problem in getattr(self._rt, "flag_errors", []):
                 self._note(problem, "error")
+            if self._model is None:
+                # 没有默认模型也把界面起起来了(为了能敲 `/login`)—— 但得说清怎么补上。
+                # 放在 banner / 启动提示**之后**:它是给用户的指引,不该出现在标题之前。
+                self._note(getattr(self._rt, "model_fallback_message", None)
+                           or no_model_selected_message(), "warning")
         except (LoadError, ConfigError) as exc:
             self._append(Static(Text(f"启动失败: {exc}", style=self._palette.hex("error")),
                                 classes="msg"))
@@ -3429,7 +3434,9 @@ class QiTui(App):
         left = Text(" ".join(parts), style=dim)
         if parts:
             left.append(" ")
-        left.append(f"{percent:.1f}%/{format_tokens(window)} (auto)" if window else "?/?",
+        # 没有窗口(还没有模型)时显示 `0/0`,而不是两个问号 —— 问号看起来像“坏了”,
+        # 而真实情况只是“还没选模型”(pi 同款)。
+        left.append(f"{percent:.1f}%/{format_tokens(window)} (auto)" if window else "0/0",
                     style=Style(color=p.hex(percent_key)))
 
         model_name = self._model.label if self._model else "no-model"
@@ -4070,6 +4077,9 @@ class QiTui(App):
                 self._model = resolve_default_model(runtime.cfg, runtime.cwd)
             except ConfigError:
                 self._model = None
+            if self._model is None:
+                self._note(getattr(runtime, "model_fallback_message", None)
+                           or no_model_selected_message(), "warning")
         self._refresh_footer()
         self._note(f"已重载:{len(runtime.extensions)} 个扩展。"
                    "主题改动需重开 qi。")

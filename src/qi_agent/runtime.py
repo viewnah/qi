@@ -27,8 +27,8 @@ from .compaction import (
     summary_context_message,
 )
 from .abort import AbortSignal
-from .config import (ProviderConfig, ResolvedModel, load_config, resolve_default_model,
-                     resolve_model, resolve_router_model)
+from .config import (ConfigError, ProviderConfig, ResolvedModel, load_config,
+                     resolve_default_model, resolve_model, resolve_router_model)
 from .extensions import (
     CommandRegistry,
     ExtensionBus,
@@ -104,6 +104,18 @@ INPUT_HANDLED_PLACEHOLDER = "(这一轮由扩展处理,没有文本输出)"
 def _salvaged(final_text: str, partial: str) -> str:
     """收尾用哪段文本:正常结束用 `agent_end` 的全文,被硬取消时用流式累计的半截。"""
     return final_text if final_text else partial
+
+
+def no_model_selected_message() -> str:
+    """没有默认模型时的指引(对齐 pi 的 `formatNoModelSelectedMessage`)。
+
+    TUI(交互式前端)**没有默认模型也照常启动** —— 与 pi 的 interactive 同款,否则用户
+    连 `/login` 都敲不进去(命令分发要求 runtime 可用)。启动时把这句话当提示显示;
+    提交消息时若仍无模型,`stream()` 也用同一句话报错。无头路径不走这里:那边仍由
+    `resolve_default_model()` 直接报错退出(见 docs/models.md)。
+    """
+    return ("还没有可用的默认模型。用 `/login` 登录一个 provider,再 `/model` 选一个;"
+            "或退出后在终端运行 `qi init` 引导写入配置。")
 
 
 def split_tool_list(text: str) -> list[str]:
@@ -366,27 +378,41 @@ class QiRuntime:
         auth: AuthStore = AuthOverride(api_key) if api_key else AuthStore()
         #: 换模型时要重建客户端,所以凭证存储要留在身上(`set_model` 用)
         self._auth = auth
+        #: 没有默认模型时的指引;**仅交互式前端**(`has_ui`)允许缺默认模型,其余照旧启动
+        #: 报错(`resolve_default_model`)。None = 有模型(或显式给了 `--model`)。
+        self.model_fallback_message: str | None = None
         if model_override:
             # `--model`:`provider/模型[:思考级别]`(对齐 pi)
             ref, _flag_thinking = parse_model_flag(model_override)
             provider, _, model_name = ref.partition("/")
-            default: ResolvedModel = resolve_model(self.cfg, provider.strip(), model_name.strip())
+            default: ResolvedModel | None = resolve_model(self.cfg, provider.strip(),
+                                                          model_name.strip())
         else:
             _flag_thinking = None
-            default = resolve_default_model(self.cfg, self.cwd)
+            try:
+                default = resolve_default_model(self.cfg, self.cwd)
+            except ConfigError:
+                # 交互式(pi 的 interactive 同款):没有默认模型也让界面起来,把指引
+                # 留在 `model_fallback_message`;`/login` 之后 `/model` 就能选模型。
+                if not has_ui:
+                    raise
+                default = None
+                self.model_fallback_message = no_model_selected_message()
         # 思考级别:显式传参(CLI --thinking)> `--model` 的后缀 > settings.defaultThinkingLevel
         # > `DEFAULT_THINKING_LEVEL`(pi 默认 medium)。四级优先(pi 的口径):`--thinking` >
         # `--model provider/id:<级别>` > `modelThinkingLevels[该模型]` > `defaultThinkingLevel`。
+        # 没有模型时按 pi 收成 `off`(`if (!model) thinkingLevel = "off"`)。
         level = (thinking_level if thinking_level is not None
                  else _flag_thinking if _flag_thinking is not None
                  else model_thinking_level(self.settings, default)
                  or self.settings.defaultThinkingLevel
                  or DEFAULT_THINKING_LEVEL)
-        self.thinking_level = normalize_thinking_level(level)
+        self.thinking_level = (normalize_thinking_level(level) if default is not None
+                               else "off")
         # 命令行给过级别(任一形式)→ 整场运行都不再从会话里还原级别:
         # 它是**当次**的显式覆盖,与 `--model` 同级(见 `_restore_context_settings`)。
         self._level_pinned_cli = thinking_level is not None or _flag_thinking is not None
-        self.llm_exec = llm or self._make_client(default)
+        self.llm_exec = (llm or self._make_client(default)) if default is not None else llm
         #: 还原失败时的**退路**。`llm_exec` 是**可变**的(换模型会整个换掉它),
         #: 而"会话里记的模型没能恢复"时不能只是记一句 note 就完事 —— 那会把它留在
         #: **上一个会话**的模型上(web 那种一个 runtime 服务多个会话的场景里必然发生)。
@@ -943,9 +969,15 @@ class QiRuntime:
                 # **上一个会话**的模型(web:一个 runtime 服务多个会话),留在那里
                 # 就会拿别人的模型跑,而提示词里还写着"已用默认模型继续" —— 那是谎话。
                 self.llm_exec = self._default_llm_exec
-                self.notes.append(
-                    f"会话里记的模型 {provider}/{model_id} 没能恢复({reason});"
-                    "已用默认模型继续")
+                if self.llm_exec is None:
+                    # 连默认模型都没有(交互式允许):别谎称"已用默认模型继续"
+                    self.notes.append(
+                        f"会话里记的模型 {provider}/{model_id} 没能恢复({reason});"
+                        + (self.model_fallback_message or no_model_selected_message()))
+                else:
+                    self.notes.append(
+                        f"会话里记的模型 {provider}/{model_id} 没能恢复({reason});"
+                        "已用默认模型继续")
         level = saved["thinking_level"]
         if level is None:
             # 老会话(这个字段上线前建的):补一条,避免它每次都被当"没记过"
@@ -1710,6 +1742,12 @@ class QiRuntime:
     async def _stream_inner(self, text: str, session: Session,
                             agent_override: str | None, abort: AbortSignal | None,
                             source: str):
+        if self.llm_exec is None:
+            # 交互式允许没模型启动(为的是能敲 `/login`),但真提交消息时没有模型可用:
+            # 报同一句指引,别在 runner 里炸成一句难懂的 AttributeError。
+            yield AgentEvent(kind="error", text=self.model_fallback_message
+                             or no_model_selected_message())
+            return
         # 旧会话首次被使用时回填 cwd(只写一次);新会话在 create(cwd=…) 时已带
         self.sessions.ensure_cwd(session, self.cwd)
         # `next_turn` 档在这里送达:它说的就是“下一次用户输入时再说”,而这就是那个时刻。

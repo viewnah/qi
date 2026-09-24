@@ -26,7 +26,9 @@ qi 通过 litellm 调各家模型。provider 与模型定义都在 `models.json`
 
 - **唯一来源是 `settings.json`**:`models.json` 里的 `defaultProvider` / `defaultModel`
   **完全不参与**(不是优先级更低),写了会被忽略并在 `qi doctor` 里报出来。
-- 缺任一项就启动失败,并给出可照抄的迁移命令。
+- 缺任一项时:**交互界面(TUI)照常启动**,顶部提示用 `/login` 登录 provider(或用 `qi init` 引导),
+  真正提交消息才报错;无头路径(`-p` / `--mode json`)直接报错退出,并给出可照抄的迁移命令
+  —— 与 pi 的 interactive / 非 interactive 同一取舍。
 - 查看:`qi --list-models [搜索词]`(缺密钥的也列,这是诊断面;解析不出凭证的 provider 不列)。
 
 ## 接本地模型

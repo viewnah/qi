@@ -846,6 +846,36 @@ async def test_model_keys_and_command(tmp_path, monkeypatch):
         assert not isinstance(app.screen, tui_mod.ModelSelector)
 
 
+@pytest.mark.asyncio
+async def test_model_selector_ctrl_s_saves_global_default(tmp_path, monkeypatch):
+    """ctrl+s = 换模型 + 写进 settings 默认(pi 的 `app.models.save`)。
+
+    enter 只改本次会话;想让**下次新会话**也是它,得 ctrl+s 存成默认。
+    """
+    import json
+
+    monkeypatch.chdir(tmp_path)
+    _tui_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(tui_mod, "QiRuntime", FakeRuntime)
+    monkeypatch.setattr(tui_mod, "resolve_default_model", lambda cfg, cwd=None: MODEL)
+
+    app = QiTui(palette=PALETTE)
+    async with app.run_test(size=(100, 30)) as pilot:
+        await pilot.pause(0.1)
+        app._rt.cfg = _fake_cfg()
+        app._command("/model alpha/m2")
+        app.action_select_model()
+        await pilot.pause(0.1)
+        assert isinstance(app.screen, tui_mod.ModelSelector)
+        await pilot.press("ctrl+s")
+        await pilot.pause(0.1)
+        assert not isinstance(app.screen, tui_mod.ModelSelector)
+        assert (app._model.provider, app._model.model) == ("alpha", "m2")
+
+    data = json.loads((tmp_path / "home" / "settings.json").read_text(encoding="utf-8"))
+    assert data["defaultProvider"] == "alpha" and data["defaultModel"] == "m2"
+
+
 # ── 多行编辑器(对齐 pi pi-tui/components/editor.js)──────────
 
 

@@ -1589,7 +1589,14 @@ class ModelSelector(PickerScreen):
 
     pi 的行是 `→ ` + `✓ `(当前)+ 模型 id + muted `[provider]` + ` · default`
     (`model-selector.js` 的 `renderList`)。
+
+    **enter = 只换本次会话**(记进会话文件,续接那个会话才还原);**ctrl+s = 连默认一起改**
+    (写 `settings.defaultProvider` / `defaultModel`,下次新会话就是它)—— 对齐 pi 的
+    `app.models.save`(`enter to select · ctrl+s to set as default`)。
     """
+
+    BINDINGS = [*PickerScreen.BINDINGS,
+                Binding("ctrl+s", "save_as_default", "存为默认", show=False)]
 
     def __init__(self, options: list[tuple[str, str, bool]], *,
                  default: tuple[str, str] | None = None) -> None:
@@ -1599,7 +1606,13 @@ class ModelSelector(PickerScreen):
         current = next((value for value, _, _, is_current in self._entries if is_current), None)
         super().__init__("选择模型", [(value, model) for value, _, model, _ in self._entries],
                          current=current,
-                         hints="↑↓ 选择 · enter 确认 · escape 取消 · 轮换清单 /scoped-models")
+                         hints="↑↓ 选择 · enter 换模型 · ctrl+s 存为默认 ·"
+                               " escape 取消 · 轮换清单 /scoped-models")
+
+    def action_save_as_default(self) -> None:
+        """ctrl+s:连**默认一起**改 —— 回调拿 `(value, True)` 区分于 enter 的 `value`。"""
+        if self._options:
+            self.dismiss((self._options[min(self._index, len(self._options) - 1)][0], True))
 
     def rows(self) -> list[Candidate]:
         out: list[Candidate] = []
@@ -4297,12 +4310,36 @@ class QiTui(App):
             self._flash(self._no_models_note())
             return
 
-        def picked(value: str | None) -> None:
-            if value:
-                provider, _, model = value.partition("\x00")
-                self._switch_model(provider, model)
+        def picked(result: object) -> None:
+            # enter 给 `value`;ctrl+s 给 `(value, True)`(连默认一起改)
+            persist = False
+            value = result
+            if isinstance(result, tuple):
+                value, persist = result
+            if not value:
+                return
+            provider, _, model = str(value).partition("\x00")
+            self._switch_model(provider, model)
+            if persist:
+                self._persist_default_model(provider, model)
 
         self.push_screen(ModelSelector(options, default=self._default_model_ref()), picked)
+
+    def _persist_default_model(self, provider: str, model: str) -> None:
+        """把模型写成**全局默认**(pi 的 `/model` 里 ctrl+s "set as default")。
+
+        写 `~/.qi/agent/settings.json` 的 `defaultProvider` / `defaultModel` —— 这是
+        "默认模型的唯一来源"(`docs/models.md`),所以下次**新**会话就是它。
+        """
+        from .settings import SettingsError, set_value
+
+        try:
+            set_value("user", "defaultProvider", provider)
+            set_value("user", "defaultModel", model)
+        except (OSError, SettingsError) as exc:
+            self._note(f"存为默认模型失败: {exc}", "error")
+            return
+        self._flash(f"已设为默认模型: {provider}/{model}")
 
     def _default_model_ref(self) -> tuple[str, str] | None:
         """`settings` 里配的默认模型(选择器用它缀 ` · default`,pi 同形)。"""

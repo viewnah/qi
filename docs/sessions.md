@@ -100,6 +100,9 @@ TUI 里回放会话、以及网页端显示的用量,都来自 `session.py` 的 
   在启动提示里说明 —— 不会拿着一个注定 401 的模型继续跑。
 - **CLI 显式给的赢**:`--model` / `--thinking`(含 `--model provider/id:级别`)是当次覆盖,
   不会被会话里的旧值顶掉。
+- **新会话走默认、不是“上次用过”**:裸 `qi` 起的是**新会话**,没有 `model_change` 可还原,
+  于是回 `settings.json` 的 `defaultProvider`/`defaultModel`。想让某个模型成为“以后都是它”,
+  在选择器里按 `ctrl+s` 存为默认(或直接编辑 `settings.json`)。
 - **换模型与换级别在界面上照旧是即时生效的**(下一回合用到请求里);落 entry 是为了"下次打开"
   与"回放里看得出切换点",不影响本回合行为。
 - **界面显示的与发出去的一致**:TUI 的 footer 缓存(`_model` / `_thinking_level`)在选会话后

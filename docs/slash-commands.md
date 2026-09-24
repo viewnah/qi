@@ -7,7 +7,7 @@ TUI 里输入 `/` 会补全全部命令(内置的、扩展注册的、技能命�
 
 | 命令 | 说明 |
 | --- | --- |
-| `/model [p/m]` | 不给参数 = 开选择器(与 `ctrl+l` 同一个);给 `p/m` 或唯一模型名 = 直接切。**只列解析得出凭证的模型**。切换会落一条 `model_change`,下次打开这条会话仍用它 |
+| `/model [p/m]` | 不给参数 = 开选择器(与 `ctrl+l` 同一个);给 `p/m` 或唯一模型名 = 直接切。**只列解析得出凭证的模型**。切换会落一条 `model_change`,**续接这条会话**时仍用它;想让**下次新会话**也是它,在选择器里按 `ctrl+s`(存为全局默认,写 `settings.defaultProvider`/`defaultModel`) |
 | `/scoped-models` | 挑 `ctrl+p` 轮换哪些模型(空 = 全部,写回 `settings.enabledModels`);已不可用的条目画删除线 + `[unavailable]`,取消勾选才移出 |
 | `/thinking` | 不给参数 = 开选择器;切换落一条 `thinking_level_change` entry,下次打开按它还原 |
 | `/settings` | 偏好面板:主题 / 思考级别 / 交互开关(`enter` 换值、`ctrl+s` 保存到**用户级** settings) |

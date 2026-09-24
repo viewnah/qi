@@ -19,6 +19,7 @@ TUI 里 `/hotkeys` 会列出当前生效的键位,并如实标出哪些还没做
 | `ctrl+x` | 复制最后一条回答 |
 | `ctrl+g` | 用 `$EDITOR` 编辑当前输入 |
 | `ctrl+l` | 模型选择器(与 `/model` 同一个) |
+| 模型选择器里 `enter` / `ctrl+s` | 换模型(**只本会话**,落 `model_change`)/ 换并**存为默认**(写 `settings.defaultProvider`/`defaultModel`) |
 | `ctrl+p` / `ctrl+shift+p` | 下一个 / 上一个模型(轮换清单由 `/scoped-models` 决定) |
 | `ctrl+z` | 挂起(回到 shell) |
 

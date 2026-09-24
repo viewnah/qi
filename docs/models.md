@@ -30,6 +30,9 @@ qi 通过 litellm 调各家模型。provider 与模型定义都在 `models.json`
   真正提交消息才报错;无头路径(`-p` / `--mode json`)直接报错退出,并给出可照抄的迁移命令
   —— 与 pi 的 interactive / 非 interactive 同一取舍。
 - 查看:`qi --list-models [搜索词]`(缺密钥的也列,这是诊断面;解析不出凭证的 provider 不列)。
+- **TUI 里换模型**:`/model`(或 `ctrl+l`)选择器里 `enter` 只换**本会话**(落一条 `model_change`,
+  续接这条会话才还原);按 **`ctrl+s`** 则连**默认一起改** —— 写回 `settings.json` 的
+  `defaultProvider` / `defaultModel`,下次**新会话**就是它(对齐 pi 的 `app.models.save`)。
 
 ## 接本地模型
 

@@ -53,12 +53,6 @@ qi **不内置**限制文件系统 / 进程 / 网络 / 凭证访问的权限系�
 `bash` 工具不做命令级过滤。需要更强的边界就**把它放进容器或沙箱**:见
 [隔离运行](docs/containerization.md),以及完整的安全模型与已知缺口 [安全地运行](docs/security.md)。
 
-## 发布与供应链
-
-* 发布走 tag:`v*` → GitHub Actions → 构建 → 用 **Trusted Publishing(OIDC)** 上传 PyPI,**不需要 API token**。
-* workflow 里的 action **全部按 commit SHA 固定**,并关掉缓存与 `checkout` 的凭证落盘(发布 job 持有 PyPI 权限)。
-* 构建产物里带完整手册(`docs/` 随 wheel 发布),且只带运行时需要的包。
-
 ## 手册
 
 | 去处 | 内容 |

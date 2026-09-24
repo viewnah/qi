@@ -6,11 +6,15 @@
 ## 1. 位置与分层
 
 ```text
-<git根>/.qi/settings.json        项目覆盖(可提交共享)
+<cwd>/.qi/settings.json          项目覆盖(可提交共享)
 ~/.qi/agent/settings.json        全局
 ```
 
-配对关系:全局比项目深一层(`~/.qi/agent/` ↔ `<项目>/.qi/`),因为全局侧是
+**项目级就在当前目录(cwd)的 `.qi/`** —— 对齐 pi 的 `.pi/settings.json`(它的文档写的是
+"Project (current directory)")。仓库根(`.git`)只用来界定 `.agents/skills` 的祖先探测,
+不是配置目录。
+
+配对关系:全局比项目深一层(`~/.qi/agent/` ↔ `<cwd>/.qi/`),因为全局侧是
 "全部用户级状态的挂载点"。`QI_AGENT_HOME` 指向的就是全局 agent 目录本身。
 
 ## 2. 合并规则
@@ -133,6 +137,6 @@ qi config                       # 看:合并后的设置、来源文件、默认
 qi config --json                # 机器可读
 qi config --set theme=light     # 写全局(JSON 值解析,失败则当字符串)
 qi config --set 'skills=["~/x"]'
-qi config -l --set theme=dark   # 写项目 <git根>/.qi/settings.json
+qi config -l --set theme=dark   # 写项目 <cwd>/.qi/settings.json
 qi config --unset theme         # 删键(支持点号路径,如 compaction.enabled)
 ```

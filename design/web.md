@@ -1697,7 +1697,7 @@ npm run build
 | 来源 | 位置 | 可见性 |
 | --- | --- | --- |
 | 全局 | `~/.qi/agent/mcp.json` | 按 agent 声明绑定 |
-| 项目 | `<git根>/.qi/mcp.json` | 按 agent 声明绑定(同名覆盖全局) |
+| 项目 | `<cwd>/.qi/mcp.json` | 按 agent 声明绑定(同名覆盖全局) |
 | 私有 | `<agent>/mcp.json` | **仅该 agent**,自动绑定 |
 
 `mcp_servers`(frontmatter)从"解析了但没人用"变成真的绑定规则。两条硬规则:**同名项目覆盖全局**;

@@ -3,7 +3,8 @@
 qi 的配置分**用户级**与**项目级**两层。
 
 - 用户级 = **agent 目录**,默认 `~/.qi/agent`(`QI_AGENT_HOME` 可改),所有用户级状态都挂在这里。
-- 项目级 = 工作目录下的 `.qi/`,跟仓库走、可提交共享。
+- 项目级 = **当前工作目录(cwd)** 下的 `.qi/`,跟 cwd 走、可提交共享(对齐 pi 的 `.pi/settings.json`)。
+  同一仓库的不同子目录各有自己的 `.qi/`;仓库根(`.git`)只用于 `.agents/skills` 的祖先探测。
 
 项目级**扩展**要过[项目信任](security.md)才加载;`settings.json` 的普通字段(`sessionDir`、`theme`、
 `defaultTools`…)与文本指令(`AGENTS.md`、技能)**不受门控**。
@@ -49,7 +50,7 @@ qi 的配置分**用户级**与**项目级**两层。
 AGENTS.override.md > AGENTS.md > AGENTS.MD > CLAUDE.md > CLAUDE.MD
 ```
 
-顺序 = 用户级 → 项目祖先链**由远到近**(含 cwd),按路径去重;祖先链**止于 git 根**。
+顺序 = 用户级 → 项目祖先链**由远到近**(含 cwd),按路径去重;祖先链**走到文件系统根**(对齐 pi)。
 `AGENTS.override.md` 只在**同一目录**里顶替 `AGENTS.md` / `CLAUDE.md`,不会压掉其它目录的。
 空文件视为未配置。上下文文件的发现**不需要项目信任**。
 

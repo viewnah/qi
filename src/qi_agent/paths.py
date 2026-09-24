@@ -4,7 +4,10 @@ pi 的全局侧比项目侧深一层,配对关系是 `~/.pi/agent/` ↔ `<项目
 
     全局(agent 目录)  `~/.qi/agent`      ← 对齐 pi 的 `~/.pi/agent` / PI_CODING_AGENT_DIR
     名字空间根        `~/.qi`            ← 只作外壳,内容都在 agent/ 下
-    项目              `<git根>/.qi`       ← 与 `~/.qi/agent` 配对,保持扁平
+    项目              `<cwd>/.qi`        ← 与 `~/.qi/agent` 配对,保持扁平
+
+项目目录取 **cwd**(对齐 pi 的 "Project (current directory)");仓库根(`.git`)只用于
+`.agents/skills` 的祖先探测边界(`project_context_ancestors`),不是配置目录。
 
 `QI_AGENT_HOME` 指向的是 **agent 目录本身**(语义同 `PI_CODING_AGENT_DIR`),
 `QI_CONFIG_DIR` 覆盖名字空间根,`QI_AGENT_CONFIG` 直接指定 models.json 文件。
@@ -93,7 +96,11 @@ def global_home() -> Path:
 
 
 def find_project_root(start: Path | None = None) -> Path:
-    """向上找含 .git 的目录作为项目根;找不到则用 cwd。"""
+    """向上找含 .git 的目录作为**仓库根**;找不到则用 cwd。
+
+    注意:这**不再**是项目配置目录(见 `project_home`)。它现在只用于
+    `.agents/skills` 的祖先探测边界(`project_context_ancestors`),对齐 pi。
+    """
     cur = (start or Path.cwd()).resolve()
     if cur.is_file():
         cur = cur.parent
@@ -104,14 +111,23 @@ def find_project_root(start: Path | None = None) -> Path:
 
 
 def project_home(cwd: Path | None = None) -> Path:
-    """项目 qi 目录(<git根>/.qi,扁平;与 user 侧 agent/ 配对)。"""
-    return find_project_root(cwd) / GLOBAL_DIR_NAME
+    """项目 qi 目录 = **当前目录**下的 `.qi/`(与 user 侧 agent/ 配对)。
+
+    对齐 pi:它的项目配置就在当前目录的 `.pi/`(`docs/settings.md` 写的是
+    "Project (current directory)")。早先 qi 取 **git 根** —— 于是从子目录启动时,
+    “项目”会跑到仓库根上;现在改成 cwd,与 pi 同义。
+    """
+    cur = (cwd or Path.cwd()).resolve()
+    if cur.is_file():
+        cur = cur.parent
+    return cur / GLOBAL_DIR_NAME
 
 
 def project_context_ancestors(cwd: Path | None = None) -> list[Path]:
-    """cwd → git 根(无 git 则到文件系统根)的祖先链,**由近到远**。
+    """cwd → **git 根**(无 git 则到文件系统根)的祖先链,**由近到远**。
 
-    用于 `.agents/skills` 这类允许逐级继承的目录(对齐 pi 的祖先探测)。
+    用于 `.agents/skills` 这类的逐级继承(pi 的 `collectAncestorAgentsSkillDirs`
+    也是走到 git 根就停)。注意项目**配置**目录不是这里 —— 那是 `project_home`(cwd)。
     """
     cur = (cwd or Path.cwd()).resolve()
     if cur.is_file():
@@ -119,6 +135,19 @@ def project_context_ancestors(cwd: Path | None = None) -> list[Path]:
     root = find_project_root(cur)
     chain = [cur, *cur.parents]
     return [p for p in chain if p >= root]
+
+
+def context_file_ancestors(cwd: Path | None = None) -> list[Path]:
+    """cwd → **文件系统根**的祖先链,**由近到远**。
+
+    用于 `AGENTS.md` / `CLAUDE.md` 的项目上下文探测 —— pi 的 `loadProjectContextFiles`
+    **不认 git 根**,一路走到文件系统根才停(`parentDir === currentDir`),qi 与它同义。
+    与 `.agents/skills` 的那条(`project_context_ancestors`,止于 git 根)是两个边界。
+    """
+    cur = (cwd or Path.cwd()).resolve()
+    if cur.is_file():
+        cur = cur.parent
+    return [cur, *cur.parents]
 
 
 def models_file_candidates(cwd: Path | None = None) -> list[Path]:

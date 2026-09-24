@@ -45,7 +45,7 @@
 > **裸 URL 故意不猜名字**:把 `git+https://host/qi-mcp` 读成一个叫 `git` 的包,比认不出更坏。
 > 这种声明会被**原样回显**并提示改成 `名字 @ URL` —— 不静默丢。
 
-作用域:用户级 `~/.qi/agent/settings.json` 与项目级 `<git 根>/.qi/settings.json` **都读**,
+作用域:用户级 `~/.qi/agent/settings.json` 与项目级 `<cwd>/.qi/settings.json` **都读**,
 同名以**项目**为准(近者胜)。两份**分别解析**而不是合并数组 —— 合并会让一侧的声明落到另一侧的基准上。
 
 ## 3. 已装扩展从哪来
@@ -107,7 +107,7 @@ $ qi list
 > **两个「作用域」别混**:`来源` 列的 `· env` 说的是**装在哪** —— pip 扩展都装进 qi 的
 > **同一个解释器环境**,所以固定是 `env`(没有“项目一份 / 全局一份”)。`声明` 列才是
 > **哪一级 `settings.packages` 写了它**:`user` = `~/.qi/agent/settings.json`,
-> `project` = `<git 根>/.qi/settings.json`(`qi install -l` 写的就是后者)。
+> `project` = `<cwd>/.qi/settings.json`(`qi install -l` 写的就是后者)。
 
 声明里有一条装不上、一条认不出,并且同一个包两级都声明时:
 

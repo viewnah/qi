@@ -132,7 +132,7 @@ qi 在这一层**刻意与 pi 保持一致**:字段名、命令名、`/tree` 语
 | | pi | qi |
 | --- | --- | --- |
 | 发现规则 | `~/.agents/skills` + 项目 `.agents/skills`(递归、含 SKILL.md 即技能) | 同构(第 1、4 层) |
-| 私有层 | 无 | **多 4 层**:`~/.qi/agent/skills`、`<git根>/.qi/skills`、以及两侧 `settings.skills[]` |
+| 私有层 | 无 | **多 4 层**:`~/.qi/agent/skills`、`<cwd>/.qi/skills`、以及两侧 `settings.skills[]` |
 | 注入方式 | `<available_skills>` + 渐进披露 | 同(共用同一形态) |
 | `--skill` / `--no-skills` | 有 | 同,且组合语义一致(`--no-skills` 不影响 `--skill`) |
 | 同层同名 | 报错 | 同 |
@@ -153,7 +153,7 @@ pi 里其实是两个正交概念:编译进 dist 的**默认 prompt**(代码内�
 | 覆盖 | `SYSTEM.md` **整体替换**默认 prompt | 同左(`<项目>/.qi/SYSTEM.md` > `~/.qi/agent/SYSTEM.md`) |
 | 追加 | `APPEND_SYSTEM.md` | **不实现**(v1 决策保留;需要时用 `SYSTEM.md` 写全;命令行侧有 `--append-system-prompt`) |
 | 动态块 | 工具清单、条件化 guidelines、`<project_context>`、`<available_skills>`、cwd | 同左;v1 还多过**数据源清单**与**角色层**两项 qi 独有内容,两者随 P-E4c 移出 core(角色层现由 qi-agents 经 `before_agent_start` 注入) |
-| 祖先链边界 | 走到文件系统根 | 止于 **git 根**(与 `.agents/skills` 的继承范围一致) |
+| 祖先链边界 | 走到文件系统根 | **走到文件系统根**(与 pi 一致;`.agents/skills` 那条另止于 git 根) |
 | 自身文档索引 | README/docs/examples 绝对路径 + 12 条指路 | 从 `docs/docs.json` 的 navigation 生成(见 [configuration.md](../docs/configuration.md)) |
 
 ## 10. 开发与测试(原 `development.md` §7)

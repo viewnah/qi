@@ -32,19 +32,19 @@ description: 审代码时按这份清单逐项检查;涉及并发、错误处理
 | 2 | `~/.qi/agent/skills/` | `qi-global` | qi 私有,全局 |
 | 3 | user `settings.json` 的 `skills[]` | `settings-global` | 追加路径,相对 `~/.qi/agent` 解析 |
 | 4 | `.agents/skills/`(cwd → git 根,远→近) | `agents-project` | 跨工具,项目级 |
-| 5 | `<git根>/.qi/skills/` | `qi-project` | qi 私有,项目级 |
-| 6 | project `settings.json` 的 `skills[]` | `settings-project` | 追加路径,相对 `<git根>/.qi` 解析 |
+| 5 | `<cwd>/.qi/skills/` | `qi-project` | qi 私有,项目级 |
+| 6 | project `settings.json` 的 `skills[]` | `settings-project` | 追加路径,相对 `<cwd>/.qi` 解析 |
 
 第 1、2、4、5 层的**具体目录**按"跨工具层与 qi 私有层交替"排列(跨工具的 `.agents` 与私有的
-`~/.qi` / `<git根>/.qi` 各占两层)。跨工具目录(`.agents`)与 qi 私有目录的区别不只是名字:
+`~/.qi` / `<cwd>/.qi` 各占两层)。跨工具目录(`.agents`)与 qi 私有目录的区别不只是名字:
 **跨工具目录只认 `<name>/SKILL.md` 这种结构,不接受根目录下散着的 `*.md`**(见 §2)。
 
 两条容易踩的:
 
 - 第 3、6 层的相对路径**各按自己所在的目录解析**(user 的按 `~/.qi/agent`,project 的按
-  `<git根>/.qi`)。用合并后的配置去解析,会让一侧的路径落到另一侧的基准上。
+  `<cwd>/.qi`)。用合并后的配置去解析,会让一侧的路径落到另一侧的基准上。
 - 第 4、5 层是**项目级**(随仓库走)。**注意:项目级技能不受信任门控** —— 未信任的项目里
-  `.agents/skills` 与 `<git根>/.qi/skills` **仍会被装载**。这与项目级*扩展*不同:后者未信任就不扫
+  `.agents/skills` 与 `<cwd>/.qi/skills` **仍会被装载**。这与项目级*扩展*不同:后者未信任就不扫
   (因为扩展是可执行代码)。界线画在“可执行 vs 文本”上,而技能是文本指令。详见
   [security.md](security.md) §2。
 
@@ -56,7 +56,7 @@ description: 审代码时按这份清单逐项检查;涉及并发、错误处理
   被误当成子技能。
 - **没有 `SKILL.md` 的子目录继续向内找** —— 支持分组目录(如 `skills/lang/python/SKILL.md`)。
 - **根目录下带 `description` 的 `*.md` 也算独立技能** —— 但**只对 qi 侧目录生效**
-  (`~/.qi/agent/skills`、`<git根>/.qi/skills`、以及 `settings.skills[]` 指定的路径与 CLI `--skill`)。
+  (`~/.qi/agent/skills`、`<cwd>/.qi/skills`、以及 `settings.skills[]` 指定的路径与 CLI `--skill`)。
   跨工具的 `.agents/skills` **不开**这一条,以贴合 Agent Skills 标准。子目录里散着的 `*.md`
   一律不算。
 - 一个 `--skill` / `settings.skills[]` 条目**可以直接指向一个 `.md` 文件**,也可以指向目录。

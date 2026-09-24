@@ -160,8 +160,8 @@ def top_level_skill_dirs(cwd: Path | None = None,
       2. `~/.qi/agent/skills`          qi 全局私有
       3. user settings 的 `skills[]`    追加路径(相对 `~/.qi/agent`)
       4. `.agents/skills`(cwd→git 根,远→近)  跨工具共享(项目,需信任)
-      5. `<git根>/.qi/skills`          qi 项目私有
-      6. project settings 的 `skills[]` 追加路径(相对 `<git根>/.qi`)
+      5. `<cwd>/.qi/skills`          qi 项目私有
+      6. project settings 的 `skills[]` 追加路径(相对 `<cwd>/.qi`)
 
     同一标签内的同名技能视为冲突(报错);跨标签同名则高优先级静默覆盖。
     `settings` 参数只为兼容旧调用保留 —— 两个作用域的 `skills[]` 一律从各自的
@@ -257,8 +257,8 @@ def resolve_base_prompt(cwd: Path | None = None) -> tuple[str, str]:
 #
 # 每级目录按候选顺序取**第一个**命中的文件(顺序照搬 pi);全局(agent 目录)在最前,
 # 项目祖先链由远到近追加 —— 近者可覆盖远者的同义约定。
-# 与 pi 的两点差异:祖先链止于 **git 根**(qi 的 project_context_ancestors 约定,
-# 与 .agents/skills 的继承范围一致;pi 一路走到文件系统根),空文件视为未配置。
+# **祖先链一路走到文件系统根**(对齐 pi 的 `loadProjectContextFiles`;与 `.agents/skills`
+# 止于 git 根的那条不同),空文件视为未配置。
 
 CONTEXT_FILE_NAMES = ("AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD")
 
@@ -294,6 +294,6 @@ def load_project_context(cwd: Path | None = None) -> list[tuple[Path, str]]:
         out.append(found)
 
     take(paths.global_home())
-    for ancestor in reversed(paths.project_context_ancestors(cwd)):   # 远 → 近
+    for ancestor in reversed(paths.context_file_ancestors(cwd)):   # 远 → 近
         take(ancestor)
     return out

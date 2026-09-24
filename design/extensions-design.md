@@ -228,7 +228,7 @@ tools = await api.resolveTools("mcp_servers", scope=role_dir)   # 新增;没人�
 - **因此角色的 `tools:` 白名单支持通配**:`tools: read, grep, mcp__github__*` —— 这也是唯一让
   “角色只拿到某个 server 的工具”写得出来的办法(逐条列工具名会在 server 升级后失效)。
 
-**作用域三层**(沿用 v1,勿改):全局 `~/.qi/agent/mcp.json` → 项目 `<git 根>/.qi/mcp.json`
+**作用域三层**(沿用 v1,勿改):全局 `~/.qi/agent/mcp.json` → 项目 `<cwd>/.qi/mcp.json`
 (同名覆盖全局)→ **agent 私有** `<agent 目录>/mcp.json`(自动绑定,只本角色可见)。
 
 **边界澄清(易混,写下来免得绕回去)** —— 分工不是“谁读那个文件”,而是**“谁知道 `mcp.json`

@@ -851,7 +851,7 @@ def list_extensions() -> None:
         if decl is None:
             mark = "否"
         else:
-            # 声明**写在哪一级**(user = `~/.qi/agent/settings.json`;project = `<git根>/.qi/settings.json`)
+            # 声明**写在哪一级**(user = `~/.qi/agent/settings.json`;project = `<cwd>/.qi/settings.json`)
             mark = f"是({' + '.join(decl.scopes)})" if decl.scopes else "是"
         table.add_row(item.name, item.channel, item.version or "—",
                       f"{item.origin} · {item.scope}", mark)
@@ -1488,7 +1488,7 @@ def config_cmd(
     unset: list[str] = typer.Option(None, "--unset", help="删键(可重复)"),
     json_out: bool = typer.Option(False, "--json", help="以 JSON 输出合并后的设置"),
 ) -> None:
-    """查看/编辑 settings.json:全局 `~/.qi/agent/` > 项目 `<git根>/.qi/`。"""
+    """查看/编辑 settings.json:全局 `~/.qi/agent/` > 项目 `<cwd>/.qi/`。"""
     scope = "project" if local else "user"
     cwd = Path.cwd()
 

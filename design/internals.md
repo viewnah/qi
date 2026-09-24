@@ -15,7 +15,7 @@
   有 `bash`/`powershell` 但没有 `grep`/`find`/`ls` 时给"用 shell 做文件操作",措辞分三种)。
 - 基座来源解析:`loader.resolve_base_prompt()` → `("", "builtin")` 表示用代码内默认;
   项目 > 用户 > 内置,**取第一个非空文件**(空文件/读失败视为未配置)。
-- 项目上下文:`paths.project_context_ancestors()`(全局 + 祖先链,止于 git 根,按路径去重),
+- 项目上下文:`paths.context_file_ancestors()`(全局 + 祖先链,**走到文件系统根**,按路径去重),
   每级目录按 `AGENTS.override.md > AGENTS.md > AGENTS.MD > CLAUDE.md > CLAUDE.MD` 取第一个命中。
 - 技能块:只给 name / description / location 的 XML;有 `read` 就说"用 read 读全文",只有 `bash` 就说 bash;
   两者都没有 → 整块不注入。相对路径以 SKILL.md 所在目录为基准解析,并在工具命令里用绝对路径。
@@ -34,7 +34,7 @@
 | `APPEND_SYSTEM.md` | 不实现;追加走 `--append-system-prompt` 或写进 `SYSTEM.md` |
 | 空文件 | 视为未配置,继续向下找;不产生空基座 |
 | 工具清单 | 列**解析后**的工具集(模型可调用全集);不写"你可能还有其他工具" |
-| 项目上下文 | 候选顺序 + 全局/祖先链 + 止于 git 根;空文件跳过;**不需要项目信任** |
+| 项目上下文 | 候选顺序 + 全局/祖先链 + 走到文件系统根;空文件跳过;**不需要项目信任** |
 | 技能注入 | XML(含 location);无 `read`/`bash` 则整块不注入 |
 | 自身文档索引 | 由 `docs.json` 生成;两处目录都找不到就整块不注入 |
 | 模板化 | 不做 `{{cwd}}` 之类占位符;动态块由代码追加 |

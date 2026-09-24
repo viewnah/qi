@@ -244,22 +244,24 @@ def test_working_directory_is_appended_last(tmp_path, monkeypatch) -> None:
 # ── 4. 项目上下文(AGENTS.md,对齐 pi)────────────────────
 
 def test_project_context_global_and_ancestors(tmp_path, monkeypatch) -> None:
-    """全局最先;祖先链由远到近(近者最后,覆盖远者的同义约定)。"""
+    """全局最先;祖先链由远到近,**一路到文件系统根**(对齐 pi,不认 git 根)。"""
     home = tmp_path / "home"
     home.mkdir()
     (home / "AGENTS.md").write_text("全局约定", encoding="utf-8")
     monkeypatch.setenv(paths.QI_AGENT_HOME, str(home))
 
+    (tmp_path / "AGENTS.md").write_text("上层约定", encoding="utf-8")   # 在 git 根**之上**
     root = tmp_path / "repo"
-    (root / ".git").mkdir(parents=True)          # 祖先链止于 git 根
+    (root / ".git").mkdir(parents=True)
     (root / "AGENTS.md").write_text("仓库约定", encoding="utf-8")
     sub = root / "pkg"
     sub.mkdir()
     (sub / "AGENTS.md").write_text("包约定", encoding="utf-8")
 
     files = load_project_context(sub)
-    assert [p.name for p, _ in files] == ["AGENTS.md", "AGENTS.md", "AGENTS.md"]
-    assert [c for _, c in files] == ["全局约定", "仓库约定", "包约定"]
+    assert [p.name for p, _ in files] == ["AGENTS.md"] * 4
+    # 全局 → git 根**之上** → 仓库 → 子目录:证明边界不是 git 根
+    assert [c for _, c in files] == ["全局约定", "上层约定", "仓库约定", "包约定"]
 
 
 def test_project_context_candidate_priority_and_fallback(tmp_path, monkeypatch) -> None:

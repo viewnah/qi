@@ -127,7 +127,7 @@ opening:
 | 2 | `~/.qi/agent/skills/` | `qi-global` | 认 |
 | 3 | user `settings.json` 的 `skills[]` | `settings-global` | 认 |
 | 4 | `.agents/skills/`(cwd → git 根,远→近) | `agents-project` | 忽略 |
-| 5 | `<git根>/.qi/skills/` | `qi-project` | 认 |
+| 5 | `<cwd>/.qi/skills/` | `qi-project` | 认 |
 | 6 | project `settings.json` 的 `skills[]` | `settings-project` | 认 |
 
 - **agent 自带技能优先级最高**:同名时覆盖顶层 —— 越具体越优先。
@@ -175,7 +175,7 @@ AgentUnit("code-analyst")
 | 来源 | 位置 | 可见性 |
 | --- | --- | --- |
 | 全局 server | `~/.qi/agent/mcp.json`(共享基建,凭证仅 env 引用) | 按 agent 声明绑定 |
-| 项目 server | `<git根>/.qi/mcp.json`(跟项目走,可提交共享) | 按 agent 声明绑定 |
+| 项目 server | `<cwd>/.qi/mcp.json`(跟项目走,可提交共享) | 按 agent 声明绑定 |
 | 私有 server | agent 目录内 `mcp.json`(拷贝即走) | **仅该 agent**,自动绑定 |
 
 三处**同一份格式**(`{"mcpServers": {…}}`),共用一个解析器(`loader.read_mcp_file`)。
@@ -289,7 +289,7 @@ qi agents import skill:path/to/skill   # 包装成私有技能进目标 agent
 | 无内置技能 | 撤销"内置技能覆盖"问题(H4 moot) |
 | opening 字段 | v1 补充:message(agent 开场白,进会话历史)+ suggestions(UI 层快捷提问,不进历史) |
 | 执行参数 | model / temperature 不进 agent.md;模型归 `models.json` + `settings.json`。轮次不是字段而是**谓词**:`RunnerSettings.stop_after`(pi 的 `shouldStopAfterTurn` 同形,默认 `None` = 不限),**qi 自己不传**(同 pi 定义了却不实现)。请求级超时/重试也不在 agent 层:归 provider SDK(`settings.json` 的 `retry.provider`,见 [settings.md](../docs/settings.md)) |
-| MCP | **v1**:私有 mcp.json 仅本 agent 自动绑定;全局(`~/.qi/agent/mcp.json`)+ 项目(`<git根>/.qi/mcp.json`)两张声明表按 `mcp_servers` 声明绑定,**默认无、显式声明**(凭证敏感);同名项目覆盖全局;凭证仅 env 引用 |
+| MCP | **v1**:私有 mcp.json 仅本 agent 自动绑定;全局(`~/.qi/agent/mcp.json`)+ 项目(`<cwd>/.qi/mcp.json`)两张声明表按 `mcp_servers` 声明绑定,**默认无、显式声明**(凭证敏感);同名项目覆盖全局;凭证仅 env 引用 |
 | 数据源 | 实例在 agent 目录 data_sources.json(私有自动绑定,凭证 env);工具/type 能力由 db 插件提供,装载门控见 [plugins.md](plugins.md) |
 | 导入/导出 | agent 自包含目录;import = 拷贝 + 复用装载校验器预检 + 明文凭证扫描;export 产物可直接 import |
 

@@ -110,7 +110,7 @@ core 移除:core 只认 `RunSpec`,而且 `AgentRunner` **不再自己拼 prompt*
 > `agent/` 与 `extensions/`,只在目标不存在时搬,绝不覆盖。
 >
 > 提示词的两个入口不要混:`SYSTEM.md` **整体替换**默认基座(项目 > 全局 > 代码内默认);
-> `AGENTS.md` / `CLAUDE.md`(全局 `~/.qi/agent/` + 项目根及各级祖先,止于 git 根)则作为
+> `AGENTS.md` / `CLAUDE.md`(全局 `~/.qi/agent/` + 项目根及各级祖先,走到文件系统根)则作为
 > `<project_context>` **追加**。两者与角色层、技能、工作目录的推出顺序见
 > [configuration.md](../docs/configuration.md)。
 

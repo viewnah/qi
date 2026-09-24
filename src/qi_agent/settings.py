@@ -2,7 +2,7 @@
 
 位置(高 → 低):
 
-    <git根>/.qi/settings.json      项目覆盖(可提交共享;与 `~/.qi/agent` 配对)
+    <cwd>/.qi/settings.json      项目覆盖(可提交共享;与 `~/.qi/agent` 配对)
     ~/.qi/agent/settings.json      全局(对齐 pi 的 `~/.pi/agent/settings.json`)
 
 合并规则同 pi:键级深合并,项目覆盖全局;数组整体替换(不逐项合并)。

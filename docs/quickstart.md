@@ -6,24 +6,28 @@
 
 qi 需要 **Python ≥ 3.12**。
 
-**发行名是 `qi-coding-agent`**(PyPI 上的 `qi-agent` 属于**别的项目**,别装错;import 包名仍是
-`qi_agent`、命令仍是 `qi`)。目前**还没发布**,所以以从源码安装为主 —— 不要假设
-`pip install qi-coding-agent` 现在就能装到东西。
+**发行名是 [`qi-coding-agent`](https://pypi.org/project/qi-coding-agent/)** —— PyPI 上的
+`qi-agent` 属于**别的项目**,别装错;import 包名仍是 `qi_agent`、命令仍是 `qi`。
 
 ```bash
-git clone https://github.com/viewnah/qi.git
-cd qi
-uv sync                 # 或用你自己习惯的方式装进某个 venv:
-                        #   python -m venv .venv && .venv/bin/pip install -e .
+uv tool install qi-coding-agent     # 推荐:装上 `qi` 命令,独立环境
+# 或:pip install qi-coding-agent    # 装进当前 venv
+# 或:uv add --dev qi-coding-agent   # 只给某个项目用
 ```
 
-装完 `qi` 命令可用(`[project.scripts]` 里的入口):
-
 ```bash
-uv run qi --version     # 或激活 venv 后直接 `qi --version`
+qi --version            # → qi 0.1.0
 ```
 
 首次运行会创建 `~/.qi/agent/`(用户级状态都挂在这里:配置、会话、技能、扩展)。
+
+**要改 qi 本身 / 跑测试**才需要源码:克隆仓库 → `uv sync` → `uv run qi …`,步骤见
+[design/development.md](../design/development.md)。三个官方扩展(qi-mcp / qi-agents / qi-web)
+**还没发到 PyPI**,现在从源码装:
+
+```bash
+pip install -e extensions/qi-mcp -e extensions/qi-agents -e extensions/qi-web
+```
 
 ## 2. 配一个模型
 
@@ -81,7 +85,7 @@ qi --mode json "分析这个仓库" # 事件流(一行一个 JSON 对象),给管
 | 想做 | 去哪 |
 | --- | --- |
 | 下次接着这条会话 | `qi -c`(最近一条)或 `qi --session <id>` —— [sessions.md](sessions.md) |
-| 换模型 / 换思考级别 | TUI 里换,或 `--thinking <级别>` —— [tui.md](tui.md) |
+| 换模型 / 换思考级别 | TUI 里换,或 `--thinking <级别>` —— [models.md](models.md) · [usage.md](usage.md) |
 | 加自己的技能 | 写 `SKILL.md` 放进 `~/.qi/agent/skills/` —— [skills.md](skills.md) |
 | 改系统提示词 | 写 `.qi/SYSTEM.md`(**整体替换**默认基座,注意副作用) —— [configuration.md](configuration.md) |
 | 写扩展 | [extensions.md](extensions.md) |

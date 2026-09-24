@@ -1,64 +1,65 @@
 # qi
 
+[![PyPI](https://img.shields.io/pypi/v/qi-coding-agent)](https://pypi.org/project/qi-coding-agent/)
+[![Python](https://img.shields.io/pypi/pyversions/qi-coding-agent)](https://pypi.org/project/qi-coding-agent/)
+
 **用 Python 写的编码 agent 框架**。给它一个目标和一个工作目录,它会读文件、跑命令、改内容,一步步把任务做完。
 
 **core 就是单 agent**:会话(JSONL + 分支树)、工具循环、系统提示词、CLI 与 TUI、压缩、认证都在里面;
 角色 / MCP / Web 这类增值功能全部走**扩展**,不塞进 core。
 
-> **发行名是 `qi-coding-agent`** —— PyPI 上的 `qi-agent` 属于**别的项目**,别装错;
-> import 包名仍是 `qi_agent`、命令仍是 `qi`。现在还没发布,所以以**从源码安装**为主(见下)。
-> `qi-mcp` / `qi-agents` / `qi-web` 是三个独立官方 pip 包,各自带自己的手册。
+> **发行名是 [`qi-coding-agent`](https://pypi.org/project/qi-coding-agent/)** —— PyPI 上的
+> `qi-agent` 属于**别的项目**,别装错;import 包名仍是 `qi_agent`、命令仍是 `qi`。
+> `qi-mcp` / `qi-agents` / `qi-web` 是三个独立官方扩展包(各自带手册,**尚未发布到 PyPI**)。
 
 ## 装
 
-前置:**Python ≥ 3.12** 与 [uv](https://docs.astral.sh/uv/)。
+前置:**Python ≥ 3.12**。
 
 ```bash
-git clone https://github.com/viewnah/qi.git
-cd qi
-uv sync                  # 把 qi 装成 editable;`uv run qi …` 直接可用
-uv run qi doctor         # 冒烟:配置 / 凭证 / 扩展 / 包声明,一次全报
+uv tool install qi-coding-agent     # 推荐:装成全局命令,独立环境
+# 或 pip install qi-coding-agent    # 装进当前 venv
+
+qi --version
+qi doctor                           # 冒烟:配置 / 凭证 / 扩展 / 包声明,一次全报
 ```
 
-官方扩展**按需单独装**(core 不内置、不默认装):
+**官方扩展**按需装(core 不内置、不默认装),它们**还在源码里**(尚未发 PyPI):
 
 ```bash
-pip install -e extensions/qi-agents -e extensions/qi-mcp -e extensions/qi-web
-uv run qi doctor         # 「声明了但没装」「装了但没声明」都在这里报出来,并给出装法
-```
-
-**发布之后**(现在还没有)可以直接装发行版,扩展用 `--with` 一次装齐:
-
-```bash
-uv tool install qi-coding-agent                       # 只装 core
-uv tool install qi-coding-agent --with qi-mcp --with qi-agents
+pip install -e extensions/qi-mcp -e extensions/qi-agents -e extensions/qi-web
+qi doctor                           # 「声明了但没装」「装了但没声明」都在这里报出来,并给出装法
 ```
 
 装法(自家 venv / `uv tool` / 只读解释器)与声明层(`settings.packages`)的差别见
-[docs/packages.md](docs/packages.md)。
+[docs/packages.md](docs/packages.md);要**改 qi 本身**、跑测试,见
+[design/development.md](design/development.md)。
+
+> `uv tool` 用户注意:`uv tool install` / `upgrade` 会**重建**工具环境,把 pip 装进去的扩展抹掉 ——
+> 声明写进 `settings.packages`,重建后用 `qi doctor` 发现并补回。
 
 ## 快速开始
 
 ```bash
-uv run qi init                 # 引导:选 provider → 加模型 → 设为默认(写 models.json + settings.json + auth.json)
-uv run qi init --list-presets  # 看内置的预置 provider(国产为主:deepseek / qwen / kimi / glm / minimax …)
-uv run qi init --preset deepseek   # 一条命令物化预置并设为默认(只补缺、幂等)
-uv run qi doctor               # 校验配置与凭证
+qi init                 # 引导:选 provider → 加模型 → 设为默认(写 models.json + settings.json + auth.json)
+qi init --list-presets  # 看内置的预置 provider(国产为主:deepseek / qwen / kimi / glm / minimax …)
+qi init --preset deepseek   # 一条命令物化预置并设为默认(只补缺、幂等)
+qi doctor               # 校验配置与凭证
 ```
 
 然后三种跑法:
 
 ```bash
-uv run qi                      # 交互界面(裸 qi 就是界面)
-uv run qi "分析这个仓库"        # 进界面,并把这句话作为首条消息发出
-uv run qi -p "分析这个仓库"     # 无头一次:stdout 只有答案(进度走 stderr)
-uv run qi --mode json "…"      # 事件流:一行一个 JSON,喂给上层程序
+qi                      # 交互界面(裸 qi 就是界面)
+qi "分析这个仓库"        # 进界面,并把这句话作为首条消息发出
+qi -p "分析这个仓库"     # 无头一次:stdout 只有答案(进度走 stderr)
+qi --mode json "…"      # 事件流:一行一个 JSON,喂给上层程序
 ```
 
 不用交互时:
 
 ```bash
-uv run qi init -y --provider my-proxy --model my-model \
+qi init -y --provider my-proxy --model my-model \
     --base-url https://my-proxy.internal/v1 --api openai-completions --api-key sk-xxx
 ```
 

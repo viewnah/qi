@@ -1,6 +1,6 @@
 """运行时目录与路径约定(对齐 pi 的两级布局)。
 
-pi 的全局侧比项目侧深一层,配对关系是 `~/.pi/agent/` ↔ `<项目>/.pi/`:
+pi 的全局侧比项目侧深一层,配对关系是 `~/.pi/agent/` ↔ `<cwd>/.pi/`:
 
     全局(agent 目录)  `~/.qi/agent`      ← 对齐 pi 的 `~/.pi/agent` / PI_CODING_AGENT_DIR
     名字空间根        `~/.qi`            ← 只作外壳,内容都在 agent/ 下
@@ -237,7 +237,7 @@ def _migrate_extension_entries(root: Path) -> None:
 
 
 def project_extensions_dir(cwd: Path | None = None) -> Path:
-    """项目级扩展目录(`<项目>/.qi/extensions`)。"""
+    """项目级扩展目录(`<cwd>/.qi/extensions`)。"""
     return project_home(cwd) / EXTENSIONS_DIR_NAME
 
 

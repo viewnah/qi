@@ -34,7 +34,7 @@ qi 能执行任意命令、读写任意文件,而**装进来的扩展就是任�
 - 判定结果与理由会进启动提示(`qi doctor` 也显示),例如
   `未信任项目(defaultProjectTrust=ask(无 UI;用 -a 信任)):.qi/extensions/ 未加载`。
 
-**未信任时不加载**:<项目>`/.qi/extensions/` 与项目级 `settings.json` 的 `extensions[]`(只挡项目那一份)。
+**未信任时不加载**:`<cwd>/.qi/extensions/` 与项目级 `settings.json` 的 `extensions[]`(只挡项目那一份)。
 **仍然生效**:项目级技能(`.agents/skills/`、`<cwd>/.qi/skills/`)、项目上下文(`AGENTS.md` 等)、
 项目级 settings 的普通字段(`defaultTools`、`theme`…)。细目见 [configuration.md](configuration.md)。
 

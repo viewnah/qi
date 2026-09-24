@@ -173,7 +173,7 @@ testpaths = ["tests"]
 | B9 | agent.md icon | 不进 v1 |
 | B10 | 样例 | examples/ 加 writer + general(演示 auto 多角色) |
 | A7 | 凭证存储 | auth store `~/.qi/agent/auth.json`(0600,git 不跟踪);解析顺序 auth store → 约定 env → models.json `apiKey` 引用;`qi auth login/logout/list` + 只读三件套 `print-api-key` / `print-bearer-token` / `check`(退出码对齐 pi:0/1/2)、`qi init` 引导 |
-| A8 | 全局目录层级 | `~/.qi/agent/` ↔ `<项目>/.qi` 配对(对齐 pi 的 `~/.pi/agent` ↔ `.pi`);旧扁平布局启动时自动迁移(不覆盖);`QI_AGENT_HOME` = agent 目录、`QI_CONFIG_DIR` = 名字空间根 |
+| A8 | 全局目录层级 | `~/.qi/agent/` ↔ `<cwd>/.qi` 配对(对齐 pi 的 `~/.pi/agent` ↔ `.pi`);旧扁平布局启动时自动迁移(不覆盖);`QI_AGENT_HOME` = agent 目录、`QI_CONFIG_DIR` = 名字空间根 |
 | A9 | 设置文件 | `settings.json` 两级深合并、数组整体替换;默认模型只属于 settings(`models.json` 里已不读取);字段清单与“仅存储未生效”清单见 [settings.md](../docs/settings.md);`qi config` 读写 |
 | A10 | 顶层技能 | 六级来源(低→高):`~/.agents/skills` → `~/.qi/agent/skills` → user `settings.skills` → 项目 `.agents/skills` 祖先链 → `<cwd>/.qi/skills` → project `settings.skills`;agent 自带者最高;同层同名报错、跳层覆盖;排除项作用于整个发现集 |
 | A11 | 系统提示词 | 默认基座**代码内**(`system_prompt.py`,按解析后的工具集生成「可用工具 / 指南」+ **手册索引**);`SYSTEM.md` **整体替换**默认基座(项目 > 全局);之后动态追加 `<project_context>`(AGENTS.override.md > AGENTS.md > AGENTS.MD > CLAUDE.md > CLAUDE.MD,全局 + 祖先链至文件系统根)→ `<available_skills>` XML(无 `read`/`bash` 则不注入)→ cwd → `--append-system-prompt`。角色层与数据源**不在 core**(归 qi-agents / 提供方扩展)。详见 [configuration.md](../docs/configuration.md) |

@@ -49,7 +49,7 @@ agent 只可能出现在 **3 个位置**,目录名都用 `agents/`:
 | --- | --- | --- |
 | 包内置 `qi_agent/builtin/agents/` | 框架自带兜底(仅 `general`),随 wheel 发布 | 最低 |
 | `~/.qi/agent/agents/` | 全局(所有项目可用) | 中 |
-| `<项目>/.qi/agents/` | 项目私有(跟项目走,可提交共享) | **高** |
+| `<cwd>/.qi/agents/` | 项目私有(跟 cwd 走,可提交共享) | **高** |
 
 同名规则:
 
@@ -142,7 +142,7 @@ opening:
 ## 6. 装载与校验流程
 
 ```text
-扫 ~/.qi/agent/agents/ 与 <项目>/.qi/agents/(项目优先,同名警告)
+扫 ~/.qi/agent/agents/ 与 <cwd>/.qi/agents/(项目优先,同名警告)
   → 每个 <name>/ 解析 agent.md:
      frontmatter → AgentConfig(pydantic)
      校验: name==目录名 / description 非空 / tools 存在于 ToolCatalog
@@ -281,7 +281,7 @@ qi agents import skill:path/to/skill   # 包装成私有技能进目标 agent
 | agent 形态 | 目录形式 `agents/<name>/`,入口固定 `agent.md` |
 | include 机制 | frontmatter `include: [...]` 拼入 system prompt(显式) |
 | 通用小能力 | 做成**全局代码工具**,不做成技能 |
-| 存放位置 | 3 处:包内置 `qi_agent/builtin/agents/` + `~/.qi/agent/agents/` + `<项目>/.qi/agents/`;无 env 层 |
+| 存放位置 | 3 处:包内置 `qi_agent/builtin/agents/` + `~/.qi/agent/agents/` + `<cwd>/.qi/agents/`;无 env 层 |
 | 覆盖规则 | 项目 > 用户 > 内置(静默覆盖,不警告);同层重复报错 |
 | 目录命名 | 隐藏目录 `.qi`(全局 `~/.qi`,项目 `.qi`),对齐 pi 的 `.pi` |
 | 内置内容 | 内置 1 个 `general` 兜底 agent(零配置可执行的前提);**不内置技能**;示例放 `examples/agents/`,不自动加载 |

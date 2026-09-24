@@ -1,7 +1,7 @@
 """内容装载器(P2):agent 目录发现(两层)、agent.md/技能解析、校验、import。
 
 对齐 design/agent-config-design.md §3/§6/§10:
-- 位置: ~/.qi/agents + <项目>/.qi/agents + 包内置 qi_agent/builtin/agents
+- 位置: ~/.qi/agents + <cwd>/.qi/agents + 包内置 qi_agent/builtin/agents
 - 优先级: 项目 > 用户 > 内置(静默覆盖);同层重复报错
 - 校验: name==目录名 / description 非空 / tools 存在 / include 存在 / 技能同名冲突
 - import: 与装载共用同一校验器;明文凭证扫描

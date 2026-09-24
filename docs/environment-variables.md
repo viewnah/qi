@@ -15,7 +15,7 @@
 > `QI_AGENT_HOME` 指向的是**目录本身**,不是它的父目录 —— 拿它去拼 `agent/settings.json` 会得到
 > `…/agent/agent/settings.json`。这是这个变量最常见的误用。
 
-`models.json` 的完整查找顺序是 `QI_AGENT_CONFIG` → `<项目>/.qi/models.json` → `~/.qi/agent/models.json`,
+`models.json` 的完整查找顺序是 `QI_AGENT_CONFIG` → `<cwd>/.qi/models.json` → `~/.qi/agent/models.json`,
 见 [models.md](models.md)。
 
 ## 注入给 shell 工具的会话变量

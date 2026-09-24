@@ -41,7 +41,7 @@ core 移除:core 只认 `RunSpec`,而且 `AgentRunner` **不再自己拼 prompt*
 | 概念 | 结论 | 详见 |
 | --- | --- | --- |
 | agent | **内容**:自包含目录 `agents/<name>/`(`agent.md` + `skills/` + `mcp.json`);frontmatter + 正文即 system prompt。**v3 归 qi-agents** | [qi-agents README](../extensions/qi-agents/README.md) |
-| agent 位置 | **2 处**:`~/.qi/agent/agents/` → `<项目>/.qi/agents/`(v1 还有"包内置 `general`"那层,P-E4c 删除);项目覆盖全局;同层重复报错 | [agent-config-design.md §3](agent-config-design.md) |
+| agent 位置 | **2 处**:`~/.qi/agent/agents/` → `<cwd>/.qi/agents/`(v1 还有"包内置 `general`"那层,P-E4c 删除);项目覆盖全局;同层重复报错 | [agent-config-design.md §3](agent-config-design.md) |
 | agent.md 字段 | **v3 只有 `name` / `description` / `tools` / `model`**;`tools: None` = **继承父**(不是"全部":那会提权)。v1 还有 `display_name` / `keywords` / `include` / `opening` | [agent-config-design.md §4](agent-config-design.md) |
 | 技能 | 私有自动绑定、渐进披露、无内置共享库;同一 agent 内同名报错 | [skills.md](../docs/skills.md) |
 | MCP | 全局 `~/.qi/agent/mcp.json` + 项目 `.qi/mcp.json`(项目覆盖全局)+ 角色私有 `mcp.json`;角色能不能用由它的 `tools:` 里写什么决定(**默认拒绝**) | [qi-mcp README](../extensions/qi-mcp/README.md) |
@@ -79,7 +79,7 @@ core 移除:core 只认 `RunSpec`,而且 `AgentRunner` **不再自己拼 prompt*
 
 ## 4. 目录布局(运行时)
 
-全局侧比项目侧深一层,与 pi 同构:`~/.pi/agent/` ↔ `<项目>/.pi/`。全部用户级状态都挂在 `agent/` 下,
+全局侧比项目侧深一层,与 pi 同构:`~/.pi/agent/` ↔ `<cwd>/.pi/`。全部用户级状态都挂在 `agent/` 下,
 `~/.qi` 本身只是名字空间外壳(`QI_CONFIG_DIR` 可改)。
 
 ```text
@@ -96,7 +96,7 @@ core 移除:core 只认 `RunSpec`,而且 `AgentRunner` **不再自己拼 prompt*
     ├── mcp.json            # 全局 MCP 声明    —— 读它的扩展:qi-mcp
     └── sessions/*.jsonl    # 会话
 
-<项目>/.qi/                 # 项目级(扁平;与 ~/.qi/agent 配对)
+<cwd>/.qi/                 # 项目级 = **当前目录**(对齐 pi 的 `<cwd>/.pi/`;扁平,与 ~/.qi/agent 配对)
 ├── settings.json           # 覆盖全局(深合并;数组整体替换)
 ├── models.json
 ├── skills/  agents/  extensions/
@@ -110,7 +110,7 @@ core 移除:core 只认 `RunSpec`,而且 `AgentRunner` **不再自己拼 prompt*
 > `agent/` 与 `extensions/`,只在目标不存在时搬,绝不覆盖。
 >
 > 提示词的两个入口不要混:`SYSTEM.md` **整体替换**默认基座(项目 > 全局 > 代码内默认);
-> `AGENTS.md` / `CLAUDE.md`(全局 `~/.qi/agent/` + 项目根及各级祖先,走到文件系统根)则作为
+> `AGENTS.md` / `CLAUDE.md`(全局 `~/.qi/agent/` + cwd 及各级祖先,走到文件系统根)则作为
 > `<project_context>` **追加**。两者与角色层、技能、工作目录的推出顺序见
 > [configuration.md](../docs/configuration.md)。
 

@@ -1,12 +1,12 @@
 """模型配置 `models.json`(对齐 pi 格式)+ 解析。
 
 文件位置(优先级从高到低):
-  $QI_AGENT_CONFIG(指定文件)→ <项目>/.qi/models.json → ~/.qi/agent/models.json
+  $QI_AGENT_CONFIG(指定文件)→ <cwd>/.qi/models.json → ~/.qi/agent/models.json
 合并:键级深合并,内层覆盖外层;providers 按 provider 名合并。
 
 默认模型 `defaultProvider` / `defaultModel` **只属于 settings.json**(对齐 pi):
 
-    <项目>/.qi/settings.json  >  ~/.qi/agent/settings.json
+    <cwd>/.qi/settings.json  >  ~/.qi/agent/settings.json
 
 models.json 里的这两个键**已不再被读取**(不是"优先级更低",是彻底不参与);
 启动时若发现残留,报错/诊断里会给出可照抄的迁移命令。
@@ -157,7 +157,7 @@ def default_model_spec(cwd: Path | None = None) -> tuple[str | None, str | None,
 
     **只从 settings.json 读**(对齐 pi):
 
-        <项目>/.qi/settings.json  >  ~/.qi/agent/settings.json
+        <cwd>/.qi/settings.json  >  ~/.qi/agent/settings.json
 
     `models.json` 里的 `defaultProvider` / `defaultModel` **不再被读取** ——
     如果旧文件里还留着,`legacy_default_keys()` 会报出来。

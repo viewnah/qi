@@ -281,7 +281,7 @@ qi 自己识别的变量分两类。
 
 它们由 `Runtime._session_env()` 生成、`merged_env()` 注入,**先删后填**所以不会从父进程继承。细节见 [environment-variables.md](environment-variables.md)。
 
-`models.json` 的完整查找顺序是 `QI_AGENT_CONFIG` → `<项目>/.qi/models.json` → `~/.qi/agent/models.json`,
+`models.json` 的完整查找顺序是 `QI_AGENT_CONFIG` → `<cwd>/.qi/models.json` → `~/.qi/agent/models.json`,
 细节见 [models.md](models.md)。
 
 > `QI_AGENT_HOME` 指向的是**目录本身**,不是它的父目录 —— 拿它去拼 `agent/settings.json` 会得到

@@ -1620,7 +1620,7 @@ qi 原来把它当"另一个页面"塞进 `work__body`,于是打开设置 = **�
 插件引言是"`~/.qi/agent/plugins/<名>/plugin.py`"。按代码逐条核对
 (`paths.py` 的 `top_level_skill_dirs`、`registry.py` 的 `_iter_plugin_loaders`)后改成:
 **技能** = `~/.qi/agent/skills/`、项目 `.qi/skills/`、跨工具 `.agents/skills/`;**插件** = 全局
-`~/.qi/agent/plugins/<名>/plugin.py` 或项目 `<项目>/.qi/plugins/<名>/`(需信任)。
+`~/.qi/agent/plugins/<名>/plugin.py` 或项目 `<cwd>/.qi/plugins/<名>/`(需信任)。
 
 #### (3) 验证时撞出来的两个真 bug(都已修)
 

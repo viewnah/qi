@@ -30,6 +30,10 @@ qi 的配置分**用户级**与**项目级**两层。
 
 ## 项目 `.qi` 目录
 
+项目级 = **当前工作目录**的 `.qi/`(对齐 pi 的 `.pi/settings.json` = "current directory");
+同一仓库的不同子目录各有一份,从仓库根启动才命中仓库根的 `.qi/`。仓库根(`.git`)只用于
+`.agents/skills` 的祖先探测,不是配置目录。
+
 | 路径 | 职责 |
 | --- | --- |
 | `.qi/settings.json` | 项目级设置(键级深合并覆盖用户级) |
@@ -50,7 +54,10 @@ qi 的配置分**用户级**与**项目级**两层。
 AGENTS.override.md > AGENTS.md > AGENTS.MD > CLAUDE.md > CLAUDE.MD
 ```
 
-顺序 = 用户级 → 项目祖先链**由远到近**(含 cwd),按路径去重;祖先链**走到文件系统根**(对齐 pi)。
+顺序 = 用户级 → 项目祖先链**由远到近**(含 cwd),按路径去重;祖先链**走到文件系统根**
+(`/`;Windows 上是盘符根如 `C:\`)—— 对齐 Claude Code / pi 的 `CLAUDE.md` / `AGENTS.md` 探测。
+这样你可以在仓库**之上**放一份 `~/AGENTS.md`(或某个团队目录下的),让下面所有项目都生效;
+而 `.agents/skills` 那条止于 **git 根**(`docs/skills.md`)。
 `AGENTS.override.md` 只在**同一目录**里顶替 `AGENTS.md` / `CLAUDE.md`,不会压掉其它目录的。
 空文件视为未配置。上下文文件的发现**不需要项目信任**。
 

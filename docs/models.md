@@ -100,7 +100,7 @@ qi 通过 litellm 调各家模型。provider 与模型定义都在 `models.json`
 `qi init` 引导默认模型,三步:**选 provider**(已有 / 预置 `[预置]` / 新建 → Base URL → API 类型 →
 API Key,直接写 `auth.json`)→ **Add Models**(`＋ Add a model` / `↻ Refresh model list (GET /models)` /
 `✓ Done` 循环)→ **Activate LLM Model**(写 `defaultProvider` / `defaultModel` 进 `settings.json`)。
-`-l` 写项目 `<项目>/.qi/models.json`(否则全局)。
+`-l` 写项目 `<cwd>/.qi/models.json`(否则全局)。
 
 ```bash
 qi init                       # 交互式
@@ -128,10 +128,10 @@ qi init -y --provider deepseek --model deepseek-chat \
 
 ```text
 models.json:  $QI_AGENT_CONFIG(env 指定文件,最高)
-              → <项目>/.qi/models.json
+              → <cwd>/.qi/models.json
               → ~/.qi/agent/models.json
 
-默认模型:     <项目>/.qi/settings.json > ~/.qi/agent/settings.json(唯一来源)
+默认模型:     <cwd>/.qi/settings.json > ~/.qi/agent/settings.json(唯一来源)
 ```
 
 键级深合并,内层覆盖外层;文件不存在则跳过。provider 按名覆盖,`models` 数组**整体替换**。

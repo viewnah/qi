@@ -16,7 +16,7 @@
 | 通道 | 怎么装 | 装到哪 | 发现机制 | 场景 |
 | --- | --- | --- | --- | --- |
 | **pip 包** | `qi install qi-db-tools`(PyPI / git / 本地) | venv 的 site-packages(环境级) | **entry point 扫描**(`importlib.metadata`,启动时自动发现) | 分发、团队共享、锁依赖 |
-| **本地目录** | 手动放置/复制源码目录 | `~/.qi/plugins/<name>/`(全局)或 `<项目>/.qi/plugins/<name>/`(项目,需信任) | **目录扫描** | 未发布/私有/本地开发,拷贝即用 |
+| **本地目录** | 手动放置/复制源码目录 | `~/.qi/plugins/<name>/`(全局)或 `<cwd>/.qi/plugins/<name>/`(项目,需信任) | **目录扫描** | 未发布/私有/本地开发,拷贝即用 |
 
 pip 包通过 **entry point** 声明(对齐 pytest/uvicorn 模式),无需维护安装清单:
 

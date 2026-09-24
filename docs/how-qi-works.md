@@ -24,7 +24,7 @@ provider 流式返回助手回复(可能包含文本与工具调用)。qi 记录
 系统提示词由**基座**加**动态块**拼成:
 
 ```text
-基座      代码内默认,或被 <项目>/.qi/SYSTEM.md / ~/.qi/agent/SYSTEM.md 整体替换
+基座      代码内默认,或被 <cwd>/.qi/SYSTEM.md / ~/.qi/agent/SYSTEM.md 整体替换
 动态块    项目上下文(AGENTS.md…) → 技能清单 → 手册索引 → 当前工作目录
 ```
 

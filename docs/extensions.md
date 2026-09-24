@@ -72,7 +72,7 @@ qi doctor               # 诊断:装载失败 / 依赖契约 / 声明不一致
 | 通道 | 位置 |
 | --- | --- |
 | 用户级 | `~/.qi/agent/extensions/<名>/extension.py` |
-| 项目级 | `<项目>/.qi/extensions/<名>/extension.py`(未信任不加载,见下) |
+| 项目级 | `<cwd>/.qi/extensions/<名>/extension.py`(未信任不加载,见下) |
 | 附加路径 | `settings.json` 的 `extensions[]`:每项可以是扩展目录的**父目录**,也可以直接指向**单个扩展目录**;支持 `-<路径>` 排除 |
 | 单次试用 | `qi -e <目录>` / `--extension`(只本进程,`scope=temporary`) |
 | pip 包 | entry point 组 `qi.extensions`,**且必须在 `settings.packages` 里声明**(没声明的装了也不加载 —— 对齐 pi) |
@@ -336,7 +336,7 @@ api.register_tool(Tool(
 - 声明方式:`api.provides_config(kind, types)`;没人提供该种类时**整个种类不装载**(静默跳过);
 - core 侧的一般机制:`api.register_resolver(kind, fn)` / `api.resolve_tools(kind, scope=…)`,
   没人提供 → `[]`;
-- 边界:**只在 scope 目录内**。全局(`~/.qi/agent/`)与项目(`<项目>/.qi/`)那两层的声明表沿用
+- 边界:**只在 scope 目录内**。全局(`~/.qi/agent/`)与项目(`<cwd>/.qi/`)那两层的声明表沿用
   按作用域分层的旧规则(它们不是任何 scope 私有的)。
 
 ## 10. 依赖契约

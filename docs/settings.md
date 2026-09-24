@@ -28,7 +28,7 @@
 // ~/.qi/agent/settings.json
 { "theme": "dark", "compaction": { "enabled": true, "reserveTokens": 16384 } }
 
-// <项目>/.qi/settings.json
+// <cwd>/.qi/settings.json
 { "compaction": { "reserveTokens": 8192 } }
 
 // 结果:theme=dark, compaction={enabled: true, reserveTokens: 8192}
@@ -82,13 +82,13 @@
 `skills`(以及将来其它资源字段)里的每一条按下列规则解析:
 
 - 相对路径 → 相对**该条所在的 settings.json 目录**:`~/.qi/agent/settings.json` 里的
-  相对路径相对 `~/.qi/agent`,`<项目>/.qi/settings.json` 里的相对 `<项目>/.qi`。
+  相对路径相对 `~/.qi/agent`,`<cwd>/.qi/settings.json` 里的相对 `<cwd>/.qi`。
   → 所以两个作用域各自写 `"skills": ["x"]` 指的是**两个不同的目录**,互不影响。
 - `~` 展开为 home;绝对路径直接用;支持 glob(`*` / `?` / `[`)。
 - 排除项:前缀 `!` 或 `-`;强制纳入:前缀 `+`。
 
 同一套语法对 **`extensions`** 也生效(排除项作用于整个发现集)—— 所以内建目录
-(`~/.qi/agent/extensions/`、`<项目>/.qi/extensions/`)里扫出来的扩展也能被单独关掉:
+(`~/.qi/agent/extensions/`、`<cwd>/.qi/extensions/`)里扫出来的扩展也能被单独关掉:
 
 ```jsonc
 { "extensions": ["-~/.qi/agent/extensions/some-ext"] }   // 只关这一个

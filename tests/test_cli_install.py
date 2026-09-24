@@ -113,6 +113,16 @@ def test_install_local_archive_goes_through_pip(tmp_path, monkeypatch, pip):
     assert _packages(home / "settings.json") == [str(archive)]
 
 
+def test_install_bare_archive_filename_uses_dist_name(tmp_path, monkeypatch, pip):
+    """裸文件名 `qi_mcp-0.1.1.tar.gz` 也是归档;声明名要从文件名取(→ qi-mcp),
+    否则它会跟已装的 dist 对不上(报“声明了但没装”)。"""
+    _env(tmp_path, monkeypatch)
+    res = runner.invoke(app, ["install", "qi_mcp-0.1.1.tar.gz"])
+    assert res.exit_code == 0, res.output
+    assert pip.calls == [["install", "qi_mcp-0.1.1.tar.gz"]]
+    assert cli_mod._declaration_name("qi_mcp-0.1.1.tar.gz") == "qi-mcp"
+
+
 def test_install_local_directory_without_entry_is_rejected(tmp_path, monkeypatch, pip):
     _env(tmp_path, monkeypatch)
     empty = tmp_path / "empty"

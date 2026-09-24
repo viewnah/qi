@@ -37,6 +37,7 @@
 | `qi-mcp>=0.2` | pip | 名字 + 版本约束(整个 spec 会进装法) |
 | `Qi.MCP` | pip | **PEP 503 归一** → `qi-mcp`(与「已装」侧同一规则,否则一边算命中一边不算) |
 | `qi-mcp @ git+https://host/repo` | pip | **显式名字**(PEP 508 的 `名字 @ URL`) |
+| `qi_mcp-0.1.1.tar.gz` / `./x.whl` | pip | **本地归档**(wheel / sdist):从文件名取 `qi_mcp-0.1.1.tar.gz` → `qi-mcp` |
 | `local:./extensions/qi-mcp` | 目录 | 目录名 |
 | `/abs/path`、`./rel`、`~/x`、`file:…` | 目录 | `Path(...).name` |
 | `{"name": "pip:qi-mcp"}` | 按内容判 | 取 `name` / `spec` / `source` 里第一个非空的 |

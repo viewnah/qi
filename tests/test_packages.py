@@ -38,6 +38,10 @@ def test_normalize_name_is_pep503():
     ("/tmp/qi_mcp-0.1.1.tar.gz", "pip", "qi-mcp"),
     ("/tmp/qi_mcp-0.1.1-py3-none-any.whl", "pip", "qi-mcp"),
     ("pip:/tmp/qi_mcp-0.1.1.tar.gz", "pip", "qi-mcp"),
+    # 裸文件名(不带 ./)也算归档 —— `qi install qi_mcp-0.1.1.tar.gz` 很常见
+    ("qi_mcp-0.1.1.tar.gz", "pip", "qi-mcp"),
+    ("qi_mcp-0.1.1-py3-none-any.whl", "pip", "qi-mcp"),
+    ("qi-mcp @ file:///tmp/x.tar.gz", "pip", "qi-mcp"),
     ("qi-mcp @ git+https://example.invalid/x", "pip", "qi-mcp"),
 ])
 def test_parse_declaration_forms(spec, channel, name):

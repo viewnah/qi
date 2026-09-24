@@ -164,21 +164,32 @@ def parse_declaration(entry: Any, source: str) -> DeclaredPackage | None:
                                extensions=_extension_filter(declared_extensions))
     if spec.startswith(_PIP_PREFIX):
         spec = spec[len(_PIP_PREFIX):].strip()
-    # 裸路径也算目录通道:`/abs/path`、`./rel`、`~/x` —— 但**归档文件走 pip 通道**:
-    # `qi install ./qi_mcp-0.1.1.tar.gz` 是“装这个包”,不是“找 ./...tar.gz/extension.py”。
+
+    # 带 `extensions:` 过滤的对象形态只在最后一条 return 上接 —— 先记住它
+    filter_ = _extension_filter(declared_extensions)
+
+    # PEP 508 的 `名字 @ URL` 形式:名字是显式的,优先取它。**放在归档判断之前** ——
+    # 这条 spec 也可能以 `.tar.gz` 结尾(`qi-mcp @ file:///…/x.tar.gz`),不能被当成本地归档。
+    explicit = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*@\s*\S+", spec)
+    if explicit:
+        return DeclaredPackage(spec=original, name=normalize_name(explicit.group(1)),
+                               channel="pip", source=source, requirement=spec,
+                               extensions=filter_)
+
+    # 本地归档(.whl / .tar.gz …)→ **pip 通道**。不论写成绝对路径、`./x` 还是**裸文件名**
+    # (`qi install qi_mcp-0.1.1.tar.gz` 很常见),pip 都能直接装;目录通道会去找
+    # `<归档>/extension.py`(一个文件,必然失败)。
+    if _looks_like_archive(spec):
+        return DeclaredPackage(spec=original, name=normalize_name(_archive_name(spec)),
+                               channel="pip", source=source, requirement=spec,
+                               extensions=filter_)
+
+    # 裸路径(非归档)也算目录通道:`/abs/path`、`./rel`、`~/x`
     if spec.startswith(("/", "./", "../", "~")) or spec.startswith("file:"):
-        if _looks_like_archive(spec):
-            return DeclaredPackage(spec=original, name=normalize_name(_archive_name(spec)),
-                                   channel="pip", source=source, requirement=spec)
         name = Path(spec.removeprefix("file:")).name or spec
         return DeclaredPackage(spec=spec, name=normalize_name(name),
                                channel="local", source=source)
 
-    # PEP 508 的 `名字 @ URL` 形式:名字是显式的,取它
-    explicit = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*@\s*\S+", spec)
-    if explicit:
-        return DeclaredPackage(spec=original, name=normalize_name(explicit.group(1)),
-                               channel="pip", source=source, requirement=spec)
     # 裸 URL / VCS 地址没有可提取的名字 —— 不猜(否则 “git+https://host/qi-mcp” 会被
     # 当成一个叫 "git" 的包,比认不出更坏)。交给调用方回显,让用户写成 `名字 @ URL`。
     if "://" in spec:
@@ -189,7 +200,7 @@ def parse_declaration(entry: Any, source: str) -> DeclaredPackage | None:
         return None
     return DeclaredPackage(spec=original, name=normalize_name(match.group(1)),
                            channel="pip", source=source, requirement=spec,
-                           extensions=_extension_filter(declared_extensions))
+                           extensions=filter_)
 
 
 def discover_declared(cwd: Path | None = None) -> tuple[list[DeclaredPackage], list[str]]:

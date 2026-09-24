@@ -523,8 +523,14 @@ def _run_headless(coro) -> None:
 #
 # SIGINT 不在这里:Python 默认转 KeyboardInterrupt → asyncio 取消主任务 →
 # `run_shell` 的 finally 回收子进程组(见 tools/shell.py)。
-
-_EXIT_CODE_BY_SIGNAL: dict[int, int] = {signal.SIGTERM: 143, signal.SIGHUP: 129}
+#
+# Windows 的 `signal` 模块**没有 SIGHUP**(只有 SIGTERM / SIGINT / SIGBREAK),而这里在
+# **import 时**就要求值 —— 直接写 `signal.SIGHUP` 会让整个 CLI 在 Windows 上崩在导入期。
+# 所以先探测再登记(而不是写 `hasattr` 分支:注册点也要用同一个名字)。
+_SIGHUP: int | None = getattr(signal, "SIGHUP", None)
+_EXIT_CODE_BY_SIGNAL: dict[int, int] = {signal.SIGTERM: 143}
+if _SIGHUP is not None:                  # 非 Windows 才有
+    _EXIT_CODE_BY_SIGNAL[_SIGHUP] = 129
 
 
 def _exit_code_for(signum: int) -> int:
@@ -536,6 +542,15 @@ def _exit_code_for(signum: int) -> int:
     return _EXIT_CODE_BY_SIGNAL.get(signum, 128 + signum)
 
 
+def _exit_signal_numbers() -> list[int]:
+    """要装处理器的信号:**SIGTERM + (非 Windows 的)SIGHUP**。
+
+    抽成函数是因为 Windows 上少一个 —— `_install_exit_signal_handlers` 和测试都要
+    按同一份口径列出它们(见 tests/test_interrupt.py)。
+    """
+    return [signal.SIGTERM] if _SIGHUP is None else [signal.SIGTERM, _SIGHUP]
+
+
 def _install_exit_signal_handlers() -> Callable[[], None]:
     """装 SIGTERM/SIGHUP 处理器:先回收在跑的子进程组,再按信号码退出。
 
@@ -543,16 +558,13 @@ def _install_exit_signal_handlers() -> Callable[[], None]:
     """
     from .tools.shell import kill_live_children
 
-    signals = [signal.SIGTERM]
-    if hasattr(signal, "SIGHUP"):        # Windows 没有 SIGHUP
-        signals.append(signal.SIGHUP)
     previous: dict[int, Any] = {}
 
     def handler(signum: int, _frame: object) -> None:
         kill_live_children()             # 同步:信号处理器里不能 await
         raise SystemExit(_exit_code_for(signum))
 
-    for sig in signals:
+    for sig in _exit_signal_numbers():
         try:
             previous[sig] = signal.signal(sig, handler)
         except (ValueError, OSError):    # 非主线程/平台不支持 → 跳过于净

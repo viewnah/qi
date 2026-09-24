@@ -19,11 +19,15 @@ import os
 import re
 import select
 import sys
-import termios
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+try:
+    import termios
+except ImportError:  # pragma: no cover - Windows:没有 termios
+    termios = None       # type: ignore[assignment]
 
 THEMES_DIR = Path(__file__).resolve().parent / "themes"
 
@@ -137,6 +141,8 @@ def parse_osc11(reply: str) -> str | None:
 
 def _query_osc11(timeout: float) -> str | None:
     """向终端发 OSC 11 查询并读回复(必须在 Textual 接管 stdin 之前调用)。"""
+    if termios is None:                  # Windows:没有 termios,探测不了 → 让调用方落 dark
+        return None
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         return None
     fd = sys.stdin.fileno()

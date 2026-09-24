@@ -360,14 +360,37 @@ async def test_kill_live_children_reaps_from_outside(tmp_path):
 # ── 5. 退出信号(对齐 pi 的 print 模式)────────────────────
 
 def test_exit_code_matches_pi():
-    """128 + 信号号:pi 的 print 模式用 143(SIGTERM)/129(SIGHUP)。"""
+    """128 + 信号号:pi 的 print 模式用 143(SIGTERM)/129(SIGHUP)。
+
+    `SIGHUP` / `SIGUSR1` 用 `getattr` 取:Windows 上没有这两个名字,直接写属性
+    访问点会让类型检查器(以及运行期)在该平台报错。
+    """
     import signal as signal_mod
 
     from qi_agent.cli import _exit_code_for
 
     assert _exit_code_for(signal_mod.SIGTERM) == 143
-    assert _exit_code_for(signal_mod.SIGHUP) == 129
-    assert _exit_code_for(signal_mod.SIGUSR1) == 128 + signal_mod.SIGUSR1
+    sighup = getattr(signal_mod, "SIGHUP", None)
+    if sighup is not None:                     # Windows 没有 SIGHUP
+        assert _exit_code_for(sighup) == 129
+    other = getattr(signal_mod, "SIGUSR1", None) or signal_mod.SIGBREAK
+    assert _exit_code_for(other) == 128 + other
+
+
+def test_windows_has_no_sighup_but_still_imports():
+    """Windows 的 signal 没有 SIGHUP:注册表与注册点都不能在 import 期崩掉。"""
+    import signal as signal_mod
+
+    import qi_agent.cli as cli_mod
+
+    assert cli_mod._EXIT_CODE_BY_SIGNAL[signal_mod.SIGTERM] == 143
+    sighup = getattr(signal_mod, "SIGHUP", None)
+    if sighup is not None:
+        assert cli_mod._EXIT_CODE_BY_SIGNAL[sighup] == 129
+        assert cli_mod._exit_signal_numbers() == [signal_mod.SIGTERM, sighup]
+        return
+    assert cli_mod._SIGHUP is None, "探测不到就不该留下名字(否则注册时会 AttributeError)"
+    assert cli_mod._exit_signal_numbers() == [signal_mod.SIGTERM]
 
 
 def _installed_handler(sig: int) -> Callable[[int, Any], None]:

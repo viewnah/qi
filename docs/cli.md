@@ -56,6 +56,9 @@ qi --export out.html                # 导出会话后退出
 中断退出码 `128+n`:`SIGTERM` / `SIGHUP` → 回收在跑的子进程组 + `exit(143/129)`;`SIGINT` → asyncio 取消 →
 `run_shell` 的 finally 回收 + `exit(130)`,不打 traceback。两条路径的半截回答都会落盘。
 
+> Windows 没有 `SIGHUP`(Python 的 `signal` 模块里不存在这个属性),所以那里只装 `SIGTERM`;
+> 其余行为一致。探测发生在**导入期之前**(代码里先 `getattr` 再登记),不会让 CLI 崩在启动。
+
 ## 模型
 
 ```sh

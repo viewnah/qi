@@ -36,13 +36,18 @@ class Role:
     tools: list[str] | None = None      # None = 继承父(不是"全部":那会提权)
     disallowed_tools: list[str] | None = None   # 从上面的结果里**减掉**的(支持 fnmatch 通配)
     model: str | None = None            # "provider/model";None = 继承父
+    #: 能否**再把自己的任务往下派**(分层委派的总开关)。缺省 True —— 拆解给多个
+    #: agent 是这个工具的常态用法;`delegate: false` 才是"到此为止"的显式声明。
+    #: 它只是闸之一:深度上限与 spawn 预算(见 subagent.py)对所有角色一视同仁。
+    delegate: bool = True
     source: str = "user"                # user | project
     path: Path | None = None
 
     def as_dict(self) -> dict:
         return {"name": self.name, "description": self.description, "source": self.source,
                 "tools": self.tools, "disallowed_tools": self.disallowed_tools,
-                "model": self.model, "path": str(self.path or "")}
+                "model": self.model, "delegate": self.delegate,
+                "path": str(self.path or "")}
 
 
 def _parse_tools(value: object) -> list[str] | None:
@@ -55,6 +60,23 @@ def _parse_tools(value: object) -> list[str] | None:
         str(value).split(",") if isinstance(value, str) else [])
     tools = [str(t).strip() for t in raw if str(t).strip()]
     return tools or None
+
+
+def _parse_bool(value: object, default: bool) -> bool:
+    """frontmatter 的布尔字段(现在只有 `delegate`):认 YAML bool 与常见字符串写法。
+
+    别的形状(数字/映射)回 default 而不是抛 —— 与 `_parse_tools` 同一条理由:
+    发现期不该让一个坏文件把整层角色拖下水。
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ("true", "yes", "on", "1"):
+            return True
+        if text in ("false", "no", "off", "0"):
+            return False
+    return default
 
 
 def _read_role(md: Path, source: str) -> Role | None:
@@ -77,6 +99,7 @@ def _read_role(md: Path, source: str) -> Role | None:
                 tools=_parse_tools(meta.get("tools")),
                 disallowed_tools=_parse_tools(meta.get("disallowed_tools")),
                 model=str(model).strip() if isinstance(model, str) and model.strip() else None,
+                delegate=_parse_bool(meta.get("delegate"), True),
                 source=source, path=md)
 
 

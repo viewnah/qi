@@ -248,13 +248,13 @@ async def test_subagent_swaps_mcp_entries_for_real_tool_names(tmp_path, monkeypa
         def __init__(self) -> None:
             self.specs: list[dict] = []
 
-        async def runAgent(self, spec, task, abort=None):
+        async def runAgent(self, spec, task, abort=None, on_event=None):
             self.specs.append(spec)
             return "子结果"
 
     role_dir = tmp_path / "agents" / "scout"
     role = sub.Role(name="scout", description="侦察", prompt="你是侦察员。",
-                    tools=["read", "subagent", "mcp__gh__*"],
+                    tools=["read", "subagent", "mcp__gh__*"], delegate=False,
                     path=role_dir / "agent.md")
     api = FakeApi()
     result = await sub._run_one(api, role, "查一下", SimpleNamespace(workdir=tmp_path, ui=None))
@@ -263,7 +263,7 @@ async def test_subagent_swaps_mcp_entries_for_real_tool_names(tmp_path, monkeypa
     tools = api.specs[0]["tools"]
     assert "mcp__gh__create_issue" in tools          # 模式换成了真名
     assert "mcp__gh__*" not in tools                 # 模式本身不能留给 runner
-    assert "subagent" not in tools                   # 递归防护照旧
+    assert "subagent" not in tools                   # delegate=false → 分层闸照剥
     assert "read" in tools
     assert captured[0][0] == role_dir                # 角色目录传对了(包主人点自己的成员)
     assert captured[0][2] == ["read", "subagent", "mcp__gh__*"]
@@ -282,7 +282,7 @@ async def test_subagent_without_mcp_entries_does_not_touch_qi_mcp(tmp_path, monk
     monkeypatch.setattr(sub, "register_role_mcp", fake_register)
 
     class FakeApi:
-        async def runAgent(self, spec, task, abort=None):
+        async def runAgent(self, spec, task, abort=None, on_event=None):
             return "子结果"
 
     role = sub.Role(name="scout", description="d", prompt="p", tools=None, path=None)

@@ -58,4 +58,4 @@ markers = [
     "real_extensions: 本测试要装载**本机真装的扩展**(退出默认的 entry-point stub)",
 ]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+testpaths = ["tests", "extensions/qi-agents/tests"]

@@ -86,7 +86,7 @@ def register(api: ExtensionApi) -> None:
 
     api.on("before_agent_start", on_start)
 
-    # ── 2. 委派:一个工具,三种模式 ──
+    # ── 2. 委派:一个工具,三种模式(预算制分层,见 subagent.py)──
     api.registerTool(build_tool(api))
 
     # ── 3. 列角色:补回 core 删掉的 `qi agents list`(TUI 里是 `/agents`)──
@@ -95,6 +95,7 @@ def register(api: ExtensionApi) -> None:
         roles = discover(ctx.cwd, scope)
         lines = [f"角色({scope},共 {len(roles)}):"]
         lines += [f"  {r.name}  [{r.source}]  {r.description}"
+                  + ("  delegate=false" if not r.delegate else "")
                   + (f"  tools={','.join(r.tools)}" if r.tools else "")
                   + (f"  model={r.model}" if r.model else "")
                   for r in sorted(roles.values(), key=lambda r: r.name)]

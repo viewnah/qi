@@ -1,0 +1,1235 @@
+"""qi-lab HTTP 宿主(design/web.md §3):REST + SSE + 静态托管。
+
+同进程直连 `QiRuntime.stream()` —— web 是 CLI/TUI 之外的**第三个 consumer**,零协议桥。
+契约版本见 `schemas.CONTRACT_VERSION`;前端从 `/api/meta` 读取并据此降级。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import secrets
+import stat
+import time
+import uuid
+from pathlib import Path
+from typing import Literal
+from urllib.parse import quote
+
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+
+from qi_agent import __version__
+from qi_agent.auth import AuthStore, resolve_key
+from qi_agent.config import (
+    ConfigError,
+    load_config,
+    resolve_default_model,
+    resolve_router_model,
+    selectable_models,
+)
+from qi_agent.llm import THINKING_LEVELS
+from qi_agent.loader import LoadError
+from qi_agent.session import usage_summary
+from qi_agent.workspaces import WorkspaceStore, normalize
+from . import agui, agents as agentapi, browse, files as fileapi, schemas, skills as skillapi
+from .security import check_credentials, check_host, mask_key
+from .serve import pin_role
+from .state import RunBusy, WebState
+
+STATIC_DIR = Path(__file__).parent / "static"
+DEFAULT_WINDOW = 200          # 会话明细默认窗口(渐进恢复:老会话不因细节太多而卡住)
+
+
+def _int_field(obj: object, name: str) -> int:
+    """取一个 int 字段(缺省 0)。**字段写坏不该把整页打成 500** —— `/api/models` 是个
+    只读页面,为一个手写配置里写歪的 `contextWindow` 报 500 得不偿失。
+
+    与 `llm.py` / `runtime.py` / `session.py` / `tui.py` 里的 `_as_int` 同一口径。
+    """
+    try:
+        return int(getattr(obj, name, 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+_PLACEHOLDER = """<!doctype html><meta charset="utf-8"><title>qi lab</title>
+<style>body{{font:14px/1.7 -apple-system,"PingFang SC",sans-serif;max-width:640px;
+margin:72px auto;padding:0 24px;color:#0F1115;background:#F5F6F7}}
+code{{background:#fff;padding:2px 6px;border-radius:4px;border:1px solid #E5E5E5}}
+h1{{font-size:18px}}</style>
+<h1>qi-lab 宿主已启动,但前端产物不存在</h1>
+<p>API 可直接使用(<code>/api/meta</code>、<code>/api/sessions</code>、SSE 事件流)。</p>
+<p>构建前端:<code>cd extensions/qi-lab/ui &amp;&amp; npm install &amp;&amp; npm run build</code></p>
+<p>构建产物会被放进 <code>extensions/qi-lab/qi_lab/static/</code>,刷新本页即可。</p>"""
+
+
+def create_app(cwd: Path | str | None = None, password: str | None = None,
+               allowed_hosts: list[str] | None = None, bind_host: str = "127.0.0.1",
+               state: WebState | None = None,
+               workspace_store: WorkspaceStore | None = None) -> FastAPI:
+    app = FastAPI(title=schemas.APP_NAME, version=__version__,
+                  docs_url=None, redoc_url=None)
+    web = state or WebState(Path(cwd).resolve() if cwd else Path.cwd())
+    app.state.web = web
+    #: 工作区的两个「人工决定」(显示名 / 不再分组)。默认落在 `~/.qi/agent/`,
+    #: 测试传一个 tmp 路径的 store,不去碰真实 home。
+    workspaces = workspace_store or WorkspaceStore()
+    app.state.workspaces = workspaces
+    app.state.password = password
+    allowed = list(allowed_hosts or [])
+
+    # ── 通用守卫 ──────────────────────────────────────────
+    def guard(request: Request) -> None:
+        if not check_host(allowed, request.headers.get("host"), bind_host):
+            raise HTTPException(status_code=400, detail="Host 头不被允许(见 QI_LAB_ALLOWED_HOSTS)")
+        auth = request.headers.get("authorization")
+        if not check_credentials(auth, password):
+            raise HTTPException(status_code=401, detail="需要凭证",
+                                headers={"WWW-Authenticate": 'Basic realm="qi-lab"'})
+
+    def confirm_gate(confirm: str | None) -> None:
+        """写操作的第二道闸:必须显式带确认头(前端弹层确认后才带上)。"""
+        if not secrets.compare_digest((confirm or "").strip().lower(), "yes"):
+            raise HTTPException(
+                status_code=428,
+                detail="写操作需要二次确认:带上请求头 X-Qi-Confirm: yes",
+            )
+
+    # ── 元信息 ────────────────────────────────────────────
+    @app.get("/api/meta", response_model=schemas.Meta, dependencies=[Depends(guard)])
+    async def meta() -> schemas.Meta:
+        return schemas.Meta(
+            version=__version__,
+            default_cwd=str(web.default_cwd),
+            auth_required=bool(password),
+            static_ready=STATIC_DIR.is_dir(),
+            capabilities={"sse": True, "streaming": True, "cancel": True,
+                          "auth_write": True, "config_read": True, "trajectory": True,
+                          # 模型面:v1 只有 `/api/config` 的只读回声 —— 界面能看见模型、
+                          # 却换不了。这一版补上清单与切换(`/api/models` + `/api/model`),
+                          # 老前端不认识这两个开关时照旧只显示,不影响它自己运行。
+                          "model_switch": True,
+                          # MCP 面:写端点(增删改 `/api/mcp`)。老宿主没有它 →
+                          # 界面把那一节当只读(写请求会 404/405),不影响读。
+                          "mcp_write": True,
+                          # 技能面:写端点(添加 / 删除 / 导入 `/api/skills*`)。
+                          # 同上:没有它 → 技能那一节只读展示(读端点一直在)。
+                          "skill_write": True,
+                          # 角色面:删除端点(`DELETE /api/agents`)。同上:没有它 →
+                          # Agent 那一节只读展示(读端点一直在),不摆一个点了才 404 的键。
+                          "agent_write": True,
+                          # 扩展面:插件据这两个开关决定要不要发结构化 UI。
+                          # `ag_ui` = 事件形状是 AG-UI;`ui_v1` = 认 details["ui"] 的词汇表
+                          # (见 design/web.md §16.2)。缺哪个都退回"折叠显示原始 JSON"。
+                          "ag_ui": True, "ui_v1": True},
+        )
+
+    @app.get("/api/health")
+    async def health() -> dict:
+        return {"ok": True, "app": schemas.APP_NAME, "contract": schemas.CONTRACT_VERSION}
+
+    # ── 会话 ──────────────────────────────────────────────
+    def touched_at(session) -> str:
+        """会话文件最后一次改动的时刻(本地时间,与 `session._now()` 同格式)。
+
+        左栏的「15分钟」显示的是**最近活跃**,不是创建时间:列表顺序本来就是文件
+        mtime(`SessionStore._files()`),用创建时间会让"排在最前却写着 3天前"
+        这种自相矛盾的行出现。文件被外部删掉时回落 `created_at`,不抛。
+        """
+        try:
+            mtime = session.path.stat().st_mtime
+        except OSError:
+            return session.created_at
+        return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(mtime))
+
+    def summary(session) -> schemas.SessionSummary:
+        return schemas.SessionSummary(
+            id=session.id, title=session.title, created_at=session.created_at,
+            updated_at=touched_at(session),
+            cwd=session.cwd, message_count=session.message_count,
+            # `is_busy` 已是 bool —— 早先写成 `is not None` 是错的(永远为 True)
+            running=web.is_busy(session.id), path=str(session.path),
+        )
+
+    def detail(session, limit: int, before: int | None) -> schemas.SessionDetail:
+        # 只暴露**当前分支**(+ header,契约里 entries[0] 一直是 header):
+        # 树里其它分支不属于这段对话的历史
+        entries = session.visible_entries()
+        end = len(entries) if before is None else max(0, min(before, len(entries)))
+        start = max(0, end - max(1, limit))
+        return schemas.SessionDetail(
+            id=session.id, title=session.title, created_at=session.created_at,
+            cwd=session.cwd, path=str(session.path),
+            running=web.is_busy(session.id),
+            total_entries=len(entries), entries=entries[start:end], skipped=start,
+            # 用量汇总统计的是**整条分支**(与这个窗口无关) —— 所以它在后端算:
+            # 前端只拿到窗口,长会话自己求和会静默少算。
+            usage=schemas.UsageSummary(**usage_summary(entries)),
+        )
+
+    # ── 角色与 MCP:走扩展的真实数据(P-E5 ③ 切片 3c,用户选 A)──
+    @app.get("/api/agents", response_model=schemas.AgentList, dependencies=[Depends(guard)])
+    async def list_agents() -> schemas.AgentList:
+        """角色列表 —— 数据来自 **qi-agents**(`discover()`)。
+
+        qi-agents 没装 → `unavailable=True`(界面说清楚),而不是 500:Web 界面不该因为
+        少装一个扩展就整页报错。
+        """
+        try:
+            from qi_agents.discovery import discover
+        except ImportError:
+            return schemas.AgentList(unavailable=True)
+        roles = discover(web.default_cwd, "both")
+        return schemas.AgentList(agents=[
+            schemas.AgentInfo(name=r.name, description=r.description, source=r.source,
+                              tools=list(r.tools or []), model=r.model or "",
+                              path=str(r.path or ""),
+                              mcp=_role_mcp_count(r.path))
+            for r in sorted(roles.values(), key=lambda r: r.name)])
+
+    @app.get("/api/mcp", response_model=schemas.McpList, dependencies=[Depends(guard)])
+    async def list_mcp() -> schemas.McpList:
+        """MCP 声明表:qi 两层 + 各角色私有(装了 qi-agents 才枚举得出角色那层)。
+
+        **值一律不出宿主**(只有键名;stdio 的 command/args 也不给)—— 由测试钉住。
+        """
+        try:
+            from qi_mcp.config import load_layers, read_file
+        except ImportError:
+            return schemas.McpList(unavailable=True)
+        sources: list[schemas.McpSource] = []
+        for scope, path, servers in load_layers(web.default_cwd):
+            sources.append(schemas.McpSource(
+                scope=scope, path=str(path), exists=path.is_file(),
+                servers=[_mcp_server_info(n, c, scope) for n, c in servers.items()]))
+        for role_path in _role_dirs(web.default_cwd):
+            declared = _role_mcp_file(role_path)
+            if declared is None:
+                continue
+            path, servers = declared
+            sources.append(schemas.McpSource(
+                scope="role", path=str(path), exists=True, role=role_path.name,
+                servers=[_mcp_server_info(n, c, "role") for n, c in servers.items()]))
+        return schemas.McpList(sources=sources)
+
+    # ── MCP 声明的写操作(增删改)────────────────────
+    # 三件事必须做对:
+    #   1. **确认头**(与写凭证同一道闸):`.qi/mcp.json` 跟着仓库走,一次误写会被提交出去;
+    #   2. **写下去就得连得上**:传输在闭集里、载荷字段齐全,否则 400 —— 连不上的声明
+    #      不会报错,它只是永远不生效,那是最难查的一种;
+    #   3. **响应回结构、不回值**:三个端点都回 `McpList`,界面一次往返就刷新完。
+
+    @app.post("/api/mcp", status_code=201, response_model=schemas.McpList,
+              dependencies=[Depends(guard)])
+    async def create_mcp(body: schemas.McpWrite,
+                         confirm: str | None = Header(None, alias="X-Qi-Confirm")) -> schemas.McpList:
+        """在 `scope` 那层新增一个 server(文件不存在就建)。"""
+        confirm_gate(confirm)
+        name = _check_mcp_name(body.server.name)
+        path = _mcp_target(body.scope, body.role, web.default_cwd)
+        servers = _read_mcp_servers(path)
+        if name in servers:
+            raise HTTPException(status_code=409, detail=f"该层已有同名 server: {name}")
+        config = _build_mcp_config(body.server)
+        _validate_mcp_config(config)
+        servers[name] = config
+        _write_mcp_servers(path, servers)
+        return await list_mcp()
+
+    @app.patch("/api/mcp", response_model=schemas.McpList, dependencies=[Depends(guard)])
+    async def patch_mcp(body: schemas.McpPatch,
+                        confirm: str | None = Header(None, alias="X-Qi-Confirm")) -> schemas.McpList:
+        """改一个 server:**只动送来的键**(见 `McpServerPatch`),没送的原样留着。
+
+        换传输时会清掉旧传输的载荷字段(command/args/cwd/url/socket)—— 留着的话文件里
+        会躺着一份“按 type 走 http、却还带 command”的残骸,读端按结构猜传输时会被误导。
+        """
+        confirm_gate(confirm)
+        target = _check_mcp_name(body.name)
+        path = _mcp_target(body.scope, body.role, web.default_cwd)
+        servers = _read_mcp_servers(path)
+        if target not in servers:
+            raise HTTPException(status_code=404, detail=f"该层没有这个 server: {target}")
+        config = _apply_mcp_patch(servers[target], body.patch)
+        _validate_mcp_config(config)
+        new_name = target
+        if "name" in body.patch.model_fields_set and body.patch.name is not None:
+            new_name = _check_mcp_name(body.patch.name)
+            if new_name != target and new_name in servers:
+                raise HTTPException(status_code=409, detail=f"该层已有同名 server: {new_name}")
+        # 按**原顺序**重建:改名只是换键,不该把这一层的排列搅乱
+        updated = {new_name if key == target else key: (config if key == target else value)
+                   for key, value in servers.items()}
+        _write_mcp_servers(path, updated)
+        return await list_mcp()
+
+    @app.delete("/api/mcp", response_model=schemas.McpList, dependencies=[Depends(guard)])
+    async def delete_mcp(body: schemas.McpDelete,
+                         confirm: str | None = Header(None, alias="X-Qi-Confirm")) -> schemas.McpList:
+        """删一个 server。**只删这一层的键**:同名的下层声明会露出来(覆盖关系没变)。"""
+        confirm_gate(confirm)
+        name = _check_mcp_name(body.name)
+        path = _mcp_target(body.scope, body.role, web.default_cwd)
+        servers = _read_mcp_servers(path)
+        if name not in servers:
+            raise HTTPException(status_code=404, detail=f"该层没有这个 server: {name}")
+        servers.pop(name)
+        _write_mcp_servers(path, servers)
+        return await list_mcp()
+
+    # ── 角色的删除(只删,不新建)────────────────────────
+    # 为什么只有删除:角色的**内容**是一段提示词 + frontmatter 的工具/模型限制,它的
+    # 写入格式由 qi-agents 定义与校验(`_read_role` 决定一份 agent.md 算不算角色)——
+    # 这个宿主不替它发明一个“看起来能写”的格式。而“删掉一个放错了/不再用的角色”是
+    # 边界清楚的文件操作:两层都是 qi 体系写出来的目录,删完读模型立刻少一条。
+    # 三件事必须做对:
+    #   1. **确认头**(与写凭证、写 MCP、写技能同一道闸):角色目录里还可能带着自己的
+    #      `mcp.json`,一次误删连私有声明一起没;
+    #   2. **名字是查找键,不拼路径**:目标由 `qi_agents.discovery.discover()` 给,与
+    #      `GET /api/agents` 同一条代码路径 —— 界面显示什么就删什么(见 `qi_lab.agents`);
+    #   3. **回新清单**:回 `AgentList`,界面一次往返就刷新完(读端点不回值 —— 角色
+    #      的提示词正文从来没出过这个宿主)。
+    # 与技能不同,这里**没有** `web.refresh_skills()` 的等价物:runtime 缓存的是
+    # `top_skills`,角色是每次派单现 `discover()` 的,删完下一次调用就看不见它了。
+
+    @app.delete("/api/agents", response_model=schemas.AgentList, dependencies=[Depends(guard)])
+    async def delete_agent(body: schemas.AgentDelete,
+                           confirm: str | None = Header(None, alias="X-Qi-Confirm")) -> schemas.AgentList:
+        """按读模型的名字删掉**该层**的一个角色(整目录)。
+
+        只删这一层:项目层同名覆盖用户层,删用户层那份不会把项目层的也带走。
+        qi-agents 没装 → 503(与读端的 `unavailable=True` 同一件事的两种说法:
+        读可以降级成“没角色”,删没有可删的对象,不能装作删成功了)。
+        """
+        confirm_gate(confirm)
+        try:
+            agentapi.remove(web.default_cwd, body.scope, body.name)
+        except agentapi.AgentError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+        return await list_agents()
+
+    # ── 技能的写操作:添加 / 删除 / 导入 ──────────────────
+    # 三件事必须做对:
+    #   1. **确认头**(与写凭证、写 MCP 同一道闸):技能是**代码** —— SKILL.md 会被
+    #      原样读进提示词,一次误写等于往模型上下文里塞东西,而它比 mcp.json 更容易
+    #      被 `git add .` 带走(项目层就在 `.qi/skills/`);
+    #   2. **写完重扫 runtime**:runtime 按 cwd 缓存 `top_skills`,不重扫的话会出现
+    #      “GET 说它在、模型却用不上”;`web.refresh_skills()` 就是干这个的;
+    #   3. **回新清单**:三个端点都回 `SkillList`,界面一次往返就刷新完。
+    #      (读端点不回值 —— 技能没有需要遮的东西,`path` 本来就在读端给。)
+    # 为什么只有两个 scope:`global` = `~/.qi/agent/skills`,`project` = `<cwd>/.qi/skills`。
+    # `.agents/skills`(别的工具的目录)与 settings 的 `skills[]`(用户手指定的路径)
+    # 不可写 —— 边界写在 `qi_lab.skills` 的模块说明里。
+
+    def _skill_error(exc: skillapi.SkillError) -> HTTPException:
+        """`SkillError.status` 就是它要回的 4xx(400/404/409)。"""
+        return HTTPException(status_code=exc.status, detail=str(exc))
+
+    @app.post("/api/skills", status_code=201, response_model=schemas.SkillList,
+              dependencies=[Depends(guard)])
+    async def create_skill(body: schemas.SkillWrite,
+                           confirm: str | None = Header(None, alias="X-Qi-Confirm")) -> schemas.SkillList:
+        """新建一个技能:`<scope 那层>/<name>/SKILL.md`(frontmatter 带 name/description)。"""
+        confirm_gate(confirm)
+        try:
+            root = skillapi.skill_root(body.scope, web.default_cwd)
+            name = skillapi.check_name(body.name)
+            skillapi.create(root, name, body.description, body.body)
+        except skillapi.SkillError as exc:
+            raise _skill_error(exc) from exc
+        web.refresh_skills()
+        return await list_skills()
+
+    @app.delete("/api/skills", response_model=schemas.SkillList,
+                dependencies=[Depends(guard)])
+    async def delete_skill(body: schemas.SkillDelete,
+                           confirm: str | None = Header(None, alias="X-Qi-Confirm")) -> schemas.SkillList:
+        """按**显示名**删掉该层的一个技能:整目录(`SKILL.md` + references/ 之类)。
+
+        只删这一层 —— 跨层同名是覆盖关系,下层同名技能会露出来而不是被一起删掉。
+        """
+        confirm_gate(confirm)
+        try:
+            root = skillapi.skill_root(body.scope, web.default_cwd)
+            skillapi.remove(root, skillapi.check_name(body.name))
+        except skillapi.SkillError as exc:
+            raise _skill_error(exc) from exc
+        web.refresh_skills()
+        return await list_skills()
+
+    @app.post("/api/skills/import", status_code=201, response_model=schemas.SkillList,
+              dependencies=[Depends(guard)])
+    async def import_skill(body: schemas.SkillImport,
+                           confirm: str | None = Header(None, alias="X-Qi-Confirm")) -> schemas.SkillList:
+        """把本机路径上的一个技能导进 `scope` 那层。
+
+        `source` 可以是技能目录、单份 `.md`、或 `.zip`(里面要能定位到唯一的 SKILL.md)。
+        **不接收上传体**:这个宿主跑在本机,导入指的是“从磁盘上拿”,不是把字节
+        推上来(推字节那条路要 multipart,属于另一件事)。
+        """
+        confirm_gate(confirm)
+        try:
+            root = skillapi.skill_root(body.scope, web.default_cwd)
+            skillapi.import_skill(root, body.source, body.name)
+        except skillapi.SkillError as exc:
+            raise _skill_error(exc) from exc
+        web.refresh_skills()
+        return await list_skills()
+
+    @app.get("/api/sessions", response_model=schemas.SessionList, dependencies=[Depends(guard)])
+    async def list_sessions() -> schemas.SessionList:
+        return schemas.SessionList(sessions=[summary(s) for s in web.sessions.list()])
+
+    @app.post("/api/sessions", response_model=schemas.SessionSummary, status_code=201,
+              dependencies=[Depends(guard)])
+    async def create_session(body: schemas.SessionCreate) -> schemas.SessionSummary:
+        cwd = Path(body.cwd).expanduser() if body.cwd else web.default_cwd
+        if not cwd.is_dir():
+            raise HTTPException(status_code=400, detail=f"工作目录不存在: {cwd}")
+        return summary(web.sessions.create(body.title, cwd=cwd))
+
+    @app.get("/api/sessions/{sid}", response_model=schemas.SessionDetail,
+             dependencies=[Depends(guard)])
+    async def get_session(sid: str, limit: int = Query(DEFAULT_WINDOW, ge=1, le=2000),
+                          before: int | None = Query(None, ge=0)) -> schemas.SessionDetail:
+        session = web.sessions.get(sid)
+        if session is None:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        return detail(session, limit, before)
+
+    @app.patch("/api/sessions/{sid}", response_model=schemas.SessionSummary,
+               dependencies=[Depends(guard)])
+    async def rename_session(sid: str, body: schemas.SessionRename) -> schemas.SessionSummary:
+        session = web.sessions.get(sid)
+        if session is None:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        # 改标题走 store 的方法:内存 + header entry + 落盘三处一起改(与自动命名共用)。
+        web.sessions.set_title(session, body.title)
+        return summary(session)
+
+    @app.delete("/api/sessions/{sid}", status_code=204, dependencies=[Depends(guard)])
+    async def delete_session(sid: str) -> None:
+        if web.is_busy(sid):
+            raise HTTPException(status_code=409, detail="会话正在运行,先停止再删除")
+        if not web.sessions.delete(sid):
+            raise HTTPException(status_code=404, detail="会话不存在")
+
+    @app.delete("/api/sessions", response_model=schemas.DeletedSessions,
+                dependencies=[Depends(guard)])
+    async def delete_sessions(scope: Literal["ungrouped"] = Query(...)) -> schemas.DeletedSessions:
+        """批量删除:目前只有一种作用域 —— 左栏「未分组」桶里的会话。
+
+        「未分组」= **没有 cwd 的旧会话**(qi 早先版本的 header 里没有 cwd,无从判断
+        它在哪个项目里)。它们既不能被"删除工作区"带走(那个目录名下的会话根本不含它们),
+        也只能一个一个删 —— 所以给这一桶一个批量出口。
+
+        与单条删除同一套护栏:**任一条在运行中就整体拒绝**(409),否则会删掉正在写的文件。
+        """
+        doomed = [
+            s.id for s in web.sessions.list()
+            if s.cwd is None or s.cwd == ""
+        ]
+        busy = [sid for sid in doomed if web.is_busy(sid)]
+        if busy:
+            raise HTTPException(
+                status_code=409,
+                detail="未分组里有会话正在运行,先停止再清除",
+            )
+        return schemas.DeletedSessions(
+            ids=[sid for sid in doomed if web.sessions.delete(sid)],
+        )
+
+    @app.get("/api/sessions/{sid}/export", dependencies=[Depends(guard)])
+    async def export_session(sid: str) -> Response:
+        """导出会话 JSONL(= TUI 的 `/export`)。**原样发文件**:会话文件本身就是 JSONL,
+        再序列化一遍只会引入第二份真相。文件名给成 `<标题>-<id>.jsonl`,浏览器据此命名。"""
+        session = web.sessions.get(sid)
+        if session is None:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        try:
+            text = session.path.read_text(encoding="utf-8")
+        except OSError:
+            raise HTTPException(status_code=404, detail="会话文件不存在") from None
+        stem = "".join(c for c in (session.title or "session") if c not in '/\\:*?"<>|')[:40]
+        # HTTP 头是 latin-1:标题里只要有中文,直接写进 `filename=` 就会抛
+        # UnicodeEncodeError(这个端点会 500)。所以按 RFC 5987 双写:ASCII 兜底名
+        # + `filename*=UTF-8''<百分号编码>`,浏览器优先用后者。
+        ascii_name = f"qi-{sid}.jsonl"
+        utf8_name = quote(f"{stem or 'session'}-{sid}.jsonl", safe="")
+        return Response(
+            content=text,
+            media_type="application/x-ndjson",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="{ascii_name}"; '
+                    f"filename*=UTF-8''{utf8_name}"
+                ),
+                # 前端要能读文件名(同源也默认不给跨不出去的响应头)
+                "Access-Control-Expose-Headers": "Content-Disposition",
+            },
+        )
+
+    @app.post("/api/sessions/{sid}/compact", response_model=schemas.CompactionResult,
+              dependencies=[Depends(guard)])
+    async def compact_session(sid: str) -> schemas.CompactionResult:
+        """手动压缩上下文(= TUI 的 `/compact`,把旧消息摘要掉)。
+
+        **不能在运行中压缩**:压缩要"读整条分支 → 摘要 → 追加一条 entry",
+        与会话正在追加的那一轮会打架(和重命名/删除同一类冲突),所以占用中就 409。
+        `compacted=False` 表示没什么可压(消息太少/没超阈值),不是错误。
+        """
+        session = web.sessions.get(sid)
+        if session is None:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        if web.is_busy(sid):
+            raise HTTPException(status_code=409, detail="会话正在运行,先停止再压缩")
+        runtime = web.runtime_for(web.session_cwd(session))
+        entry = await runtime.compact_session(session)
+        return schemas.CompactionResult(compacted=entry is not None)
+
+    @app.post("/api/sessions/{sid}/fork", response_model=schemas.SessionSummary,
+              status_code=201, dependencies=[Depends(guard)])
+    async def fork_session(sid: str, body: schemas.SessionFork | None = None) -> schemas.SessionSummary:
+        """把一个会话的**当前分支**复制成新会话(pi 的 fork:新文件,不是同一个文件里开叉)。
+
+        语义与 CLI/TUI 一致(`store.fork_at(source, source.current, title=f"{title} @fork")`):
+        副标题带 `@fork`、cwd 继承、entry 的 id/parentId 原样拷过去(链在新文件里自洽)。
+        运行中不允许分叉:文件正在被追加,拷到的可能是个半截回合。
+        """
+        session = web.sessions.get(sid)
+        if session is None:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        if web.is_busy(sid):
+            raise HTTPException(status_code=409, detail="会话正在运行,先停止再分叉")
+        at = session.current if body is None or body.at is None else body.at
+        if at is not None and at not in {str(e.get("id")) for e in session.tree_entries}:
+            raise HTTPException(status_code=400, detail=f"找不到分叉点: {at}")
+        title = f"{session.title} @fork" if session.title else "fork"
+        return summary(web.sessions.fork_at(session, at, title=title))
+
+    # ── 工作区:只有"改过的显示名"这一份偏好 ────────────────
+    # 项目列表本身是派生的(会话 cwd),所以这里没有"列表"端点,也没有"新建工作区"——
+    # 在某个目录下新建会话就是新建工作区。三种方法的语义见 design/web.md §18.3。
+
+    @app.get("/api/workspaces", response_model=schemas.WorkspaceNames,
+             dependencies=[Depends(guard)])
+    async def list_workspaces() -> schemas.WorkspaceNames:
+        return schemas.WorkspaceNames(names=workspaces.load().names)
+
+    @app.patch("/api/workspaces", response_model=schemas.WorkspaceNames,
+               dependencies=[Depends(guard)])
+    async def rename_workspace(body: schemas.WorkspaceRename) -> schemas.WorkspaceNames:
+        """改工作区的**显示名**。目录不动:项目就是目录,改目录名会影响会话的 cwd。"""
+        return schemas.WorkspaceNames(names=workspaces.rename(body.cwd, body.name).names)
+
+    @app.delete("/api/workspaces", response_model=schemas.WorkspaceDeleted,
+                dependencies=[Depends(guard)])
+    async def delete_workspace(cwd: str = Query(..., min_length=1)) -> schemas.WorkspaceDeleted:
+        """删除工作区:**连同它名下的会话一起删**(不可恢复)。目录本身不删。
+
+        三件事必须做对:
+          · 会话集合按**规范化后的 cwd** 取(老会话的 header 可能没规范化过,
+            macOS 上 `/tmp` 与 `/private/tmp` 是同一个目录两种写法);
+          · 任一会话在运行中就整体拒绝(409)—— 删掉正在写的文件会毁掉那一轮;
+          · 最后忘掉这个目录的显示名,不留悬空的覆盖项。
+        """
+        target = normalize(cwd)
+        doomed = [
+            s.id for s in web.sessions.list()
+            if s.cwd is not None and normalize(s.cwd) == target
+        ]
+        busy = [sid for sid in doomed if web.is_busy(sid)]
+        if busy:
+            raise HTTPException(
+                status_code=409,
+                detail="该工作区有会话正在运行,先停止再删除工作区",
+            )
+        deleted = [sid for sid in doomed if web.sessions.delete(sid)]
+        return schemas.WorkspaceDeleted(
+            ids=deleted, names=workspaces.forget(cwd).names,
+        )
+
+    # ── 服务器目录浏览(「添加工作区」的选择器)─────────────────
+    # 形状照 pi-web 的 `GET /api/cwd/browse`(见 `web/browse.py` 的文件头)。
+    # 只读、只列目录:权限面比已有的 bash 工具小得多,所以沿用同一道 guard。
+
+    @app.get("/api/fs/dirs", response_model=schemas.DirectoryListing,
+             dependencies=[Depends(guard)])
+    async def browse_dirs(path: str = Query("")) -> schemas.DirectoryListing:
+        """列某个目录下的子目录;`path` 省略 = 主目录(前端首屏就这样)。"""
+        try:
+            listing = browse.list_directories(path)
+        # 三条 except 各自可达:FileNotFoundError / NotADirectoryError / PermissionError
+        # 是 OSError 的三个**兄弟**(实测 MRO:NotADirectoryError → OSError → Exception),
+        # 互不为子类。pi-lens 的 unreachable-except 在这里是误报。
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="目录不存在") from None
+        except NotADirectoryError:
+            raise HTTPException(status_code=400, detail="这不是一个目录") from None
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="没有权限读取这个目录") from None
+        root = browse.resolve_dir(path)
+        return schemas.DirectoryListing(
+            path=str(root),
+            parent=browse.parent_of(root),
+            home=str(browse.home_dir()),
+            roots=[schemas.DirEntry(**d) for d in browse.windows_drives()],
+            entries=[schemas.DirEntry(**e) for e in listing],
+        )
+
+    # ── 会话目录内的文件(右侧文件面板)──────────────────────────
+    #
+    # **边界与文件工具同一条**(`files.guard` 抄自 `ToolContext.guard`):路径必须落在
+    # 会话 cwd 内,软链也跟随后判定。同一份数据不该有两个边界 —— 工具读不到的,界面也不读。
+    #
+    # 三个端点各管一件事:列一层 / 读文本 / 读原字节。原字节那条**只给白名单类型**,
+    # 而且对 HTML 加 `sandbox` 响应头(见 `files.py` 的模块注释)。
+
+    def _file_root(session: str | None) -> tuple[Path, str]:
+        """取这次请求的根目录:会话的 cwd(没有会话 → 默认 cwd)。"""
+        if session:
+            found = web.sessions.get(session)
+            if found is None:
+                raise HTTPException(status_code=404, detail="会话不存在")
+            return web.session_cwd(found), session
+        return web.default_cwd, ""
+
+    @app.get("/api/files", response_model=schemas.FileListing,
+             dependencies=[Depends(guard)])
+    async def list_files(path: str = Query(""),
+                         session: str | None = Query(None)) -> schemas.FileListing:
+        """列**一层**目录(前端懒展开)。"""
+        root, _sid = _file_root(session)
+        try:
+            absolute, entries = fileapi.list_dir(root, path)
+        except fileapi.FileAccessError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="目录不存在") from None
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="没有权限读取这个目录") from None
+        parent = Path(path).parent.as_posix() if path else None
+        if parent == ".":
+            parent = ""
+        return schemas.FileListing(
+            root=str(root.resolve(strict=False)), path=absolute, parent=parent,
+            entries=[schemas.FileEntry(name=e.name, path=e.path, kind=e.kind,
+                                       size=e.size, mtime=e.mtime, raw=e.raw)
+                     for e in entries],
+        )
+
+    @app.get("/api/files/content", response_model=schemas.FileContent,
+             dependencies=[Depends(guard)])
+    async def file_content(path: str = Query(...),
+                           session: str | None = Query(None)) -> schemas.FileContent:
+        """文本预览。二进制 / 太大**不算错误**:回 kind 说明,前端显示一行提示。"""
+        root, _sid = _file_root(session)
+        try:
+            read = fileapi.read_text(root, path)
+        except fileapi.FileAccessError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="文件不存在") from None
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="没有权限读取这个文件") from None
+        return schemas.FileContent(
+            path=path, kind=read.kind, size=read.size, truncated=read.truncated,
+            # 二进制不给语言提示(它不预览)
+            lang=fileapi.lang_of(path) if read.kind == "text" else "",
+            text=read.text,
+        )
+
+    @app.get("/api/files/raw", dependencies=[Depends(guard)])
+    async def file_raw(path: str = Query(...),
+                       session: str | None = Query(None)) -> Response:
+        """原字节预览(图片 / PDF / HTML)。
+
+        两条响应头是安全设计的一部分,不是可选项:
+          · `X-Content-Type-Options: nosniff` —— 别让浏览器把回的东西当别的类型解释;
+          · `Content-Security-Policy: sandbox`(只对 HTML)—— 把预览的 HTML 放进一个
+            **不透明源**:脚本不执行、拿不到本站的 cookie/凭证。前端那头还会再加一层
+            `<iframe sandbox>`(双保险)。
+        """
+        root, _sid = _file_root(session)
+        try:
+            blob, media = fileapi.read_bytes(root, path)
+        except fileapi.FileAccessError as exc:
+            code = 415 if "不支持原样预览" in str(exc) else 400
+            raise HTTPException(status_code=code, detail=str(exc)) from exc
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="文件不存在") from None
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="没有权限读取这个文件") from None
+        headers = {
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": "inline",
+            "Cache-Control": "no-store",
+        }
+        if media == "text/html":
+            headers["Content-Security-Policy"] = "sandbox"
+        return Response(content=blob, media_type=media, headers=headers)
+
+    # ── AG-UI:单次 POST,响应即流 ──────────────────────────────
+    #
+    # 这是 design/web.md 记的**破坏性替换**:旧的 `POST /turn`(202)+ `POST /cancel`
+    # + `GET /events`(两跳、带 `event:`/`id:`、`snapshot` 收尾)已全部移除。
+    #
+    # 三条硬约束来自**官方编码器**(`@ag-ui/encoder@0.0.59` 的 `encodeSSE`),
+    # 不是文档转述:只有 `data:` 行、没有 `event:`、没有 `id:`;类型在 JSON 的 `type` 里。
+    #
+    # 于是三个东西一起没了(取舍记录在文档里):
+    #   · `?run_id=` 重放已完成轮 —— 流就是这次响应,没有"晚连上来"的客户端;
+    #   · `?from=` 断线续传 —— 没有可续的流;AG-UI 的答案本是"重发 RunAgentInput";
+    #   · `id:` 游标 —— 没有任何消费者了(实测过原生 EventSource 会回传
+    #     `Last-Event-ID` 而 qi 不读它,留着只会误导)。
+    #
+    # 取消也不再需要单独的端点:客户端 abort 请求 → ASGI 取消生成器 →
+    # `runtime.stream()` 被 CancelledError 打断。
+    @app.post("/api/ag-ui", dependencies=[Depends(guard)])
+    async def ag_ui(request: Request, body: dict = Body(...)) -> StreamingResponse:
+        """AG-UI 协议端点:POST `RunAgentInput` → `text/event-stream`。
+
+        `threadId` = qi 的 session id(qi 的 fork 会**新建会话文件**,所以每个分支
+        天然是一条独立 thread,与 AG-UI 的线性 thread 模型不冲突);
+        `runId` 由客户端提供,原样回显在 `RUN_STARTED` 里。
+        """
+        try:
+            inp = agui.RunAgentInput.parse(body)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if not inp.thread_id:
+            raise HTTPException(status_code=422, detail="RunAgentInput.threadId 不能为空")
+        session = web.sessions.get(inp.thread_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail=f"会话不存在: {inp.thread_id}")
+        text = inp.last_user_text()
+        if not text.strip():
+            raise HTTPException(status_code=422, detail="messages 里没有 user 内容")
+        try:
+            web.begin(session.id)               # 会话级串行:两个 POST 不得往同一文件追加
+        except RunBusy as busy:
+            raise HTTPException(status_code=409, detail="该会话已有活跃 run") from busy
+
+        run_id = inp.run_id or uuid.uuid4().hex[:12]
+        translator = agui.AguiTranslator(thread_id=session.id, run_id=run_id)
+        entries = session.visible_entries()
+
+        async def gen():
+            runtime = web.runtime_for(web.session_cwd(session))
+            try:
+                # RUN_STARTED 必须是流的第一帧(AG-UI 生命周期边界),
+                # 紧接着把历史与状态作为权威起点推给客户端 —— 这是 qi 自己的决定:
+                # AG-UI 不强制快照,但 qi 的 UI 靠它重建整屏。
+                for frame in translator.start():
+                    yield agui.encode(frame)
+                yield agui.encode(agui.messages_snapshot(entries))
+                yield agui.encode(agui.state_snapshot({
+                    "cwd": session.cwd, "title": session.title,
+                }))
+                # qi 自己的完整 entry 列表:MESSAGES_SNAPSHOT 装不下 dispatch/tool/叙述,
+                # 不给这一份,刷新后轨迹就只剩对话(直播与回放不一致)。
+                yield agui.encode(agui.history_snapshot(entries))
+                # **绑定会话**:web 是"一个 runtime 服务同一 cwd 下的多个会话",而
+                # `_active_session` 只在一个回合内有效 —— 不显式绑定,两件事同时坏掉:
+                #   ① 换模型/级别的落盘(`model_change` / `thinking_level_change`)写不进
+                #      "哪个文件"(web 端此前没有任何 `/model` 落盘点);
+                #   ② 续会话不还原上次用的模型(runtime 用一个模型发请求、界面上写着另一个)。
+                # `bind_session` 同时做还原,所以每轮**开跑前**调一次(它幂等:同一会话的
+                # 还原只做一次 —— `_restored_session` 记的是"上一轮绑的那个 id")。
+                await web.bind(runtime, session, reason="resume")
+                # 「智能体 chip」的落点。**不能**靠 `stream(agent_override=…)`:那是 P-E4c
+                # 之前的接口,core 收窄成单 agent 之后流水线里已经没人读它(传了不报错、
+                # 只是没生效)。角色现在是 qi-agents 的 `before_agent_start`,
+                # 所以这里把钉住值交给它(详见 `serve.pin_role`)。
+                pin_role(runtime, inp.agent)
+                async for ev in runtime.stream(text, session):
+                    for frame in translator.feed(ev):
+                        yield agui.encode(frame)
+                # 流正常结束:补收尾(万一最后一帧还开着文本/思考)
+                for frame in translator.finish_open():
+                    yield agui.encode(frame)
+            except asyncio.CancelledError:
+                # 客户端 abort(Stop 按钮)/ 掉线。**不能吞**:要让 ASGI 看见取消,
+                # 否则连接不释放。收尾帧也发不出去(连接已断),所以只记一句日志。
+                for frame in translator.finish_open():
+                    yield agui.encode(frame)
+                raise
+            except Exception as exc:  # noqa: BLE001 一律转 RUN_ERROR,不断连
+                yield agui.encode(translator.run_error(
+                    f"{type(exc).__name__}: {exc}", code=type(exc).__name__))
+            finally:
+                web.end(session.id)             # 必须在 finally:否则一次异常就永久卡住
+
+        return StreamingResponse(gen(), media_type="text/event-stream", headers={
+            "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        })
+
+    # ── agent / 配置(只读) + 凭证(写需二次确认) ──────────
+    @app.get("/api/config", response_model=schemas.ConfigView, dependencies=[Depends(guard)])
+    async def get_config() -> schemas.ConfigView:
+        runtime = web.runtime_for(web.default_cwd)
+        cfg = runtime.cfg
+        store = AuthStore()
+        providers = []
+        for name, prov in cfg.providers.items():
+            resolved = resolve_key(name, prov.apiKey, store)
+            providers.append(schemas.ProviderInfo(
+                name=name, base_url=prov.baseUrl, api=prov.api,
+                models=len(prov.models), credential_ok=resolved.ok,
+                credential_source=resolved.source, credential_masked=mask_key(resolved.key),
+            ))
+        default = resolve_default_model(cfg, web.default_cwd)
+        router = resolve_router_model(cfg, web.default_cwd)
+        # 只管“在用”的 provider:models.json 里写过的 + 默认/路由模型那个。
+        # 预置兜底那批只是目录(见 qi_agent.presets),没配也不算缺。
+        #
+        # 用 getattr 而不是模块级 import:qi-lab 是**独立安装**的扩展(`qi install`),
+        # 用户的 qi-agent 可能还是没有这个符号的旧版本 —— 那种情况下不能把整个扩展顶崩,
+        # 退回旧口径(全部 provider 都算在用)即可。
+        from qi_agent import config as qi_config
+
+        hook = getattr(qi_config, "in_play_providers", None)
+        in_play = (hook(cfg, default_provider=default.provider, router_provider=router.provider)
+                   if callable(hook) else set(cfg.providers))
+        missing = [p.name for p in providers if p.name in in_play and not p.credential_ok]
+        checks = [
+            {"name": "models.json", "ok": bool(runtime.config_files),
+             "detail": ", ".join(str(p) for p in runtime.config_files) or "未找到"},
+            {"name": "默认模型", "ok": bool(default.model), "detail": default.label},
+            {"name": "凭证", "ok": not missing, "detail": "缺失: " + ", ".join(missing) if missing else "全部就绪"},
+        ]
+        return schemas.ConfigView(
+            providers=providers, default_model=default.label,
+            default_model_name=default.model,
+            default_model_context_window=default.context_window,
+            default_model_source="settings" if default.model else "",
+            router_model=(router.label if router.label != default.label else None),
+            settings_files=[str(p) for p in runtime.settings_files],
+            config_files=[str(p) for p in runtime.config_files],
+            session_dir=str(runtime.sessions.root),
+            # 二次确认弹层要显示"改的是哪个文件",所以把凭证文件路径一并回给前端
+            auth_file=str(AuthStore().path),
+            checks=checks,
+        )
+
+    # ── 模型:清单 + 切换(会话级)──────────────────────────
+    #
+    # 为什么需要这一节:web 端此前**只有 `/api/config` 的只读回声** —— 界面上那个模型名
+    # 标着"换模型在设置里",而设置页只有 provider 卡片与凭证,没有换模型的入口。
+    # 于是 web 能看见模型、却换不了(TUI 有 `/model` / ctrl+l / ctrl+p)。
+    #
+    # 三个决定:
+    #   · **清单口径与 TUI 的 `/model` 完全一致** —— 都走 core 的 `selectable_models()`:
+    #     **解析得出凭证的 provider 才列**(`models.json` 里显式写过的也没有豁免,
+    #     写了 `$ENV` 却没导出就是“用不了”)。两处各写一份清单,迟早一个改了另一个没改;
+    #   · **换模型走 `runtime.set_model()` / `set_thinking_level()`** —— 那是唯一入口,
+    #     `model_select` / `thinking_level_select` 事件与 `model_change` /
+    #     `thinking_level_change` 的落盘都在里面。界面层不自己拼 entry;
+    #   · **带 `session` 时先绑定** —— 一个 runtime 服务同一 cwd 下的多个会话,
+    #     不绑定就"不知道该写进哪个文件"(这正是本扩展此前漏掉会话绑定的那一类)。
+    #     绑定同时会按会话里记的 entry 还原模型,所以先绑再设,顺序不能反。
+
+    def _session_for(sid: str | None):
+        """按 id 取会话(不给则 None)。不存在 → 404(不是静默回落到别的会话)。"""
+        if sid is None:
+            return None
+        session = web.sessions.get(sid)
+        if session is None:
+            raise HTTPException(status_code=404, detail=f"会话不存在: {sid}")
+        return session
+
+    def _current_model_label(runtime) -> str:
+        spec = getattr(getattr(runtime, "llm_exec", None), "spec", None)
+        if spec is None:
+            return ""
+        return f"{spec.provider}/{spec.model}"
+
+    @app.get("/api/models", response_model=schemas.ModelCatalog,
+             dependencies=[Depends(guard)])
+    async def list_models(session: str | None = Query(None)) -> schemas.ModelCatalog:
+        """可选模型清单 + 当前值(与 TUI 的 `/model` 同一份口径)。
+
+        `session` 给了就先绑定它 —— 当前值要反映**那条会话**的还原结果,而不是
+        runtime 上残留的上一轮状态(一个 runtime 服务多个会话)。
+        """
+        target = _session_for(session)
+        runtime = web.runtime_for(web.session_cwd(target) if target else web.default_cwd)
+        if target is not None:
+            web.bind_session(runtime, target)
+        store = getattr(runtime, "_auth", None)
+        options: list[schemas.ModelOption] = []
+        for provider, model_id in selectable_models(runtime.cfg, store=store):
+            prov = (runtime.cfg.providers or {}).get(provider)
+            entry = next((m for m in (prov.models if prov else []) if m.id == model_id), None)
+            options.append(schemas.ModelOption(
+                provider=provider, id=model_id,
+                context_window=_int_field(entry, "contextWindow"),
+            ))
+        return schemas.ModelCatalog(
+            models=options,
+            currently=_current_model_label(runtime),
+            thinking_level=str(getattr(runtime, "thinking_level", "") or ""),
+            thinking_levels=list(THINKING_LEVELS),
+        )
+
+    @app.post("/api/model", response_model=schemas.ModelCatalog,
+              dependencies=[Depends(guard)])
+    async def set_model(body: schemas.ModelSelect) -> schemas.ModelCatalog:
+        """换模型 / 换思考级别(下一回合生效),并返回更新后的当前值。
+
+        返回新的清单而不只是 204:界面要在同一次往返里把 chip 上的字与菜单里的 ✓ 一起
+        更新掉,否则它会显示"已经切了"而实际没切(或反过来)—— 复用 GET 的那份装配。
+        """
+        if (body.provider is None) != (body.model is None):
+            raise HTTPException(status_code=422,
+                                detail="provider 与 model 必须成对给(只给一个会切到半个模型)")
+        if body.provider is None and body.thinking_level is None:
+            raise HTTPException(status_code=422,
+                                detail="至少要给 model 或 thinking_level 之一")
+
+        target = _session_for(body.session)
+        runtime = web.runtime_for(web.session_cwd(target) if target else web.default_cwd)
+        if target is not None:
+            # 先绑:① 落盘要知道写哪个文件;② 绑定会按会话里的 entry 还原,
+            # 于是"这次没传的字段"保持会话里的值,而不是被上一次绑定的残留顶掉。
+            web.bind_session(runtime, target)
+        if body.provider is not None:
+            try:
+                runtime.set_model(str(body.provider), str(body.model), source="set")
+            except Exception as exc:      # noqa: BLE001 配置/凭证问题 → 400,不是 500
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{type(exc).__name__}: {exc}") from exc
+        if body.thinking_level is not None:
+            level = str(body.thinking_level).strip().lower()
+            if level not in THINKING_LEVELS:
+                raise HTTPException(status_code=422,
+                                    detail=f"未知思考级别: {body.thinking_level}"
+                                           f"(可选 {'/'.join(THINKING_LEVELS)})")
+            runtime.set_thinking_level(level, source="set")
+        return await list_models(body.session)
+
+    @app.get("/api/skills", response_model=schemas.SkillList, dependencies=[Depends(guard)])
+    async def list_skills() -> schemas.SkillList:
+        """顶层技能(六层来源 + settings 追加),供设置页展示。"""
+        runtime = web.runtime_for(web.default_cwd)
+        return schemas.SkillList(skills=[
+            schemas.SkillInfo(name=skill.name, description=skill.description,
+                              source=skill.source, path=str(skill.path))
+            for skill in runtime.top_skills
+        ])
+
+    @app.get("/api/extensions", response_model=schemas.ExtensionList, dependencies=[Depends(guard)])
+    async def list_extensions() -> schemas.ExtensionList:
+        runtime = web.runtime_for(web.default_cwd)
+        return schemas.ExtensionList(extensions=list(runtime.extensions))
+
+    @app.post("/api/auth/{provider}", status_code=204, dependencies=[Depends(guard)])
+    async def set_auth(provider: str, body: schemas.AuthWrite,
+                       confirm: str | None = Header(None, alias="X-Qi-Confirm")) -> None:
+        confirm_gate(confirm)
+        AuthStore().set_key(provider, body.key)
+
+    @app.delete("/api/auth/{provider}", status_code=204, dependencies=[Depends(guard)])
+    async def delete_auth(provider: str,
+                          confirm: str | None = Header(None, alias="X-Qi-Confirm")) -> None:
+        confirm_gate(confirm)
+        if not AuthStore().remove(provider):
+            raise HTTPException(status_code=404, detail=f"凭证不存在: {provider}")
+
+    # ── 配置/装载错误 → 可读响应(而不是 500 栈) ──────────
+    @app.exception_handler(ConfigError)
+    @app.exception_handler(LoadError)
+    async def _config_error(_request: Request, exc: Exception) -> JSONResponse:
+        return JSONResponse(status_code=503,
+                            content={"detail": f"{type(exc).__name__}: {exc}"})
+
+    # ── 静态前端(必须最后挂:先匹配 /api) ─────────────────
+    if STATIC_DIR.is_dir():
+        app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="ui")
+    else:
+        @app.get("/", response_class=HTMLResponse)
+        async def placeholder() -> str:
+            return _PLACEHOLDER
+
+    return app
+
+
+def main() -> None:  # pragma: no cover - 入口由 CLI 调用
+    raise SystemExit("请用 `qi lab` 启动(见 qi_agent.cli)")
+
+
+# ── 3c 的辅助:角色目录与 MCP 结构(模块级,纯读)────────────────
+
+def _role_dirs(cwd) -> list:
+    """各角色的目录(装了 qi-agents 才有)。读不到就当没有 —— 界面那头会显示 unavailable。"""
+    try:
+        from qi_agents.discovery import discover
+    except ImportError:
+        return []
+    return [r.path.parent for r in discover(cwd, "both").values() if r.path]
+
+
+def _role_mcp_file(role_dir):
+    """角色目录里的 mcp.json → `(路径, {名: 声明})`;没有/读坏返回 None。"""
+    try:
+        from qi_mcp.config import MCP_FILE, read_file
+    except ImportError:
+        return None
+    path = role_dir / MCP_FILE
+    if not path.is_file():
+        return None
+    try:
+        return path, read_file(path)
+    except Exception:          # noqa: BLE001 一个角色写坏了不该让整页 500
+        return None
+
+
+def _role_mcp_count(agent_md) -> int:
+    found = _role_mcp_file(agent_md.parent) if agent_md else None
+    return len(found[1]) if found else 0
+
+
+def _mcp_server_info(name, config, scope):
+    """把一份 server 声明变成**只有结构**的视图(键名可以给,值一律不给)。"""
+    from .schemas import McpServerInfo
+
+    env = config.get("env") if isinstance(config.get("env"), dict) else {}
+    headers = config.get("headers") if isinstance(config.get("headers"), dict) else {}
+    try:
+        # 传输判定**只有一处**:走 qi-mcp 的 `ServerSpec`(它认 Agent Plugins 的 `type`,
+        # 也在说“这一块归 qi-mcp 管”)。以前这里自己又抄了一份 `command`/`url`/`socket`
+        # 三连推断 —— 那意味着 `type: streamable-http` 的声明在两个面里得到不同答案。
+        from qi_mcp.config import ServerSpec, unknown_fields
+
+        spec = ServerSpec(name=name, config=config)
+        unknown = unknown_fields(spec)
+        transport = spec.transport_label     # 展示用:写了 type 就照它显示(如 streamable-http)
+        kind = spec.transport                # 判定用:stdio | http | socket | sse | unknown
+    except ImportError:
+        unknown = []
+        kind = ("stdio" if config.get("command") else
+                "http" if config.get("url") else
+                "socket" if config.get("socket") else "unknown")
+        transport = kind
+    direct = config.get("directTools", False)
+    # `disabled` 是布尔开关:**只认真正的 JSON true**(`"true"` / `1` 都不算)。
+    # 等价于 `config.get("disabled") is True`,但用 isinstance 门写 —— 与下面 direct_tools
+    # 同一惯用法,且避开“identity comparison with literal”的静态检查。
+    disabled = config.get("disabled")
+    return McpServerInfo(
+        name=name, transport=transport,
+        # `url` 只在 HTTP 家族(streamable-http / sse)才吐 —— stdio 的 `command`/`args`
+        # 是最容易直接写进明文密钥的地方,一律不出。
+        url=str(config.get("url", "")) if kind in ("http", "sse") else "",
+        # socket 路径与 url 同档:结构、不是密钥(不给的话那种 server 改不了)
+        socket=str(config.get("socket", "")) if kind == "socket" else "",
+        env_keys=sorted(str(k) for k in env),
+        header_keys=sorted(str(k) for k in headers),
+        disabled=isinstance(disabled, bool) and disabled,
+        direct_tools=direct if isinstance(direct, (bool, list)) else False,
+        unknown_fields=unknown, source=scope)
+
+
+# ── MCP 声明的写操作:路径 / 读 / 写 / 校验(模块级,纯函数)──────────
+
+
+def _mcp_target(scope: str, role: str, cwd) -> Path:
+    """这一处声明表落在哪个文件。
+
+    **路径只有一处算法**:读端走 `qi_mcp.config.scope_files()`,写端也必须走它 ——
+    读 A 写 B 是“改了却没生效”里最贵的一种。`scope=role` 那层不在 qi-mcp 里
+    (它只有两层,第三层归 qi-agents),所以按角色目录名找。
+    """
+    try:
+        from qi_mcp.config import MCP_FILE, scope_files
+    except ImportError:
+        raise HTTPException(status_code=400, detail="没装 qi-mcp 扩展,不能改写 MCP 声明")
+    if scope in ("global", "project"):
+        for layer, path in scope_files(cwd):
+            if layer == scope:
+                return path
+        raise HTTPException(status_code=400, detail=f"不认识的 scope: {scope}")
+    if not role.strip():
+        raise HTTPException(status_code=400, detail="scope=role 必须给角色名 role")
+    try:
+        import qi_agents.discovery                      # noqa: F401  探可用性
+    except ImportError:
+        raise HTTPException(status_code=400, detail="没装 qi-agents 扩展,没有角色层可写")
+    for directory in _role_dirs(cwd):
+        if directory.name == role:
+            return directory / MCP_FILE
+    raise HTTPException(status_code=404, detail=f"没有这个角色: {role}")
+
+
+def _check_mcp_name(name: str) -> str:
+    """server 名的规矩:**不许带首尾空白**(一个手滑的空格会造出两个“同名” server,
+    而界面上看起来一模一样),长度给个上限。"""
+    if not name or not name.strip():
+        raise HTTPException(status_code=400, detail="server 名不能为空")
+    if name != name.strip():
+        raise HTTPException(status_code=400, detail="server 名不能带首尾空白")
+    if len(name) > 200:
+        raise HTTPException(status_code=400, detail="server 名太长(最多 200 字)")
+    return name
+
+
+def _read_mcp_servers(path: Path) -> dict:
+    """读一份声明表 → `{名: 声明}`;文件不存在 = **空表**(没配 ≠ 配错了)。"""
+    from qi_mcp.config import read_file
+    if not path.is_file():
+        return {}
+    try:
+        return dict(read_file(path))
+    except Exception as exc:            # noqa: BLE001 坏文件要说清是哪个文件
+        raise HTTPException(status_code=400, detail=f"{path}: 读不了({exc})")
+
+
+def _write_mcp_servers(path: Path, servers: dict) -> None:
+    """把 `servers` 写回 `path`。
+
+    · **顶层其它键原样保留**(`$schema` 这类):文件是用户手写的,不能因为改一个
+      server 就把别的键抹掉;
+    · **原子写**(临时文件 + replace):留下半份 JSON,会让“我配了但没生效”变成
+      没法诊断的事;
+    · 新文件 **0600**:声明表里可能直接写着 `env` / `headers` 的明文密钥。
+    """
+    raw: dict = {}
+    if path.is_file():
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=400, detail=f"{path}: JSON 解析失败 {exc}")
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=400, detail=f"{path}: 顶层必须是对象")
+    raw["mcpServers"] = servers
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.tmp")
+    tmp.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    mode = stat.S_IMODE(path.stat().st_mode) if path.is_file() else 0o600
+    os.chmod(tmp, mode)
+    tmp.replace(path)
+
+
+def _build_mcp_config(server) -> dict:
+    """表单 → 一份声明。**写 `type`**(Agent Plugins 1.0 写法):读端优先认它,于是
+    “界面上选的传输”与“文件里的词”永远是同一个,拿着文件核对也对得上。
+
+    这里**不**检查载荷齐不齐 —— 统一交给 `_validate_mcp_config`,免得两处规则各说各话。
+    """
+    transport = server.transport.strip()
+    if transport not in schemas.MCP_TRANSPORTS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"不认识的传输 `{server.transport}`(可写:{' / '.join(schemas.MCP_TRANSPORTS)})")
+    config: dict = {"type": transport}
+    if transport == "stdio":
+        if server.command.strip():
+            config["command"] = server.command
+        if server.args:
+            config["args"] = list(server.args)
+        if server.cwd.strip():
+            config["cwd"] = server.cwd
+    elif transport in ("streamable-http", "sse", "http"):
+        config["url"] = server.url.strip()
+    else:                              # socket
+        config["socket"] = server.socket.strip()
+    if server.env:
+        config["env"] = dict(server.env)
+    if server.headers:
+        config["headers"] = dict(server.headers)
+    if server.disabled:
+        config["disabled"] = True
+    if isinstance(server.direct_tools, list):
+        if server.direct_tools:
+            config["directTools"] = list(server.direct_tools)
+    elif server.direct_tools:
+        config["directTools"] = True
+    return config
+
+
+def _validate_mcp_config(config: dict) -> None:
+    """落盘前判一遍:**不完整的声明连不上,而它不会报错** —— 它只是永远不生效。"""
+    from qi_mcp.config import ServerSpec
+
+    spec = ServerSpec(name="", config=config)
+    declared = spec.declared_type
+    if declared is not None and declared not in schemas.MCP_TRANSPORTS:
+        raise HTTPException(status_code=400,
+                            detail=f"不支持的传输 `{declared}`"
+                                   f"(可写:{' / '.join(schemas.MCP_TRANSPORTS)})")
+    transport = spec.transport
+    if transport == "unknown":
+        raise HTTPException(status_code=400,
+                            detail="声明不完整:stdio 要 command,streamable-http/sse 要 url,"
+                                   "socket 要套接字路径")
+    if transport == "stdio" and not str(config.get("command", "")).strip():
+        raise HTTPException(status_code=400, detail="stdio 必须给 command")
+    if transport in ("http", "sse") and not str(config.get("url", "")).strip():
+        raise HTTPException(status_code=400, detail=f"{spec.transport_label} 必须给 url")
+    if transport == "socket" and not str(config.get("socket", "")).strip():
+        raise HTTPException(status_code=400, detail="socket 必须给套接字路径")
+
+
+def _apply_mcp_patch(config: dict, patch) -> dict:
+    """把 `patch` 里**出现过**的键改到 `config` 的副本上;没出现的键一个都不动。
+
+    这正是“值看不见也改得动”的实现:读端不给值,前端就不送键,旧值原样留着。
+    """
+    from qi_mcp.config import TYPE_TRANSPORTS, ServerSpec
+
+    out = dict(config)
+    if "transport" in patch.model_fields_set and patch.transport is not None:
+        transport = patch.transport.strip()
+        if transport not in schemas.MCP_TRANSPORTS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"不认识的传输 `{patch.transport}`"
+                       f"(可写:{' / '.join(schemas.MCP_TRANSPORTS)})")
+        # 换传输 = 换载荷。按 **kind** 判而不是按字面:老声明没写 `type`,而
+        # `http` 与 `streamable-http` 是同一种东西,不该因此把 url 清掉。
+        if TYPE_TRANSPORTS.get(transport, transport) != ServerSpec(name="", config=out).transport:
+            for key in ("command", "args", "cwd", "url", "socket"):
+                out.pop(key, None)
+        out["type"] = transport
+
+    for field in ("url", "command", "cwd", "socket"):
+        if field in patch.model_fields_set:
+            value = getattr(patch, field)
+            _set_or_drop(out, field, value.strip() if isinstance(value, str) else value)
+
+    for field, key in (("args", "args"), ("env", "env"), ("headers", "headers")):
+        if field in patch.model_fields_set and getattr(patch, field) is not None:
+            value = getattr(patch, field)
+            if value:
+                out[key] = dict(value) if isinstance(value, dict) else list(value)
+            else:
+                out.pop(key, None)
+
+    if "disabled" in patch.model_fields_set and patch.disabled is not None:
+        # 空键比 `disabled: false` 更诚实(读端只认真 true,两者等价)。
+        if patch.disabled:
+            out["disabled"] = True
+        else:
+            out.pop("disabled", None)
+    if "direct_tools" in patch.model_fields_set and patch.direct_tools is not None:
+        value = patch.direct_tools
+        if isinstance(value, list) and value:
+            out["directTools"] = list(value)
+        elif value is True:
+            out["directTools"] = True
+        else:
+            out.pop("directTools", None)
+    return out
+
+
+def _set_or_drop(config: dict, key: str, value: str | None) -> None:
+    """空字符串 = **删掉键**,不写空值:`{'url': ''}` 在界面上显示成“未声明”,
+    却没人看得出那是“被改没了”。"""
+    if value:
+        config[key] = value
+    else:
+        config.pop(key, None)

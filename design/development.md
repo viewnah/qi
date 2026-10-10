@@ -45,12 +45,23 @@ uv run qi --mode json "你好"   # 改完想看一眼事件流时最快
 ## 3. 测试
 
 ```bash
-.venv/bin/python -m pytest            # 全量(53 个测试文件,约 50 秒)
-.venv/bin/python -m pytest -q tests/test_session.py       # 单个文件
+.venv/bin/python -m pytest            # 全量(88 个测试文件,约 90 秒)
+.venv/bin/python -m pytest -q tests/test_session_store.py   # 单个文件
 uv run pytest -q                      # 等价写法
 ```
 
 **qi 没有 `test.sh`** —— 上面就是唯一入口(别去敲不存在的包装脚本)。
+
+### 扩展的测试放扩展自己目录下
+
+`tests/` 是**宿主**的用例;扩展自带的用例放各自目录(`extensions/qi-agents/tests/`、
+`extensions/qi-lab/tests/`),不往根目录里搬 —— 扩展是独立发行包,测试跟着它走。两个前提缺一不可:
+
+1. **`pyproject.toml` 的 `testpaths` 要同时登记**新目录。pytest 只认列出来的目录,
+   忘了登记不会报错,只是那一批测试**静默不跑**(没失败、也没覆盖);
+2. **conftest 按目录生效**,根 `tests/conftest.py` 覆盖不到子目录 —— 所以每个扩展的 tests/
+   自带一份同源精简版(entry-point stub、`~/.qi` 隔离、必要时再加 `minimal_config`)。
+   改根 conftest 的隔离逻辑时**两边一起改**,否则隔离只对一半测试生效。
 
 ### 默认不装载"本机真装的扩展"
 
@@ -82,7 +93,8 @@ pytestmark = pytest.mark.real_extensions      # 只对这类文件生效
 
 ```jsonc
 "include":    ["src", "tests", "extensions"],
-"extraPaths": ["extensions/qi-agents", "extensions/qi-mcp", "extensions/qi-web", "src"]
+"extraPaths": ["extensions/qi-agents", "extensions/qi-mcp", "extensions/qi-web",
+               "extensions/qi-lab", "src"]
 ```
 
 `extraPaths` 是为了让跨包 import(`from qi_agents.discovery import discover`)在类型检查器里也能解析 ——
@@ -96,14 +108,15 @@ pytestmark = pytest.mark.real_extensions      # 只对这类文件生效
 
 ```text
 src/qi_agent/        # core:单包(一个 wheel)。裸启动 = 单 agent
-extensions/          # 三个独立 pip 包,各自有自己的 pyproject.toml / README
-  qi-agents/         #   角色系统 + subagent 委派
+extensions/          # 四个独立 pip 包,各自有自己的 pyproject.toml / README / tests
+  qi-agents/         #   角色系统 + subagent 委派(用例在 qi-agents/tests/)
   qi-mcp/            #   MCP 支持
   qi-web/            #   HTTP 宿主 + 官方 UI(UI 在 qi-web/ui/,自带 package.json)
+  qi-lab/            #   qi-web 的副本 + 分化(用例在 qi-lab/tests/,契约在 qi-lab/docs/api/)
 design/              # 内部设计、决策记录、变更记录 —— **不进 wheel、不注入提示词**
 docs/                # 手册(见 docs/index.md)+ docs.json(导航清单)
 examples/            # 教学样例(不自动加载)
-tests/               # pytest
+tests/               # 宿主的 pytest 用例(扩展自带的在各自 extensions/*/tests/)
 ```
 
 判据很简单:**只有 `src/qi_agent/` 进 wheel**;`docs/` 目前也不进(要把手册随包发布得改

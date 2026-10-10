@@ -22,14 +22,17 @@ data/
 # pi 自身的运行期目录(tasks 输出等,非源码)
 .pi/
 
-# qi-web 前端依赖与构建中间产物
+# qi-web / qi-lab 前端依赖与构建中间产物
 extensions/qi-web/ui/node_modules/
 extensions/qi-web/ui/dist/
+extensions/qi-lab/ui/node_modules/
+extensions/qi-lab/ui/dist/
 
 # 编辑器配置
 .vscode/
 
 # vitest 输出(node 侧测试报告;含绝对路径与时间戳,不入库)。
-# 旧 core web 与 qi-web 扩展两条路径都要盖。
+# 旧 core web 与 qi-web / qi-lab 扩展的路径都要盖。
 web/.vitest/
 extensions/qi-web/ui/.vitest/
+extensions/qi-lab/ui/.vitest/

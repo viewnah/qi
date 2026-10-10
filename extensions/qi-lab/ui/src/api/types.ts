@@ -244,8 +244,13 @@ export type UiNode =
         type: "list";
         items: {
            label: string;
-           state?: "done" | "active" | "pending";
+           /** v1.1 新增词:委派失败。不认它的老渲染端会当 `pending` 画成 ○,
+            * 所以 `note` 里始终带着错误原文 —— 与「不认识的 type 退回 JSON」
+            * 同一条降级哲学:读不到形状,至少读得到字。 */
+           state?: "done" | "active" | "pending" | "error";
            note?: string;
+           /** v1.1 新增:显示用缩进层级(1 起)。缺省时渲染端回退 label 前导空格。 */
+           depth?: number;
         }[];
      }
    | { type: "kv"; rows: [string, string][] }

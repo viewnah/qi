@@ -18,6 +18,7 @@
  */
 import { useState } from "react";
 import type { UiNode } from "../api/types";
+import { itemDepth, parseBanners, type SubSegment } from "../state/segments";
 import {
   IconBranchOutline16,
   IconCheckOutline16,
@@ -62,14 +63,28 @@ function UiNodeView({ node }: { node: UiNode }) {
         <ul className="ui-list">
           {items.map((it, i) => {
             const state = it.state ?? "pending";
+            // 层级走 `depth`(label 的前导空格只是给纯文本消费方的兜底,
+            // 渲染时裁掉 —— 否则 depth 缩进与空格缩进会叠成两份)
+            const depth = itemDepth(it);
             return (
-              <li key={i} className="ui-list__item">
-                {/* 状态不单靠颜色:形状本身也不同(✓ / ▸ / ○) */}
+              <li
+                key={i}
+                className="ui-list__item"
+                data-state={state}
+                style={{ paddingInlineStart: `${(depth - 1) * 14}px` }}
+              >
+                {/* 状态不单靠颜色:形状本身也不同(✓ / ▸ / ○ / ✗) */}
                 <span className="ui-list__mark" data-state={state}>
-                  {state === "done" ? "✓" : state === "active" ? "▸" : "○"}
+                  {state === "done"
+                    ? "✓"
+                    : state === "active"
+                      ? "▸"
+                      : state === "error"
+                        ? "✗"
+                        : "○"}
                 </span>
                 <span className="ui-list__label" data-state={state}>
-                  {it.label}
+                  {it.label.trimStart()}
                 </span>
                 {it.note ? (
                   <span className="ui-list__note">{it.note}</span>
@@ -142,6 +157,53 @@ function Details({ details }: { details: Record<string, unknown> | null }) {
     );
   }
   return <pre className="evidence">{JSON.stringify(details, null, 2)}</pre>;
+}
+
+/** 委派正文:横幅契约切出的「一个 agent 一张卡」(TUI `AgentCard` 同构)。
+ *
+ * 形状抄 TUI:卡头 `名字 ← 归属 · 深度 ✓/✗`,卡内三区 `·` 活动 → `✎` 思考 → 输出,
+ * 层级用缩进表达、**不画树地图**(TUI 的明确取舍:委派关系在活动行与深度里已自明,
+ * 地图是重复的第二份信息)。解析不到就退回原文(调用方的 `<pre>`)。 */
+function Segments({ segs }: { segs: SubSegment[] }) {
+  return (
+    <div className="segs">
+      {segs.map((s, i) => (
+        <div
+          key={i}
+          className="seg"
+          data-ok={s.ok}
+          style={{ marginInlineStart: `${(s.depth - 1) * 12}px` }}
+        >
+          <div className="seg__head">
+            <span className="seg__mark">{s.ok ? "✓" : "✗"}</span>
+            <span className="seg__name">{s.name}</span>
+            <span className="seg__meta">
+              {s.parent ? `← ${s.parent} · ` : ""}深度 {s.depth}
+            </span>
+          </div>
+          {s.activity.length > 0 ? (
+            <div className="seg__zone">
+              {s.activity.map((line, j) => (
+                <div key={j} className="seg__line" data-zone="act">
+                  {line}
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {s.thoughts.length > 0 ? (
+            <div className="seg__zone">
+              {s.thoughts.map((line, j) => (
+                <div key={j} className="seg__line" data-zone="think">
+                  {line}
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {s.output ? <div className="seg__out">{s.output}</div> : null}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 /** 无壳的行容器:提问 / 回答 / 分派 / 标记 / 错误。 */
@@ -422,6 +484,9 @@ function Tool({ row }: { row: ToolRowData }) {
   const args = Object.entries(row.args)
     .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`)
     .join(" ");
+  // 展开时才解析:折叠行是常态,不为看不见的文本付解析代价。
+  // 解析不出来 = null → 走下面的原始 `<pre>`,永远有退路。
+  const segs = open && row.result ? parseBanners(row.result) : null;
   return (
     <div className="tool" data-status={row.status}>
       <button
@@ -447,15 +512,32 @@ function Tool({ row }: { row: ToolRowData }) {
         <div className="tool__body">
           {/* 插件给的结构化详情排在最前:它是给人看的,result 是给模型的 */}
           {row.details ? <Details details={row.details} /> : null}
+          {/* 正文按横幅契约切成卡(切不动就整个退回原文,一个字不丢) */}
+          {segs ? <Segments segs={segs} /> : null}
           {args ? (
             <pre className="evidence">{JSON.stringify(row.args, null, 2)}</pre>
           ) : null}
           {row.result ? (
-            <pre
-              className={`evidence${row.status === "error" ? " evidence--error" : ""}`}
-            >
-              {row.result}
-            </pre>
+            segs ? (
+              <details className="seg-raw">
+                <summary className="seg-raw__sum">原始输出</summary>
+                <pre
+                  className={`evidence${
+                    row.status === "error" ? " evidence--error" : ""
+                  }`}
+                >
+                  {row.result}
+                </pre>
+              </details>
+            ) : (
+              <pre
+                className={`evidence${
+                  row.status === "error" ? " evidence--error" : ""
+                }`}
+              >
+                {row.result}
+              </pre>
+            )
           ) : null}
           {row.error ? (
             <div className="process__text">错误原因:{row.error}</div>

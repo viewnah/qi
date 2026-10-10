@@ -648,9 +648,9 @@ data={"status": …, "duration_ms": …, "exit_code": …, "error": …}
 ```json
 {"ui_version": 1, "ui": [
   {"type": "list", "items": [
-    {"label": "读需求", "state": "done"},
-    {"label": "写实现", "state": "active", "note": "第 3 个文件"},
-    {"label": "补测试", "state": "pending"}
+    {"label": "scout · 查上层", "state": "done", "depth": 1},
+    {"label": "  writer · 写底层", "state": "error", "note": "boom: 文件不存在", "depth": 2},
+    {"label": "    scout · 再查", "state": "pending", "depth": 3}
   ]},
   {"type": "kv", "rows": [["模型", "deepseek-chat"], ["耗时", "1.2s"]]},
   {"type": "progress", "value": 2, "max": 5, "label": "已完成"},
@@ -661,7 +661,7 @@ data={"status": …, "duration_ms": …, "exit_code": …, "error": …}
 
 | `type` | 字段 | 渲染 |
 | --- | --- | --- |
-| `list` | `items[].{label, state?: "done"\|"active"\|"pending", note?}` | 勾选列表(形符 ✓/▸/○,**不单靠颜色**) |
+| `list` | `items[].{label, state?: "done"\|"active"\|"pending"\|"error", note?, depth?}` | 勾选列表(形符 ✓/▸/○/✗,**不单靠颜色**);`depth` 驱动缩进 |
 | `kv` | `rows: [键, 值][]` | 键值对(等宽值,右对齐) |
 | `progress` | `{value, max, label?}` | 进度条 + `2 / 5` |
 | `code` | `{text, lang?}` | 等宽证据块 |
@@ -673,6 +673,25 @@ data={"status": …, "duration_ms": …, "exit_code": …, "error": …}
    "插件发了东西但没人看见"变成不可诊断的问题。
 2. **有 `details` 但没 `ui` → 折叠显示整个 details 的 JSON。** 所以插件即使完全
    不碰词汇表,也**永远有东西可看**。
+
+#### v1.1(2026-10-10,由 `web-lab.md` 的一期引入)
+
+只**加词**,不改已知词的语义 —— 旧数据照原样渲染,新数据在旧宿主上降级可读:
+
+| 新增 | 谁发 | 老渲染端的降级 |
+| --- | --- | --- |
+| `state: "error"` | qi-agents `_ui_items`(委派失败) | 当 `pending` 画成 ○,**但 `note` 里是错误原文** —— 读不到形状,至少读得到字 |
+| `items[].depth` | 同上(委派深度,1 起) | 忽略字段,回退 label 的前导空格(两级一格);两个都没有 = 顶层 |
+
+宿主侧的实现在 `extensions/qi-lab/ui/src/state/segments.ts`(`itemDepth`)与
+`Rows.tsx`(`UiNodeView` 的 list 分支)。**词汇表仍然只约定已知键、不禁止附加键** ——
+v1.1 **没有**引入树节点(嵌套仍靠 `depth` 平铺表达),这是刻意的:树地图是重复的
+第二份信息(TUI 的同一取舍,见 `web-lab.md` §2)。
+
+顺带记一笔:`list` 只是**结构**;委派的**正文**走另一条路 —— qi-agents 的 `result`
+文本按横幅契约(`render.py: banner()/BANNER_RE`)排版,宿主用同源正则把它切回
+"一张卡一个 agent"(`segments.ts: parseBanners`,切不动就退回原文 `<pre>` )。
+两条路各管一半:**结构进 `details`,正文进 `result`,不重复存储**。
 
 ### 16.3 为什么是数据契约,不是代码契约
 

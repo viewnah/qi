@@ -3004,10 +3004,15 @@ pre,
 .ui-list__mark[data-state="pending"] {
  color: var(--dsw-alias-label-caption);
 }
+.ui-list__mark[data-state="error"] {
+ color: var(--dsw-alias-state-error-primary);
+}
 
 .ui-list__label {
  color: var(--dsw-alias-label-primary);
  min-width: 0;
+ white-space: pre-wrap;
+ overflow-wrap: anywhere;
 }
 .ui-list__label[data-state="done"] {
  color: var(--dsw-alias-label-tertiary);
@@ -3016,12 +3021,112 @@ pre,
 .ui-list__label[data-state="active"] {
  font-weight: 500;
 }
+.ui-list__label[data-state="error"] {
+ color: var(--dsw-alias-state-error-primary);
+}
 
 .ui-list__note {
  margin-left: auto;
  color: var(--dsw-alias-label-caption);
  font-family: var(--ds-font-family-code);
  font-size: 11px;
+}
+.ui-list__item[data-state="error"] .ui-list__note {
+ color: var(--dsw-alias-state-error-primary);
+}
+
+/* ── 委派分段(`parseBanners` 从横幅正文切出的卡)──────────────────
+   形状抄 TUI 的 AgentCard:一张卡一个 agent,卡头「名字 ← 归属 · 深度 ✓/✗」,
+   卡内三区 `·` 活动 / `✎` 思考 / 输出;层级用缩进,**不画树地图**。
+   线条与配色全走令牌:分段卡是内容不是 chrome,暗亮两套主题都要跟对。 */
+.segs {
+ display: flex;
+ flex-direction: column;
+ gap: 8px;
+}
+
+.seg {
+ max-width: 100%;
+ border: 1px solid var(--dsw-alias-border-l1);
+ border-radius: var(--dsw-radius-md);
+ background: var(--dsw-alias-bg-layer-1);
+ padding: 8px 10px;
+}
+
+.seg[data-ok="false"] {
+ border-left-width: 2px;
+ border-left-color: var(--dsw-alias-state-error-primary);
+}
+
+.seg__head {
+ display: flex;
+ gap: 6px;
+ align-items: baseline;
+ font-size: 13px;
+ line-height: 20px;
+ color: var(--dsw-alias-label-primary);
+}
+
+.seg__mark {
+ flex: none;
+ font-size: 11px;
+ color: var(--dsw-alias-state-success);
+}
+.seg[data-ok="false"] .seg__mark {
+ color: var(--dsw-alias-state-error-primary);
+}
+
+.seg__name {
+ min-width: 0;
+ font-weight: 500;
+ overflow-wrap: anywhere;
+}
+
+.seg__meta {
+ flex: none;
+ margin-left: auto;
+ color: var(--dsw-alias-label-caption);
+ font-size: 11px;
+}
+
+.seg__zone {
+ display: flex;
+ flex-direction: column;
+ gap: 2px;
+ margin-top: 6px;
+}
+
+.seg__line {
+ white-space: pre-wrap;
+ overflow-wrap: anywhere;
+ font-family: var(--ds-font-family-code);
+ font-size: 12px;
+ line-height: 18px;
+ color: var(--dsw-alias-label-secondary);
+}
+.seg__line[data-zone="think"] {
+ color: var(--dsw-alias-label-tertiary);
+}
+
+.seg__out {
+ margin-top: 6px;
+ white-space: pre-wrap;
+ overflow-wrap: anywhere;
+ font-size: 13px;
+ line-height: 20px;
+ color: var(--dsw-alias-label-primary);
+}
+.seg[data-ok="false"] .seg__out {
+ color: var(--dsw-alias-state-error-primary);
+}
+
+.seg-raw {
+ margin-top: 6px;
+}
+.seg-raw__sum {
+ cursor: pointer;
+ color: var(--dsw-alias-label-caption);
+ font-size: 12px;
 }
 
 .ui-kv {

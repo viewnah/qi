@@ -1148,6 +1148,30 @@ pre,
  white-space: pre-wrap;
  word-break: break-word;
 }
+/* 流式中的思考/叙述:提亮一档 + 行尾光标 —— “还在写”不只靠内容变化。 */
+.process__text[data-live="true"] {
+ color: var(--dsw-alias-label-primary);
+}
+.process__text[data-live="true"]::after {
+ content: "";
+ display: inline-block;
+ width: 6px;
+ height: 13px;
+ margin-left: 2px;
+ vertical-align: -2px;
+ background: currentColor;
+ animation: qi-caret-blink 1s step-end infinite;
+}
+@keyframes qi-caret-blink {
+ 50% {
+  opacity: 0;
+ }
+}
+@media (prefers-reduced-motion: reduce) {
+ .process__text[data-live="true"]::after {
+  animation: none;
+ }
+}
 /* 工具行在块里:点 · 名字 · 参数 · 耗时 · 形符(状态不单靠颜色,带 ✓/✗)。 */
 .tool {
  display: flex;
@@ -3176,6 +3200,22 @@ pre,
 }
 @media (prefers-reduced-motion: reduce) {
  .seg__line[data-zone="stream"] {
+  animation: none;
+ }
+}
+
+/* 流式行尾的闪烁光标(与 `.process__text[data-live]` 同一套 blink)。 */
+.seg__caret {
+ display: inline-block;
+ width: 6px;
+ height: 13px;
+ margin-left: 2px;
+ vertical-align: -2px;
+ background: currentColor;
+ animation: qi-caret-blink 1s step-end infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+ .seg__caret {
   animation: none;
  }
 }

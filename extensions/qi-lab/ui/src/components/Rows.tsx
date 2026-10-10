@@ -16,7 +16,7 @@
  *
  * 折叠策略不变:**过程可折叠,结论不可折叠**。
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { UiNode } from "../api/types";
 import { itemDepth, parseBanners, type SubSegment } from "../state/segments";
 import {
@@ -245,6 +245,7 @@ function ActivityPane({ entries }: { entries: SubActivity[] }) {
               {e.phase === "stream" && e.text ? (
                 <div className="seg__line" data-zone="stream">
                   {e.text}
+                  <i className="seg__caret" aria-hidden="true" />
                 </div>
               ) : null}
             </div>
@@ -428,7 +429,12 @@ function Route({ row }: { row: RouteRow }) {
 function ProcessRowView({ row }: { row: ProcessRow }) {
   if (row.kind === "tool") return <Tool row={row} />;
   if (!row.text) return null;
-  return <div className="process__text">{row.text}</div>;
+  // 流式中的行带 `data-live` —— 光标与提亮都靠它(CSS 见 `.process__text[data-live]`)
+  return (
+    <div className="process__text" data-live={row.live}>
+      {row.text}
+    </div>
+  );
 }
 
 /**
@@ -440,6 +446,7 @@ function ProcessRowView({ row }: { row: ProcessRow }) {
  */
 function Process({ rows }: { rows: ProcessRow[] }) {
   const [open, setOpen] = useState(false);
+  const [touched, setTouched] = useState(false);
   const live = rows.some((row) =>
     row.kind === "think"
       ? row.live
@@ -447,13 +454,22 @@ function Process({ rows }: { rows: ProcessRow[] }) {
         ? row.status === "running"
         : false,
   );
+  // 运行中自动展开(**用户没动过才自动**):直播与流式思考必须看得见。
+  // 用户关了就听用户的,之后不再强开;结束后也不自动合上 —— 刚看完的
+  // 过程不能在眼前消失,要收是用户的事。
+  useEffect(() => {
+    if (live && !touched) setOpen(true);
+  }, [live, touched]);
   return (
     <div className="process" data-open={open || undefined} data-live={live || undefined}>
       <button
         type="button"
         className="disclose process__head"
         aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          setTouched(true);
+          setOpen((v) => !v);
+        }}
       >
         <Caret open={open} />
         <span className="process__label">{processLabel(rows)}</span>
@@ -532,7 +548,15 @@ function cost(row: ToolRowData): string {
  */
 function Tool({ row }: { row: ToolRowData }) {
   const [open, setOpen] = useState(false);
+  const [touched, setTouched] = useState(false);
   const running = row.status === "running";
+  // 委派卡:一有直播就自动展开(同样只在用户没动过时)。结束后保持展开,
+  // 横幅卡(Segments)直接接管视线 —— 用户刚盯着看的东西不能自己合上。
+  // 普通工具(无直播)不自动展开:每次调用都弹开是闪动,不是信息。
+  const autoLive = running && row.activity.length > 0;
+  useEffect(() => {
+    if (autoLive && !touched) setOpen(true);
+  }, [autoLive, touched]);
   const args = Object.entries(row.args)
     .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`)
     .join(" ");
@@ -548,7 +572,10 @@ function Tool({ row }: { row: ToolRowData }) {
         type="button"
         className="disclose disclose--fill"
         aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          setTouched(true);
+          setOpen((v) => !v);
+        }}
       >
         <Caret open={open} />
         <span className="tool-line disclose--grow">

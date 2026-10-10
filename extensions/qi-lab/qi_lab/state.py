@@ -20,12 +20,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
+import weakref
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from qi_agent.runtime import QiRuntime
 from qi_agent.session import Session, SessionStore
+
+from . import activity
 
 #: 建 runtime 的方式。默认就是 `QiRuntime` 本身;测试传替身工厂(接受 `cwd=` 关键字)。
 RuntimeFactory = Callable[..., QiRuntime]
@@ -49,6 +53,12 @@ class WebState:
         self._runtime_factory = runtime_factory
         self._runtimes: dict[str, QiRuntime] = {}
         self._busy: set[str] = set()
+        # ── 委派直播(见 activity.py)──
+        # 每个 AG-UI 流开一条队列;总线 handler 把直播内容**广播**给所有活跃队列。
+        # 订了哪个 runtime 用 WeakSet 记:总线只有 `on` 没有 `off`,而 runtime 是
+        # LRU 缓存 —— 强引用会把淘汰掉的 runtime 钉住,id 又可能被复用误判已订。
+        self._activity: list[asyncio.Queue] = []
+        self._activity_subs: weakref.WeakSet = weakref.WeakSet()
 
     # ── runtime 缓存 ──
     def runtime_for(self, cwd: Path | str | None) -> QiRuntime:
@@ -59,7 +69,54 @@ class WebState:
             self._runtimes[key] = self._runtime_factory(cwd=Path(key))
         else:                                            # 命中即刷新 LRU 顺序
             self._runtimes[key] = self._runtimes.pop(key)
-        return self._runtimes[key]
+        runtime = self._runtimes[key]
+        self._subscribe_activity(runtime)
+        return runtime
+
+    # ── 委派直播队列 ──
+    def _subscribe_activity(self, runtime: QiRuntime) -> None:
+        """把直播 handler 挂上 runtime 的总线(每个 runtime 只挂一次)。
+
+        挂不上只是没有直播(读音:总线不可用、runtime 不可弱引用)—— 不影响任何
+        既有能力,所以这里不往上抛。
+        """
+        if runtime in self._activity_subs:
+            return
+        try:
+            runtime.bus.on("tool_execution_update", self._on_activity,
+                           source="qi-lab")
+        except Exception:  # noqa: BLE001 直播是旁路:失败不该影响读接口
+            return
+        self._activity_subs.add(runtime)
+
+    def _on_activity(self, payload: Any, ctx: Any) -> None:
+        """总线 handler:过滤出委派直播内容,广播给活跃流的队列。
+
+        **广播而不是归因**:payload 里没有会话信息(runtime 按 cwd 缓存,同 cwd
+        的多个会话共用一个),而每个流拿到内容后按 `toolCallId` 归卡 —— 不是本流
+        的 id,前端直接丢弃,无害。没有活跃队列时连过滤都不做(零订阅零开销,
+        与宿主 `bus.has` 的护栏同向)。
+        """
+        if not self._activity:
+            return
+        content = activity.activity_content(payload)
+        if content is None:
+            return
+        for queue in list(self._activity):
+            queue.put_nowait((activity.KIND_ACTIVITY, content))
+
+    def open_activity(self) -> asyncio.Queue:
+        """开一条直播队列(每个 AG-UI 流一个);流结束必须 `close_activity`。"""
+        queue: asyncio.Queue = asyncio.Queue()
+        self._activity.append(queue)
+        return queue
+
+    def close_activity(self, queue: asyncio.Queue) -> None:
+        """收掉一条直播队列。必须在 finally:泄漏的队列会让广播越推越多。"""
+        try:
+            self._activity.remove(queue)
+        except ValueError:                 # 已经收过了(幂等)
+            pass
 
     @property
     def sessions(self) -> SessionStore:

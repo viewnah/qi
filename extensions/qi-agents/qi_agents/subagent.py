@@ -389,13 +389,42 @@ async def _run_one(api: Any, role: Role, task: str, ctx: Any,
     if callable(adder):
         me_card = adder(name, parent_name, depth)
 
+    def _web(phase: str, **extra: Any) -> None:
+        """把本 run 的活动推给宿主(**直播**,design/web-lab.md 二期)。
+
+        走 `ctx.on_update` —— runner 把它转成 `tool_execution_update` 总线事件,
+        外层自带**这次工具调用**的 `tool_call_id`:嵌套子运行经各自的 ctx 推出去,
+        收敛到同一个 id 上,前端一张卡装下整棵委派树(与平铺架子同构)。
+
+        三道护栏叠在一起,所以推不出去是常态而不是事故:宿主没订阅时 runner
+        直接跳过(`bus.has`);handler 路径的 ctx 没有 `on_update` → 这里跳过;
+        **旁路**:推失败不带倒子运行。
+
+        `line` 是**完整展示行**(带 `· `/`✎ `):与结束后 `_render` 拼进 result 的
+        同名行逐字一致 —— 直播关掉后,回放看到的是同一批文字(回放红线)。
+        """
+        push = getattr(ctx, "on_update", None)
+        if not callable(push):
+            return
+        try:
+            push({"qi": {"kind": "subagent", "phase": phase, "run": name,
+                         "role": role.name, "parent": parent_name,
+                         "depth": depth, "task": task, **extra}})
+        except Exception:  # noqa: BLE001 直播是旁路:失败不该带倒子运行
+            pass
+
     def _current_card() -> Any:
         """本 run **自己那张**平铺卡(入口建好);None = headless/建卡失败 →
         思考走时间线兜底、活动只进 log 与 result 段。"""
         return me_card
 
     def _flush_stream(mode: str) -> None:
-        """把当前轮的流式缓冲推进本 agent 的卡(见 _AgentCard)。"""
+        """把当前轮的流式缓冲推进本 agent 的卡(见 _AgentCard),并推给直播。
+
+        节流发生在调用方(`STREAM_FLUSH_INTERVAL` 到点、轮末强制),所以直播帧
+        天然不会逐字刷屏;headless 的 delta 在 `_on_event` 就被挡掉,进不到这。
+        """
+        _web("stream", mode=mode, text=stream_buf)
         try:
             setter = getattr(_current_card(), "set_stream", None)
             if callable(setter):
@@ -470,8 +499,11 @@ async def _run_one(api: Any, role: Role, task: str, ctx: Any,
                     if len(thoughts) < THOUGHT_ROUNDS:
                         thoughts.append(thinking if len(thinking) <= THOUGHT_CHARS
                                         else thinking[:THOUGHT_CHARS] + "…")
+                        # 行与 `_render` 的 ✎ 区逐字一致(`✎ 第N轮: …`)
+                        _web("think", line=f"✎ 第{len(thoughts)}轮: {thoughts[-1]}")
                     elif len(thoughts) == THOUGHT_ROUNDS:
                         thoughts.append("…(更多轮次的思考省略)")
+                        _web("think", line=f"✎ 第{len(thoughts)}轮: {thoughts[-1]}")
                     if _current_card() is None and not getattr(
                             getattr(ctx, "ui", None), "has_frontend", False):
                         # 无前端 = 没有卡可显示:时间线是唯一的思考可见处;
@@ -490,6 +522,7 @@ async def _run_one(api: Any, role: Role, task: str, ctx: Any,
                 brief = brief[:80] + "…"
             if len(log) < STEP_LOG_LIMIT:
                 log.append(f"· {tool} {brief}")
+                _web("act", line=log[-1])       # 直播 = result 活动区的同一行
             elif len(log) == STEP_LOG_LIMIT:
                 log.append("· …(后续工具调用省略)")
             # 过程归卡:前端的活动行只进该 agent 的卡(时间线再出一遍就是重复);
@@ -502,6 +535,7 @@ async def _run_one(api: Any, role: Role, task: str, ctx: Any,
         except Exception:  # noqa: BLE001 时间线是旁路:失败不该带倒子运行
             pass
 
+    _web("start")                        # 派单即推:卡在子运行真跑之前就出现
     # 宿主可能只有其中一种写法(snake_case 是正式名,camelCase 是别名) —— 两种都试。
     run_agent = getattr(api, "run_agent", None) or getattr(api, "runAgent")
     try:
@@ -535,6 +569,7 @@ async def _run_one(api: Any, role: Role, task: str, ctx: Any,
     if info.spawned:
         # 它自己派出去的那棵子树 —— 发起方(如果有)把它挂进自己的 children。
         result["children"] = info.spawned
+    _web("done", ok=ok, error=(error or "")[:300])
     _push_done(ok, result)
     if me_card is not None:
         # 平铺卡定格:标题转 ✓/✗、正文收起为摘要(点击展开该 agent 全文)

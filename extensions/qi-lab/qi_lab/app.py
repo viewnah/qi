@@ -34,7 +34,8 @@ from qi_agent.llm import THINKING_LEVELS
 from qi_agent.loader import LoadError
 from qi_agent.session import usage_summary
 from qi_agent.workspaces import WorkspaceStore, normalize
-from . import agui, agents as agentapi, browse, files as fileapi, schemas, skills as skillapi
+from . import (activity, agui, agents as agentapi, browse, files as fileapi,
+               schemas, skills as skillapi)
 from .security import check_credentials, check_host, mask_key
 from .serve import pin_role
 from .state import RunBusy, WebState
@@ -123,7 +124,11 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
                           # 扩展面:插件据这两个开关决定要不要发结构化 UI。
                           # `ag_ui` = 事件形状是 AG-UI;`ui_v1` = 认 details["ui"] 的词汇表
                           # (见 design/web.md §16.2)。缺哪个都退回"折叠显示原始 JSON"。
-                          "ag_ui": True, "ui_v1": True},
+                          "ag_ui": True, "ui_v1": True,
+                          # 直播面:委派过程的 `ACTIVITY_SNAPSHOT` 帧(qi-agents → 本端,
+                          # 见 design/web-lab.md 二期)。没有它 = 运行中看不到子运行在干什么
+                          # (结束后照旧走 details + result 分段)。
+                          "activity": True},
         )
 
     @app.get("/api/health")
@@ -718,6 +723,11 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
 
         async def gen():
             runtime = web.runtime_for(web.session_cwd(session))
+            # 直播队列与主流**同一个**(design/web-lab.md §5.2 通道 A):子运行期间
+            # 主流是静默的(LLM 调用不产事件),活动帧如果走旁路就会抢在工具卡帧
+            # 之前到 —— 同队列 FIFO 把顺序钉死。
+            feed = web.open_activity()
+            pump: asyncio.Task[None] | None = None
             try:
                 # RUN_STARTED 必须是流的第一帧(AG-UI 生命周期边界),
                 # 紧接着把历史与状态作为权威起点推给客户端 —— 这是 qi 自己的决定:
@@ -744,23 +754,47 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
                 # 只是没生效)。角色现在是 qi-agents 的 `before_agent_start`,
                 # 所以这里把钉住值交给它(详见 `serve.pin_role`)。
                 pin_role(runtime, inp.agent)
-                async for ev in runtime.stream(text, session):
-                    for frame in translator.feed(ev):
-                        yield agui.encode(frame)
-                # 流正常结束:补收尾(万一最后一帧还开着文本/思考)
-                for frame in translator.finish_open():
+
+                async def pump_stream() -> None:
+                    """把主流灌进队列(翻译、不直接 yield)。
+
+                    直播帧由 bus handler 直接进同一个队列,所以"子运行的静默期"
+                    不必等下一个主流事件。异常在这里转成 `RUN_ERROR` 帧再收尾:
+                    这个 task 的异常不会冒到外层,不转帧外层就会永远等下去。
+                    """
+                    try:
+                        async for ev in runtime.stream(text, session):
+                            for frame in translator.feed(ev):
+                                feed.put_nowait((activity.KIND_FRAME, frame))
+                    except asyncio.CancelledError:
+                        raise                 # 取消:外层 finally 会 cancel 本 task
+                    except Exception as exc:  # noqa: BLE001 一律转 RUN_ERROR,不断连
+                        feed.put_nowait((activity.KIND_FRAME, translator.run_error(
+                            f"{type(exc).__name__}: {exc}", code=type(exc).__name__)))
+                    else:
+                        # 流正常结束:补收尾(万一最后一帧还开着文本/思考)
+                        for frame in translator.finish_open():
+                            feed.put_nowait((activity.KIND_FRAME, frame))
+                    finally:
+                        feed.put_nowait((activity.KIND_END, None))
+
+                pump = asyncio.create_task(pump_stream())
+                async for frame in agui.mixed_frames(feed, translator):
                     yield agui.encode(frame)
             except asyncio.CancelledError:
                 # 客户端 abort(Stop 按钮)/ 掉线。**不能吞**:要让 ASGI 看见取消,
-                # 否则连接不释放。收尾帧也发不出去(连接已断),所以只记一句日志。
-                for frame in translator.finish_open():
-                    yield agui.encode(frame)
+                # 否则连接不释放。收尾帧也发不出去(连接已断),不再往里 yield;
+                # pump 在 finally 里被 cancel → `runtime.stream` 被同一把取消打断
+                # (与改造前"直接打断生成器"等价)。
                 raise
             except Exception as exc:  # noqa: BLE001 一律转 RUN_ERROR,不断连
                 yield agui.encode(translator.run_error(
                     f"{type(exc).__name__}: {exc}", code=type(exc).__name__))
             finally:
-                web.end(session.id)             # 必须在 finally:否则一次异常就永久卡住
+                if pump is not None:
+                    pump.cancel()        # 不 cancel 会把流留在后台跑到进程结束
+                web.close_activity(feed)  # 泄漏的队列会让广播越推越多
+                web.end(session.id)       # 必须在 finally:否则一次异常就永久卡住
 
         return StreamingResponse(gen(), media_type="text/event-stream", headers={
             "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no",

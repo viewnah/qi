@@ -1345,6 +1345,18 @@ pre,
  font-size: calc(var(--dsh-content-font-size-secondary) - 2px);
 }
 
+/* 直播:折叠行上代替“还没有的结果”的那行最新活动(委派运行中才有)。 */
+.tool-line__live {
+ flex: 0 1 auto;
+ min-width: 0;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+ color: var(--dsw-alias-label-tertiary);
+ font-family: var(--ds-font-family-code);
+ font-size: calc(var(--dsh-content-font-size-secondary) - 2px);
+}
+
 /* 形符 ✓/✗ 是**图形**,不是文本 —— 固定 11px,不跟着正文档位走(否则
    大字号偏好下它会抢过工具名)。 */
 .tool-line__mark {
@@ -3127,6 +3139,45 @@ pre,
  cursor: pointer;
  color: var(--dsw-alias-label-caption);
  font-size: 12px;
+}
+
+/* ── 委派直播(与 .seg 同一套行语言;唯一区别:虚线 = 还没定稿) ── */
+
+.act {
+ border-style: dashed;
+}
+
+/* 进行中的标记是 ▸,不是 ✓ —— 别让它先绿。 */
+.act .seg__mark {
+ color: var(--dsw-alias-label-secondary);
+}
+.act[data-ok="true"] .seg__mark {
+ color: var(--dsw-alias-state-success);
+}
+
+.act__task {
+ margin-top: 4px;
+ white-space: pre-wrap;
+ overflow-wrap: anywhere;
+ font-size: 12px;
+ line-height: 18px;
+ color: var(--dsw-alias-label-tertiary);
+}
+
+/* 当前轮的流式缓冲:轻脉动(与 tool-line__dot 同一套节奏)。 */
+.seg__line[data-zone="stream"] {
+ color: var(--dsw-alias-label-primary);
+ animation: qi-act-breathe 1.1s ease-in-out infinite;
+}
+@keyframes qi-act-breathe {
+ 50% {
+  opacity: 0.45;
+ }
+}
+@media (prefers-reduced-motion: reduce) {
+ .seg__line[data-zone="stream"] {
+  animation: none;
+ }
 }
 
 .ui-kv {

@@ -59,6 +59,33 @@ export interface SayRow {
   entryId?: string;
 }
 
+/**
+ * 一次子运行的直播状态(`ACTIVITY_SNAPSHOT.content`,design/web-lab.md 二期)。
+ *
+ * 一个 `run` 一条;嵌套委派**收敛到发起方那张工具卡**(后端用 `toolCallId` 归卡,
+ * 嵌套子运行共用同一个),所以一棵委派树在界面上是一张卡里并列的几条。
+ * `phase` 可能值见后端 `qi_lab/activity.PHASES`。
+ */
+export interface SubActivity {
+  run: string;
+  role: string;
+  parent: string;
+  depth: number;
+  task: string;
+  /** 最新帧的阶段(start/stream/act/think/done)。 */
+  phase: string;
+  /** 已发生的活动与思考行 —— 与结束后 result 段的同名行逐字同源(后端保证)。 */
+  lines: { zone: "act" | "think"; text: string }[];
+  /** `phase === "stream"` 时的当前轮缓冲(下一个 act/think 帧自然把它隐去)。 */
+  text?: string;
+  mode?: string;
+  ok?: boolean;
+  error?: string;
+}
+
+/** 后端 `qi_lab/activity.py` 的活动类型 —— 两处必须同值(有测试盯)。 */
+export const ACTIVITY_TYPE = "qi.subagent";
+
 export interface ToolRowData {
   kind: "tool";
   key: string;
@@ -72,6 +99,12 @@ export interface ToolRowData {
   result: string;
   /** 插件给客户端看的自由结构;渲染见 Rows.tsx 的 `Details`。 */
   details: Record<string, unknown> | null;
+  /**
+   * 委派直播的活动(一个子 run 一条)。**结束即清**(`TOOL_CALL_RESULT`):
+   * 结果回到 `result` 的横幅卡 —— 直播只是把同一批文字提前显示,留着就是
+   * 同一段话在一张卡里出两遍。
+   */
+  activity: SubActivity[];
 }
 
 export interface NoteRow {
@@ -116,6 +149,11 @@ export interface TurnState {
    * 里面没有这一轮的 user 消息(那是 run 开始后才落盘的),重新水合后要补回去。
    */
   pendingUser: string | null;
+  /**
+   * 直播帧早于工具卡到达时的暂存(后端同队列 FIFO保证正常不发生)。
+   * 兕底而不是丢弃:归错卡或丢帧都是直播最难查的那类 bug。
+   */
+  pendingActivity: Record<string, Record<string, unknown>[]>;
 }
 
 export const emptyTurn: TurnState = {
@@ -125,7 +163,89 @@ export const emptyTurn: TurnState = {
   phase: "idle",
   ids: {},
   pendingUser: null,
+  pendingActivity: {},
 };
+
+/**
+ * 一条直播内容 → 该 run 的条目(**纯函数**)。
+ *
+ * 帧是**覆盖式**的:act/think 追加一行,stream 覆盖当前轮缓冲,done 定格。
+ * 重复收到同一帧的 act 不会重复入行吗?—— 会:所以后端只发“新发生的行”,
+ * 前端不负责去重(去重要靠序号,而帧里刻意没有序号)。
+ */
+function reduceActivity(
+  list: SubActivity[],
+  raw: Record<string, unknown>,
+): SubActivity[] {
+  const run = asStr(raw.run);
+  const phase = asStr(raw.phase);
+  if (!run || !phase) return list;
+  const prev = list.find((e) => e.run === run);
+  const next: SubActivity = {
+    run,
+    role: asStr(raw.role, prev?.role ?? ""),
+    parent: asStr(raw.parent, prev?.parent ?? ""),
+    depth: asNum(raw.depth, prev?.depth ?? 1),
+    task: asStr(raw.task, prev?.task ?? ""),
+    phase,
+    lines: prev?.lines ?? [],
+    // 帧是覆盖式全量:没带的字段 = 没变,从前值继承(done 不会把 stream 冲掉)
+    text: prev?.text,
+    mode: prev?.mode,
+    ok: prev?.ok,
+    error: prev?.error,
+  };
+  if (phase === "act" || phase === "think") {
+    const line = asStr(raw.line);
+    if (line) next.lines = [...next.lines, { zone: phase, text: line }];
+  } else if (phase === "stream") {
+    next.text = asStr(raw.text);
+    next.mode = asStr(raw.mode, "text");
+  } else if (phase === "done") {
+    next.ok = raw.ok !== false;
+    next.error = asStr(raw.error);
+  }
+  return prev ? list.map((e) => (e.run === run ? next : e)) : [...list, next];
+}
+
+/** 把一条直播内容落到正确的工具卡上;卡还没建就暂存(见 `pendingActivity`)。 */
+function applyActivity(
+  state: TurnState,
+  raw: Record<string, unknown>,
+): TurnState {
+  if (asStr(raw.kind) !== "subagent") return state;
+  const callId = asStr(raw.toolCallId);
+  const run = asStr(raw.run);
+  if (!callId || !run) return state;
+  const key = state.ids[callId];
+  if (!key) {
+    return {
+      ...state,
+      pendingActivity: {
+        ...state.pendingActivity,
+        [callId]: [...(state.pendingActivity[callId] ?? []), raw],
+      },
+    };
+  }
+  return {
+    ...state,
+    rows: patchByKey(state.rows, key, (row) =>
+      row.kind === "tool"
+        ? { ...row, activity: reduceActivity(row.activity, raw) }
+        : row,
+    ),
+  };
+}
+
+/** 折叠行上的“最新一行直播”(运行中代替 result 的位置 —— 那时还没有 result)。 */
+export function latestActivityLine(entries: SubActivity[]): string | null {
+  const last = entries[entries.length - 1];
+  if (!last) return null;
+  if (last.phase === "stream" && last.text) return last.text;
+  const line = last.lines[last.lines.length - 1]?.text;
+  if (line) return line;
+  return last.task ? `${last.role || last.run} ${last.task}` : null;
+}
 
 let counter = 0;
 const nextKey = (prefix: string) => `${prefix}-${++counter}`;
@@ -350,6 +470,7 @@ export function fromEntries(entries: Entry[]): Row[] {
           error: e.error ?? null,
           result: e.result ?? "",
           details: e.details ?? null,
+          activity: [],        // 回放没有直播:活动只活在运行中的那一轮
         });
         break;
       case "compaction":
@@ -511,9 +632,18 @@ export function reduce(state: TurnState, ev: AguiEvent): TurnState {
     // ── 工具 ──
     case "TOOL_CALL_START": {
       const key = nextKey("tool");
+      const pending = state.pendingActivity[ev.toolCallId];
+      const pendingActivity = { ...state.pendingActivity };
+      delete pendingActivity[ev.toolCallId];
+      // 早到的帧先在暂存里攒着,卡一建好就注入(不丢帧)
+      const activity = (pending ?? []).reduce(
+        (acc, raw) => reduceActivity(acc, raw),
+        [] as SubActivity[],
+      );
       return {
         ...state,
         ids: { ...state.ids, [ev.toolCallId]: key },
+        pendingActivity,
         rows: [
           ...state.rows,
           {
@@ -528,6 +658,7 @@ export function reduce(state: TurnState, ev: AguiEvent): TurnState {
             error: null,
             result: "",
             details: null,
+            activity,
           },
         ],
       };
@@ -576,6 +707,8 @@ export function reduce(state: TurnState, ev: AguiEvent): TurnState {
                 error: typeof meta.error === "string" ? meta.error : null,
                 result: ev.content,
                 details,
+                // 直播退场:结果由横幅卡接管(同一批文字,不显两遍)
+                activity: [],
               }
             : row,
         ),
@@ -604,12 +737,19 @@ export function reduce(state: TurnState, ev: AguiEvent): TurnState {
     case "STEP_STARTED":
     case "STEP_FINISHED":
     case "STATE_DELTA":
-    case "ACTIVITY_SNAPSHOT":
     case "ACTIVITY_DELTA":
     case "RAW":
-      // 显式忽略:qi 目前不发这些;但留着分支,这样将来后端一开始发,
-      // 编译器不会因为"没处理"而报错,我们也不会以为它没被覆盖过。
+      // 显式忽略:ACTIVITY_DELTA 不发(qi 的直播每帧都是**覆盖式全量**,增量合并
+      // 是另一套语义,没需要就不做);其余几个 qi 目前不发。留着分支,这样将来
+      // 后端一开始发,编译器不会因为"没处理"而报错,我们也不会以为它没被覆盖过。
       return state;
+
+    case "ACTIVITY_SNAPSHOT": {
+      // 委派直播(design/web-lab.md 二期):按 toolCallId 归到工具卡,
+      // 一个子 run 一条;不认识的活动类型原样忽略(通用通道,别人也在用)。
+      if (ev.activityType !== ACTIVITY_TYPE) return state;
+      return applyActivity(state, asRecord(ev.content));
+    }
   }
 }
 

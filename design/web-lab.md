@@ -1,6 +1,6 @@
 # qi-lab 的多智能体过程展示(web 端委派可视化)
 
-> 状态:**一期已实现(2026-10-10);二期 / 三期未实现**。动手前先读 §6 红线与 §7 验收。
+> 状态:**一期、二期已实现(2026-10-10);三期未实现**。动手前先读 §6 红线与 §7 验收。
 > 一期的落地记录与两处与原计划的偏差写在 §5.1 末尾的「落地」小节;
 >
 > 相关文档:[web.md](web.md)(AG-UI 事件 / `details["ui"]` 词汇表,§16 是本文的落点)、
@@ -43,9 +43,9 @@ TUI 的平铺卡和 `runtime.notes`,**从来没进过 AG-UI 流**。
    词汇表 v1 只有 `done | active | pending`(`design/web.md` §16.2,行 644)→
    `Rows.tsx` 的三分支把 `error` 落进 else,画成 `○`、不加删除线;错误文本只在
    `note` 里当一行小字。修法:词汇表 v1.1 加 `error` 词 + `✗` 形符(降级规则见 §5.1)。
-2. **结构上不可能有“运行中”**(**待二期**):`details` 只在 `run_subagent` 返回前
+2. **结构上不可能有“运行中”**(**二期已解,2026-10-10**):`details` 只在 `run_subagent` 返回前
    构造一次(`subagent.py:698`),所以 `active` 永远不会出现 —— 这不是 bug,
-   是数据模型缺一层(见 §5.2)。
+   是数据模型缺一层 → 二期用 `ACTIVITY_SNAPSHOT` 把“运行中”那层补上(见 §5.2 落地)。
 
 ---
 
@@ -245,6 +245,25 @@ qi 目前 **A/B/C/D 一类都没有**:直播期空白 + 回放期文本墙。
   结束收起为摘要行(✓/✗),点开展开三区;全局一个开合键(对应 TUI 的 `ctrl+o`)。
 - 层级用 `depth` 缩进,**不画树地图**。
 - `/api/meta` capabilities 加 `activity`:前端有则画实时,无则退回一期。
+
+#### 落地(2026-10-10)
+
+| 方案里的设想 | 实际落地 | 为什么改 |
+| --- | --- | --- |
+| handler “按当前活跃会话过滤” | **广播**:每条开流的队列都收到(qi-agents 侧 `_web` → `runner._on_update` 的 bus 事件无会话号);前端按 `content.toolCallId` 收敛,不是本流的帧随新轮丢弃 | payload 里就没有会话身份 —— 要过滤得改 `src/`,不值得;归卡是硬事实(`tool_call_id`),认卡比认会话可靠 |
+| per-run 队列,主流循环排空 | **per-stream 单队列混装** `(kind, payload)`(`activity.py` 的三态 kind),主事件 pump 任务与 bus handler 都往里写,`agui.mixed_frames` 合并出帧 | 子运行期间主流静默(LLM 调用不产事件),活动帧若等主流事件就饿死;同一队列的 FIFO 还顺带保证“卡帧在前、活动在后” |
+| `phase: start \| think \| act \| done \| error` | `start \| stream \| act \| think \| done`(失败并入 `done` 的 `ok:false, error`);补上 `stream`(流式缓冲) | `error` 当阶段与 `ok/err` 双字段二选一;`stream` 是思考/正文的实时态,缺了直播只剩干巴巴的活动行 |
+| `messageId = subagentRunId` | `messageId = "qi-act-<run>"`(同一 run 的多帧共享)+ `replace: true` | 同一“消息”的更新应是同一 id;`subagentRunId` 单独放字段当归因键(与 AG-UI 多智能体字段同名) |
+| 收尾补 `SUBAGENT_STARTED/FINISHED/ERROR` | **未发**:只发 `ACTIVITY_SNAPSHOT` | 没有消费方;三期连 `MultiAgentCapabilities` 一起做才有意义 |
+| 结束时收敛进 `details.ui` | **一期已完成**(横幅契约);二期只管运行中,`TOOL_CALL_RESULT` 一到直播表清空 | 同一份文字不显两遍(回放红线的反面) |
+| `turn.ts` 按 `messageId` 归卡 | 按 `content.toolCallId` 归卡,早到帧进 `pendingActivity` 暂存(每轮清) | `messageId` 标的是“哪个子 run”,不是“哪张工具卡”;归卡必须用卡的 id |
+| capability `activity` | ✓ `/api/meta` 新增 `activity: true` | 没有它,界面退回一期(只能结束看) |
+
+推送端(qi-agents)只加了一个闭包 `_web(phase, **extra)`:五个调用点、吞掉一切异常 ——
+直播是旁路,推不成也不能带倒子运行。宿主侧的新增面是 `qi_lab/activity.py`(过滤与形状)+
+`state.py` 的订阅与广播(WeakSet 防强引用钉住被驱逐的 runtime)+ `agui.feed_activity` /
+`mixed_frames` + `app.py` 的双生产者队列。测试:`test_lab_activity.py`(22)与
+`test_qi_agents_activity.py`(6),含逐字一致的回放红线断言,变异验证 ×10(含前端 ×4)。
 
 ### 5.3 三期(可选,做完再评估)
 

@@ -15,6 +15,7 @@ import {
   groupProcess,
   hydrate,
   lastUsage,
+  latestActivityLine,
   reduce,
   withUserMessage,
 } from "./turn";
@@ -370,6 +371,7 @@ describe("groupProcess(把一轮的过程收成一个块)", () => {
       error: null,
       result: "",
       details: null,
+      activity: [],
     });
   const say = (key: string, tone: "final" | "narration"): Row =>
     row({ kind: "say", key, agent: "a", text: "话", live: false, tone });
@@ -418,5 +420,157 @@ describe("groupProcess(把一轮的过程收成一个块)", () => {
     expect(blocks.map((b) => b.kind)).toEqual([
       "process", "row", "process", "row",
     ]);
+  });
+});
+
+describe("委派直播(ACTIVITY_SNAPSHOT → 工具卡上的活动)", () => {
+  const toolStart: AguiEvent[] = [
+    { type: "TOOL_CALL_START", toolCallId: "c1", toolCallName: "run_subagent" },
+    { type: "TOOL_CALL_END", toolCallId: "c1" },
+  ];
+  /** 后端 activity.py 的 content 形状(缺省 = 一条顶层 scout 的 start 帧)。 */
+  const snap = (over: Record<string, unknown>): AguiEvent => {
+    const c = {
+      kind: "subagent",
+      run: "scout#1",
+      role: "scout",
+      parent: "qi",
+      depth: 1,
+      task: "读一遍",
+      phase: "start",
+      toolCallId: "c1",
+      ...over,
+    };
+    return {
+      type: "ACTIVITY_SNAPSHOT",
+      messageId: `qi-act-${String(c.run)}`,
+      activityType: "qi.subagent",
+      subagentRunId: String(c.run),
+      content: c,
+      replace: true,
+    };
+  };
+  const toolOf = (s: ReturnType<typeof reduce>): ToolRowData =>
+    s.rows.find((r) => r.kind === "tool") as ToolRowData;
+
+  it("落对卡、归成一条;归因字段齐全(act 帧也带 run/depth)", () => {
+    const s = run(
+      ...toolStart,
+      snap({}),
+      snap({ phase: "act", line: '· read {"path":"a.py"}' }),
+    );
+    expect(s.pendingActivity).toEqual({});
+    expect(toolOf(s).activity).toHaveLength(1);
+    expect(toolOf(s).activity[0]).toMatchObject({
+      run: "scout#1",
+      role: "scout",
+      parent: "qi",
+      depth: 1,
+      phase: "act",
+      lines: [{ zone: "act", text: '· read {"path":"a.py"}' }],
+    });
+  });
+
+  it("嵌套子 run 在同一张卡里并列(共用发起方的 toolCallId)", () => {
+    const s = run(
+      ...toolStart,
+      snap({}),
+      snap({ run: "child#2", role: "librarian", parent: "scout#1", depth: 2 }),
+    );
+    expect(toolOf(s).activity.map((e) => e.run)).toEqual(["scout#1", "child#2"]);
+    expect(toolOf(s).activity[1]).toMatchObject({ depth: 2, parent: "scout#1" });
+  });
+
+  it("stream 覆盖当前轮缓冲、done 定格;旧的行不丢", () => {
+    const s = run(
+      ...toolStart,
+      snap({ phase: "think", line: "✎ 第1轮: 先定范围" }),
+      snap({ phase: "stream", mode: "think", text: "先定范围" }),
+      snap({ phase: "stream", mode: "think", text: "先定范围,再看细节" }),
+      snap({ phase: "done", ok: false, error: "子运行失败" }),
+    );
+    expect(toolOf(s).activity[0]).toMatchObject({
+      phase: "done",
+      ok: false,
+      error: "子运行失败",
+      lines: [{ zone: "think", text: "✎ 第1轮: 先定范围" }],
+      text: "先定范围,再看细节",
+    });
+  });
+
+  it("帧早到:先暂存,卡建好时注入(不丢帧)", () => {
+    const early = run(snap({ phase: "start" }));
+    expect(early.pendingActivity["c1"]).toHaveLength(1);
+    expect(early.rows).toHaveLength(0);
+    let s = early;
+    for (const ev of toolStart) s = reduce(s, ev);
+    expect(s.pendingActivity).toEqual({});
+    expect(toolOf(s).activity).toHaveLength(1);
+  });
+
+  it("TOOL_CALL_RESULT 清空直播(结果由横幅卡接管,不显两遍)", () => {
+    const s = run(
+      ...toolStart,
+      snap({ phase: "act", line: '· read {"path":"a.py"}' }),
+      {
+        type: "TOOL_CALL_RESULT",
+        messageId: "tm1",
+        toolCallId: "c1",
+        content: "── scout (深度1, 成功) ──",
+        metadata: { "qi.tool": { status: "ok", duration_ms: 3, error: null } },
+      },
+    );
+    expect(toolOf(s).activity).toEqual([]);
+    expect(toolOf(s).result).toContain("scout");
+  });
+
+  it("不是我们的活动 / 缺归卡字段 → 原样不动", () => {
+    const base = run(...toolStart);
+    const bad = reduce(base, {
+      type: "ACTIVITY_SNAPSHOT",
+      messageId: "x",
+      activityType: "someone.else",
+      content: { kind: "subagent", run: "r", toolCallId: "c1" },
+    });
+    expect(bad).toBe(base);
+    const noRun = reduce(base, {
+      type: "ACTIVITY_SNAPSHOT",
+      messageId: "x",
+      activityType: "qi.subagent",
+      content: { kind: "subagent", phase: "start", toolCallId: "c1" },
+    });
+    expect(noRun).toBe(base);
+    const notOurs = reduce(base, {
+      type: "ACTIVITY_SNAPSHOT",
+      messageId: "x",
+      activityType: "qi.subagent",
+      content: { kind: "someone-else", run: "r", toolCallId: "c1", phase: "start" },
+    });
+    expect(notOurs).toBe(base);
+    const noCard = reduce(base, {
+      type: "ACTIVITY_SNAPSHOT",
+      messageId: "x",
+      activityType: "qi.subagent",
+      content: { kind: "subagent", run: "r", phase: "start" },
+    });
+    expect(noCard).toBe(base);   // 没有 toolCallId 就无从归卡:不动,而不是乱存
+  });
+
+  it("latestActivityLine:当前流优先,其次最后一行,最后退到任务", () => {
+    const s = run(
+      ...toolStart,
+      snap({ phase: "act", line: '· read {"path":"a.py"}' }),
+      snap({ phase: "stream", text: "正在生成" }),
+    );
+    expect(latestActivityLine(toolOf(s).activity)).toBe("正在生成");
+    const s2 = run(
+      ...toolStart,
+      snap({ phase: "act", line: '· read {"path":"a.py"}' }),
+      snap({ phase: "think" }),
+    );
+    expect(latestActivityLine(toolOf(s2).activity)).toBe('· read {"path":"a.py"}');
+    expect(latestActivityLine([])).toBeNull();
+    const s3 = run(...toolStart, snap({}));
+    expect(latestActivityLine(toolOf(s3).activity)).toBe("scout 读一遍");
   });
 });

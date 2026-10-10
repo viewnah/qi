@@ -105,6 +105,7 @@ curl -X PATCH http://127.0.0.1:3456/api/mcp -H 'X-Qi-Confirm: yes' -H 'Content-T
 | `mcp_write` | `/api/mcp` 的 POST/PATCH/DELETE(**没有它 → 界面把 MCP 节当只读**) |
 | `skill_write` | `/api/skills` 的 POST/DELETE + `/api/skills/import`(**没有它 → 技能节只读**) |
 | `agent_write` | `/api/agents` 的 DELETE(**没有它 → Agent 节只读**;读端点一直在) |
+| `activity` | 委派直播帧 `ACTIVITY_SNAPSHOT`(**没有它 → 运行中的子运行看不到在干什么**,退回一期) |
 | `ag_ui` / `ui_v1` | 事件形状是 AG-UI;`details["ui"]` 的词汇表(缺则退回折叠显示原始 JSON) |
 
 ### 5. 密钥不回显(读写两侧同一条)

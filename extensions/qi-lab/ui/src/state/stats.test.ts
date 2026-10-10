@@ -8,6 +8,7 @@
 import { describe, expect, it } from "vitest";
 import type { UsageSummary } from "../api/types";
 import { contextShare, countsLabel, formatTokens, processLabel } from "./stats";
+import type { ToolRowData } from "./turn";
 
 function usage(partial: Partial<UsageSummary> = {}): UsageSummary {
    return {
@@ -90,6 +91,7 @@ describe("processLabel(过程块收起时的那行字)", () => {
       error: null,
       result: "",
       details: null,
+      activity: [] as ToolRowData["activity"],   // as const 会把它冻成 readonly
     }) as const;
   const narration = (text: string) =>
     ({ kind: "say", key: "s", agent: null, text, live: false, tone: "narration" }) as const;

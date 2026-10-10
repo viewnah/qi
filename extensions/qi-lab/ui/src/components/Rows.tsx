@@ -27,6 +27,7 @@ import {
 } from "./icons";
 import { Markdown } from "../markdown/render";
 import { processLabel } from "../state/stats";
+import { latestActivityLine } from "../state/turn";
 import type {
   Block,
   ErrorRow,
@@ -35,6 +36,7 @@ import type {
   RouteRow,
   Row,
   SayRow,
+  SubActivity,
   ToolRowData,
   YouRow,
 } from "../state/turn";
@@ -200,6 +202,56 @@ function Segments({ segs }: { segs: SubSegment[] }) {
             </div>
           ) : null}
           {s.output ? <div className="seg__out">{s.output}</div> : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * **委派直播**:运行中的工具卡里,每个子 run 一张小卡(名字 · 父 · 深度 · 活动)。
+ *
+ * 行语言与结束后的 `Segments` 同一套(`seg__*`),所以前后读起来是同一段对话;
+ * 虚线边框是唯一的区别 —— 它还没定稿。结束后这张表整个消失,由 `result` 的
+ * 横幅卡接管(同一批文字不显两遍,见 `ToolRowData.activity`)。
+ */
+function ActivityPane({ entries }: { entries: SubActivity[] }) {
+  return (
+    <div className="segs">
+      {entries.map((e) => (
+        <div
+          key={e.run}
+          className="seg act"
+          data-ok={e.phase === "done" ? e.ok !== false : undefined}
+          style={{ marginInlineStart: `${(e.depth - 1) * 12}px` }}
+        >
+          <div className="seg__head">
+            <span className="seg__mark">
+              {e.phase !== "done" ? "▸" : e.ok !== false ? "✓" : "✗"}
+            </span>
+            <span className="seg__name">{e.role || e.run}</span>
+            <span className="seg__meta">
+              {e.parent ? `← ${e.parent} · ` : ""}深度 {e.depth}
+            </span>
+          </div>
+          {e.task ? <div className="act__task">{e.task}</div> : null}
+          {e.lines.length > 0 || (e.phase === "stream" && e.text) ? (
+            <div className="seg__zone">
+              {e.lines.map((l, j) => (
+                <div key={j} className="seg__line" data-zone={l.zone}>
+                  {l.text}
+                </div>
+              ))}
+              {e.phase === "stream" && e.text ? (
+                <div className="seg__line" data-zone="stream">
+                  {e.text}
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+          {e.phase === "done" && e.error ? (
+            <div className="seg__out">{e.error}</div>
+          ) : null}
         </div>
       ))}
     </div>
@@ -487,6 +539,9 @@ function Tool({ row }: { row: ToolRowData }) {
   // 展开时才解析:折叠行是常态,不为看不见的文本付解析代价。
   // 解析不出来 = null → 走下面的原始 `<pre>`,永远有退路。
   const segs = open && row.result ? parseBanners(row.result) : null;
+  // 运行中:折叠行带上最新一行直播(委派的那几秒里,它比参数更有信息量);
+  // 没直播就还是原来的空白 —— 不是委派的工具不受影响。
+  const live = running ? latestActivityLine(row.activity) : null;
   return (
     <div className="tool" data-status={row.status}>
       <button
@@ -500,6 +555,7 @@ function Tool({ row }: { row: ToolRowData }) {
           <i className="tool-line__dot" data-live={running} />
           <span className="tool-line__name">{row.tool}</span>
           <span className="tool-line__args">{args}</span>
+          {live ? <span className="tool-line__live">{live}</span> : null}
           <span className="tool-line__cost">{cost(row)}</span>
           {running ? null : (
             <span className="tool-line__mark" data-ok={row.status === "ok"}>
@@ -512,6 +568,10 @@ function Tool({ row }: { row: ToolRowData }) {
         <div className="tool__body">
           {/* 插件给的结构化详情排在最前:它是给人看的,result 是给模型的 */}
           {row.details ? <Details details={row.details} /> : null}
+          {/* 直播只在运行中出现;结束后 result 的横幅卡接管(同一批文字不显两遍) */}
+          {running && row.activity.length > 0 ? (
+            <ActivityPane entries={row.activity} />
+          ) : null}
           {/* 正文按横幅契约切成卡(切不动就整个退回原文,一个字不丢) */}
           {segs ? <Segments segs={segs} /> : null}
           {args ? (

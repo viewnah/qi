@@ -36,7 +36,7 @@ curl -s http://127.0.0.1:3456/api/meta | jq
     "sse": true, "streaming": true, "cancel": true,
     "auth_write": true, "config_read": true, "trajectory": true,
     "model_switch": true, "mcp_write": true, "skill_write": true,
-    "agent_write": true,
+    "agent_write": true, "activity": true,
     "ag_ui": true, "ui_v1": true
   }
 }
@@ -55,6 +55,7 @@ curl -s http://127.0.0.1:3456/api/meta | jq
 | `mcp_write` | `/api/mcp` 的 POST/PATCH/DELETE 存在 | **MCP 节退回只读**:不画"添加/编辑/删除" |
 | `skill_write` | `/api/skills` 的 POST/DELETE + `/api/skills/import` 存在 | **技能节退回只读**:不画"添加/删除/导入"(老宿主根本没有这三个端点) |
 | `agent_write` | `DELETE /api/agents` 存在 | **Agent 节退回只读**:不画"删除"(读端点一直在,所以只是少一个键) |
+| `activity` | 委派直播(`ACTIVITY_SNAPSHOT` 帧)在发 | **看不到子运行在干什么**:结束前的工具卡里只有参数(退回一期) |
 | `ag_ui` | 事件形状是 AG-UI | 退成折叠显示原始 JSON |
 | `ui_v1` | `details["ui"]` 的词汇表可用 | 同上 |
 

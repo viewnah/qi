@@ -88,6 +88,7 @@ data: {"type":"RUN_STARTED","timestamp":1730000000000,...}\n\n
 | `REASONING_START` / `REASONING_END` | 思考块边界 | |
 | `TOOL_CALL_START` / `TOOL_CALL_ARGS` / `TOOL_CALL_END` | 工具调用三段式。qi 在 `tool_start` 时已有**完整**参数,所以 Args 一次发完 | `toolCallId`, `toolCallName`, `delta` |
 | `TOOL_CALL_RESULT` | 工具结果 | `toolCallId`, `content`, `metadata["qi.tool"]` |
+| `ACTIVITY_SNAPSHOT` | **委派直播**:子运行期间随时插入(不在固定顺序) | `activityType`, `subagentRunId`, `content`, `replace` |
 | `RUN_FINISHED` | 正常结束 | `outcome:{type:"success"}`, `result`, `metadata["qi.usage"]` |
 | `RUN_ERROR` | 出错(**不断连**,帧内报错) | `message`, `code` |
 | `RAW` | 未知事件类型按 AG-UI 的 Raw 透传(不静默丢弃) | `event`, `data` |
@@ -102,6 +103,32 @@ data: {"type":"RUN_STARTED","timestamp":1730000000000,...}\n\n
 | `qi.narration` | 这段文本是"过程叙述"还是"最终回答"(`tool_calls` / `is_final` / `thinking`) |
 | `qi.compaction` | 压缩的 `start` / `end` 阶段 |
 | `qi.branch` | 分支变化 |
+
+### 委派直播:`ACTIVITY_SNAPSHOT`
+
+子运行(`qi-agents` 的委派)期间,这一帧**可能随时插在主事件之间**:它是某个子 run 的
+**最新全量**活动(`replace: true` + 稳定的 `messageId = qi-act-<run>` = “同一张状态的更新”,
+不是增量 —— 增量要发 `ACTIVITY_DELTA`,qi 刻意不发,少一套合并语义)。
+
+| 字段 | 含义 |
+| --- | --- |
+| `activityType` | `"qi.subagent"`(客户端按它认领;别的类型原样忽略 —— 这是通用通道) |
+| `subagentRunId` | 子 run 的稳定标识(同一 run 多帧相等) |
+| `content.kind` | `"subagent"` |
+| `content.run` / `role` / `parent` / `depth` / `task` | 归因,与 TUI 卡头、结束后的横幅同源 |
+| `content.phase` | `start` / `stream` / `act` / `think` / `done` |
+| `content.line` | `act`/`think` 的**整行**(`· tool …` / `✎ 第N轮: …`)—— 与结束后 `result` 段**逐字同源** |
+| `content.text` / `mode` | `stream` 的本轮缓冲(节流 `STREAM_FLUSH_INTERVAL` + 轮末强制)与种类(`think`/`text`) |
+| `content.ok` / `error` | `done` 的收束(error 截 300 字) |
+| `content.toolCallId` | **归卡**:落进哪张工具卡(嵌套子运行共用**发起方**那次调用 → 一棵树一张卡) |
+
+三条规则(与设计红线一一对应,见 `design/web-lab.md` §5.2 落地):
+
+1. **广播**:总线载荷里没有会话号,每个开流的订阅者都会收到所有 run 的帧;
+   本流不认识的 `toolCallId` 会在暂存里到新轮清空 —— 收敛无害、零成本(不是委派的流没有消费方)。
+2. **旁路**:直播失败不影响子运行与主流(qi-agents 的推送、宿主的分发都是吞异常的)。
+3. **回放红线**:直播的每一行都能在结束后从 `result` 段重放出来(逐字同源);
+   `TOOL_CALL_RESULT` 一到,直播表整体清空 —— 同一批文字不显两遍。
 
 ### 取消与错误
 

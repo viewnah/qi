@@ -515,6 +515,8 @@ export type AguiEvent =
         type: "ACTIVITY_SNAPSHOT";
         messageId: string;
         activityType: string;
+        /** qi 的直播帧带:同一子 run 的稳定标识(同一 run 的多帧相等)。 */
+        subagentRunId?: string;
         content: unknown;
         replace?: boolean;
      })

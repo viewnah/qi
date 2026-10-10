@@ -29,6 +29,8 @@ from typing import Any
 
 from qi_agent.models import AgentEvent
 
+from . import activity
+
 # ── 组帧(与官方 encodeSSE 逐字节一致)────────────────────────────────
 
 
@@ -347,6 +349,26 @@ class AguiTranslator:
         return [{**self._base("RAW"), "event": ev.kind,
                  "source": "qi", "data": {"text": ev.text, "data": ev.data}}]
 
+    def feed_activity(self, content: dict) -> list[dict]:
+        """委派直播 → `ACTIVITY_SNAPSHOT`(design/web-lab.md 二期)。
+
+        **一个子 run 一条稳定的活动消息**:`messageId` 只由 run 名决定,配 `replace: true`
+        → 客户端把它当“这条活动的最新全量”来覆盖(而不是追加一条新消息),
+        同一工具卡下多棵子树并存时靠 `content.run` 各自一条。
+
+        `subagentRunId` 是 AG-UI 多智能体事件族里的同名字段;`content.toolCallId`
+        是 qi 归卡的**主键**(嵌套委树收敛到发起方那次调用)。
+        """
+        run = content.get("run")
+        if not isinstance(run, str) or not run:
+            return []
+        return [{**self._base("ACTIVITY_SNAPSHOT"),
+                 "messageId": f"qi-act-{run}",
+                 "activityType": activity.ACTIVITY_TYPE,
+                 "subagentRunId": run,
+                 "replace": True,
+                 "content": content}]
+
     def finish_open(self) -> list[dict]:
         """流意外结束(出错/被取消)时补收尾,避免客户端停在 Start 状态。"""
         return self._close_open()
@@ -355,6 +377,27 @@ class AguiTranslator:
 def _now_ms() -> int:
     """毫秒时间戳。`time_ns` 而不是 `time()*1000`:避免浮点误差,也少一次转换。"""
     return time.time_ns() // 1_000_000
+
+
+async def mixed_frames(feed: Any, translator: AguiTranslator) -> Any:
+    """直播队列 → AG-UI 帧序列(**单一队列**,design/web-lab.md §5.2)。
+
+    队列里混着三种消息:`KIND_ACTIVITY`(直播内容,翻译成 `ACTIVITY_SNAPSHOT`)、
+    `KIND_FRAME`(主流的已成型帧)、`KIND_END`(哨兵)。同队列 FIFO 是这里最重要
+    的性质:子运行期间主流是静默的(LLM 调用不产事件),活动帧与工具卡帧不排队,
+    顺序就会错乱 —— 卡还没建、活动先到了。
+
+    纯消费逻辑:不碰 FastAPI、不碰 runtime,给一个假队列就能测。
+    """
+    while True:
+        kind, payload = await feed.get()
+        if kind == activity.KIND_END:
+            return
+        if kind == activity.KIND_ACTIVITY:
+            for frame in translator.feed_activity(payload if isinstance(payload, dict) else {}):
+                yield frame
+            continue
+        yield payload
 
 
 # ── 会话快照 → AG-UI ─────────────────────────────────────────────────

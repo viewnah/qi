@@ -3165,27 +3165,137 @@ pre,
  font-size: 12px;
 }
 
-/* ── 委派直播(与 .seg 同一套行语言;唯一区别:虚线 = 还没定稿) ── */
+/* ── 委派直播:一个子智能体一张卡(身份靠结构,不靠色相) ── */
 
-.act {
- border-style: dashed;
+.subs {
+ display: flex;
+ flex-direction: column;
+ gap: 8px;
 }
 
-/* 进行中的标记是 ▸,不是 ✓ —— 别让它先绿。 */
-.act .seg__mark {
- color: var(--dsw-alias-label-secondary);
+.sub {
+ max-width: 100%;
+ border: 1px solid var(--dsw-alias-border-l1);
+ border-inline-start-width: 3px;
+ border-radius: var(--dsw-radius-md);
+ background: var(--dsw-alias-bg-layer-1);
+ padding: 8px 10px;
+ animation: qi-sub-in 0.18s ease-out;
 }
-.act[data-ok="true"] .seg__mark {
+@keyframes qi-sub-in {
+ from {
+  opacity: 0;
+  transform: translateY(-2px);
+ }
+}
+
+/* 深度条:明度编码层级(不拿状态色冒充身份) */
+.sub[data-depth="1"] {
+ border-inline-start-color: var(--dsw-alias-label-primary);
+}
+.sub[data-depth="2"] {
+ border-inline-start-color: var(--dsw-alias-label-secondary);
+}
+.sub[data-depth="3"] {
+ border-inline-start-color: var(--dsw-alias-label-tertiary);
+}
+
+/* 活着的那张:更亮的边 + 更亮的底 —— 人一多,眼睛先看这里 */
+.sub[data-state="running"] {
+ border-color: var(--dsw-alias-border-l3);
+ background: var(--dsw-alias-bg-layer-2);
+}
+.sub[data-state="error"] {
+ border-color: var(--dsw-alias-state-error-primary);
+}
+
+.sub__head {
+ display: flex;
+ gap: 6px;
+ align-items: center;
+ font-size: 13px;
+ line-height: 20px;
+}
+
+.sub__badge {
+ flex: none;
+ width: 18px;
+ height: 18px;
+ border-radius: 5px;
+ background: var(--dsw-alias-bg-layer-3);
+ color: var(--dsw-alias-label-primary);
+ font-family: var(--ds-font-family-code);
+ font-size: 11px;
+ font-weight: 600;
+ line-height: 18px;
+ text-align: center;
+}
+
+.sub__name {
+ min-width: 0;
+ color: var(--dsw-alias-label-primary);
+ font-weight: 600;
+ overflow-wrap: anywhere;
+}
+
+.sub__meta {
+ flex: none;
+ margin-left: auto;
+ color: var(--dsw-alias-label-caption);
+ font-size: 11px;
+}
+
+.sub__pulse {
+ flex: none;
+ width: 6px;
+ height: 6px;
+ border-radius: 999px;
+ background: currentColor;
+ color: var(--dsw-alias-label-primary);
+ animation: qi-act-breathe 1.1s ease-in-out infinite;
+}
+
+.sub__mark {
+ flex: none;
+ font-size: 11px;
+}
+.sub__mark[data-ok="true"] {
  color: var(--dsw-alias-state-success);
 }
+.sub__mark[data-ok="false"] {
+ color: var(--dsw-alias-state-error-primary);
+}
 
-.act__task {
+.sub__task {
  margin-top: 4px;
  white-space: pre-wrap;
  overflow-wrap: anywhere;
  font-size: 12px;
  line-height: 18px;
  color: var(--dsw-alias-label-tertiary);
+}
+
+.sub__body {
+ display: flex;
+ flex-direction: column;
+ gap: 2px;
+ margin-top: 6px;
+}
+
+.sub__error {
+ margin-top: 6px;
+ white-space: pre-wrap;
+ overflow-wrap: anywhere;
+ font-size: 13px;
+ line-height: 20px;
+ color: var(--dsw-alias-state-error-primary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+ .sub,
+ .sub__pulse {
+  animation: none;
+ }
 }
 
 /* 当前轮的流式缓冲:轻脉动(与 tool-line__dot 同一套节奏)。 */

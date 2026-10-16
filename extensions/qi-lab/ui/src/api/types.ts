@@ -526,6 +526,32 @@ export type AguiEvent =
         activityType: string;
         patch: unknown[];
      })
+   // 多智能体(0.0.59 的 SUBAGENT_* 事件族):生 / 死走原生事件,内容走 ACTIVITY_*
+   | (Base & {
+        type: "SUBAGENT_STARTED";
+        subagentRunId: string;
+        name: string;
+        description?: string;
+        parentSubagentRunId?: string;
+        parentToolCallId?: string;
+        parentMessageId?: string;
+        /** qi 额外带的归卡 / 展示字段(`toolCallId` / `depth` / `parent`)。 */
+        metadata?: Record<string, unknown>;
+     })
+   | (Base & {
+        type: "SUBAGENT_FINISHED";
+        subagentRunId: string;
+        result?: unknown;
+        outcome?: unknown;
+        metadata?: Record<string, unknown>;
+     })
+   | (Base & {
+        type: "SUBAGENT_ERROR";
+        subagentRunId: string;
+        message: string;
+        code?: string;
+        metadata?: Record<string, unknown>;
+     })
    // 扩展点
    | (Base & { type: "CUSTOM"; name: string; value: unknown })
    | (Base & { type: "RAW"; event: unknown; source?: string });

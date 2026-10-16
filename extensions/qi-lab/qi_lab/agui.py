@@ -350,18 +350,51 @@ class AguiTranslator:
                  "source": "qi", "data": {"text": ev.text, "data": ev.data}}]
 
     def feed_activity(self, content: dict) -> list[dict]:
-        """委派直播 → `ACTIVITY_SNAPSHOT`(design/web-lab.md 二期)。
+        """委派直播 → AG-UI 帧(**按 phase 分两路**,design/web-lab.md 二期)。
 
-        **一个子 run 一条稳定的活动消息**:`messageId` 只由 run 名决定,配 `replace: true`
-        → 客户端把它当“这条活动的最新全量”来覆盖(而不是追加一条新消息),
-        同一工具卡下多棵子树并存时靠 `content.run` 各自一条。
+        `start` / `done` 是子智能体的**生命**:用 AG-UI 本来就有的
+        `SUBAGENT_STARTED` / `SUBAGENT_FINISHED` / `SUBAGENT_ERROR`(0.0.59 的
+        `EventType` 里就有),`parentToolCallId` 正好指回发起它的那张工具卡;
+        `stream` / `act` / `think` 是**内容**:`ACTIVITY_SNAPSHOT`,每 run 一条稳定
+        `messageId` + `replace: true`(这条活动的最新全量)。
 
-        `subagentRunId` 是 AG-UI 多智能体事件族里的同名字段;`content.toolCallId`
-        是 qi 归卡的**主键**(嵌套委树收敛到发起方那次调用)。
+        分两路的意义:前端先能把“谁被派了单”画成一张卡(名字 / 父 / 深度),
+        内容再往这张卡里长 —— 而不是从内容帧里倒推“好像多了个人”。
+        严格 AG-UI 客户端也认得生与死。
         """
         run = content.get("run")
         if not isinstance(run, str) or not run:
             return []
+        meta = _subagent_meta(content)
+        phase = content.get("phase")
+        if phase == "start":
+            name = _text(content.get("role")) or run
+            ev: dict = {**self._base("SUBAGENT_STARTED"),
+                        "subagentRunId": run, "name": name}
+            task = _text(content.get("task"))
+            if task:
+                ev["description"] = task
+            depth = content.get("depth")
+            parent = _text(content.get("parent"))
+            # 顶层那次由**主 agent** 派出:主 agent 不是子运行,没有父 run id
+            if isinstance(depth, int) and depth > 1 and parent:
+                ev["parentSubagentRunId"] = parent
+            call_id = content.get("toolCallId")
+            if isinstance(call_id, str) and call_id:
+                ev["parentToolCallId"] = call_id
+            if meta:
+                ev["metadata"] = meta
+            return [ev]
+        if phase == "done":
+            base: dict = {"subagentRunId": run}
+            if meta:
+                base["metadata"] = meta
+            if content.get("ok") is not False:
+                return [{**self._base("SUBAGENT_FINISHED"),
+                         **base, "outcome": {"type": "success"}}]
+            return [{**self._base("SUBAGENT_ERROR"), **base,
+                     "message": _text(content.get("error")) or "子运行失败",
+                     "code": "subagent_failed"}]
         return [{**self._base("ACTIVITY_SNAPSHOT"),
                  "messageId": f"qi-act-{run}",
                  "activityType": activity.ACTIVITY_TYPE,
@@ -372,6 +405,31 @@ class AguiTranslator:
     def finish_open(self) -> list[dict]:
         """流意外结束(出错/被取消)时补收尾,避免客户端停在 Start 状态。"""
         return self._close_open()
+
+
+def _text(value: Any) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _subagent_meta(content: dict) -> dict:
+    """`SUBAGENT_*` 的归卡与展示元数据(AG-UI 的 `metadata` 自由字段)。
+
+    `SUBAGENT_STARTED` 有 `parentToolCallId`,而 `SUBAGENT_FINISHED` /
+    `SUBAGENT_ERROR` **没有**这个字段(协议把死挂在 run id 上)。qi 的卡是按
+    “哪次工具调用”归的,所以三条事件都额外带一份 `metadata`,前端用同一把钥匙
+    (`toolCallId`)就能找到卡 —— 不必自己维护 run → 卡 的映射表。
+    """
+    out: dict = {}
+    call_id = content.get("toolCallId")
+    if isinstance(call_id, str) and call_id:
+        out["toolCallId"] = call_id
+    depth = content.get("depth")
+    if isinstance(depth, int):
+        out["depth"] = depth
+    parent = _text(content.get("parent"))
+    if parent:
+        out["parent"] = parent
+    return out
 
 
 def _now_ms() -> int:

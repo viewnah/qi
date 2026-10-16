@@ -72,7 +72,12 @@ export interface SubActivity {
   parent: string;
   depth: number;
   task: string;
-  /** 最新帧的阶段(start/stream/act/think/done)。 */
+  /**
+   * **生命状态**(AG-UI 原生 `SUBAGENT_STARTED` / `SUBAGENT_FINISHED` /
+   * `SUBAGENT_ERROR`)。界面“谁在跑”看它,不看 `phase`。
+   */
+  state: "running" | "done" | "error";
+  /** 内容阶段(`ACTIVITY_SNAPSHOT`):`start` / `stream` / `act` / `think`;定格后 `done`。 */
   phase: string;
   /** 已发生的活动与思考行 —— 与结束后 result 段的同名行逐字同源(后端保证)。 */
   lines: { zone: "act" | "think"; text: string }[];
@@ -153,7 +158,7 @@ export interface TurnState {
    * 直播帧早于工具卡到达时的暂存(后端同队列 FIFO保证正常不发生)。
    * 兕底而不是丢弃:归错卡或丢帧都是直播最难查的那类 bug。
    */
-  pendingActivity: Record<string, Record<string, unknown>[]>;
+  pendingActivity: Record<string, AguiEvent[]>;
 }
 
 export const emptyTurn: TurnState = {
@@ -167,63 +172,116 @@ export const emptyTurn: TurnState = {
 };
 
 /**
- * 一条直播内容 → 该 run 的条目(**纯函数**)。
+ * 一条直播事件 → 该子 run 的卡(**纯函数**)。
  *
- * 帧是**覆盖式**的:act/think 追加一行,stream 覆盖当前轮缓冲,done 定格。
- * 重复收到同一帧的 act 不会重复入行吗?—— 会:所以后端只发“新发生的行”,
- * 前端不负责去重(去重要靠序号,而帧里刻意没有序号)。
+ * 四类事件分两层,与协议同构:
+ * · **生 / 死**:`SUBAGENT_STARTED` 建卡,`SUBAGENT_FINISHED` / `SUBAGENT_ERROR` 定格;
+ * · **内容**:`ACTIVITY_SNAPSHOT` 的 act/think 追加一行、stream 覆盖当前轮缓冲。
+ * 内容帧对没见过的 run 也建卡(兜底):只发内容不发生命的宿主不会丢人。
+ *
+ * 帧是**覆盖式全量**:没带的字段从前值继承;行不去重 —— 后端只发新发生的行,
+ * 去重要靠序号,而帧里刻意没有序号。
  */
-function reduceActivity(
-  list: SubActivity[],
-  raw: Record<string, unknown>,
-): SubActivity[] {
+function mergeActivity(list: SubActivity[], ev: AguiEvent): SubActivity[] {
+  if (ev.type === "SUBAGENT_FINISHED" || ev.type === "SUBAGENT_ERROR") {
+    const failed = ev.type === "SUBAGENT_ERROR";
+    return list.map((e) =>
+      e.run === ev.subagentRunId
+        ? {
+            ...e,
+            state: failed ? "error" : "done",
+            phase: "done",
+            ok: !failed,
+            error: failed ? ev.message : e.error,
+          }
+        : e,
+    );
+  }
+  if (ev.type === "SUBAGENT_STARTED") {
+    const meta = asRecord(ev.metadata);
+    return upsertActivity(list, {
+      run: ev.subagentRunId,
+      role: ev.name || ev.subagentRunId,
+      parent: asStr(meta.parent),
+      depth: asNum(meta.depth, 1),
+      task: ev.description ?? "",
+      phase: "start",
+      state: "running",
+      lines: [],
+    });
+  }
+  if (ev.type !== "ACTIVITY_SNAPSHOT") return list;
+  const raw = asRecord(ev.content);
   const run = asStr(raw.run);
-  const phase = asStr(raw.phase);
-  if (!run || !phase) return list;
+  const phase = asStr(raw.phase, "act");
   const prev = list.find((e) => e.run === run);
-  const next: SubActivity = {
-    run,
-    role: asStr(raw.role, prev?.role ?? ""),
-    parent: asStr(raw.parent, prev?.parent ?? ""),
-    depth: asNum(raw.depth, prev?.depth ?? 1),
-    task: asStr(raw.task, prev?.task ?? ""),
-    phase,
-    lines: prev?.lines ?? [],
-    // 帧是覆盖式全量:没带的字段 = 没变,从前值继承(done 不会把 stream 冲掉)
-    text: prev?.text,
-    mode: prev?.mode,
-    ok: prev?.ok,
-    error: prev?.error,
-  };
+  const next: SubActivity = prev
+    ? { ...prev, phase }
+    : {
+        run,
+        role: asStr(raw.role),
+        parent: asStr(raw.parent),
+        depth: asNum(raw.depth, 1),
+        task: asStr(raw.task),
+        phase,
+        state: "running",
+        lines: [],
+      };
   if (phase === "act" || phase === "think") {
     const line = asStr(raw.line);
     if (line) next.lines = [...next.lines, { zone: phase, text: line }];
   } else if (phase === "stream") {
     next.text = asStr(raw.text);
     next.mode = asStr(raw.mode, "text");
-  } else if (phase === "done") {
-    next.ok = raw.ok !== false;
-    next.error = asStr(raw.error);
   }
-  return prev ? list.map((e) => (e.run === run ? next : e)) : [...list, next];
+  return upsertActivity(list, next);
 }
 
-/** 把一条直播内容落到正确的工具卡上;卡还没建就暂存(见 `pendingActivity`)。 */
-function applyActivity(
-  state: TurnState,
-  raw: Record<string, unknown>,
-): TurnState {
-  if (asStr(raw.kind) !== "subagent") return state;
-  const callId = asStr(raw.toolCallId);
-  const run = asStr(raw.run);
-  if (!callId || !run) return state;
+/** 同 run 替换、异 run 追加 —— 一张工具卡下多棵子树并存(`run` 是身份)。 */
+function upsertActivity(list: SubActivity[], entry: SubActivity): SubActivity[] {
+  return list.some((e) => e.run === entry.run)
+    ? list.map((e) => (e.run === entry.run ? entry : e))
+    : [...list, entry];
+}
+
+/**
+ * 这条事件该落到哪张工具卡(null = 不是我们的 / 归不了卡)。
+ *
+ * 三把钥匙同一把锁 —— 都指向“哪次工具调用”:
+ * · 出生:协议的 `parentToolCallId`(0.0.59 就有,正好指回发起它的工具卡);
+ * · 内容:`content.toolCallId`(qi 抬上去的主键);
+ * · 死亡:协议没给归属字段,qi 用 `metadata.toolCallId` 补上。
+ * `activityType` / `kind` / `run` 的校验都在这里 —— 别的扩展的活动帧从这挡掉。
+ */
+function activityCallId(ev: AguiEvent): string | null {
+  if (ev.type === "SUBAGENT_STARTED") {
+    if (!ev.subagentRunId) return null;
+    return ev.parentToolCallId ?? (asStr(asRecord(ev.metadata).toolCallId) || null);
+  }
+  if (ev.type === "SUBAGENT_FINISHED" || ev.type === "SUBAGENT_ERROR") {
+    if (!ev.subagentRunId) return null;
+    return asStr(asRecord(ev.metadata).toolCallId) || null;
+  }
+  if (ev.type === "ACTIVITY_SNAPSHOT") {
+    if (ev.activityType !== ACTIVITY_TYPE) return null;
+    const raw = asRecord(ev.content);
+    if (asStr(raw.kind) !== "subagent" || !asStr(raw.run)) return null;
+    return asStr(raw.toolCallId) || null;
+  }
+  return null;
+}
+
+/** 把一条直播事件落到正确的工具卡上;卡还没建就暂存(见 `pendingActivity`)。 */
+function applyActivity(state: TurnState, ev: AguiEvent): TurnState {
+  const callId = activityCallId(ev);
+  if (!callId) return state;
   const key = state.ids[callId];
   if (!key) {
     return {
       ...state,
       pendingActivity: {
         ...state.pendingActivity,
-        [callId]: [...(state.pendingActivity[callId] ?? []), raw],
+        [callId]: [...(state.pendingActivity[callId] ?? []), ev],
       },
     };
   }
@@ -231,7 +289,7 @@ function applyActivity(
     ...state,
     rows: patchByKey(state.rows, key, (row) =>
       row.kind === "tool"
-        ? { ...row, activity: reduceActivity(row.activity, raw) }
+        ? { ...row, activity: mergeActivity(row.activity, ev) }
         : row,
     ),
   };
@@ -635,9 +693,9 @@ export function reduce(state: TurnState, ev: AguiEvent): TurnState {
       const pending = state.pendingActivity[ev.toolCallId];
       const pendingActivity = { ...state.pendingActivity };
       delete pendingActivity[ev.toolCallId];
-      // 早到的帧先在暂存里攒着,卡一建好就注入(不丢帧)
+      // 早到的事件先在暂存里攒着,卡一建好就注入(不丢帧)
       const activity = (pending ?? []).reduce(
-        (acc, raw) => reduceActivity(acc, raw),
+        (acc, ev) => mergeActivity(acc, ev),
         [] as SubActivity[],
       );
       return {
@@ -744,12 +802,18 @@ export function reduce(state: TurnState, ev: AguiEvent): TurnState {
       // 后端一开始发,编译器不会因为"没处理"而报错,我们也不会以为它没被覆盖过。
       return state;
 
-    case "ACTIVITY_SNAPSHOT": {
-      // 委派直播(design/web-lab.md 二期):按 toolCallId 归到工具卡,
-      // 一个子 run 一条;不认识的活动类型原样忽略(通用通道,别人也在用)。
-      if (ev.activityType !== ACTIVITY_TYPE) return state;
-      return applyActivity(state, asRecord(ev.content));
-    }
+    case "SUBAGENT_STARTED":
+    case "SUBAGENT_FINISHED":
+    case "SUBAGENT_ERROR":
+      // 子智能体的生 / 死(AG-UI 多智能体事件族,0.0.59 就有)。生按协议的
+      // `parentToolCallId` 归卡、死按 qi 补的 `metadata.toolCallId` 归卡 ——
+      // 先有一张“谁被派了单”的卡,内容再由 ACTIVITY_SNAPSHOT 往里面长。
+      return applyActivity(state, ev);
+
+    case "ACTIVITY_SNAPSHOT":
+      // 直播的内容通道:认领 `activityType` 是 qi.subagent 的那些(别的类型在
+      // `activityCallId` 里被挡掉 —— ACTIVITY_* 是通用通道,别人也在用)。
+      return applyActivity(state, ev);
   }
 }
 

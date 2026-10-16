@@ -215,45 +215,81 @@ function Segments({ segs }: { segs: SubSegment[] }) {
  * 虚线边框是唯一的区别 —— 它还没定稿。结束后这张表整个消失,由 `result` 的
  * 横幅卡接管(同一批文字不显两遍,见 `ToolRowData.activity`)。
  */
-function ActivityPane({ entries }: { entries: SubActivity[] }) {
+/**
+ * **一个子智能体一张卡** —— “谁是谁”靠**结构**区分,不靠色相。
+ *
+ * dsw 的呈现 token 池里只有 deepseek / red / green / amber 四个色相,其中三个是
+ * 状态语义色:拿绿色标 agent,用户会读成“它成功了”。所以身份的载体是:
+ *   · 首字母**徽标**(方块,一眼扫得到);
+ *   · 名字**加粗、正文档位**(不再是 11px caption);
+ *   · 层级靠**缩进 + 左侧深度条**(明度编码层级,不误导);
+ *   · 归属写全(`← 由 X 指派 · 深度 N`);
+ *   · **活着才有脉动点与更亮的边框** —— 名字一多,眼睛先找到正在跑的那个。
+ *
+ * 行语言与结束后的 `Segments` 同一套(`seg__line`),前后读起来是同一段对话;
+ * 结束后这张表整个消失,结果交给横幅卡(同一批文字不显两遍)。
+ */
+function SubagentCard({ e }: { e: SubActivity }) {
+  const running = e.state === "running";
   return (
-    <div className="segs">
-      {entries.map((e) => (
-        <div
-          key={e.run}
-          className="seg act"
-          data-ok={e.phase === "done" ? e.ok !== false : undefined}
-          style={{ marginInlineStart: `${(e.depth - 1) * 12}px` }}
-        >
-          <div className="seg__head">
-            <span className="seg__mark">
-              {e.phase !== "done" ? "▸" : e.ok !== false ? "✓" : "✗"}
-            </span>
-            <span className="seg__name">{e.role || e.run}</span>
-            <span className="seg__meta">
-              {e.parent ? `← ${e.parent} · ` : ""}深度 {e.depth}
-            </span>
-          </div>
-          {e.task ? <div className="act__task">{e.task}</div> : null}
-          {e.lines.length > 0 || (e.phase === "stream" && e.text) ? (
-            <div className="seg__zone">
-              {e.lines.map((l, j) => (
-                <div key={j} className="seg__line" data-zone={l.zone}>
-                  {l.text}
-                </div>
-              ))}
-              {e.phase === "stream" && e.text ? (
-                <div className="seg__line" data-zone="stream">
-                  {e.text}
-                  <i className="seg__caret" aria-hidden="true" />
-                </div>
-              ) : null}
+    <div
+      className="sub"
+      data-state={e.state}
+      data-depth={Math.min(Math.max(e.depth, 1), 3)}
+      style={{ marginInlineStart: `${(e.depth - 1) * 14}px` }}
+    >
+      <div className="sub__head">
+        <AgentBadge name={e.role || e.run} />
+        <span className="sub__name">{e.role || e.run}</span>
+        <span className="sub__meta">
+          {e.parent ? `← 由 ${e.parent} 指派 · ` : ""}深度 {e.depth}
+        </span>
+        {running ? (
+          <i className="sub__pulse" data-live="true" />
+        ) : (
+          <span className="sub__mark" data-ok={e.state === "done"}>
+            {e.state === "done" ? "✓" : "✗"}
+          </span>
+        )}
+      </div>
+      {e.task ? <div className="sub__task">{e.task}</div> : null}
+      {e.lines.length > 0 || (e.phase === "stream" && e.text) ? (
+        <div className="sub__body">
+          {e.lines.map((l, j) => (
+            <div key={j} className="seg__line" data-zone={l.zone}>
+              {l.text}
+            </div>
+          ))}
+          {e.phase === "stream" && e.text ? (
+            <div className="seg__line" data-zone="stream">
+              {e.text}
+              <i className="seg__caret" aria-hidden="true" />
             </div>
           ) : null}
-          {e.phase === "done" && e.error ? (
-            <div className="seg__out">{e.error}</div>
-          ) : null}
         </div>
+      ) : null}
+      {e.state === "error" && e.error ? (
+        <div className="sub__error">{e.error}</div>
+      ) : null}
+    </div>
+  );
+}
+
+/** 首字母徽标 —— 身份的第一眼(不靠色相,也不靠差一点点的字号)。 */
+function AgentBadge({ name }: { name: string }) {
+  const ch = (name.trim()[0] ?? "?").toUpperCase();
+  return (
+    <span className="sub__badge" aria-hidden="true">
+      {ch}
+    </span>
+  );
+}
+
+function ActivityPane({ entries }: { entries: SubActivity[] }) {
+  return (
+    <div className="subs">
+      {entries.map((e) => (
+        <SubagentCard key={e.run} e={e} />
       ))}
     </div>
   );

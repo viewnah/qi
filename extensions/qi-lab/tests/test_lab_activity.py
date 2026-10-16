@@ -99,6 +99,57 @@ def test_feed_activity_without_run_emits_nothing():
     assert tr.feed_activity({"run": ""}) == []
 
 
+def _qi_content(**over: object) -> dict:
+    """qi-agents 真发的 content(缺省 = scout 的一条活动帧)。"""
+    c: dict = {"kind": "subagent", "run": "scout#1", "role": "scout",
+               "parent": "qi", "depth": 1, "task": "读一遍",
+               "toolCallId": "call_1", "phase": "act"}
+    c.update(over)
+    return c
+
+
+def _envelope(qi: dict) -> dict:
+    """qi-agents 推送 + runner 外层的完整 payload 形状。"""
+    return {"tool_call_id": "call_1", "partial_result": {"qi": qi}}
+
+
+def test_start_becomes_a_native_subagent_started():
+    """生:**AG-UI 原生的 `SUBAGENT_STARTED`**(不是我们自造的类型)。"""
+    tr = AguiTranslator(thread_id="t", run_id="r")
+    (frame,) = tr.feed_activity(_qi_content(phase="start"))
+    assert frame["type"] == "SUBAGENT_STARTED"
+    assert frame["subagentRunId"] == "scout#1" and frame["name"] == "scout"
+    assert frame["description"] == "读一遍", "子任务进 description"
+    assert frame["parentToolCallId"] == "call_1", "指回发起它的那张工具卡"
+    assert frame["metadata"] == {"toolCallId": "call_1", "depth": 1,
+                                 "parent": "qi"}, "深度与父:展示要用"
+
+
+def test_only_nested_runs_carry_a_parent_run_id():
+    """顶层由**主 agent** 派出 —— 主 agent 不是子运行,不发 parentSubagentRunId。"""
+    tr = AguiTranslator(thread_id="t", run_id="r")
+    (top,) = tr.feed_activity(_qi_content(phase="start", depth=1))
+    assert "parentSubagentRunId" not in top
+    (nested,) = tr.feed_activity(
+        _qi_content(phase="start", depth=2, parent="coordinator"))
+    assert nested["parentSubagentRunId"] == "coordinator"
+
+
+def test_done_becomes_finished_or_error():
+    """死:成功 `SUBAGENT_FINISHED`,失败 `SUBAGENT_ERROR` —— 都拿 metadata 归卡。"""
+    tr = AguiTranslator(thread_id="t", run_id="r")
+    (ok,) = tr.feed_activity(_qi_content(phase="done", ok=True))
+    assert ok["type"] == "SUBAGENT_FINISHED" and ok["outcome"] == {"type": "success"}
+    assert ok["metadata"]["toolCallId"] == "call_1", \
+        "FINISHED 在协议里没有 parentToolCallId:归卡靠 metadata"
+
+    (bad,) = tr.feed_activity(
+        _qi_content(phase="done", ok=False, error="子运行失败"))
+    assert bad["type"] == "SUBAGENT_ERROR"
+    assert bad["message"] == "子运行失败" and bad["code"] == "subagent_failed"
+    assert bad["metadata"]["toolCallId"] == "call_1"
+
+
 class _Feed:
     """假队列:与 `WebState` 的消息形状一致 `(kind, payload)`。"""
 
@@ -239,7 +290,12 @@ def test_activity_snapshot_arrives_in_the_stream(tmp_path, monkeypatch):
     app = create_app(cwd=project, state=state, allowed_hosts=[], bind_host="127.0.0.1")
     # runtime_for 在 gen 开头被调 → 订阅那时已挂(这里再确认一次,不用等流)
     assert state.runtime_for(project).bus.has("tool_execution_update")
-    llm.inject = lambda: state._on_activity(PAYLOAD, None)
+    llm.inject = lambda: [
+        state._on_activity(p, None)
+        for p in (_envelope(_qi_content(phase="start")),
+                  PAYLOAD,
+                  _envelope(_qi_content(phase="done", ok=True)))
+    ]
 
     with TestClient(app, base_url="http://127.0.0.1") as client:
         sid = client.post("/api/sessions", json={"title": "t",
@@ -255,9 +311,16 @@ def test_activity_snapshot_arrives_in_the_stream(tmp_path, monkeypatch):
 
     kinds = [f.get("type") for f in frames]
     assert "RUN_STARTED" in kinds and "RUN_FINISHED" in kinds, kinds
-    assert kinds.index("ACTIVITY_SNAPSHOT") > kinds.index("RUN_STARTED")
-    assert kinds.index("ACTIVITY_SNAPSHOT") < kinds.index("RUN_FINISHED"), \
-        "直播帧必须落在流里(既不是流外,也不是流后)"
+    for want in ("SUBAGENT_STARTED", "ACTIVITY_SNAPSHOT", "SUBAGENT_FINISHED"):
+        assert want in kinds, kinds
+        assert kinds.index("RUN_STARTED") < kinds.index(want) < kinds.index("RUN_FINISHED"), \
+            "直播帧必须落在流里(既不是流外,也不是流后)"
+    assert (kinds.index("SUBAGENT_STARTED") < kinds.index("ACTIVITY_SNAPSHOT")
+            < kinds.index("SUBAGENT_FINISHED")), "生 → 内容 → 死:单队列 FIFO 保证"
+    start = frames[kinds.index("SUBAGENT_STARTED")]
+    assert start["name"] == "scout" and start["parentToolCallId"] == "call_1"
+    finish = frames[kinds.index("SUBAGENT_FINISHED")]
+    assert finish["subagentRunId"] == "scout#1" and finish["outcome"] == {"type": "success"}
     snap = frames[kinds.index("ACTIVITY_SNAPSHOT")]
     assert snap["activityType"] == "qi.subagent"
     assert snap["content"]["run"] == "scout#1" and snap["content"]["toolCallId"] == "call_1"

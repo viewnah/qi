@@ -1,6 +1,6 @@
 # qi-lab 的多智能体过程展示(web 端委派可视化)
 
-> 状态:**一期、二期已实现(2026-10-10);三期未实现**。动手前先读 §6 红线与 §7 验收。
+> 状态:**一期、二期已实现(2026-10-10,含子智能体区分修版);三期未实现**。动手前先读 §6 红线与 §7 验收。
 > 一期的落地记录与两处与原计划的偏差写在 §5.1 末尾的「落地」小节;
 >
 > 相关文档:[web.md](web.md)(AG-UI 事件 / `details["ui"]` 词汇表,§16 是本文的落点)、
@@ -254,7 +254,7 @@ qi 目前 **A/B/C/D 一类都没有**:直播期空白 + 回放期文本墙。
 | per-run 队列,主流循环排空 | **per-stream 单队列混装** `(kind, payload)`(`activity.py` 的三态 kind),主事件 pump 任务与 bus handler 都往里写,`agui.mixed_frames` 合并出帧 | 子运行期间主流静默(LLM 调用不产事件),活动帧若等主流事件就饿死;同一队列的 FIFO 还顺带保证“卡帧在前、活动在后” |
 | `phase: start \| think \| act \| done \| error` | `start \| stream \| act \| think \| done`(失败并入 `done` 的 `ok:false, error`);补上 `stream`(流式缓冲) | `error` 当阶段与 `ok/err` 双字段二选一;`stream` 是思考/正文的实时态,缺了直播只剩干巴巴的活动行 |
 | `messageId = subagentRunId` | `messageId = "qi-act-<run>"`(同一 run 的多帧共享)+ `replace: true` | 同一“消息”的更新应是同一 id;`subagentRunId` 单独放字段当归因键(与 AG-UI 多智能体字段同名) |
-| 收尾补 `SUBAGENT_STARTED/FINISHED/ERROR` | **未发**:只发 `ACTIVITY_SNAPSHOT` | 没有消费方;三期连 `MultiAgentCapabilities` 一起做才有意义 |
+| 收尾补 `SUBAGENT_STARTED/FINISHED/ERROR` | **已发**(见下面的修版) | 用户反馈“分不清谁是谁”暴露了根因:生命与内容混在一个通道里,前端只能倒推;0.0.59 里本来就有原生事件 |
 | 结束时收敛进 `details.ui` | **一期已完成**(横幅契约);二期只管运行中,`TOOL_CALL_RESULT` 一到直播表清空 | 同一份文字不显两遍(回放红线的反面) |
 | `turn.ts` 按 `messageId` 归卡 | 按 `content.toolCallId` 归卡,早到帧进 `pendingActivity` 暂存(每轮清) | `messageId` 标的是“哪个子 run”,不是“哪张工具卡”;归卡必须用卡的 id |
 | capability `activity` | ✓ `/api/meta` 新增 `activity: true` | 没有它,界面退回一期(只能结束看) |
@@ -262,8 +262,53 @@ qi 目前 **A/B/C/D 一类都没有**:直播期空白 + 回放期文本墙。
 推送端(qi-agents)只加了一个闭包 `_web(phase, **extra)`:五个调用点、吞掉一切异常 ——
 直播是旁路,推不成也不能带倒子运行。宿主侧的新增面是 `qi_lab/activity.py`(过滤与形状)+
 `state.py` 的订阅与广播(WeakSet 防强引用钉住被驱逐的 runtime)+ `agui.feed_activity` /
-`mixed_frames` + `app.py` 的双生产者队列。测试:`test_lab_activity.py`(22)与
+`mixed_frames` + `app.py` 的双生产者队列。测试:`test_lab_activity.py`(25)与
 `test_qi_agents_activity.py`(6),含逐字一致的回放红线断言,变异验证 ×10(含前端 ×4)。
+
+#### 修版:子智能体是协议的一等事件,界面上是**一张有身份的卡**(2026-10-10)
+
+用户反馈:「还是不行,我希望在思考过程中分配到不同子智能体,能明显区分不同子智能体。」
+分两件事修。
+
+**一、协议:生命与内容分开(AG-UI 已有,不必发明)**
+
+一期把生 / 死也塞进 `ACTIVITY_SNAPSHOT` 的 `phase` 里 —— 能用,但前端只能**从内容帧里
+倒推“好像多了个人”**。0.0.59 的 `EventType` 里本来就有 `SUBAGENT_STARTED /
+FINISHED / ERROR`:
+
+- 生:`SUBAGENT_STARTED{subagentRunId, name, description, parentToolCallId, parentSubagentRunId?}`
+  —— `parentToolCallId` 正好指回发起它的那张工具卡;
+- 死:`SUBAGENT_FINISHED{subagentRunId, outcome}` / `SUBAGENT_ERROR{subagentRunId, message, code}`;
+- 内容:`ACTIVITY_SNAPSHOT{activityType, content, replace, subagentRunId}`(不变)。
+
+`SUBAGENT_FINISHED / ERROR` 协议里没有归属字段 → qi 在三条事件上都带一份
+`metadata{toolCallId, depth, parent}`(AG-UI 允许的自由字段),前端三把钥匙同一把锁。
+
+1.0 另给了 `ActivityMessage{role:"activity", subagentRunId?}` 与
+`MultiAgentCapabilities{subagents:[SubagentInfo{name, description?}]}` —— 前者是
+“活动作为一种消息”、后者是“声明有哪些角色”。三期做角色选择器时用得上,二期不需要。
+
+**二、视觉:身份靠结构,不靠色相**
+
+先查了 dsw 的呈现 token 池(实测):只有 deepseek(蓝紫)/ red / green / amber
+四个色相,其中三个是**状态语义色**。拿绿色标一个 agent,用户会读成“它成功了” ——
+所以身份不能用色相:
+
+| 手段 | 作用 |
+| --- | --- |
+| 首字母**徽标**(方块,`bg-layer-3`) | 扫读时第一眼区分(scout / librarian / scribe) |
+| 名字**加粗 + 正文档位** | 不再是 11px caption —— 它是这张卡的主语 |
+| **缩进 + 左侧深度条**(明度编码层级) | 一眼看出谁在谁下面,且不冒充状态色 |
+| 归属写全 `← 由 X 指派 · 深度 N` | 用户问的“分配到不同子智能体”就是这一行 |
+| **活着才有脉动点 + 更亮的边与底** | 人一多,眼睛先找到正在跑的那个 |
+| 入场动画(`prefers-reduced-motion` 关) | 新 agent 出现时不被长列表吃掉 |
+
+活动行继续用一期的一行语言(`· tool …` / `✎ 第N轮: …`),所以运行中看到的与结束后
+横幅卡里重放的是同一段文字(回放红线)。行语言与 `Segments` 同源(`seg__line`),
+但卡片外壳分开:`sub*` = 运行中(未定稿),`seg` = 结束后(已定稿)。
+
+前端契约守卫(`ui/src/api/contract.test.ts`)在这次改动的第一轮里就变红了 ——
+它从 python 源码刮事件类型与前端清单对拍,`SUBAGENT_*` 三条被当场要求声明。
 
 ### 5.3 三期(可选,做完再评估)
 

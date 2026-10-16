@@ -37,6 +37,11 @@ const HANDLED = [
   "STATE_SNAPSHOT",
   "MESSAGES_SNAPSHOT",
   "CUSTOM",
+  // 委派直播(design/web-lab.md 二期):生命走原生 SUBAGENT_*,内容走 ACTIVITY_*
+  "SUBAGENT_STARTED",
+  "SUBAGENT_FINISHED",
+  "SUBAGENT_ERROR",
+  "ACTIVITY_SNAPSHOT",
 ];
 
 /** 前端**按设计**不渲染的类型(有理由,不是漏掉)。 */
@@ -44,7 +49,6 @@ const IGNORED_BY_DESIGN = [
   "STEP_STARTED",
   "STEP_FINISHED",
   "STATE_DELTA",
-  "ACTIVITY_SNAPSHOT",
   "ACTIVITY_DELTA",
   "RAW",
 ];

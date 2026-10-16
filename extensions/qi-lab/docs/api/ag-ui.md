@@ -88,7 +88,8 @@ data: {"type":"RUN_STARTED","timestamp":1730000000000,...}\n\n
 | `REASONING_START` / `REASONING_END` | 思考块边界 | |
 | `TOOL_CALL_START` / `TOOL_CALL_ARGS` / `TOOL_CALL_END` | 工具调用三段式。qi 在 `tool_start` 时已有**完整**参数,所以 Args 一次发完 | `toolCallId`, `toolCallName`, `delta` |
 | `TOOL_CALL_RESULT` | 工具结果 | `toolCallId`, `content`, `metadata["qi.tool"]` |
-| `ACTIVITY_SNAPSHOT` | **委派直播**:子运行期间随时插入(不在固定顺序) | `activityType`, `subagentRunId`, `content`, `replace` |
+| `ACTIVITY_SNAPSHOT` | **委派直播内容**:子运行期间随时插入(不在固定顺序) | `activityType`, `subagentRunId`, `content`, `replace` |
+| `SUBAGENT_STARTED` / `SUBAGENT_FINISHED` / `SUBAGENT_ERROR` | **子智能体的生与死**(原生多智能体事件族) | `subagentRunId`, `name`, `description`, `parentToolCallId`, `outcome` |
 | `RUN_FINISHED` | 正常结束 | `outcome:{type:"success"}`, `result`, `metadata["qi.usage"]` |
 | `RUN_ERROR` | 出错(**不断连**,帧内报错) | `message`, `code` |
 | `RAW` | 未知事件类型按 AG-UI 的 Raw 透传(不静默丢弃) | `event`, `data` |
@@ -104,28 +105,41 @@ data: {"type":"RUN_STARTED","timestamp":1730000000000,...}\n\n
 | `qi.compaction` | 压缩的 `start` / `end` 阶段 |
 | `qi.branch` | 分支变化 |
 
-### 委派直播:`ACTIVITY_SNAPSHOT`
+### 委派直播:生命走 `SUBAGENT_*`,内容走 `ACTIVITY_SNAPSHOT`
 
-子运行(`qi-agents` 的委派)期间,这一帧**可能随时插在主事件之间**:它是某个子 run 的
-**最新全量**活动(`replace: true` + 稳定的 `messageId = qi-act-<run>` = “同一张状态的更新”,
-不是增量 —— 增量要发 `ACTIVITY_DELTA`,qi 刻意不发,少一套合并语义)。
+子运行(`qi-agents` 的委派)期间,流里会插进两类帧 —— **生 / 死**与**内容**,
+用的都是 AG-UI 本来就有的两族事件(0.0.59 的 `EventType` 里就有,不是 qi 发明的)。
+位置不固定:派单即插,内容随发生插。
+
+**生命(三条原生事件)**
+
+| `type` | 什么时候 | 关键字段 |
+| --- | --- | --- |
+| `SUBAGENT_STARTED` | 派单那一刻(子运行真跑之前) | `subagentRunId`(稳定标识)、`name`(角色名)、`description`(子任务)、`parentToolCallId`(发起它的那次工具调用)、`parentSubagentRunId`(**只有嵌套才有** —— 顶层是主 agent 派的,主 agent 不是一次子运行) |
+| `SUBAGENT_FINISHED` | 成功收束 | `subagentRunId`、`outcome: {type:"success"}` |
+| `SUBAGENT_ERROR` | 失败收束 | `subagentRunId`、`message`、`code: "subagent_failed"` |
+
+**内容**:`ACTIVITY_SNAPSHOT`(每 run 一条稳定 `messageId = qi-act-<run>` + `replace: true`
+= 该 run 活动的最新全量)。它是**通用通道**,qi 用 `activityType: "qi.subagent"` 认领:
 
 | 字段 | 含义 |
 | --- | --- |
-| `activityType` | `"qi.subagent"`(客户端按它认领;别的类型原样忽略 —— 这是通用通道) |
-| `subagentRunId` | 子 run 的稳定标识(同一 run 多帧相等) |
-| `content.kind` | `"subagent"` |
-| `content.run` / `role` / `parent` / `depth` / `task` | 归因,与 TUI 卡头、结束后的横幅同源 |
-| `content.phase` | `start` / `stream` / `act` / `think` / `done` |
+| `content.phase` | `stream`(本轮缓冲)/ `act`(工具行)/ `think`(思考行) |
 | `content.line` | `act`/`think` 的**整行**(`· tool …` / `✎ 第N轮: …`)—— 与结束后 `result` 段**逐字同源** |
 | `content.text` / `mode` | `stream` 的本轮缓冲(节流 `STREAM_FLUSH_INTERVAL` + 轮末强制)与种类(`think`/`text`) |
-| `content.ok` / `error` | `done` 的收束(error 截 300 字) |
 | `content.toolCallId` | **归卡**:落进哪张工具卡(嵌套子运行共用**发起方**那次调用 → 一棵树一张卡) |
+| `content.role` / `parent` / `depth` / `task` | 归因,与 TUI 卡头、结束后的横幅同源 |
 
-三条规则(与设计红线一一对应,见 `design/web-lab.md` §5.2 落地):
+**归卡:`metadata` 补协议缺的那把钥匙。** `SUBAGENT_FINISHED` / `SUBAGENT_ERROR`
+在协议里**没有** `parentToolCallId`(死挂在 run id 上)。qi 于是三条事件都额外带一份
+`metadata: {toolCallId, depth, parent}`(`metadata` 是 AG-UI 允许的自由字段)——
+前端三把钥匙同一把锁:出生 `parentToolCallId`、内容 `content.toolCallId`、死亡 `metadata.toolCallId`。
+没有它前端就得自己维护 run → 卡 的映射表。
 
-1. **广播**:总线载荷里没有会话号,每个开流的订阅者都会收到所有 run 的帧;
-   本流不认识的 `toolCallId` 会在暂存里到新轮清空 —— 收敛无害、零成本(不是委派的流没有消费方)。
+三条规则(与设计红线一一对应,见 `design/web-lab.md` §5.2):
+
+1. **广播**:总线载荷里没有会话号,每个开流的订阅者都会收到所有 run 的帧;本流不认识的
+   `toolCallId` 会在暂存里到新轮清空 —— 收敛无害、零成本(不是委派的流没有消费方)。
 2. **旁路**:直播失败不影响子运行与主流(qi-agents 的推送、宿主的分发都是吞异常的)。
 3. **回放红线**:直播的每一行都能在结束后从 `result` 段重放出来(逐字同源);
    `TOOL_CALL_RESULT` 一到,直播表整体清空 —— 同一批文字不显两遍。

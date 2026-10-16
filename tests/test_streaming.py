@@ -352,7 +352,13 @@ async def test_litellm_astream_falls_back_to_chat_when_streaming_unsupported(tmp
 
 @pytest.mark.asyncio
 async def test_litellm_astream_does_not_retry_after_partial_text(tmp_path, fake_litellm):
-    """已吐出部分文本后失败 → 直接抛,不降级重试(重试会导致文本重复)。"""
+    """已吐出部分文本后失败 → 直接抛,不重试;**但要把降级钉住**。
+
+    不重试:已发出的部分会被再说一遍(重复输出比报错更难查)。
+    钉降级:中途断 = 这条 provider 的流式通道不可信(网关/代理截断响应体)。让它每轮
+    都白跑一次才是真的坏 —— 所以下一轮起走非流式(`QI_NO_STREAM` 是手动版,
+    这个是自动版)。代价:偶发抖动也会粘住,重启或换模型即恢复。
+    """
     class _MidFailure(_FakeAcompletion):
         async def __call__(self, **kwargs):
             self.calls.append(kwargs)
@@ -371,7 +377,7 @@ async def test_litellm_astream_does_not_retry_after_partial_text(tmp_path, fake_
             if delta.text:
                 seen.append(delta.text)
     assert seen == ["前半段"]                  # 已发出的部分不会被重复
-    assert client._stream_broken is False      # 这不是"不支持流式"
+    assert client._stream_broken is True       # 钉住:下一轮自动非流式
 
 
 @pytest.mark.asyncio
@@ -532,3 +538,53 @@ def test_stream_enabled_reads_the_env_switch(monkeypatch):
         assert stream_enabled() is False, value
     monkeypatch.setenv("QI_NO_STREAM", "0")
     assert stream_enabled() is True, "0/空/别的词都不该关掉流式"
+
+
+def test_midstream_drop_sticks_to_non_stream_for_later_turns(tmp_path, fake_litellm):
+    """流中途断掉 → 这个 client 之后自动走非流式(只白跑**一轮**,而不是每轮)。
+
+    上游的流式通道坏掉时(网关/代理截断响应体),qi 不重试已吐出的内容(会重复输出),
+    但也不该让用户靠环境变量才能用 —— 所以把"流式中途会断"钉在这个 client 上。
+    代价:偶发抖动也会粘住(想强行恢复流式:重启或换模型)。
+    """
+
+    class _DropAfterOneChunk:
+        def __init__(self) -> None:
+            self.calls: list[dict] = []
+
+        async def __call__(self, **kwargs):
+            self.calls.append(kwargs)
+            if not kwargs.get("stream"):
+                return _completion("第二轮:非流式整段")
+
+            async def gen():
+                yield _chunk("前半句")
+                raise RuntimeError(
+                    "litellm.MidStreamFallbackError: Response payload is not completed: "
+                    "<TransferEncodingError: 400, message='Not enough data'>")
+
+            return gen()
+
+        @property
+        def stream_calls(self) -> list[dict]:
+            return [c for c in self.calls if c.get("stream")]
+
+    fake = fake_litellm(_DropAfterOneChunk())
+
+    async def go():
+        client = LiteLLMClient(_spec(), AuthStore(path=tmp_path / "auth.json"))
+        err: Exception | None = None
+        try:
+            async for _ in client.astream([ChatMessage(role="user", content="hi")]):
+                pass
+        except Exception as exc:            # noqa: BLE001 这一轮就是要它抛
+            err = exc
+        second = [d async for d in client.astream([ChatMessage(role="user", content="再问")])]
+        return client, err, second
+
+    client, err, second = asyncio.run(go())
+    assert err is not None and "中途断了" in str(err)
+    assert "已自动改用非流式" in str(err), "要说出来 —— 否则用户只会觉得“突然不逐字了”"
+    assert client._stream_broken is True, "降级必须粘住(下一轮别再试注定失败的流)"
+    assert len(fake.stream_calls) == 1, "第二轮不该再发 stream 请求"
+    assert [d.text for d in second if d.text] == ["第二轮:非流式整段"]

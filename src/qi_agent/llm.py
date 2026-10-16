@@ -334,7 +334,7 @@ class ProviderStreamError(RuntimeError):
     """
 
 
-def friendly_provider_error(exc: Exception) -> Exception:
+def friendly_provider_error(exc: Exception, *, stream_auto_off: bool = False) -> Exception:
     """把 provider 侧那句只有工程师看得懂的底层错误,翻成带下一步动作的。
 
     命中 `'ascii'/'latin-1' codec can't encode`:HTTP 头/URL 装不下这个值 —— 最常见的就是
@@ -342,6 +342,8 @@ def friendly_provider_error(exc: Exception) -> Exception:
 
     命中 `Response payload is not completed` / `TransferEncodingError` /
     `MidStreamFallbackError`:上游流中途被掐断 —— 见 `ProviderStreamError`。
+    `stream_auto_off=True` = 调用方**已经**把流式钉成 broken(下一轮起自动非流式),
+    文案要说出来,否则用户只会觉得“突然不逐字了”。
     """
     text = str(exc)
     if "'ascii' codec can't encode" in text or "'latin-1' codec can't encode" in text:
@@ -353,13 +355,17 @@ def friendly_provider_error(exc: Exception) -> Exception:
             or "TransferEncodingError" in text
             or "MidStreamFallbackError" in text):
         head = text.splitlines()[0][:160] if text.splitlines() else text[:160]
+        tail = ("**已自动改用非流式**(这一轮之后不再逐字;换模型或重启即恢复流式)。"
+                if stream_auto_off else
+                "也可用 `QI_NO_STREAM=1` 重启,从非流式开始。")
         return ProviderStreamError(
             f"上游的流**中途断了**(响应体不完整)。原始错误:{head}\n"
             "已吐出的内容不会重放 —— qi 刻意不重试(重试会把同一段文字说两遍),所以这一轮"
-            "到此为止,重发即可。若反复出现:用 `QI_NO_STREAM=1` 重启(走非流式,那么"
-            "`retry.provider.maxRetries` 真正生效、整轮也能安全重发);调大 "
-            "`settings.json` 的 `retry.provider.timeoutMs`;或看看**委派**是不是同时开了"
-            "太多条流(一次委派最多 4 个子运行并发)—— 网关/代理的连接数或限流常卡在这里。")
+            f"到此为止,重发即可。{tail}\n"
+            "若反复出现:调大 `settings.json` 的 `retry.provider.timeoutMs`;或看看**委派**"
+            "是不是同时开了太多条流(一次委派最多 4 个子运行并发)—— 网关/代理的连接数"
+            "或限流常卡在这里。")
+    return exc
     return exc
 
 
@@ -650,7 +656,11 @@ class LiteLLMClient:
         except Exception as exc:
             # 首片就失败 → 可安全降级;已吐过字/思考 → 不能重试(会重复输出)
             if content_seen:
-                raise friendly_provider_error(exc) from exc
+                # 只白跑**一轮**:钉住“这个 provider 的流式中途会断”,下一轮起自动非流式
+                # (与“打开流失败”同一种粘性降级)。否则每一轮都要付一次白跑的代价 ——
+                # 上游的流式通道坏掉时,用户不该靠环境变量才能用。
+                self._stream_broken = True
+                raise friendly_provider_error(exc, stream_auto_off=True) from exc
             self._stream_broken = True
             async for delta in chat_as_stream(self, messages, tools, temperature):
                 yield delta

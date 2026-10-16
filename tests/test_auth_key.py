@@ -94,3 +94,19 @@ def test_friendly_provider_error_leaves_other_errors_alone():
 
     raw = RuntimeError("connection reset")
     assert friendly_provider_error(raw) is raw
+
+
+def test_friendly_provider_error_translates_a_midstream_drop():
+    """流中途断连:翻成“断得干净 + 怎么办”,并保留原始关键字(用户要拿去搜)。"""
+    from qi_agent.llm import ProviderStreamError, friendly_provider_error
+
+    raw = RuntimeError(
+        "litellm.MidStreamFallbackError: litellm.APIConnectionError: APIConnectionError: "
+        "OpenAIException - Response payload is not completed: <TransferEncodingError: 400, "
+        "message='Not enough data to satisfy transfer length header.'>")
+    friendly = friendly_provider_error(raw)
+    assert isinstance(friendly, ProviderStreamError)
+    text = str(friendly)
+    assert "中途断了" in text
+    assert "重放" in text, "要说清为什么不重试"
+    assert "TransferEncodingError" in text, "原始关键字要留着"

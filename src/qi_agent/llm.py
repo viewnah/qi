@@ -324,11 +324,24 @@ class ProviderAuthError(RuntimeError):
     """
 
 
+class ProviderStreamError(RuntimeError):
+    """上游的流**中途**断了(响应体不完整)。
+
+    存在的理由:litellm 把它包成 `MidStreamFallbackError: … TransferEncodingError:
+    Not enough data to satisfy transfer length header`,`字多但不告诉你怎么办`。
+    这不是 qi 读得慢(也不是重试能修的):已经吐出的内容不能重放 —— 重试会把同一
+    段话说两遍。所以只翻译、不重试,并把可选动作写进消息。
+    """
+
+
 def friendly_provider_error(exc: Exception) -> Exception:
     """把 provider 侧那句只有工程师看得懂的底层错误,翻成带下一步动作的。
 
     命中 `'ascii'/'latin-1' codec can't encode`:HTTP 头/URL 装不下这个值 —— 最常见的就是
     API key 里混入了非 ASCII 字符(把一段中文提示误粘贴进了密钥框)。
+
+    命中 `Response payload is not completed` / `TransferEncodingError` /
+    `MidStreamFallbackError`:上游流中途被掐断 —— 见 `ProviderStreamError`。
     """
     text = str(exc)
     if "'ascii' codec can't encode" in text or "'latin-1' codec can't encode" in text:
@@ -336,6 +349,16 @@ def friendly_provider_error(exc: Exception) -> Exception:
             "请求头里有非 ASCII 字符(HTTP 头只能是 ASCII)—— 最常见的是 **API key 里混入了"
             "中文/全角字符**(比如误把一段提示粘进了密钥框)。检查 `qi auth list`、对应的"
             "环境变量(如 `DEEPSEEK_API_KEY`)、以及 `models.json` 里的 `apiKey` 来源。")
+    if ("Response payload is not completed" in text
+            or "TransferEncodingError" in text
+            or "MidStreamFallbackError" in text):
+        head = text.splitlines()[0][:160] if text.splitlines() else text[:160]
+        return ProviderStreamError(
+            f"上游的流**中途断了**(响应体不完整)。原始错误:{head}\n"
+            "已吐出的内容不会重放 —— qi 刻意不重试(重试会把同一段文字说两遍),所以这一轮"
+            "到此为止,重发即可。若反复出现:调大 `settings.json` 的"
+            "`retry.provider.timeoutMs`,或看看**委派**是不是同时开了太多条流"
+            "(一次委派最多 4 个子运行并发),网关/代理的连接数或限流往往卡在这里。")
     return exc
 
 

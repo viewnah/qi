@@ -334,3 +334,66 @@ def test_pinned_project_agent_is_used_once_trusted(tmp_path, monkeypatch):
         _run_turn(client, sid, "reviewer", "r1")
 
     assert "MARKER-项目审查员。" in llm.systems[0]
+
+
+class _BrokenStreamLLM:
+    """流吐了一半就断连 —— 真实形状:上游响应体不完整(litellm 包成 MidStreamFallbackError)。
+
+    这是 qi 明确**不重试**的那条路径(重试会把同一段文字说两遍),所以这里要测的是
+    “断得干净”:错误帧到达、会话不卡在运行中、下一轮还能开。
+    异常按 `LiteLLMClient` 的真实做法先过一遍 `friendly_provider_error`
+    (端到端链路里就是它翻译的 —— 假 LLM 不该绕过这一步)。
+    """
+
+    def __init__(self, *, fail: bool = True) -> None:
+        self.fail = fail
+
+    async def chat(self, messages, tools=None, temperature=None):  # pragma: no cover
+        raise AssertionError("有 astream 时不应调用 chat")
+
+    async def astream(self, messages, tools=None, temperature=None):
+        from qi_agent.llm import LLMDelta, friendly_provider_error
+
+        if not self.fail:
+            yield LLMDelta(text="好了")
+            yield LLMDelta(finished=True, usage={"total_tokens": 1})
+            return
+        yield LLMDelta(text="前半句")
+        raw = RuntimeError(
+            "litellm.MidStreamFallbackError: litellm.APIConnectionError: APIConnectionError: "
+            "OpenAIException - Response payload is not completed: <TransferEncodingError: 400, "
+            "message='Not enough data to satisfy transfer length header.'>")
+        raise friendly_provider_error(raw) from raw
+
+
+def test_a_midstream_drop_lands_as_run_error_and_frees_the_session(tmp_path, monkeypatch):
+    """主运行的流中途断掉:一帧 `RUN_ERROR`(不是断连),会话退出运行中,下一轮还能开。"""
+    project = tmp_path / "proj"
+    project.mkdir(parents=True, exist_ok=True)
+    llm = _BrokenStreamLLM()
+    app = _shared_runtime_app(project, tmp_path, monkeypatch, llm)
+
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        sid = client.post(
+            "/api/sessions", json={"title": "t", "cwd": str(project)}).json()["id"]
+        frames = []
+        with client.stream("POST", "/api/ag-ui", json={
+                "threadId": sid, "runId": "r1",
+                "messages": [{"role": "user", "content": "你好"}]}) as resp:
+            assert resp.status_code == 200, resp.read()
+            for line in resp.iter_lines():
+                if line.startswith("data: "):
+                    frames.append(json.loads(line[len("data: "):]))
+
+    kinds = [f.get("type") for f in frames]
+    assert "RUN_STARTED" in kinds, kinds
+    assert "RUN_ERROR" in kinds, f"断流必须转成错误帧,而不是让连接断在半空:{kinds}"
+    err = frames[kinds.index("RUN_ERROR")]
+    assert "中途断了" in err["message"], "翻译层要生效(用户不该读到 TransferEncodingError)"
+    assert sid not in app.state.web._busy, "断流之后 busy 必须释放 —— 否则会话永远卡在运行中"
+
+    # 没被毒住:同一会话下一轮照跑
+    llm.fail = False
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        _run_turn(client, sid, None, "r2")
+    assert sid not in app.state.web._busy

@@ -529,3 +529,60 @@ async def test_custom_tool_returning_tool_outcome_is_respected(tmp_path):
     assert end.data["exit_code"] == 3
     assert end.text == "自定义失败"
     assert isinstance(end.data["duration_ms"], int)
+
+
+@pytest.mark.asyncio
+async def test_extension_tool_progress_reaches_the_bus(tmp_path):
+    """插件工具的进度回调(`ctx.on_update`)必须经总线发出去。
+
+    **这是委派直播的唯一通道**:qi-agents 的 `_web()` 走 `ctx.on_update` → runner 把它
+    转成 `tool_execution_update` 总线事件 → 宿主(qi-lab)订阅后翻成 `ACTIVITY_SNAPSHOT`,
+    前端才看得到子运行在干什么。
+
+    这条接缝以前没有测试,而它坏了的表现正是「执行 subagent 的内部内容前端看不到」——
+    而且**毫无报错**:工具照常跑完、结果照常返回,只是中途一个字节都没出去。
+    """
+    import asyncio
+
+    from qi_agent.extensions import ExtensionBus, ExtensionContext
+
+    catalog = _catalog()
+    progress = {"qi": {"kind": "subagent", "phase": "act", "run": "scout#1",
+                       "role": "scout", "parent": "qi", "depth": 1,
+                       "task": "读一遍", "line": '· read {"path": "a.py"}'}}
+
+    async def _extension(args, ctx):
+        # 工具侧的真实写法:同步可调,失败也不该带倒自己(qi-agents 的 `_web` 同款)
+        on_update = getattr(ctx, "on_update", None)
+        assert callable(on_update), "runner 必须把 on_update 注入工具 ctx"
+        on_update(progress)
+        return ToolOutcome(result="ok")
+
+    catalog.register(Tool("streamy", "会推进度的扩展工具",
+                          {"type": "object", "properties": {}}, _extension))
+    unit = _agent_unit(tmp_path, catalog)
+    ctx = ToolContext(agent_name=unit.name, workdir=tmp_path)
+    llm = StubLLM([_tool_call("streamy", {}), ChatResponse(text="做完了")])
+
+    bus = ExtensionBus()
+    seen: list[dict] = []
+
+    async def _handler(payload, _ctx):
+        seen.append(payload)
+
+    bus.on("tool_execution_update", _handler, source="test")
+    runner = AgentRunner(unit, catalog, llm,
+                         RunnerSettings(stop_after=stop_after_turns(5)), tool_ctx=ctx,
+                         bus=bus,
+                         extension_ctx=lambda signal: ExtensionContext(cwd=tmp_path,
+                                                                      signal=signal))
+    events = [e async for e in runner.run("做点事")]
+    for _ in range(3):                 # 派发是后台 task(见 runner._on_update)
+        await asyncio.sleep(0)
+
+    assert [e for e in events if e.kind == "tool_end"], "工具本身要照常跑完"
+    assert seen, "进度一个字节都没出总线 —— 前端当然看不到子运行在干什么"
+    payload = seen[0]
+    assert payload["partial_result"] == progress
+    assert payload["tool_call_id"], "归卡要靠它(qi-lab 用 tool_call_id 把活动落到那张卡上)"
+    assert payload["tool_name"] == "streamy"

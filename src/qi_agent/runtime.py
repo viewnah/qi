@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -104,6 +105,19 @@ INPUT_HANDLED_PLACEHOLDER = "(这一轮由扩展处理,没有文本输出)"
 def _salvaged(final_text: str, partial: str) -> str:
     """收尾用哪段文本:正常结束用 `agent_end` 的全文,被硬取消时用流式累计的半截。"""
     return final_text if final_text else partial
+
+
+def stream_enabled() -> bool:
+    """是否走**流式**请求(`QI_NO_STREAM=1` 关掉)。
+
+    存在的理由(2026-10-11):上游的**流式通道**出问题时(网关/代理把响应体截断,
+    报 `MidStreamFallbackError` / `TransferEncodingError`),流中途断掉的那一轮**不能**
+    安全重试 —— 已吐出的文本重放会说两遍。非流式没有这个限制:litellm 的
+    `retry.provider.maxRetries` 真正生效,整轮失败也能重发。所以给一条“先绕开”的路
+    (重启生效):`QI_NO_STREAM=1 qi`,或 `QI_NO_STREAM=1 qi lab`。
+    """
+    value = (os.environ.get("QI_NO_STREAM") or "").strip().lower()
+    return value not in {"1", "true", "yes", "on"}
 
 
 def no_model_selected_message() -> str:
@@ -559,6 +573,7 @@ class QiRuntime:
                              retry=self.settings.retry,
                              thinking_budgets=self.settings.thinkingBudgets,
                              bus=self.bus,
+                             stream=stream_enabled(),
                              extension_ctx=lambda signal: self.extension_ctx(signal))
 
     def _client_for(self, model_ref: str | None) -> Any:

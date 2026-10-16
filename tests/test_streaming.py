@@ -22,6 +22,7 @@ from qi_agent.abort import AbortSignal
 from qi_agent.auth import AuthStore
 from qi_agent.config import ResolvedModel
 from qi_agent.llm import (
+    ChatMessage,
     ChatResponse,
     LiteLLMClient,
     LLMDelta,
@@ -497,3 +498,37 @@ async def test_runtime_persists_narration_before_its_tools(tmp_path, monkeypatch
     history = [m.content for m in rt._history(session)]
     assert "找到了" in history
     assert "我先查一下" not in history
+
+
+# ── 主动放弃流式(`QI_NO_STREAM=1`)────────────────────────────────
+
+def test_no_stream_client_never_opens_a_stream(tmp_path, fake_litellm):
+    """`stream=False` 的客户端**一次流式请求都不发** —— 整段作为单块发出。
+
+    存在的理由:上游的流式通道截断响应体时(`TransferEncodingError`),流中途断掉的
+    那一轮不能安全重试(重放会重复输出);非流式没有这个限制。所以这条开关必须
+    是“压根不试”,而不是“试了再降级”。
+    """
+    fake = fake_litellm(_FakeAcompletion(completion=_completion("整段答案")))
+
+    async def go():
+        client = LiteLLMClient(_spec(), AuthStore(path=tmp_path / "auth.json"), stream=False)
+        return [d async for d in client.astream([ChatMessage(role="user", content="hi")])]
+
+    deltas = asyncio.run(go())
+    assert fake.stream_calls == [], "stream=False 时不该发出任何 stream 请求"
+    assert [d.text for d in deltas if d.text] == ["整段答案"], "整段就是一块(不再是逐字)"
+    assert deltas[-1].finished is True
+
+
+def test_stream_enabled_reads_the_env_switch(monkeypatch):
+    """`QI_NO_STREAM` 的取值语义:`1/true/yes/on` 关流式,其余照旧。"""
+    from qi_agent.runtime import stream_enabled
+
+    monkeypatch.delenv("QI_NO_STREAM", raising=False)
+    assert stream_enabled() is True
+    for value in ("1", "true", "YES", " on "):
+        monkeypatch.setenv("QI_NO_STREAM", value)
+        assert stream_enabled() is False, value
+    monkeypatch.setenv("QI_NO_STREAM", "0")
+    assert stream_enabled() is True, "0/空/别的词都不该关掉流式"

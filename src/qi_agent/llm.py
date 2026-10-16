@@ -356,9 +356,10 @@ def friendly_provider_error(exc: Exception) -> Exception:
         return ProviderStreamError(
             f"上游的流**中途断了**(响应体不完整)。原始错误:{head}\n"
             "已吐出的内容不会重放 —— qi 刻意不重试(重试会把同一段文字说两遍),所以这一轮"
-            "到此为止,重发即可。若反复出现:调大 `settings.json` 的"
-            "`retry.provider.timeoutMs`,或看看**委派**是不是同时开了太多条流"
-            "(一次委派最多 4 个子运行并发),网关/代理的连接数或限流往往卡在这里。")
+            "到此为止,重发即可。若反复出现:用 `QI_NO_STREAM=1` 重启(走非流式,那么"
+            "`retry.provider.maxRetries` 真正生效、整轮也能安全重发);调大 "
+            "`settings.json` 的 `retry.provider.timeoutMs`;或看看**委派**是不是同时开了"
+            "太多条流(一次委派最多 4 个子运行并发)—— 网关/代理的连接数或限流常卡在这里。")
     return exc
 
 
@@ -368,7 +369,8 @@ class LiteLLMClient:
     def __init__(self, spec: ResolvedModel, auth_store: AuthStore | None = None,
                  thinking_level: str = "off", retry: dict | None = None,
                  thinking_budgets: dict[str, int] | None = None,
-                 bus: Any = None, extension_ctx: Any = None):
+                 bus: Any = None, extension_ctx: Any = None, *,
+                 stream: bool = True):
         self.spec = spec
         #: 扩展事件总线 + ctx 工厂:provider 三件套事件(`before_provider_request` /
         #: `before_provider_headers` / `after_provider_response`)靠它们派发。
@@ -391,6 +393,9 @@ class LiteLLMClient:
         self._no_usage_opt = False
         # 流式是否已确认打不开(容错 2):钉住后不再每轮重试一次注定失败的请求
         self._stream_broken = False
+        #: `stream=False`(`QI_NO_STREAM=1`)= **主动**放弃流式。与 `_stream_broken`
+        #: 的区别:那个是“试过、打不开”,这个是“上游的流式通道不可信,别试”。见 `astream`。
+        self._stream_enabled = stream
 
     @property
     def ready(self) -> bool:
@@ -599,8 +604,11 @@ class LiteLLMClient:
 
         限制(写明白而不是假装支持):若流**已吐出部分文本后**才失败,不重试、直接抛出——
         重试会导致文本重复。这种情况需上层处理(Web 层应转成 error 帧)。
+
+        还有一处是**配置**:`QI_NO_STREAM=1`(建客户端时 `stream=False`)压根不走流式 ——
+        上游的流式通道持续截断响应体时的活路(见 `friendly_provider_error`)。
         """
-        if self._stream_broken:
+        if self._stream_broken or not self._stream_enabled:
             async for delta in chat_as_stream(self, messages, tools, temperature):
                 yield delta
             return

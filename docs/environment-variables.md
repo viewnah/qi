@@ -11,7 +11,7 @@
 | `QI_CONFIG_DIR` | 名字空间根(默认 `~/.qi`)。仅用于推导默认路径与旧布局迁移 |
 | `QI_AGENT_CONFIG` | **直接指定 `models.json` 文件**(优先于项目 / 全局路径) |
 | `QI_THEME` | `dark` / `light` / `auto`,覆盖 `settings.theme` → [themes.md](themes.md) |
-| `QI_NO_STREAM` | `1` = **不走流式**(整段发出),一开始就不想流式时用。qi 在检测到流式中途断掉时**会自动**这样降级(只白跑一轮,代价是不再逐字);重启生效 |
+| `QI_NO_STREAM` | `1` = **不走流式**(整段发出)。上游的流式通道持续不可用时手动绕开;qi 不会自己切过去 —— 流式中途断掉由 agent 级重试处理(`retry`),通道本身不变(与 pi 一致)。重启生效 |
 
 > `QI_AGENT_HOME` 指向的是**目录本身**,不是它的父目录 —— 拿它去拼 `agent/settings.json` 会得到
 > `…/agent/agent/settings.json`。这是这个变量最常见的误用。

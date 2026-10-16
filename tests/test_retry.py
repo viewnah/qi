@@ -113,6 +113,6 @@ def test_translation_does_not_hide_the_original_error():
 
     raw = RuntimeError(
         "litellm.MidStreamFallbackError: <TransferEncodingError: 400, message='Not enough data'>")
-    friendly = ProviderStreamError("上游的流**中途断了**(响应体不完整)。已自动改用非流式。")
+    friendly = ProviderStreamError("上游的流**中途断了**(响应体不完整)。重试也尽了。")
     friendly.__cause__ = raw
     assert is_retryable_error(friendly) is True, "只看最外层会把瞬时故障误判成不可重试"

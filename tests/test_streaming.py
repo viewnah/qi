@@ -352,12 +352,12 @@ async def test_litellm_astream_falls_back_to_chat_when_streaming_unsupported(tmp
 
 @pytest.mark.asyncio
 async def test_litellm_astream_does_not_retry_after_partial_text(tmp_path, fake_litellm):
-    """已吐出部分文本后失败 → 直接抛,不重试;**但要把降级钉住**。
+    """已吐出部分文本后失败 → **在本层直接抛**:不重试、也不换通道。
 
-    不重试:已发出的部分会被再说一遍(重复输出比报错更难查)。
-    钉降级:中途断 = 这条 provider 的流式通道不可信(网关/代理截断响应体)。让它每轮
-    都白跑一次才是真的坏 —— 所以下一轮起走非流式(`QI_NO_STREAM` 是手动版,
-    这个是自动版)。代价:偶发抖动也会粘住,重启或换模型即恢复。
+    不重试:已发出的部分会被再说一遍(重复输出比报错更难查)—— 重试是 **agent 级**
+    的事(`retry` 模块在 runner 里重跑这一次调用,并让消费者丢弃半截输出)。
+    不换通道:在这里退回非流式会把“通道”变成隐式状态,用户只会看到“突然不逐字了”。
+    与 pi 一致:provider 层只负责报清楚错。
     """
     class _MidFailure(_FakeAcompletion):
         async def __call__(self, **kwargs):
@@ -377,7 +377,7 @@ async def test_litellm_astream_does_not_retry_after_partial_text(tmp_path, fake_
             if delta.text:
                 seen.append(delta.text)
     assert seen == ["前半段"]                  # 已发出的部分不会被重复
-    assert client._stream_broken is True       # 钉住:下一轮自动非流式
+    assert client._stream_broken is False      # 不是“不支持流式”:通道照旧
 
 
 @pytest.mark.asyncio
@@ -540,12 +540,11 @@ def test_stream_enabled_reads_the_env_switch(monkeypatch):
     assert stream_enabled() is True, "0/空/别的词都不该关掉流式"
 
 
-def test_midstream_drop_sticks_to_non_stream_for_later_turns(tmp_path, fake_litellm):
-    """流中途断掉 → 这个 client 之后自动走非流式(只白跑**一轮**,而不是每轮)。
+def test_midstream_drop_keeps_the_streaming_channel(tmp_path, fake_litellm):
+    """流中途断掉**不换通道**:下一轮照旧是流式请求(重试是 agent 级的事)。
 
-    上游的流式通道坏掉时(网关/代理截断响应体),qi 不重试已吐出的内容(会重复输出),
-    但也不该让用户靠环境变量才能用 —— 所以把"流式中途会断"钉在这个 client 上。
-    代价:偶发抖动也会粘住(想强行恢复流式:重启或换模型)。
+    pi 也不这么做 —— 它把重试放在 `retryAssistantCall`,provider 层只负责报错。
+    在 provider 层悄悄退回非流式,代价是用户“突然不逐字了”且无从解释:那是隐式状态。
     """
 
     class _DropAfterOneChunk:
@@ -555,7 +554,7 @@ def test_midstream_drop_sticks_to_non_stream_for_later_turns(tmp_path, fake_lite
         async def __call__(self, **kwargs):
             self.calls.append(kwargs)
             if not kwargs.get("stream"):
-                return _completion("第二轮:非流式整段")
+                return _completion("非流式(不该走到这里)")
 
             async def gen():
                 yield _chunk("前半句")
@@ -570,21 +569,27 @@ def test_midstream_drop_sticks_to_non_stream_for_later_turns(tmp_path, fake_lite
             return [c for c in self.calls if c.get("stream")]
 
     fake = fake_litellm(_DropAfterOneChunk())
+    client = _client(tmp_path)
 
-    async def go():
-        client = LiteLLMClient(_spec(), AuthStore(path=tmp_path / "auth.json"))
-        err: Exception | None = None
+    async def go() -> tuple[list[str], str]:
+        first: list[str] = []
+        err = ""
         try:
-            async for _ in client.astream([ChatMessage(role="user", content="hi")]):
-                pass
+            async for delta in client.astream([ChatMessage(role="user", content="hi")]):
+                if delta.text:
+                    first.append(delta.text)
         except Exception as exc:            # noqa: BLE001 这一轮就是要它抛
-            err = exc
-        second = [d async for d in client.astream([ChatMessage(role="user", content="再问")])]
-        return client, err, second
+            err = str(exc)
+        try:
+            async for _delta in client.astream([ChatMessage(role="user", content="再问")]):
+                pass
+        except Exception:                   # noqa: BLE001 第二次同样会断
+            pass
+        return first, err
 
-    client, err, second = asyncio.run(go())
-    assert err is not None and "中途断了" in str(err)
-    assert "已自动改用非流式" in str(err), "要说出来 —— 否则用户只会觉得“突然不逐字了”"
-    assert client._stream_broken is True, "降级必须粘住(下一轮别再试注定失败的流)"
-    assert len(fake.stream_calls) == 1, "第二轮不该再发 stream 请求"
-    assert [d.text for d in second if d.text] == ["第二轮:非流式整段"]
+    first, err = asyncio.run(go())
+    assert first == ["前半句"], "已流出的部分不会被重放"
+    assert "中途断了" in err, "报错翻成人话(层在 provider;重试在 runner)"
+    assert "agent 级重试" in err, "文案要指向真正做事的那一层"
+    assert client._stream_broken is False, "中途断 ≠ “流式打不开”:不换通道"
+    assert len(fake.stream_calls) == 2, "第二次仍然是流式请求(与 pi 一致)"

@@ -460,9 +460,9 @@ async def _run_one(api: Any, role: Role, task: str, ctx: Any,
     def _on_event(event: Any) -> None:
         """子运行的事件旁路 —— 三个去处:
 
-        1. **流式**(本 agent 的平铺卡,实时):`thinking_delta`/`text_delta`
-           累计进当前轮缓冲,节流 `STREAM_FLUSH_INTERVAL` 秒刷进这张卡;没有卡
-           就不积 —— 逐字进时间线是刷屏;
+        1. **流式**(本 agent 的平铺卡 + 宿主的直播通道,实时):`thinking_delta`/`text_delta`
+           累计进当前轮缓冲,节流 `STREAM_FLUSH_INTERVAL` 秒刷一次 —— **卡片与直播是
+           两条独立的旁路**:没有平铺卡(web 就没有)也要推直播。
         2. **时间线**(对话流,append-only):**前端只出节点** —— run 收束的完成块
            `── 名字 ✓ 深度N ──`(失败用 error 色);**过程归卡**(黄标题/工具
            活动/思考/输出都在该 agent 自己的卡里,时间线再出一套就是重复)。仅
@@ -476,8 +476,10 @@ async def _run_one(api: Any, role: Role, task: str, ctx: Any,
         nonlocal last_thinking, stream_buf, last_flush
         kind = getattr(event, "kind", "")
         if kind in ("thinking_delta", "text_delta"):
-            if _current_card() is None:
-                return
+            # **不要拿“有没有平铺卡”当开关**:那张卡是 TUI 的展示面,web(qi-lab)没有它 ——
+            # 以前这里 `if _current_card() is None: return`,后果是 web 一个 stream 帧都收不到
+            # (现象:“子运行的过程只有完全结束后才看得到”)。直播通道(`_web`)与卡片无关,
+            # 两边各自旁路;无前端时 `_push` 也不是这里负责的。
             try:
                 stream_buf += str(getattr(event, "text", "") or "")
                 now = time.monotonic()
@@ -509,12 +511,12 @@ async def _run_one(api: Any, role: Role, task: str, ctx: Any,
                         # 无前端 = 没有卡可显示:时间线是唯一的思考可见处;
                         # 有前端则只进卡(结束后点开看) —— 两边一起出就是重复
                         _push(_preview(thinking))
-                card = _current_card()
-                if card is not None:
-                    # 轮末强制把本轮推进卡,再清缓冲换下一轮
-                    last_flush = time.monotonic()
-                    _flush_stream("think" if has_think else "text")
-                    stream_buf = ""
+                # 轮末强制把本轮推出去,再清缓冲换下一轮。
+                # **不包 `if card is not None`**:直播与卡片是两条旁路,web 没有卡也要推
+                # (`_flush_stream` 内部对缺失的卡有处理)。
+                last_flush = time.monotonic()
+                _flush_stream("think" if has_think else "text")
+                stream_buf = ""
                 return
             tool = getattr(event, "tool", None) or "?"
             brief = json.dumps(data.get("args") or {}, ensure_ascii=False, default=str)

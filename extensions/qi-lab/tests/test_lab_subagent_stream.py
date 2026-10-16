@@ -1,0 +1,140 @@
+"""**一条真链路**:真 `subagent` 工具(qi-agents)→ 直播帧 → qi-lab 的 AG-UI 流。
+
+为什么单开一个文件:推送端(qi-agents 的 `_web`)、宿主端(qi-lab 的过滤/广播/翻译)、
+runner 的注入、前端渲染各自都有测试,但「**真委派在过程中就把活动推出来**」从来没被
+端到端验证过 —— 而用户看到的现象恰恰是「subagent 的执行过程要等完全结束才展示」。
+
+所以这里不只看"有没有帧",而是钉**帧到达的顺序**:活动帧必须出现在
+`TOOL_CALL_RESULT` 之前。只要顺序错了,界面上就只能是"结束才看到",而且不会有任何报错。
+
+需要 `real_extensions` 标记:qi-lab 的 conftest 默认 stub 掉 `qi.extensions` entry point
+(免得测试随本机装了什么漂移),这条测试要的正是**真的** qi-agents。
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+pytest.importorskip("fastapi")
+from fastapi.testclient import TestClient  # noqa: E402
+
+pytestmark = pytest.mark.real_extensions
+
+_ROLE = """---
+name: scout
+description: 探路的
+tools: ["read"]
+---
+你是 scout,只做一件事:读一遍。
+"""
+
+
+class _DelegatingLLM:
+    """按**内容**分派调用(不能用调用计数:回合开头的自动起标题也会调 LLM)。
+
+    · 起标题的调用 → 一个短标题;
+    · 子运行(提示词里是 scout)→ 子结果;
+    · 主运行 → 第一次要委派,之后给最终回答。
+    """
+
+    def __init__(self) -> None:
+        self.delegated = False
+
+    async def chat(self, messages, tools=None, temperature=None):  # pragma: no cover
+        raise AssertionError("qi 有 astream 时走流式")
+
+    async def astream(self, messages, tools=None, temperature=None):
+        from qi_agent.llm import LLMDelta
+
+        head = str(getattr(messages[0], "content", "") or "")
+        if "起标题" in head or "标题" in head[:40]:
+            yield LLMDelta(text="一次委派")
+            yield LLMDelta(finished=True, usage={"total_tokens": 1})
+            return
+        if "scout" in head:
+            yield LLMDelta(text="scout 读完了 README")
+            yield LLMDelta(finished=True, usage={"total_tokens": 1})
+            return
+        if not self.delegated:
+            self.delegated = True
+            from qi_agent.llm import ToolCallOut
+
+            yield LLMDelta(text="我让 scout 去看")
+            yield LLMDelta(finished=True, usage={"total_tokens": 1},
+                           tool_calls=[ToolCallOut(id="call_delegate", name="subagent",
+                                                   args={"agent": "scout",
+                                                         "task": "读一遍 README"})])
+            return
+        yield LLMDelta(text="它说读完了")
+        yield LLMDelta(finished=True, usage={"total_tokens": 1})
+
+
+def _frames(tmp_path, monkeypatch, llm) -> list[dict]:
+    from qi_agent import paths
+    from qi_agent.runtime import QiRuntime, RuntimeConfig
+    from qi_agent.session import SessionStore
+    from qi_lab.app import create_app
+    from qi_lab.state import WebState
+
+    project = tmp_path / "proj"
+    (project / ".git").mkdir(parents=True, exist_ok=True)
+    home = tmp_path / "home"
+    (home / "agents" / "scout").mkdir(parents=True, exist_ok=True)
+    (home / "agents" / "scout" / "agent.md").write_text(_ROLE, encoding="utf-8")
+    # 关键:`packages` 声明是 pip 包扩展的**事实来源** —— 没声明就不加载
+    # (registry 里那条 `if key not in declared_pips: continue`),真机上你的
+    # settings.json 正是这么声明的。少了它,这条测试只会验出“未知工具 subagent”。
+    (home / "settings.json").write_text(
+        '{"defaultProvider": "stub", "defaultModel": "m1", '
+        '"packages": ["pip:qi-agents"]}', encoding="utf-8")
+    (tmp_path / "models.json").write_text(
+        '{"providers": {"stub": {"api": "openai-completions", "models": [{"id": "m1"}]}}}',
+        encoding="utf-8")
+    monkeypatch.setenv(paths.QI_AGENT_HOME, str(home))
+    monkeypatch.setenv(paths.QI_AGENT_CONFIG, str(tmp_path / "models.json"))
+
+    store = SessionStore(root=tmp_path / "sessions")
+    state = WebState(project, runtime_factory=lambda cwd: QiRuntime(
+        cwd=project, runtime_cfg=RuntimeConfig(workdir=project),
+        session_store=store, llm=llm, approve_project=True))
+    app = create_app(cwd=project, state=state, allowed_hosts=[], bind_host="127.0.0.1")
+
+    out: list[dict] = []
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        sid = client.post("/api/sessions",
+                          json={"title": "t", "cwd": str(project)}).json()["id"]
+        with client.stream("POST", "/api/ag-ui", json={
+                "threadId": sid, "runId": "r1",
+                "messages": [{"role": "user", "content": "让 scout 读一下 README"}]}) as resp:
+            assert resp.status_code == 200, resp.read()
+            for line in resp.iter_lines():
+                if line.startswith("data: "):
+                    out.append(json.loads(line[len("data: "):]))
+    return out
+
+
+def test_a_real_delegation_streams_progress_before_the_tool_finishes(tmp_path, monkeypatch):
+    """真委派:活动帧必须**在 `TOOL_CALL_RESULT` 之前**到达 —— 否则界面只能是"结束才看到"。"""
+    frames = _frames(tmp_path, monkeypatch, _DelegatingLLM())
+    kinds = [(f.get("type"), f.get("name") or f.get("activityType") or "") for f in frames]
+    order = [k for k, _ in kinds]
+
+    assert "TOOL_CALL_RESULT" in order, f"委派工具没跑起来:{kinds}"
+    result_at = order.index("TOOL_CALL_RESULT")
+
+    starts = [i for i, (k, n) in enumerate(kinds) if k == "SUBAGENT_STARTED"]
+    acts = [i for i, (k, n) in enumerate(kinds)
+            if k == "ACTIVITY_SNAPSHOT" and n == "qi.subagent"]
+    assert starts, f"没有 SUBAGENT_STARTED:委派直播根本没发出来:{kinds}"
+    assert acts, f"没有 qi.subagent 的 ACTIVITY_SNAPSHOT:{kinds}"
+    assert min(starts) < result_at, "子智能体的“生”必须在工具结束之前到 —— 否则就是结束才看到"
+    assert min(acts) < result_at, "活动内容必须在工具结束之前到（这是用户要的“过程中流式展示”）"
+
+    # 生 → 内容 的顺序(单队列 FIFO 保证卡先来、内容再来)
+    assert min(starts) < min(acts), f"顺序错了:{kinds}"
+    start = frames[min(starts)]
+    assert start["name"] == "scout" and start.get("parentToolCallId")
+    snap = frames[min(acts)]
+    assert snap["content"]["run"] and snap["content"].get("toolCallId")

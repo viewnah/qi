@@ -310,6 +310,35 @@ FINISHED / ERROR`:
 前端契约守卫(`ui/src/api/contract.test.ts`)在这次改动的第一轮里就变红了 ——
 它从 python 源码刮事件类型与前端清单对拍,`SUBAGENT_*` 三条被当场要求声明。
 
+**三、真缺陷:TUI 的卡片条件挡住了 web 的直播(2026-10-10)**
+
+用户反馈「subagent 的执行过程在完全执行结束后才展示,过程中不展示」。这次没有猜:
+写了一**真链路**测试(真 `subagent` 工具 + qi-lab 的 AG-UI 流,见
+`extensions/qi-lab/tests/test_lab_subagent_stream.py`),第一次跑就复现 —— 帧序列里只有
+`SUBAGENT_STARTED` / `SUBAGENT_FINISHED`,**一个 `ACTIVITY_SNAPSHOT` 都没有**。
+
+根因在 `qi-agents/subagent.py: _on_event`:
+
+```python
+if kind in ("thinking_delta", "text_delta"):
+    if _current_card() is None:      # ← 那张「平铺卡」是 TUI 的展示面,web 没有它
+        return
+...
+card = _current_card()
+if card is not None:                 # ← 轮末强制 flush 同样被卡挡住
+    _flush_stream(...)
+```
+
+于是 web(qi-lab)一个 `stream` 帧都收不到(流式文本/思考全丢),而 `act` / `think` 恰好
+不经过这两处条件 —— 表现就是「过程零星可见,但完整过程要等结束后横幅里才有」。
+**教训:两套前端共用一个后端时,某一个前端的“展示面”不能当数据通道的开关**;
+直播(`_web`)与卡片是两条独立旁路,`_flush_stream` 内部本来就对缺失的卡安全
+(`getattr(None, ...)`)。
+
+修法:去掉两处卡片条件。测试按**帧到达顺序**钉住(`SUBAGENT_STARTED` 与
+`ACTIVITY_SNAPSHOT` 必须早于 `TOOL_CALL_RESULT`)—— 顺序反了,界面就只能是“结束才看到”,
+而且不会有任何报错。
+
 ### 5.3 三期(可选,做完再评估)
 
 - 全套 `SUBAGENT_*` + `MultiAgentCapabilities.subagents` 用于角色选择器;

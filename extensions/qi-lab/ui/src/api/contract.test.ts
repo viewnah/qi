@@ -61,6 +61,7 @@ const QI_CUSTOM_NAMES = [
   "qi.narration",
   "qi.compaction",
   "qi.branch",
+  "qi.retry",
 ];
 
 describe("契约号", () => {

@@ -262,6 +262,12 @@ class AguiTranslator:
         if kind == "text_delta":
             return self._emit_text(ev.text)
 
+        if kind == "retry":
+            # 一次 LLM 调用失败、即将重跑它(pi 的 agent 级重试)。前端据此**撤回半截输出** ——
+            # 失败那次的消息不会进历史,屏幕上留着它,重试成功后同一段回答就会出现两遍。
+            return [{**self._base("CUSTOM"), "name": "qi.retry",
+                     "value": dict(ev.data or {})}]
+
         if kind == "assistant_message":
             # 每轮 LLM 回复完成一次:这是"这段文本到此为止"的权威边界。
             calls = [str(c) for c in (ev.data or {}).get("tool_calls") or []]

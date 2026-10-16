@@ -22,6 +22,7 @@ from .extensions import ExtensionBus, ExtensionContext
 from .llm import ChatMessage, LLMClient, LLMDelta, ToolCallOut, stream_llm
 from .models import TOOL_ERROR, TOOL_OK, AgentEvent, ToolOutcome
 from .registry import ToolCatalog
+from .retry import RetryPolicy, is_retryable_error, retry_delay_ms
 
 
 @dataclass
@@ -39,6 +40,11 @@ class RunnerSettings:
 
     #: 每轮结束后调用,收到已完成的轮数;True = 优雅停(stop_after_turns(n) 是常用形状)
     stop_after: Callable[[int], bool] | None = None
+
+    #: agent 级重试:一次 LLM 调用遇上**瞬时**故障(过载 / 网络 / 流提前结束)就重跑
+    #: 这一次调用(pi 的 `retry.*`)。`None` = 不重试 —— 测试替身与“明确关掉”都走这条。
+    #: 语义见 `retry` 模块:重跑的是**这一次调用**,失败那次的半截文本由调用方丢弃。
+    retry: RetryPolicy | None = None
 
 
 def stop_after_turns(limit: int) -> Callable[[int], bool]:
@@ -143,6 +149,32 @@ async def _iter_until_abort(iterator: AsyncGenerator[LLMDelta, None],
             await it.aclose()
 
 
+async def _sleep_unless_aborted(seconds: float, abort: AbortSignal | None) -> bool:
+    """睡 `seconds`;**中断置位立刻醒**并返回 False。
+
+    退避最长能到 60s,不能阻塞 escape:与 `_iter_until_abort` 同一个理由 ——
+    “等一会儿再重试”与“卡死了”在界面上必须能分辨。
+    """
+    if seconds <= 0:
+        return not (abort is not None and abort.aborted)
+    if abort is None:
+        await asyncio.sleep(seconds)
+        return True
+    if abort.aborted:
+        return False
+    sleeper = asyncio.ensure_future(asyncio.sleep(seconds))
+    watcher = asyncio.ensure_future(abort.wait())
+    try:
+        done, _ = await asyncio.wait({sleeper, watcher},
+                                     return_when=asyncio.FIRST_COMPLETED)
+        return sleeper in done
+    finally:
+        for task in (sleeper, watcher):
+            task.cancel()
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                await task
+
+
 def _interrupted_outcome() -> ToolOutcome:
     """未执行就被中断的工具调用,补一条结果 —— 不让 `tool_calls` 悬空(pi 同款)。"""
     return ToolOutcome(status=TOOL_ERROR, error="aborted",
@@ -237,6 +269,22 @@ class AgentRunner:
     def _tools(self) -> list[Tool]:
         return self.catalog.resolve(self.spec.tools)
 
+    def _should_retry(self, exc: BaseException, attempt: int,
+                      abort: AbortSignal | None) -> bool:
+        """这一次失败值得重跑吗(pi 的策略:开关 + 中断 + 预算 + 分类)。
+
+        `attempt` = 已经重试过几次(0 = 第一次就失败)。四道闸门的顺序有意:
+        中断优先于预算 —— 用户按了 Stop 就不该再睡下去。
+        """
+        policy = self.settings.retry
+        if policy is None or not policy.enabled:
+            return False
+        if abort is not None and abort.aborted:
+            return False
+        if attempt >= policy.max_retries:
+            return False
+        return is_retryable_error(exc)
+
     async def run(self, user_input: str, history: list[ChatMessage] | None = None,
                   abort: AbortSignal | None = None):
         """执行一轮用户输入,产出事件。
@@ -281,10 +329,6 @@ class AgentRunner:
                 turn += 1
                 await self._emit("turn_start",
                                  {"turn_index": turn, "timestamp": time.time()}, abort)
-                acc_text = ""
-                acc_thinking = ""
-                tool_calls: list[ToolCallOut] = []
-                usage: dict = {}
                 # `context`:每次 LLM 调用前可换消息表(裁剪 / 注入)。返回里的 `messages`
                 # 就是这一轮要发出去的那一份 —— 要改就返回**新列表**,别就地改消息对象
                 # (它们是会话历史的来源,就地改会污染跨轮上下文)。
@@ -298,33 +342,66 @@ class AgentRunner:
                 # 放在 `context` 之后:这样扩展剥掉的消息不会把刚插进来的那条也带走。
                 for extra in self._drain("steer"):
                     msgs.append(ChatMessage(role="user", content=extra))
-                # 请求级超时归 provider/SDK(见 llm.py 的 retry.provider),不在这里套 asyncio.timeout
-                await self._emit("message_start",
-                                 {"message": {"role": "assistant", "content": ""}}, abort)
-                async for delta in _iter_until_abort(
-                        stream_llm(self.llm, msgs, tools=schemas), abort):
-                    if delta.reasoning:
-                        # 思考内容:与回答分开流式(pi 的 thinking block)
-                        acc_thinking += delta.reasoning
-                        yield AgentEvent(kind="thinking_delta", agent=self.spec.name,
-                                         text=delta.reasoning)
-                    if delta.text:
-                        acc_text += delta.text
-                        # 逐字流式:Web 端靠它打字。CLI/TUI 只读回合末尾的 text 事件,
-                        # 所以它们的输出不变——这是有意为之的向后兼容。
-                        yield AgentEvent(kind="text_delta", agent=self.spec.name,
-                                         text=delta.text)
-                    if delta.text or delta.reasoning:
-                        # pi 的 `message_update`:流式过程中的逐段推送(带 partial message)
-                        await self._emit(
-                            "message_update",
-                            {"message": {"role": "assistant", "content": acc_text},
-                             "assistantMessageEvent": {"text": delta.text or "",
-                                                       "reasoning": delta.reasoning or ""}},
-                            abort)
-                    if delta.finished:
-                        tool_calls = delta.tool_calls
-                        usage = delta.usage
+                # 请求级超时归 provider/SDK(见 llm.py 的 retry.provider),不在这里套 asyncio.timeout。
+                #
+                # **重试回环只包住这一次 LLM 调用**(不是整个回合):`msgs` 里已经留着
+                # 本轮之前成功的工具往返,所以重跑时模型看得见那些结果、不会重复调工具 ——
+                # 与 pi “移除失败的 assistant 消息、重跑这一轮”的效果一样。
+                # `context` / `steer` 的钩子在循环外:重试不该让它们重复派发。
+                attempt = 0
+                while True:
+                    acc_text = ""
+                    acc_thinking = ""
+                    tool_calls = []
+                    usage = {}
+                    try:
+                        # `message_start` 每次尝试都发:对扩展而言这就是“这条 assistant
+                        # 消息重开了”—— 失败那次不会走到 `message_end` / `assistant_message`,
+                        # 所以它不会落盘(pi 移除失败消息的等价物)。
+                        await self._emit("message_start",
+                                         {"message": {"role": "assistant", "content": ""}}, abort)
+                        async for delta in _iter_until_abort(
+                                stream_llm(self.llm, msgs, tools=schemas), abort):
+                            if delta.reasoning:
+                                # 思考内容:与回答分开流式(pi 的 thinking block)
+                                acc_thinking += delta.reasoning
+                                yield AgentEvent(kind="thinking_delta", agent=self.spec.name,
+                                                 text=delta.reasoning)
+                            if delta.text:
+                                acc_text += delta.text
+                                # 逐字流式:Web 端靠它打字。CLI/TUI 只读回合末尾的 text 事件,
+                                # 所以它们的输出不变——这是有意为之的向后兼容。
+                                yield AgentEvent(kind="text_delta", agent=self.spec.name,
+                                                 text=delta.text)
+                            if delta.text or delta.reasoning:
+                                # pi 的 `message_update`:流式过程中的逐段推送(带 partial message)
+                                await self._emit(
+                                    "message_update",
+                                    {"message": {"role": "assistant", "content": acc_text},
+                                     "assistantMessageEvent": {"text": delta.text or "",
+                                                               "reasoning": delta.reasoning or ""}},
+                                    abort)
+                            if delta.finished:
+                                tool_calls = delta.tool_calls
+                                usage = delta.usage
+                        break                     # 这一次调用成功走完
+                    except asyncio.CancelledError:
+                        raise                     # 取消永不重试
+                    except Exception as exc:      # noqa: BLE001 分类由策略决定
+                        if not self._should_retry(exc, attempt, abort):
+                            raise
+                        attempt += 1
+                        delay_ms = retry_delay_ms(self.settings.retry, attempt)
+                        # 半截输出由**消费者**回收:`retry` 事件让 Web/TUI 撤掉它,
+                        # runtime 清掉已累积的 partial(否则硬取消时会把半截落盘,
+                        # 而界面上那段已经没了 -> 直播与回放不一致)。
+                        yield AgentEvent(kind="retry", agent=self.spec.name,
+                                         data={"attempt": attempt,
+                                               "max": self.settings.retry.max_retries,
+                                               "delay_ms": delay_ms,
+                                               "error": f"{type(exc).__name__}: {exc}"})
+                        if not await _sleep_unless_aborted(delay_ms / 1000, abort):
+                            break                 # 退避期间被中断:交给下面的 aborted 处理
                 turns_used = turn
                 # 流式途中被中断:半截的 tool_calls 参数不可信,一律丢(pi 对截断消息同处理)
                 if abort is not None and abort.aborted:

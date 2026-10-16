@@ -71,7 +71,7 @@
 | `defaultTools` | 初始内置工具集 | **已接**:只挑**内置**那一档,扩展装的工具照旧全留 —— 所以 `[]` = "不要内置、只留扩展"(与"没配"是两件事)。`--tools` / `-t` 等 CLI 旗标**压过**它 |
 | `compaction` | `{enabled, reserveTokens(默认 16384), keepRecentTokens(默认 20000)}` | 已接:超 `contextWindow - reserveTokens` 自动压缩;`/compact` 手动压缩。见 [slash-commands.md](slash-commands.md) |
 | `retry.provider` | `{timeoutMs, maxRetries}` | **已接**(请求级):→ litellm 的 `timeout`(秒)/ `num_retries`。毫秒→秒在代码里换算。这是**唯一**该管请求超时的地方 —— agent 层不再套 `asyncio.timeout`(旧行为会把整轮打成“执行超时”) |
-| `retry.enabled` / `retry.maxRetries` / `retry.baseDelayMs` | 回合级重试 | 未接(失败回合退避重试)。已接的只是上面的 `retry.provider.*`;`maxRetryDelayMs` 无对应 litellm 参数,未映射 |
+| `retry.enabled` / `retry.maxRetries` / `retry.baseDelayMs` / `retry.maxAgentDelayMs` | `{true, 3, 2000, 60000}` | **已接**(agent 级):一次 LLM 调用遇上**瞬时**故障(过载 / 限流 / 5xx / 网络 / **流提前结束**)就重跑**这一次调用**,指数退避(2s→4s→8s,封顶 `maxAgentDelayMs`)。配额与计费类**不重试**(fail fast);中断永不重试。半截输出会被丢弃 —— 见 [agent 级重试](#8-agent-级重试)。 |
 | `packages` | **扩展声明层**:这个环境该装哪些扩展 | **已接**:`qi list` / `qi doctor` 读它做「声明了没装 / 装了没声明」的双向比对,并输出可复制的装法。qi **不替你调 pip**(理由见 [extensions.md §11](extensions.md)),所以这里只是声明 |
 | `extensions` | 额外扩展路径 | **已接**(P-E1):每一条可以是扩展目录的**父目录**,也可以直接指向**单个扩展目录**;支持 `!排除` / `-排除`(见 §4);项目级那份受信任门控 |
 
@@ -140,3 +140,19 @@ qi config --set 'skills=["~/x"]'
 qi config -l --set theme=dark   # 写项目 <cwd>/.qi/settings.json
 qi config --unset theme         # 删键(支持点号路径,如 compaction.enabled)
 ```
+
+## 8. agent 级重试
+
+一次 LLM 调用失败(过载 / 限流 / 5xx / 网络 / **流提前结束**)时,qi 会**重跑这一次调用** ——
+与 pi 的 `retry.*` 同名同形(默认 `enabled=true`、`maxRetries=3`、`baseDelayMs=2000`、
+`maxAgentDelayMs=60000`;指数退避:2s → 4s → 8s…,封顶 `maxAgentDelayMs`)。
+
+三条要点:
+
+- **重跑的是这一次调用,不是“续上那条流”**。失败那次已经流出的半截文本会被丢弃
+  (它从不落盘;Web/TUI 收到 `qi.retry` 事件后从屏幕上撤回)。所以在**轮**里重试不会
+  出现两遍回答 —— 在**流**里重试才会。
+- **上下文不变**:重试不重复插入用户消息,本轮已成功的工具往返仍在上下文里,所以
+  模型不会把同一个工具再调一遍 —— 这是 pi「移除失败的 assistant 消息」的等价物。
+- **不该重试的不重试**:配额/计费类(`insufficient_quota`、`billing`…)立刻失败,让配额
+  处理接手;中断(escape / Stop)永不重试 —— 退避期间按 escape 会立刻停下。

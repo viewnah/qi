@@ -104,6 +104,7 @@ data: {"type":"RUN_STARTED","timestamp":1730000000000,...}\n\n
 | `qi.narration` | 这段文本是"过程叙述"还是"最终回答"(`tool_calls` / `is_final` / `thinking`) |
 | `qi.compaction` | 压缩的 `start` / `end` 阶段 |
 | `qi.branch` | 分支变化 |
+| `qi.retry` | 一次 LLM 调用失败、qi 正在**重跑它**(`attempt`/`max`/`delay_ms`/`error`)。客户端应**撤回半截输出** —— 失败那次不会进历史,留着会与重试后的输出叠在一起 |
 
 ### 委派直播:生命走 `SUBAGENT_*`,内容走 `ACTIVITY_SNAPSHOT`
 

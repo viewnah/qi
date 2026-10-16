@@ -32,7 +32,9 @@ _MODELS = json.dumps({
         "beta": {"api": "openai-completions", "models": [{"id": "m3"}]},
     },
 })
-_SETTINGS = '{"defaultProvider": "ollama", "defaultModel": "x"}'
+_SETTINGS = ('{"defaultProvider": "ollama", "defaultModel": "x",'
+             # 这个文件里有重试用例:退避设 0,免得多等 2 秒(默认 baseDelayMs=2000)
+             ' "retry": {"baseDelayMs": 0}}')
 
 
 def _env(tmp_path: Path, monkeypatch) -> None:
@@ -275,3 +277,41 @@ async def test_on_event_reports_sub_run_progress(tmp_path, monkeypatch):
 
     assert await _run() == "子读完"
     assert {"agent_start", "tool_start", "tool_end", "agent_end"} <= set(seen)
+
+
+class _FlakyLLM:
+    """可编程的**非流式**假 LLM:第 2 次调用断流一次,之后正常。
+
+    非流式也走同一条重试路径(`chat_as_stream` 把 `chat` 合成为流),所以这里
+    同时验证了“实现方只有 chat 时重试照样生效”。
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def chat(self, messages, tools=None, temperature=None):
+        self.calls += 1
+        if self.calls == 1:
+            return _call("delegate", {})                 # 父:第 1 轮 → 调工具
+        if self.calls == 2:
+            raise RuntimeError("connection lost")        # 子运行:断流(可重试)
+        if self.calls == 3:
+            return ChatResponse(text="子运行结果")        # 子运行:重试成功
+        return ChatResponse(text="父的最终回答")          # 父:第 2 轮
+
+
+@pytest.mark.asyncio
+async def test_subagents_get_agent_level_retry_too(tmp_path, monkeypatch):
+    """子运行也享受 agent 级重试 —— 上游抖动不该让整个委派白跑。
+
+    钉法就是数调用次数:没有重试的话,子运行断流那次直接失败,总共只有 3 次调用;
+    有重试则 4 次(父调工具 → 子断流 → 子重试成功 → 父收尾)。
+    """
+    llm = _FlakyLLM()
+    _install(tmp_path, "delegator", _DELEGATE_EXT)
+    runtime = _runtime(tmp_path, monkeypatch, llm)
+    session = runtime.sessions.create("t", cwd=runtime.cwd)
+    events = await _drain(runtime, "帮我委派", session)
+
+    assert llm.calls == 4, "子运行没重试(应该 4 次:含一次重试)"
+    assert [e for e in events if e.kind == "text"][-1].text == "父的最终回答"

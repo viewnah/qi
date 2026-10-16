@@ -59,6 +59,7 @@ from .runner import AgentRunner, RunnerSettings, RunSpec
 from .session import (MODEL_CHANGE, THINKING_LEVEL_CHANGE, Session, SessionStore,
                       context_settings, has_title)
 from .titling import suggest_title
+from .retry import agent_retry_policy
 from .settings import (default_tools, extension_dirs, load_settings, load_settings_by_scope,
                        branch_summary_skip_prompt, model_thinking_level,
                        project_declared_default_trust, resolve_project_trust, session_dir)
@@ -621,6 +622,10 @@ class QiRuntime:
                           session_env=self._child_session_env(data.get("model")),
                           abort=abort)
         runner = AgentRunner(run_spec, self.catalog, self._client_for(data.get("model")),
+                            # 子运行**也**享受 agent 级重试(不传 `stop_after`:子运行靠自身
+                            # 预算收敛,主回合的“防跑飞”不该套在它头上)。上游抖动时子运行
+                            # 失败会让整个委派失败 —— 没有任何理由只让主回合重试。
+                            RunnerSettings(retry=agent_retry_policy(self.settings.retry)),
                             tool_ctx=ctx,
                             bus=self.bus,
                             extension_ctx=lambda signal: self.extension_ctx(signal),
@@ -1808,7 +1813,8 @@ class QiRuntime:
             # 运行单元:core 只认识“提示词 + 工具名单 + 名字”(见 `RunSpec`)
             RunSpec(name=CORE_AGENT_NAME, prompt=system_prompt, tools=tools),
             self.catalog, self.llm_exec,
-            RunnerSettings(stop_after=self.stop_after),
+            RunnerSettings(stop_after=self.stop_after,
+                           retry=agent_retry_policy(self.settings.retry)),
             tool_ctx=self._tool_ctx(CORE_AGENT_NAME),
             injected_messages=[injected] if injected else None,
             drain_injections=self._drain_messages,
@@ -1829,6 +1835,11 @@ class QiRuntime:
                 elif event.kind == "text_delta":
                     # 当前轮的增量:硬取消发生在 assistant_message 之前时,就靠它抢救半截回答
                     partial += event.text or ""
+                elif event.kind == "retry":
+                    # 一次 LLM 调用失败、即将重跑它:失败那次的半截文本要丢 ——
+                    # 界面马上会撤回那段(TUI/Web 收到的同一个事件),所以它也**不能**
+                    # 在硬取消时被当成“抢救出的半截”落盘,否则直播与回放就不一致了。
+                    partial = ""
                 elif event.kind == "assistant_message":
                     partial = event.text or ""        # 该轮的权威全文
                     # 思考**先**落:它发生在这条消息之前。顺序反了,回放就成了

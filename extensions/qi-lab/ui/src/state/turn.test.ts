@@ -19,7 +19,7 @@ import {
   reduce,
   withUserMessage,
 } from "./turn";
-import type { Row, SayRow, ToolRowData } from "./turn";
+import type { NoteRow, Row, SayRow, ToolRowData } from "./turn";
 
 /** 按序归约,返回终态。 */
 const run = (...events: AguiEvent[]) => events.reduce(reduce, emptyTurn);
@@ -558,5 +558,59 @@ describe("委派直播(SUBAGENT_* 生命 + ACTIVITY_SNAPSHOT 内容)", () => {
     const s3 = run(...toolStart, born());
     expect(latestActivityLine(toolOf(s3).activity)).toBe("scout \u8bfb\u4e00\u904d");
     expect(latestActivityLine([])).toBeNull();
+  });
+});
+
+describe("agent 级重试(qi.retry):撤回半截输出", () => {
+  const retry = (over: Record<string, unknown> = {}): AguiEvent =>
+    ({
+      type: "CUSTOM", name: "qi.retry",
+      value: { attempt: 1, max: 3, delay_ms: 2000,
+               error: "RuntimeError: connection lost", ...over },
+    }) as AguiEvent;
+  const sayRows = (s: ReturnType<typeof reduce>) =>
+    s.rows.filter((r) => r.kind === "say" || r.kind === "think");
+
+  it("丢掉还在流的 say/think 行,留一行重试提示", () => {
+    // 失败那次已经流出的半截:它不会进历史,屏幕上也不能留着 ——
+    // 否则重试成功后同一段回答会出现两遍。
+    const s = run(
+      { type: "TEXT_MESSAGE_START", messageId: "m1", role: "assistant" },
+      { type: "TEXT_MESSAGE_CONTENT", messageId: "m1", delta: "半截回答" },
+      retry(),
+    );
+    expect(sayRows(s)).toEqual([]);
+    const note = s.rows.at(-1) as NoteRow;
+    expect(note).toMatchObject({ kind: "note", label: "重试" });
+    expect(note.detail).toContain("1/3");
+    expect(note.detail).toContain("2s");   // 退避要显示:用户要知道等多久
+    expect(note.detail).toContain("connection lost");
+  });
+
+  it("思考行同样撤回(它属于同一次失败的调用)", () => {
+    const s = run(
+      { type: "REASONING_MESSAGE_START", messageId: "r1", role: "reasoning" },
+      { type: "REASONING_MESSAGE_CONTENT", messageId: "r1", delta: "想了一半" },
+      retry(),
+    );
+    expect(sayRows(s)).toEqual([]);
+  });
+
+  it("已收尾的 say 行、工具行与工具结果都不动(保留已经发生的事)", () => {
+    const s = run(
+      { type: "TOOL_CALL_START", toolCallId: "c1", toolCallName: "ls" },
+      { type: "TOOL_CALL_END", toolCallId: "c1" },
+      { type: "TOOL_CALL_RESULT", messageId: "tm1", toolCallId: "c1",
+        content: "d home", metadata: { "qi.tool": { status: "ok" } } },
+      // 已收尾的回答(END 之后不在"流中")
+      { type: "TEXT_MESSAGE_START", messageId: "m2", role: "assistant" },
+      { type: "TEXT_MESSAGE_CONTENT", messageId: "m2", delta: "上一轮的正文" },
+      { type: "TEXT_MESSAGE_END", messageId: "m2" },
+      retry(),
+    );
+    const tool = s.rows.find((r) => r.kind === "tool") as ToolRowData;
+    expect(tool.result).toBe("d home");
+    const says = sayRows(s).filter((r) => r.kind === "say") as SayRow[];
+    expect(says.map((r) => r.text)).toEqual(["上一轮的正文"]);
   });
 });

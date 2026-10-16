@@ -897,6 +897,29 @@ function applyCustom(
           },
         ],
       };
+    case QI_CUSTOM.retry: {
+      // 一次 LLM 调用失败、qi 正在重跑它(pi 的 agent 级重试)。**撤回半截输出**:
+      // 失败那次的消息不进历史,屏幕上留着它,重试成功后同一段回答就会出现两遍。
+      // 只丢还在流的那条 say/think(`live`);已收尾的行与**工具行不动** ——
+      // 工具结果保留,与 pi “移除失败的 assistant 消息、保留工具往返”一致。
+      const kept = state.rows.filter(
+        (row) => !((row.kind === "say" || row.kind === "think") && row.live),
+      );
+      const seconds = Math.round(asNum(value.delay_ms) / 100) / 10;
+      return {
+        ...state,
+        rows: [
+          ...kept,
+          {
+            kind: "note",
+            key: nextKey("note"),
+            label: "重试",
+            detail: `${asNum(value.attempt)}/${asNum(value.max)} · ${seconds}s 后重试 · ` +
+              asStr(value.error).slice(0, 120),
+          },
+        ],
+      };
+    }
     case QI_CUSTOM.branch:
       return {
         ...state,

@@ -564,6 +564,8 @@ export const QI_CUSTOM = {
    compaction: "qi.compaction",
    branch: "qi.branch",
    history: "qi.history",
+   /** 一次 LLM 调用失败、qi 正在重跑它(pi 的 agent 级重试):前端据此**撤回半截输出**。 */
+   retry: "qi.retry",
    /** 工具结构化结果挂在 TOOL_CALL_RESULT.metadata 下的键。 */
    toolMeta: "qi.tool",
    usage: "qi.usage",

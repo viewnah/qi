@@ -189,6 +189,27 @@ def test_tool_details_survive_the_agui_layer():
     assert result["metadata"]["qi.tool"]["status"] == TOOL_OK
 
 
+def test_retry_event_becomes_a_custom_frame():
+    """agent 级重试 → `CUSTOM qi.retry`。
+
+    前端靠这一帧**撤回半截输出**(失败那次调用不会进历史,留在屏幕上就会与重试后的
+    输出叠在一起)。所以映射层必须原样带上 attempt/max/delay_ms/error。
+    """
+    from qi_agent.models import AgentEvent
+    from qi_lab.agui import AguiTranslator
+
+    t = AguiTranslator(thread_id="s", run_id="r")
+    frames = t.feed(AgentEvent(kind="retry", agent="qi",
+                               data={"attempt": 1, "max": 3, "delay_ms": 2000,
+                                     "error": "RuntimeError: connection lost"}))
+    assert len(frames) == 1
+    frame = frames[0]
+    assert frame["type"] == "CUSTOM" and frame["name"] == "qi.retry"
+    assert frame["value"]["attempt"] == 1 and frame["value"]["max"] == 3
+    assert frame["value"]["delay_ms"] == 2000
+    assert "connection lost" in frame["value"]["error"]
+
+
 # ── AG-UI:线格式 ──────────────────────────────────────────
 
 @pytest.mark.asyncio

@@ -478,6 +478,12 @@ def root_callback(
                 console.print(ev.text)
             elif ev.kind == "error":
                 err_console.print(f"[red]{escape(ev.text)}[/red]")
+            elif verbose and ev.kind == "retry":
+                data = ev.data or {}
+                err_console.print(
+                    f"[yellow]↻ 上游失败,{(data.get('delay_ms') or 0) / 1000:.0f}s 后重试"
+                    f"({data.get('attempt')}/{data.get('max')}):"
+                    f"{escape(str(data.get('error') or '')[:120])}[/yellow]")
             elif verbose and ev.kind == "dispatch":
                 err_console.print(f"[cyan]→ {escape(ev.text)}[/cyan]")
             elif verbose and ev.kind == "tool_start":

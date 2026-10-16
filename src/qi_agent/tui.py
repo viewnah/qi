@@ -3630,6 +3630,15 @@ class QiTui(App):
                     self._append_compaction(entry or {"summary": ev.text,
                                                       "tokensBefore": ev.data.get("tokensBefore")})
                     self._flash("已自动压缩上下文")
+                elif ev.kind == "retry":
+                    # 一次 LLM 调用失败、即将重跑它(pi 的 agent 级重试):把**半截输出**
+                    # 从屏幕上撤掉 —— 失败那次不进历史,留着它会与重试后的输出叠在一起。
+                    # 工具块不动:已经跑过的结果保留(pi 同款)。
+                    self._discard_live_output()
+                    delay_s = (ev.data.get("delay_ms") or 0) / 1000
+                    self._flash(
+                        f"上游失败,{delay_s:.0f}s 后重试({ev.data.get('attempt')}/"
+                        f"{ev.data.get('max')}):{str(ev.data.get('error') or '')[:80]}", 5.0)
                 elif ev.kind == "thinking_delta":
                     if self._live_thinking is None:
                         self._live_thinking = ThinkingMessage("", self._palette)
@@ -4139,6 +4148,22 @@ class QiTui(App):
         for widget in self._thinking_widgets:
             widget.display = self._show_thinking
         self._flash("思考块:" + ("显示" if self._show_thinking else "隐藏"))
+
+    def _discard_live_output(self) -> None:
+        """撤回**这一次调用**已经渲染的半截输出(重试前)。
+
+        只碰还在流的文本/思考 widget(`_live` / `_live_thinking`):它们属于失败的那次
+        调用。工具块与已收尾的回答都不动 —— 那是已经发生的事(重试重跑的是调用,不是回放)。
+        """
+        for widget in (self._live, self._live_thinking):
+            if widget is None:
+                continue
+            with contextlib.suppress(Exception):     # 控件可能已被移除
+                widget.remove()
+            if widget in self._thinking_widgets:
+                self._thinking_widgets.remove(widget)
+        self._live = None
+        self._live_thinking = None
 
     def _report_reasoning_dropped(self) -> None:
         """provider 拒绝了 reasoning_effort 时提示一次(别让用户以为级别生效了)。"""

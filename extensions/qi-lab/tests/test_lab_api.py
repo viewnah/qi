@@ -210,6 +210,32 @@ def test_retry_event_becomes_a_custom_frame():
     assert "connection lost" in frame["value"]["error"]
 
 
+def test_tool_frames_carry_the_events_call_id():
+    """`TOOL_CALL_*` 必须用事件自带的 `tool_call_id`,不能自己编号。
+
+    踩过的坑(用户现象:「委派工具卡在闪、里面一片空白」):活动帧的
+    `ACTIVITY_SNAPSHOT.content.toolCallId` 与落盘都按 runner 的真实 `call.id` 认卡;
+    这一层自编号(`call_2`)之后,前端永远找不到那张卡 —— 帧被塞进暂存,永不显示。
+    """
+    from qi_agent.models import AgentEvent
+    from qi_lab.agui import AguiTranslator
+
+    t = AguiTranslator(thread_id="s", run_id="r")
+    start = t.feed(AgentEvent(kind="tool_start", tool="subagent",
+                              data={"args": {"agent": "scout"},
+                                    "tool_call_id": "call_delegate"}))
+    assert [f["toolCallId"] for f in start] == ["call_delegate"] * 3, \
+        "Start/Args/End 要用事件的 id(自编号 = 前端归不了卡)"
+    end = t.feed(AgentEvent(kind="tool_end", tool="subagent", text="ok",
+                            data={"status": "ok", "tool_call_id": "call_delegate"}))
+    assert end[0]["toolCallId"] == "call_delegate", "Result 也要对上同一把钥匙"
+    assert end[0]["metadata"]["qi.tool"]["tool_call_id"] == "call_delegate"
+
+    # 不带 id 的来源仍有兜底(老路径 / 第三方 AgentEvent 生产者)
+    legacy = t.feed(AgentEvent(kind="tool_start", tool="t", data={"args": {}}))
+    assert legacy[0]["toolCallId"], "缺 id 时要能自编号,不能发出空 id"
+
+
 # ── AG-UI:线格式 ──────────────────────────────────────────
 
 @pytest.mark.asyncio

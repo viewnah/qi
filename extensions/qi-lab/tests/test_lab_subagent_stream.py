@@ -138,3 +138,12 @@ def test_a_real_delegation_streams_progress_before_the_tool_finishes(tmp_path, m
     assert start["name"] == "scout" and start.get("parentToolCallId")
     snap = frames[min(acts)]
     assert snap["content"]["run"] and snap["content"].get("toolCallId")
+
+    # **归卡键必须与工具卡一致**:不一致时前端只会把它暂存(pendingActivity),永远不显示 ——
+    # 现象正是「工具卡在闪、里面什么都没有」。
+    tool_start = next(f for f in frames if f["type"] == "TOOL_CALL_START")
+    assert snap["content"]["toolCallId"] == tool_start["toolCallId"], \
+        f"活动帧归不了卡:content={snap['content']['toolCallId']!r} " \
+        f"TOOL_CALL_START={tool_start['toolCallId']!r}"
+    assert start.get("parentToolCallId") == tool_start["toolCallId"], \
+        "SUBAGENT_STARTED 的 parentToolCallId 也要指向同一张卡"

@@ -339,6 +339,30 @@ if card is not None:                 # ← 轮末强制 flush 同样被卡挡住
 `ACTIVITY_SNAPSHOT` 必须早于 `TOOL_CALL_RESULT`)—— 顺序反了,界面就只能是“结束才看到”,
 而且不会有任何报错。
 
+**四、真缺陷:活动帧归不了卡 —— 两套 `tool_call_id`(2026-10-10)**
+
+用户反馈「只有 `subagent` 在闪,内部过程看不到」。给真链路测试补上一条**归卡键一致性**
+断言后当场复现:
+
+```
+ACTIVITY_SNAPSHOT.content.toolCallId = "call_delegate"   ← runner 的真实 call.id(落盘也用这个)
+TOOL_CALL_START.toolCallId            = "call_2"         ← agui 自己编的号
+```
+
+`qi-lab/qi_lab/agui.py` 的 `tool_start` 映射用 `self._next("call")` **重新编号**,把事件自带
+的 `tool_call_id` 丢了。前端按 `content.toolCallId` 找那张卡 → 永远找不到 → 帧被塞进
+`pendingActivity` 暂存 → **永不显示**。于是:卡在闪(`running` 状态照常),里面一片空白;
+结束后的横幅(走 `result`)照常 —— 用户看到的就是「过程要等结束才看到」。
+
+这也是**直连也复现**的原因:它跟网络、代理、端口映射都无关,是归卡键对不上。
+
+修法:`tool_start` 一律用事件的 `tool_call_id`(缺失才自编号兜底);`tool_end` 也用事件 id
+配对(同一轮多个工具并行时,原来的单槽会错配)。测试:真链路断言三者一致 + 一条不依赖
+委派的单测;变异(改回自编号)立刻变红。
+
+**教训**:跨进程/跨层传的**主键**只有一个来源。任何一层“顺手生成一个”都会让下游静默失效 ——
+而且失效方向恰好是“看起来在跑”。
+
 ### 5.3 三期(可选,做完再评估)
 
 - 全套 `SUBAGENT_*` + `MultiAgentCapabilities.subagents` 用于角色选择器;

@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from dataclasses import dataclass, field
@@ -296,7 +297,10 @@ class AguiTranslator:
 
         if kind == "tool_start":
             out = self._close_open()
-            call_id = self._next("call")
+            # **必须用事件自带的 `tool_call_id`**:活动帧(`ACTIVITY_SNAPSHOT.content.toolCallId`)
+            # 与落盘都按 runner 的真实 `call.id` 认卡 —— 这里自编号会让前端归不了卡,
+            # 现象是「工具卡在闪、里面一片空白」(帧进了待用暂存,永远等不到卡建成)。
+            call_id = str((ev.data or {}).get("tool_call_id") or "") or self._next("call")
             args = (ev.data or {}).get("args") or {}
             self._pending_tool = (call_id, str(ev.tool or "tool"), args)
             out += [
@@ -312,7 +316,11 @@ class AguiTranslator:
             return out
 
         if kind == "tool_end":
-            call_id, _name, _args = self._pending_tool or (self._next("call"), "", {})
+            # 用事件自带的 id 配对(同一轮多个工具并行时,单个槽位会配错);
+            # 老来源不给 id 时才退回槽位/自编号。
+            call_id = str((ev.data or {}).get("tool_call_id") or "")
+            if not call_id:
+                call_id, _name, _args = self._pending_tool or (self._next("call"), "", {})
             self._pending_tool = None
             data = dict(ev.data or {})
             return [{**self._base("TOOL_CALL_RESULT"),
@@ -443,7 +451,15 @@ def _now_ms() -> int:
     return time.time_ns() // 1_000_000
 
 
-async def mixed_frames(feed: Any, translator: AguiTranslator) -> Any:
+#: 心跳哨兵:队列空闲超过间隔时 yield 它,`app` 把它编成 SSE 注释行(`: ping`)。
+#: 存在的理由:中间层(反向代理 / **内网穿透 / 远程端口映射**)常常“攒够一定字节
+#: 或时间才转发”,于是 SSE 帧全部堆到响应结束 —— 用户看到的就是“过程要等结束才
+#: 展示”,而且刷新/重启都没用。周期性输出是唯一能让这类层乖乖 flush 的东西。
+HEARTBEAT = object()
+
+
+async def mixed_frames(feed: Any, translator: AguiTranslator,
+                       *, heartbeat_s: float | None = None) -> Any:
     """直播队列 → AG-UI 帧序列(**单一队列**,design/web-lab.md §5.2)。
 
     队列里混着三种消息:`KIND_ACTIVITY`(直播内容,翻译成 `ACTIVITY_SNAPSHOT`)、
@@ -451,10 +467,20 @@ async def mixed_frames(feed: Any, translator: AguiTranslator) -> Any:
     的性质:子运行期间主流是静默的(LLM 调用不产事件),活动帧与工具卡帧不排队,
     顺序就会错乱 —— 卡还没建、活动先到了。
 
+    `heartbeat_s` 给了就在空闲超过它时 yield `HEARTBEAT`(见上面那个哨兵的用途)。
+    超时只取消 `Queue.get`(取消它不会丢队列里的元素),所以心跳不会吃掉真帧。
+
     纯消费逻辑:不碰 FastAPI、不碰 runtime,给一个假队列就能测。
     """
     while True:
-        kind, payload = await feed.get()
+        if heartbeat_s is None:
+            kind, payload = await feed.get()
+        else:
+            try:
+                kind, payload = await asyncio.wait_for(feed.get(), heartbeat_s)
+            except asyncio.TimeoutError:
+                yield HEARTBEAT
+                continue
         if kind == activity.KIND_END:
             return
         if kind == activity.KIND_ACTIVITY:

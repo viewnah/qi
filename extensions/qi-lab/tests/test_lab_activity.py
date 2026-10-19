@@ -23,7 +23,7 @@ import pytest
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
-from qi_lab import activity  # noqa: E402
+from qi_lab import activity, agui  # noqa: E402
 from qi_lab.agui import AguiTranslator, mixed_frames  # noqa: E402
 from qi_lab.state import WebState  # noqa: E402
 
@@ -178,6 +178,39 @@ async def test_mixed_frames_translates_activity_and_keeps_fifo_order():
     assert out[1]["content"]["run"] == "scout#1"
 
 
+class _QueueFeed:
+    """真队列版假 feed:心跳测试需要“真的会等”(列表版 get 不等)。"""
+
+    def __init__(self) -> None:
+        import asyncio
+
+        self._q: "asyncio.Queue" = asyncio.Queue()
+
+    async def get(self):
+        return await self._q.get()
+
+    def put_nowait(self, item) -> None:
+        self._q.put_nowait(item)
+
+
+@pytest.mark.asyncio
+async def test_mixed_frames_emits_a_heartbeat_when_idle():
+    """空闲超过间隔 → 心跳哨兵;它**不吃掉**随后的真帧(超时只取消 `get`)。
+
+    心跳是给中间层看的:内网穿透 / 远程端口映射 / 反代常常“攒够字节或时间才转发”,
+    没有周期性输出时,整个 SSE 会被堆到回合结束 —— 表面现象就是“过程要等结束才展示”。
+    """
+    feed = _QueueFeed()
+    tr = AguiTranslator(thread_id="t", run_id="r")
+    frames = mixed_frames(feed, tr, heartbeat_s=0.01)
+
+    assert await anext(frames) is agui.HEARTBEAT
+    feed.put_nowait((activity.KIND_FRAME, {"type": "RUN_STARTED"}))
+    assert await anext(frames) == {"type": "RUN_STARTED"}, "心跳不能吃掉真帧"
+    feed.put_nowait((activity.KIND_END, None))
+    assert await anext(frames, "done") == "done"
+
+
 @pytest.mark.asyncio
 async def test_mixed_frames_ends_at_the_sentinel():
     """哨兵之后一帧都不出(pump 收工)。"""
@@ -260,6 +293,62 @@ class _ActivityLLM:
             injected()
         yield LLMDelta(text="好")
         yield LLMDelta(finished=True, usage={"total_tokens": 1})
+
+
+class _SlowLLM:
+    """故意慢:让队列空闲下来,逼出心跳(心跳只该在空闲时发)。"""
+
+    async def astream(self, messages, tools=None, temperature=None):
+        import asyncio
+
+        from qi_agent.llm import LLMDelta
+
+        await asyncio.sleep(0.25)
+        yield LLMDelta(text="慢回答")
+        yield LLMDelta(finished=True, usage={"total_tokens": 1})
+
+
+def test_an_idle_stream_sends_sse_heartbeats(tmp_path, monkeypatch):
+    """空闲的流要发 SSE **注释行**(`: ping`)—— 中间层攒够才转发时唯一的顶开手段。"""
+    import qi_lab.app as lab_app
+    from qi_agent import paths
+    from qi_agent.runtime import QiRuntime, RuntimeConfig
+    from qi_agent.session import SessionStore
+    from qi_lab.app import create_app
+    from qi_lab.state import WebState
+
+    monkeypatch.setattr(lab_app, "STREAM_HEARTBEAT_S", 0.05)
+    project = tmp_path / "proj"
+    (project / ".git").mkdir(parents=True, exist_ok=True)
+    home = tmp_path / "home"
+    home.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "models.json").write_text(
+        '{"providers": {"stub": {"api": "openai-completions", "models": [{"id": "m1"}]}}}',
+        encoding="utf-8")
+    (home / "settings.json").write_text(
+        '{"defaultProvider": "stub", "defaultModel": "m1"}', encoding="utf-8")
+    monkeypatch.setenv(paths.QI_AGENT_CONFIG, str(tmp_path / "models.json"))
+    monkeypatch.setenv(paths.QI_AGENT_HOME, str(home))
+
+    store = SessionStore(root=tmp_path / "sessions")
+    state = WebState(project, runtime_factory=lambda cwd: QiRuntime(
+        cwd=Path(cwd), runtime_cfg=RuntimeConfig(workdir=Path(cwd)),
+        session_store=store, llm=_SlowLLM()))
+    app = create_app(cwd=project, state=state, allowed_hosts=[], bind_host="127.0.0.1")
+
+    raw: list[str] = []
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        sid = client.post("/api/sessions",
+                          json={"title": "t", "cwd": str(project)}).json()["id"]
+        with client.stream("POST", "/api/ag-ui", json={
+                "threadId": sid, "runId": "r1",
+                "messages": [{"role": "user", "content": "你好"}]}) as resp:
+            assert resp.status_code == 200, resp.read()
+            raw.extend(resp.iter_lines())
+
+    assert any(line.startswith(":") for line in raw), \
+        "空闲时没有心跳 —— 中间层会把整条流攒到回合结束(现象:“过程要等结束才展示”)"
+    assert any(line.startswith("data: ") for line in raw), "真帧也不能少"
 
 
 def test_activity_snapshot_arrives_in_the_stream(tmp_path, monkeypatch):

@@ -43,6 +43,11 @@ from .state import RunBusy, WebState
 STATIC_DIR = Path(__file__).parent / "static"
 DEFAULT_WINDOW = 200          # 会话明细默认窗口(渐进恢复:老会话不因细节太多而卡住)
 
+#: SSE 心跳间隔(秒):队列空闲这么久就发一行注释,顶开“攒够字节/时间才转发”的中间层
+#: (内网穿透 / 远程端口映射 / 反代)。太小会白占带宽,太大则中间层的阈值先到 —— 10s 是
+#: 常见的 keep-alive 量级。
+STREAM_HEARTBEAT_S = 10.0
+
 
 def _int_field(obj: object, name: str) -> int:
     """取一个 int 字段(缺省 0)。**字段写坏不该把整页打成 500** —— `/api/models` 是个
@@ -779,7 +784,14 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
                         feed.put_nowait((activity.KIND_END, None))
 
                 pump = asyncio.create_task(pump_stream())
-                async for frame in agui.mixed_frames(feed, translator):
+                async for frame in agui.mixed_frames(feed, translator,
+                                                     heartbeat_s=STREAM_HEARTBEAT_S):
+                    if frame is agui.HEARTBEAT:
+                        # SSE 注释行(`:` 开头):客户端忽略,但支够顶开“攒够字节/时间才转发”
+                        # 的中间层 —— 内网穿透 / 远程端口映射 / 反代都可能这么干,表现就是
+                        # “直播要等整个回合结束才一次到齐”。
+                        yield ": ping\n\n"
+                        continue
                     yield agui.encode(frame)
             except asyncio.CancelledError:
                 # 客户端 abort(Stop 按钮)/ 掉线。**不能吞**:要让 ASGI 看见取消,

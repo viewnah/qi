@@ -109,6 +109,13 @@ class _RunInfo:
     #: 同一个架子上;各 run 的事件进自己那张卡,不落时间线(否则同一段过程
     #: 会在对话流与卡片各出现一遍)。
     holder: list | None = None
+    #: 这棵委派树的**直播推送面**:根那次 `subagent` 工具调用的 `ctx.on_update`。
+    #:
+    #: 为何从根继承:嵌套子运行跑在**嵌套 runner** 里,宿主注入给它的 `on_update` 绑的是
+    #: 嵌套内部那次工具调用(`call_inner`),而前端只有**顶层**那张卡(`call_outer`)——
+    #: 不继承的话,二级以下的直播帧全归到一张不存在的卡上,表现就是
+    #: 「一级卡有活动,再次指派的卡片永远不显示」。
+    on_update: Any = None
 
 
 REGISTRY: dict[str, _RunInfo] = {}    # 唯一 run 名 → 登记项(run 结束即注销)
@@ -281,7 +288,8 @@ async def _run_one(api: Any, role: Role, task: str, ctx: Any,
                    sem: asyncio.Semaphore | None = None, *,
                    parent: _RunInfo | None = None,
                    budget: _Budget | None = None,
-                   holder: list | None = None) -> dict:
+                   holder: list | None = None,
+                   on_update: Any = None) -> dict:
     """跑一个角色。返回结构化结果(带 usage/错误),失败**不抛**给上层 ——
     一个子任务失败不该把另外几个已经跑完的结果一起扔掉。
 
@@ -341,7 +349,10 @@ async def _run_one(api: Any, role: Role, task: str, ctx: Any,
     # 发起方凭 `_RunInfo` 回收 children(见模块文档)。
     name = _unique_name(role.name)
     info = _RunInfo(depth=depth, tools=tools, budget=budget,
-                    holder=holder, name=name)
+                    holder=holder, name=name,
+                    # 子层继承用的推送面:本层没给就退回 ctx 的(老的调用方形状不变)
+                    on_update=on_update if on_update is not None
+                    else getattr(ctx, "on_update", None))
     REGISTRY[name] = info
     spec = {"system_prompt": role.prompt or f"你是 {role.name}。",
             "name": name, "tools": tools, "model": role.model}
@@ -392,9 +403,10 @@ async def _run_one(api: Any, role: Role, task: str, ctx: Any,
     def _web(phase: str, **extra: Any) -> None:
         """把本 run 的活动推给宿主(**直播**,design/web-lab.md 二期)。
 
-        走 `ctx.on_update` —— runner 把它转成 `tool_execution_update` 总线事件,
-        外层自带**这次工具调用**的 `tool_call_id`:嵌套子运行经各自的 ctx 推出去,
-        收敛到同一个 id 上,前端一张卡装下整棵委派树(与平铺架子同构)。
+        用**根那次工具调用**的推送面(`_RunInfo.on_update`,见那里的说明):宿主按
+        `tool_call_id` 归卡,而前端只有**顶层**那张卡 —— 所以一棵树必须共用同一个
+        推送面。二级以下的 `ctx.on_update` 绑的是嵌套 runner 内部那次工具调用,
+        用它就会归到一张前端不存在的卡上(现象:「再次指派的卡片永远不显示」)。
 
         三道护栏叠在一起,所以推不出去是常态而不是事故:宿主没订阅时 runner
         直接跳过(`bus.has`);handler 路径的 ctx 没有 `on_update` → 这里跳过;
@@ -403,7 +415,7 @@ async def _run_one(api: Any, role: Role, task: str, ctx: Any,
         `line` 是**完整展示行**(带 `· `/`✎ `):与结束后 `_render` 拼进 result 的
         同名行逐字一致 —— 直播关掉后,回放看到的是同一批文字(回放红线)。
         """
-        push = getattr(ctx, "on_update", None)
+        push = on_update if callable(on_update) else getattr(ctx, "on_update", None)
         if not callable(push):
             return
         try:
@@ -698,6 +710,10 @@ def build_tool(api: Any) -> Tool:
             holder = me.holder if me.holder is not None else []
         else:
             holder = [render_mod.PENDING_CARDS.pop(0)] if render_mod.PENDING_CARDS else []
+        # 直播推送面:在**一棵委派树里** → 继承根那次工具调用的(前端只有那张卡);
+        # 主会话发起 → 用本次工具调用的 `ctx.on_update`。
+        push = (me.on_update if me is not None and me.on_update is not None
+                else getattr(ctx, "on_update", None))
         chain = isinstance(args.get("chain"), list)
         if chain:
             results: list[dict] = []
@@ -712,7 +728,8 @@ def build_tool(api: Any) -> Tool:
                     break
                 task = str(item.get("task") or "").replace("{previous}", previous)
                 out = await _run_one(api, _require(roles, item.get("agent")), task, ctx,
-                                     parent=me, budget=budget, holder=holder)
+                                     parent=me, budget=budget, holder=holder,
+                                     on_update=push)
                 results.append(out)
                 previous = out.get("output", "") if out["ok"] else previous
                 if not out["ok"]:
@@ -724,7 +741,7 @@ def build_tool(api: Any) -> Tool:
             sem = asyncio.Semaphore(MAX_CONCURRENCY) if len(tasks) > 1 else None
             results = await asyncio.gather(*[
                 _run_one(api, _require(roles, t.get("agent")), str(t.get("task") or ""), ctx, sem,
-                         parent=me, budget=budget, holder=holder)
+                         parent=me, budget=budget, holder=holder, on_update=push)
                 for t in tasks])
 
         if me is not None:

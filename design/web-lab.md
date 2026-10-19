@@ -363,6 +363,27 @@ TOOL_CALL_START.toolCallId            = "call_2"         ← agui 自己编的�
 **教训**:跨进程/跨层传的**主键**只有一个来源。任何一层“顺手生成一个”都会让下游静默失效 ——
 而且失效方向恰好是“看起来在跑”。
 
+**五、真缺陷:嵌套委派的推送面必须从根继承(2026-10-10)**
+
+用户反馈「一级 subagent 卡片有了,**再次指派的卡片无法显示**」。把真链路测试扩成两级
+(主 → coordinator → scout)后复现:
+
+```
+SUBAGENT_STARTED(scout).parentToolCallId = "call_inner"   ← 嵌套 runner 内部那次工具调用
+TOOL_CALL_START.toolCallId               = "call_outer"   ← 前端唯一存在的那张卡
+```
+
+二级以下的 `_web` 拿到的是**嵌套 runner 注入的** `ctx.on_update`(绑在 `call_inner` 上),
+而前端只有顶层那张卡 → 帧归到一张不存在的卡 → 待用暂存 → **永不显示**。一级之所以正常,
+是因为它的 `ctx.on_update` 恰好就是顶层那次调用的。
+
+修法:`_RunInfo` 加 `on_update`(这棵树的推送面),嵌套派单时**从根继承**;顶层(主会话)
+第一次派单时它就是本次工具调用的 `ctx.on_update`。全树共用一个 `tool_call_id` ——
+正是「一棵树一张卡」的设计。
+
+**同一条教训的第二次出现**:跨层传的**主键**(这里是“归到哪张卡”)只能有一个来源。
+一级对、二级错这种形态最难发现 —— 每层单独看都对。
+
 ### 5.3 三期(可选,做完再评估)
 
 - 全套 `SUBAGENT_*` + `MultiAgentCapabilities.subagents` 用于角色选择器;

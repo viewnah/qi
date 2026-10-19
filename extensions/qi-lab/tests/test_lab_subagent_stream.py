@@ -71,7 +71,7 @@ class _DelegatingLLM:
         yield LLMDelta(finished=True, usage={"total_tokens": 1})
 
 
-def _frames(tmp_path, monkeypatch, llm) -> list[dict]:
+def _frames(tmp_path, monkeypatch, llm, roles: dict[str, str] | None = None) -> list[dict]:
     from qi_agent import paths
     from qi_agent.runtime import QiRuntime, RuntimeConfig
     from qi_agent.session import SessionStore
@@ -81,8 +81,9 @@ def _frames(tmp_path, monkeypatch, llm) -> list[dict]:
     project = tmp_path / "proj"
     (project / ".git").mkdir(parents=True, exist_ok=True)
     home = tmp_path / "home"
-    (home / "agents" / "scout").mkdir(parents=True, exist_ok=True)
-    (home / "agents" / "scout" / "agent.md").write_text(_ROLE, encoding="utf-8")
+    for role_name, body in (roles or {"scout": _ROLE}).items():
+        (home / "agents" / role_name).mkdir(parents=True, exist_ok=True)
+        (home / "agents" / role_name / "agent.md").write_text(body, encoding="utf-8")
     # 关键:`packages` 声明是 pip 包扩展的**事实来源** —— 没声明就不加载
     # (registry 里那条 `if key not in declared_pips: continue`),真机上你的
     # settings.json 正是这么声明的。少了它,这条测试只会验出“未知工具 subagent”。
@@ -147,3 +148,96 @@ def test_a_real_delegation_streams_progress_before_the_tool_finishes(tmp_path, m
         f"TOOL_CALL_START={tool_start['toolCallId']!r}"
     assert start.get("parentToolCallId") == tool_start["toolCallId"], \
         "SUBAGENT_STARTED 的 parentToolCallId 也要指向同一张卡"
+
+
+#: 会**再往下派**的角色:工具清单里必须带 `subagent`(否则二级根本没发生,不是 UI 的问题)
+_COORDINATOR = """---
+name: coordinator
+description: 指挥的
+tools: ["read", "subagent"]
+---
+你是 coordinator。你可以把子任务再派出去。
+"""
+
+_ROLE_SCOUT = """---
+name: scout
+description: 探路的
+tools: ["read"]
+---
+你是 scout。
+"""
+
+
+class _NestedLLM:
+    """主 → coordinator → scout 两级委派。"""
+
+    def __init__(self) -> None:
+        self.delegated = False
+        self.inner = False
+
+    async def chat(self, messages, tools=None, temperature=None):  # pragma: no cover
+        raise AssertionError("走 astream")
+
+    async def astream(self, messages, tools=None, temperature=None):
+        from qi_agent.llm import LLMDelta, ToolCallOut
+
+        head = str(getattr(messages[0], "content", "") or "")
+        if "标题" in head[:40]:
+            yield LLMDelta(text="两级委派")
+            yield LLMDelta(finished=True, usage={"total_tokens": 1})
+            return
+        if "scout" in head:
+            yield LLMDelta(text="scout 读完了")
+            yield LLMDelta(finished=True, usage={"total_tokens": 1})
+            return
+        if "coordinator" in head:
+            if not self.inner:                      # 只派一次,否则递归到天荒地老
+                self.inner = True
+                yield LLMDelta(text="coordinator 再派 scout")
+                yield LLMDelta(finished=True, usage={"total_tokens": 1},
+                               tool_calls=[ToolCallOut(id="call_inner", name="subagent",
+                                                       args={"agent": "scout",
+                                                             "task": "读 README"})])
+                return
+            yield LLMDelta(text="coordinator 收尾")
+            yield LLMDelta(finished=True, usage={"total_tokens": 1})
+            return
+        if not self.delegated:
+            self.delegated = True
+            yield LLMDelta(text="我派 coordinator")
+            yield LLMDelta(finished=True, usage={"total_tokens": 1},
+                           tool_calls=[ToolCallOut(id="call_outer", name="subagent",
+                                                   args={"agent": "coordinator",
+                                                         "task": "安排一下"})])
+            return
+        yield LLMDelta(text="都完成了")
+        yield LLMDelta(finished=True, usage={"total_tokens": 1})
+
+
+def test_nested_delegation_shows_every_level_on_the_delegation_card(tmp_path, monkeypatch):
+    """二级(嵌套)委派也要显示:两个 `SUBAGENT_STARTED`、活动归到**同一张工具卡**。
+
+    一棵委派树在前端是「一张工具卡 + 里面平铺的若干子智能体卡」(靠 depth 缩进),
+    所以二级不出现 = 用户会以为"再次指派没反应"。
+    """
+    frames = _frames(tmp_path, monkeypatch, _NestedLLM(),
+                     roles={"coordinator": _COORDINATOR, "scout": _ROLE_SCOUT})
+    starts = [f for f in frames if f.get("type") == "SUBAGENT_STARTED"]
+    names = [f.get("name") for f in starts]
+    assert "coordinator" in names, f"一级没派起来:{names}"
+    assert "scout" in names, f"二级(嵌套)没派起来或没显示:{names}"
+
+    tool_start = next(f for f in frames if f["type"] == "TOOL_CALL_START")
+    card = tool_start["toolCallId"]
+    # 两个层级的活动都收敛到**同一张**工具卡(这就是"一棵树一张卡")
+    for f in starts:
+        assert f["parentToolCallId"] == card, f"{f['name']} 归到了别的卡:{f['parentToolCallId']}"
+    nested = next(f for f in starts if f["name"] == "scout")
+    assert nested["metadata"]["depth"] == 2, "二级的深度要标对(前端靠它缩进)"
+    assert nested.get("parentSubagentRunId") == "coordinator", "二级要指认它的父"
+
+    acts = [f for f in frames if f.get("type") == "ACTIVITY_SNAPSHOT"
+            and f.get("activityType") == "qi.subagent"]
+    runs = {f["content"]["run"] for f in acts}
+    assert len(runs) >= 2, f"两级活动没收进同一张卡:{runs}"
+    assert all(f["content"]["toolCallId"] == card for f in acts), "活动帧也归同一张卡"

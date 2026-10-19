@@ -630,6 +630,11 @@ function Tool({ row }: { row: ToolRowData }) {
       {open ? (
         <div className="tool__body">
           {/* 插件给的结构化详情排在最前:它是给人看的,result 是给模型的 */}
+          {/* 顺序 = 读的顺序:**先输入**(这次调用要干什么),再看过程与结果。
+              参数以前排在卡片下面,读起来像“结果先出、原因当附注”。 */}
+          {args ? (
+            <pre className="evidence">{JSON.stringify(row.args, null, 2)}</pre>
+          ) : null}
           {row.details ? <Details details={row.details} /> : null}
           {/* 直播只在运行中出现;结束后 result 的横幅卡接管(同一批文字不显两遍) */}
           {running && row.activity.length > 0 ? (
@@ -637,9 +642,6 @@ function Tool({ row }: { row: ToolRowData }) {
           ) : null}
           {/* 正文按横幅契约切成卡(切不动就整个退回原文,一个字不丢) */}
           {segs ? <Segments segs={segs} /> : null}
-          {args ? (
-            <pre className="evidence">{JSON.stringify(row.args, null, 2)}</pre>
-          ) : null}
           {row.result ? (
             segs ? (
               <details className="seg-raw">

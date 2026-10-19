@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import type { AguiEvent, Entry } from "../api/types";
 import {
   emptyTurn,
+  formatElapsed,
   fromEntries,
   groupProcess,
   hydrate,
@@ -612,5 +613,31 @@ describe("agent 级重试(qi.retry):撤回半截输出", () => {
     expect(tool.result).toBe("d home");
     const says = sayRows(s).filter((r) => r.kind === "say") as SayRow[];
     expect(says.map((r) => r.text)).toEqual(["上一轮的正文"]);
+  });
+});
+
+describe("子运行的状态与耗时", () => {
+  it("定格时记下起止时间(完成的卡才显示得出“跑了多久”)", () => {
+    const s = run(
+      { type: "TOOL_CALL_START", toolCallId: "c1", toolCallName: "subagent" },
+      { type: "TOOL_CALL_END", toolCallId: "c1" },
+      { type: "SUBAGENT_STARTED", subagentRunId: "scout#1", name: "scout",
+        parentToolCallId: "c1", timestamp: 1000,
+        metadata: { toolCallId: "c1", depth: 1 } } as AguiEvent,
+      { type: "SUBAGENT_FINISHED", subagentRunId: "scout#1", timestamp: 3400,
+        metadata: { toolCallId: "c1" } } as AguiEvent,
+    );
+    const tool = s.rows.find((r) => r.kind === "tool") as ToolRowData;
+    expect(tool.activity[0]).toMatchObject({
+      state: "done", startedAt: 1000, finishedAt: 3400,
+    });
+  });
+
+  it("formatElapsed:毫秒 / 秒 / 分秒三档,坏值给空串", () => {
+    expect(formatElapsed(120)).toBe("120ms");
+    expect(formatElapsed(3400)).toBe("3.4s");
+    expect(formatElapsed(83_000)).toBe("1m 23s");
+    expect(formatElapsed(-1)).toBe("");
+    expect(formatElapsed(Number.NaN)).toBe("");
   });
 });

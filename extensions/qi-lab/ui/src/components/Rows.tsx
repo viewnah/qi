@@ -27,7 +27,7 @@ import {
 } from "./icons";
 import { Markdown } from "../markdown/render";
 import { processLabel } from "../state/stats";
-import { latestActivityLine } from "../state/turn";
+import { formatElapsed, latestActivityLine } from "../state/turn";
 import type {
   Block,
   ErrorRow,
@@ -231,6 +231,12 @@ function Segments({ segs }: { segs: SubSegment[] }) {
  */
 function SubagentCard({ e }: { e: SubActivity }) {
   const running = e.state === "running";
+  // 定格后才算耗时(运行中不显示:那需要一个每秒的 tick,而它没有信息量 ——
+  // 用户真正想知道的是"这个子智能体到底跑完了没有、跑了多久")。
+  const elapsed =
+    !running && e.startedAt && e.finishedAt
+      ? formatElapsed(e.finishedAt - e.startedAt)
+      : "";
   return (
     <div
       className="sub"
@@ -244,13 +250,17 @@ function SubagentCard({ e }: { e: SubActivity }) {
         <span className="sub__meta">
           {e.parent ? `← 由 ${e.parent} 指派 · ` : ""}深度 {e.depth}
         </span>
-        {running ? (
-          <i className="sub__pulse" data-live="true" />
-        ) : (
-          <span className="sub__mark" data-ok={e.state === "done"}>
-            {e.state === "done" ? "✓" : "✗"}
+        <span className="sub__state" data-state={e.state}>
+          {running ? (
+            <i className="sub__pulse" data-live="true" />
+          ) : (
+            <span className="sub__mark">{e.state === "done" ? "✓" : "✗"}</span>
+          )}
+          <span className="sub__state-text">
+            {running ? "运行中" : e.state === "done" ? "完成" : "失败"}
+            {elapsed ? ` · ${elapsed}` : ""}
           </span>
-        )}
+        </span>
       </div>
       {e.task ? <div className="sub__task">{e.task}</div> : null}
       {e.lines.length > 0 || (e.phase === "stream" && e.text) ? (

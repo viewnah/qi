@@ -77,6 +77,9 @@ export interface SubActivity {
    * `SUBAGENT_ERROR`)。界面“谁在跑”看它,不看 `phase`。
    */
   state: "running" | "done" | "error";
+  /** 出生/定格的时间戳(AG-UI 每帧都带 `timestamp`):定格后算耗时用。 */
+  startedAt?: number;
+  finishedAt?: number;
   /** 内容阶段(`ACTIVITY_SNAPSHOT`):`start` / `stream` / `act` / `think`;定格后 `done`。 */
   phase: string;
   /** 已发生的活动与思考行 —— 与结束后 result 段的同名行逐字同源(后端保证)。 */
@@ -193,6 +196,7 @@ function mergeActivity(list: SubActivity[], ev: AguiEvent): SubActivity[] {
             phase: "done",
             ok: !failed,
             error: failed ? ev.message : e.error,
+            finishedAt: typeof ev.timestamp === "number" ? ev.timestamp : e.finishedAt,
           }
         : e,
     );
@@ -208,6 +212,7 @@ function mergeActivity(list: SubActivity[], ev: AguiEvent): SubActivity[] {
       phase: "start",
       state: "running",
       lines: [],
+      startedAt: typeof ev.timestamp === "number" ? ev.timestamp : undefined,
     });
   }
   if (ev.type !== "ACTIVITY_SNAPSHOT") return list;
@@ -293,6 +298,21 @@ function applyActivity(state: TurnState, ev: AguiEvent): TurnState {
         : row,
     ),
   };
+}
+
+/**
+ * 耗时 → 人读的一行(子运行卡的状态标签用)。
+ *
+ * 三档就够:不到 1 秒给毫秒(那一刻用户在看“卡了没”),不到 1 分钟给一位小数秒,
+ * 再长给 `1m 20s` —— 委派常常几十秒,再精确没有意义。
+ */
+export function formatElapsed(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${Math.round(seconds - minutes * 60)}s`;
 }
 
 /** 折叠行上的“最新一行直播”(运行中代替 result 的位置 —— 那时还没有 result)。 */

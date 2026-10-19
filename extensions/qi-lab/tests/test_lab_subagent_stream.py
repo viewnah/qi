@@ -241,3 +241,89 @@ def test_nested_delegation_shows_every_level_on_the_delegation_card(tmp_path, mo
     runs = {f["content"]["run"] for f in acts}
     assert len(runs) >= 2, f"两级活动没收进同一张卡:{runs}"
     assert all(f["content"]["toolCallId"] == card for f in acts), "活动帧也归同一张卡"
+
+
+#: 三级链的顶:只编排,把活原样交给 lead(正文刻意不写角色名,免得被 LLM 脚本误判)
+_TREE = """---
+name: tree
+description: 三级委派测试
+tools: ["subagent"]
+---
+你是 tree,一个只做编排的角色:把收到的任务原样转交给下一级去安排。
+"""
+
+
+class _ThreeLevelLLM:
+    """主 → tree(深1)→ lead(深2)→ scout(深3)。
+
+    按 system prompt 的**第一句**分流(不能按“包含角色名”:角色的正文里会提到下一级)。
+    """
+
+    def __init__(self) -> None:
+        self.seen: set[str] = set()
+
+    async def chat(self, messages, tools=None, temperature=None):  # pragma: no cover
+        raise AssertionError("走 astream")
+
+    async def astream(self, messages, tools=None, temperature=None):
+        from qi_agent.llm import LLMDelta, ToolCallOut
+
+        head = str(getattr(messages[0], "content", "") or "")
+        first = head.strip().splitlines()[0] if head.strip() else ""
+
+        if first.startswith("你负责给一段对话起标题") or "起标题" in first[:40]:
+            yield LLMDelta(text="三级委派")
+            yield LLMDelta(finished=True, usage={"total_tokens": 1})
+            return
+        tool = None
+        if first.startswith("你是 scout"):
+            text = "scout 读完了"
+        elif first.startswith("你是 coordinator"):
+            if "coordinator" not in self.seen:
+                self.seen.add("coordinator")
+                text, tool = "coordinator 再派 scout", ("scout", "call_inner")
+            else:
+                text = "coordinator 收尾"
+        elif first.startswith("你是 tree"):
+            if "tree" not in self.seen:
+                self.seen.add("tree")
+                text, tool = "tree 派 coordinator", ("coordinator", "call_mid")
+            else:
+                text = "tree 收尾"
+        else:                                    # 主运行
+            if "main" not in self.seen:
+                self.seen.add("main")
+                text, tool = "我派 tree", ("tree", "call_root")
+            else:
+                text = "全部完成"
+        yield LLMDelta(text=text)
+        calls = []
+        if tool is not None:
+            calls = [ToolCallOut(id=tool[1], name="subagent",
+                                 args={"agent": tool[0], "task": "安排一下"})]
+        yield LLMDelta(finished=True, usage={"total_tokens": 1}, tool_calls=calls)
+
+
+def test_three_level_delegation_keeps_a_depth_chain_on_one_card(tmp_path, monkeypatch):
+    """三级委派(tree → coordinator → scout)整棵树都在同一张卡上,深度与父子链都要对。
+
+    `MAX_DEPTH = 3`,所以这条链正好顶到上限 —— 多一级就该被拒(那是另一条测试的事),
+    而少一级、深度错、父子链断掉,用户看到的就是“树只画了一半”。
+    """
+    frames = _frames(tmp_path, monkeypatch, _ThreeLevelLLM(),
+                     roles={"tree": _TREE, "coordinator": _COORDINATOR, "scout": _ROLE_SCOUT})
+    starts = [f for f in frames if f.get("type") == "SUBAGENT_STARTED"]
+    names = [f["name"] for f in starts]
+    assert names == ["tree", "coordinator", "scout"], f"三级链没跑起来:{names}"
+
+    depths = [f["metadata"]["depth"] for f in starts]
+    assert depths == [1, 2, 3], f"深度标错:{depths}"
+    parents = [f.get("parentSubagentRunId") for f in starts]
+    assert parents[0] is None, "顶层由主 agent 派:没有父 run id"
+    assert parents[1:] == ["tree", "coordinator"], f"父子链断了:{parents}"
+
+    card = next(f for f in frames if f["type"] == "TOOL_CALL_START")["toolCallId"]
+    assert all(f["parentToolCallId"] == card for f in starts), "整棵树必须归同一张卡"
+    acts = [f for f in frames if f.get("type") == "ACTIVITY_SNAPSHOT"
+            and f.get("activityType") == "qi.subagent"]
+    assert len({f["content"]["run"] for f in acts}) == 3, "三层的活动都要在"

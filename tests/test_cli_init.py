@@ -234,6 +234,32 @@ def test_select_arrow_keys(monkeypatch):
     assert p.select("pick", ["a", "b", "c"], default=0) == 2
 
 
+def test_read_key_decodes_windows_scan_codes(monkeypatch):
+    """Windows 方向键是 E0 H / E0 P;解码后要等于 POSIX 的 ESC[A / ESC[B。"""
+    import builtins
+    import sys
+    import types
+
+    from qi_agent import prompt as p
+
+    fake_msvcrt = types.ModuleType("msvcrt")
+    keys = iter(["\xe0", "H", "\xe0", "P"])
+    fake_msvcrt.getwch = lambda: next(keys)
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name in ("termios", "tty"):
+            raise ImportError(name)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    monkeypatch.setattr(p.sys, "stdin", types.SimpleNamespace(fileno=lambda: 0))
+
+    assert p._read_key() == "\x1b[A"
+    assert p._read_key() == "\x1b[B"
+
+
 # ── Models 菜单:和「＋ Add a model」同级的「↻ Refresh model list」 ──────
 
 

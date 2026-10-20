@@ -46,8 +46,9 @@ def _read_key() -> str:
 
         ch = msvcrt.getwch()
         if ch in ("\x00", "\xe0"):
+            # 扫描码 → ANSI:上 = E0 H,下 = E0 P(必须补上 "[",与 _UP/_DOWN 对齐)
             nxt = msvcrt.getwch()
-            return _ESC + {"H": "A", "P": "B"}.get(nxt, nxt)
+            return _ESC + "[" + {"H": "A", "P": "B"}.get(nxt, nxt)
         return ch
 
     old = termios.tcgetattr(fd)

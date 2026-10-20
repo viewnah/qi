@@ -124,9 +124,40 @@ qi-web 只把角色**列**出来;qi-lab 多给一个删除端点,设置页的 Ag
 
 回归测试:`tests/test_lab_agent_write_api.py`(15 条);契约在 `docs/api/agents.md`。
 
+## A2A 条目(第四处分化)
+
+qi-web 没有这块;qi-lab 把 [qi-a2a](../qi-a2a) 的两层 `a2a.json` 接上了
+(读 + 增删改 + 名片探测):
+
+| 方法 | 路径 | 干什么 |
+| --- | --- | --- |
+| `GET` | `/api/a2a` | 逐层原样 + **深合并后的生效视图** |
+| `POST` | `/api/a2a` | 在某层新建一个条目(201,需确认头) |
+| `PATCH` | `/api/a2a` | 改一个条目:**只改送出去的键** |
+| `DELETE` | `/api/a2a` | 删一层里的条目(同名的下层会露出来) |
+| `POST` | `/api/a2a/probe` | 去真实端点拉一次名片(只读,无需确认头) |
+
+三条与 MCP 共用同一套规矩(确认头 / 只写读端指的那一层 / 值只进不回),
+A2A 自己的三件:
+
+- **只有两层**(`global` / `project`),没有角色私有那层;
+- **合并是深合并**(数组替换、`null` 删键),所以读端多回一份 `resolved` ——
+  否则界面上看到的永远是“某层写了什么”,而不是“现在到底连的是哪”;
+- **校验看合并后的生效结果**:项目层只写 `{"tenant": …}` 是合法的(端点由全局层给),
+  只验这一层会把它误判成“缺端点”;
+- **`PATCH` 的 `null` = 不改**(与 MCP 一致):读端不给 `headers` 的值,把 `null` 当
+  “删掉”会让人一保存就丢 token。要清掉整张表就送 `{}`;
+- **探测只收已配置的条目名**,不收任意 URL —— 否则这个端点就成了内网探测器。
+  失败也是 `200` + `ok=false`(那是**结果**,不是宿主异常)。
+
+回归测试:`tests/test_lab_a2a_api.py`(35 条);契约在 `docs/api/a2a.md`。
+
+> **前端未接**:`ui/` 里还没有 A2A 面板(与 MCP 那一节同形的表单)。接口与能力位
+> (`a2a_write`)已就绪,面板可以直接照 `McpPanel.tsx` 的形状长出来。
+
 ## 接口文档
 
-**`docs/api/`** —— 35 条 `/api` 路由的完整契约(请求体、响应字段表、状态码、curl 例子、
+**`docs/api/`** —— 40 条 `/api` 路由的完整契约(请求体、响应字段表、状态码、curl 例子、
 写端的规矩与坑):
 
 | 文件 | 内容 |
@@ -136,6 +167,7 @@ qi-web 只把角色**列**出来;qi-lab 多给一个删除端点,设置页的 Ag
 | [`docs/api/sessions.md`](docs/api/sessions.md) | 会话:列表、明细、改名、删除、导出、压缩、分叉 |
 | [`docs/api/ag-ui.md`](docs/api/ag-ui.md) | 运行入口:POST → SSE 的帧格式与事件表、取消语义 |
 | [`docs/api/mcp.md`](docs/api/mcp.md) | MCP 声明(全局 / 项目 / 角色私有)的读与增删改 |
+| [`docs/api/a2a.md`](docs/api/a2a.md) | A2A 条目:两层深合并、确认头、`null` = 不改、名片探测 |
 | [`docs/api/agents.md`](docs/api/agents.md) | 角色:读(只回元数据)与删除(两层、按显示名、整目录) |
 | [`docs/api/config.md`](docs/api/config.md) | 配置/模型/扩展只读视图、凭证写入 |
 | [`docs/api/skills.md`](docs/api/skills.md) | 技能:读(六层来源)与添加 / 删除 / 导入 |

@@ -299,26 +299,58 @@ class A2AEntry:
         return "声明不完整(缺 baseUrl / rpcUrl / cardUrl)"
 
 
+def _merge_layers(cwd: Path | None, trusted: bool
+                  ) -> dict[str, tuple[dict[str, Any], list[EntryScope], Path | None]]:
+    """两层**深合并**(不做展开/校验),并记下每条参与过哪些层、最后落在哪个文件。
+
+    `merge_config` 只有这一处调用方 —— 合并规则改一次两边都对。
+    """
+    merged: dict[str, tuple[dict[str, Any], list[EntryScope], Path | None]] = {}
+    for scope, path, servers in load_layers(cwd):
+        if scope == "project" and not trusted:
+            continue
+        for name, cfg in servers.items():
+            previous = merged.get(name)
+            if previous is None:
+                merged[name] = (dict(cfg), [scope], path)
+            else:
+                merged[name] = (merge_config(previous[0], cfg), [*previous[1], scope], path)
+    return merged
+
+
+def resolve_layers(cwd: Path | None = None, *,
+                   trusted: bool = True) -> dict[str, tuple[dict[str, Any], list[str], str]]:
+    """合并结果 + **层来源**:`{名: (合并后的原始配置, [参与层…], 主导层)}`。
+
+    **不展开 `${ENV}`、不校验** —— 给"要看得见结构、但别把值读出来"的界面用
+    (qi-lab 的设置页要显示"这条是全局写的、项目又加了什么")。要能直接调用的条目用
+    `resolve()`。
+    """
+    return {name: (config, list(layers), layers[-1])
+            for name, (config, layers, _path) in _merge_layers(cwd, trusted).items()}
+
+
+def validate_entry(name: str, config: dict[str, Any],
+                   path: Path | None = None) -> None:
+    """校验一份**还没落盘**的条目:展开 `${ENV}` 后过 `validate`。
+
+    展开只用于**检查**(缺环境变量要当场报出来,而不是写进文件里等运行时才发现);
+    调用方写回文件时应当用**原始**配置,别把展开后的值固化进去。
+    """
+    validate(name, _expand(config, "", name), path)
+
+
 def resolve(cwd: Path | None = None, *, trusted: bool = True) -> dict[str, A2AEntry]:
     """两层合并 + 展开环境变量 + 校验,返回按名查的表。
 
     项目层未受信任时**整层跳过** —— 项目里的 a2a.json 能把对话内容指向任意端点,
     风险与项目级扩展同级。
     """
-    merged: dict[str, tuple[dict[str, Any], EntryScope, Path]] = {}
-    for scope, path, servers in load_layers(cwd):
-        if scope == "project" and not trusted:
-            continue
-        for name, cfg in servers.items():
-            previous = merged.get(name)
-            combined = merge_config(previous[0], cfg) if previous else dict(cfg)
-            merged[name] = (combined, scope, path)
-
     out: dict[str, A2AEntry] = {}
-    for name, (cfg, scope, path) in merged.items():
-        expanded = _expand(cfg, "", name)
+    for name, (config, layers, path) in _merge_layers(cwd, trusted).items():
+        expanded = _expand(config, "", name)
         validate(name, expanded, path)
-        out[name] = A2AEntry(name=name, config=expanded, scope=scope, path=path)
+        out[name] = A2AEntry(name=name, config=expanded, scope=layers[-1], path=path)
     return out
 
 

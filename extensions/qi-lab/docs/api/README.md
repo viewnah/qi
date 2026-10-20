@@ -1,7 +1,7 @@
 # qi-lab HTTP API
 
 `qi_lab/app.py` 是这些接口的**唯一真相**;本文与代码同仓,改端点的人顺手改这里。
-`extensions/qi-lab/tests/test_lab_docs_api.py` 会把 `create_app()` 实际注册的 35 条 `/api` 路由逐条对着
+`extensions/qi-lab/tests/test_lab_docs_api.py` 会把 `create_app()` 实际注册的 40 条 `/api` 路由逐条对着
 本文目录查一遍 —— 少写一个就红,防止"文档说有、代码已删"与"代码有、文档没有"两种漂移。
 
 ## 起服务
@@ -118,7 +118,7 @@ curl -X PATCH http://127.0.0.1:3456/api/mcp -H 'X-Qi-Confirm: yes' -H 'Content-T
 
 ---
 
-## 端点总表(35)
+## 端点总表(40)
 
 | 方法 | 路径 | 说明 | 文档 |
 | --- | --- | --- | --- |
@@ -147,6 +147,11 @@ curl -X PATCH http://127.0.0.1:3456/api/mcp -H 'X-Qi-Confirm: yes' -H 'Content-T
 | POST | `POST /api/mcp` | 新建 server(201,需确认头) | `mcp.md` |
 | PATCH | `PATCH /api/mcp` | 改 server(只改送来的键) | `mcp.md` |
 | DELETE | `DELETE /api/mcp` | 删 server(只删一层) | `mcp.md` |
+| GET | `GET /api/a2a` | A2A 条目(两层原样 + 合并后的生效视图) | `a2a.md` |
+| POST | `POST /api/a2a` | 新建条目(201,需确认头) | `a2a.md` |
+| PATCH | `PATCH /api/a2a` | 改条目(只改送来的键) | `a2a.md` |
+| DELETE | `DELETE /api/a2a` | 删条目(只删一层) | `a2a.md` |
+| POST | `POST /api/a2a/probe` | 去真实端点拉一次名片(只读) | `a2a.md` |
 | GET | `GET /api/config` | provider/凭证/默认模型只读视图 | `config.md` |
 | GET | `GET /api/models` | 可选模型清单 + 当前值 | `config.md` |
 | POST | `POST /api/model` | 换模型 / 换思考级别 | `config.md` |
@@ -169,6 +174,7 @@ curl -X PATCH http://127.0.0.1:3456/api/mcp -H 'X-Qi-Confirm: yes' -H 'Content-T
 | [`sessions.md`](sessions.md) | 会话的增删改查、导出、压缩、分叉、批量删 |
 | [`ag-ui.md`](ag-ui.md) | `POST /api/ag-ui`:请求体、SSE 帧格式、事件表、取消语义 |
 | [`mcp.md`](mcp.md) | MCP 声明的读与增删改(三层、确认头、只改送来的键) |
+| [`a2a.md`](a2a.md) | A2A 条目:两层深合兼、确认头、`null` = 不改、名片探测 |
 | [`agents.md`](agents.md) | 角色:读(元数据,不回正文)与删除(两层、按显示名、整目录、只删该层) |
 | [`config.md`](config.md) | 配置/模型/扩展的只读视图,凭证写入 |
 | [`skills.md`](skills.md) | 技能:读(六层来源)与添加 / 删除 / 导入(确认头、可写边界、zip 防御) |

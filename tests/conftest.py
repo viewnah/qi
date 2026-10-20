@@ -16,7 +16,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 
-for _name in ("qi-agents", "qi-mcp", "qi-web", "qi-lab"):
+for _name in ("qi-agents", "qi-mcp", "qi-web", "qi-lab", "qi-a2a"):
     _path = REPO / "extensions" / _name
     if _path.is_dir() and str(_path) not in sys.path:
         sys.path.insert(0, str(_path))

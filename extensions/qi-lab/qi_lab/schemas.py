@@ -508,3 +508,166 @@ class McpDelete(BaseModel):
     scope: Literal["global", "project", "role"]
     role: str = ""
     name: str
+
+
+# ── A2A 条目(两层 a2a.json)────────────────────────────
+#
+# 与 MCP 同一套读写口径,但**只有两层**(`global` / `project`)—— a2a.json 没有角色私有
+# 那层。另外 a2a.json 的合并规则是**同名深合并**(不是整体覆盖),所以读端除了逐层原样,
+# 还回一份 `resolved` 生效视图:否则界面上看到的永远是"某一层写了什么",而不是
+# "现在到底连的是哪"。
+
+#: 可写的层。闭集,与 `qi_a2a.config.scope_files()` 一致。
+A2A_SCOPES = ("global", "project")
+
+
+class A2ASkill(BaseModel):
+    """名片里的一条技能。只用于探测结果展示。"""
+
+    id: str = ""
+    name: str = ""
+    description: str = ""
+    tags: list[str] = Field(default_factory=list)
+
+
+class A2AEntryInfo(BaseModel):
+    """一个 A2A 条目的**结构视图**。
+
+    与 MCP 同一条安全规矩:`headers` 只给**键名**,值一律不出宿主(那是 token 最常待的地方)。
+    端点三个字段(卡片 / 基址 / RPC)照文件里写了什么就给什么 —— 它们是结构不是密钥,
+    而且不给的话界面上就分不清这条走的是"卡片发现"还是"直连端点"。
+    """
+
+    name: str
+    card_url: str = ""
+    base_url: str = ""
+    rpc_url: str = ""
+    tenant: str = ""
+    description: str = ""
+    header_keys: list[str] = Field(default_factory=list)   # 值不给
+    timeout_ms: int = 600_000
+    streaming: bool = True
+    discovery: str = "auto"
+    direct_tools: bool | list[str] = False
+    #: 直连工具名(`<prefix>__<条目>`),开了 `directTools` 才有意义
+    tool_name: str = ""
+    disabled: bool = False
+    unknown_fields: list[str] = Field(default_factory=list)
+    #: 这条声明来自哪一层(`global` / `project`);`resolved` 里是**生效值**的主导层
+    source: str = ""
+    #: `resolved` 视图里:有哪些层参与了这个条目(深合并的痕迹)
+    layers: list[str] = Field(default_factory=list)
+
+
+class A2ASource(BaseModel):
+    """一处声明表。`exists=false` 也回 —— 前端据此区分"没这个文件"与"文件在但没写条目"。"""
+
+    scope: str                     # global | project
+    path: str
+    exists: bool = False
+    entries: list[A2AEntryInfo] = Field(default_factory=list)
+
+
+class A2AList(BaseModel):
+    sources: list[A2ASource] = Field(default_factory=list)
+    #: 两层深合并后的**生效**视图(含被 `disabled` 关掉的,界面要能显示"关了")
+    resolved: list[A2AEntryInfo] = Field(default_factory=list)
+    unavailable: bool = False      # qi-a2a 没装
+
+
+class A2AEntryEdit(BaseModel):
+    """一个条目的**可写**字段(POST 新建)。
+
+    字段名用 snake_case(与所有 `/api` 一致),落盘时转成 a2a.json 的 camelCase。
+    空串 / 空表表示"不写这个键" —— 默认值由 qi-a2a 自己补,不在这里抄一遍。
+    """
+
+    name: str
+    card_url: str = ""
+    base_url: str = ""
+    rpc_url: str = ""
+    tenant: str = ""
+    description: str = ""
+    headers: dict[str, str] = Field(default_factory=dict)   # 只进不回
+    timeout_ms: int | None = None
+    streaming: bool | None = None
+    discovery: str = ""
+    direct_tools: bool | list[str] = False
+    tool_prefix: str = ""
+    disabled: bool = False
+
+
+class A2AEntryPatch(BaseModel):
+    """PATCH 的部分语义:**只改 `model_fields_set` 里出现过的键**。
+
+    全部默认 `None`:“没送这个键”读作不改。**送了 `null` 也读作不改** —— 读端不给
+    `headers` 的值,前端就不可能把整张表重发回来,把 `null` 当"删掉"会让人一保存就丢 token。
+    要清掉某张表,送一个空对象 `{}`。
+    """
+
+    name: str | None = None        # 给了就是**改名**(顶层那个 name 是改前的名字)
+    card_url: str | None = None
+    base_url: str | None = None
+    rpc_url: str | None = None
+    tenant: str | None = None
+    description: str | None = None
+    headers: dict[str, str] | None = None
+    timeout_ms: int | None = None
+    streaming: bool | None = None
+    discovery: str | None = None
+    direct_tools: bool | list[str] | None = None
+    tool_prefix: str | None = None
+    disabled: bool | None = None
+
+
+class A2AWrite(BaseModel):
+    """`POST /api/a2a`:在某一层新增一个条目。"""
+
+    scope: Literal["global", "project"]
+    entry: A2AEntryEdit
+
+
+class A2APatch(BaseModel):
+    """`PATCH /api/a2a`:改某一层里的一个条目(`name` 是**改之前**的名字)。"""
+
+    scope: Literal["global", "project"]
+    name: str
+    patch: A2AEntryPatch
+
+
+class A2ADelete(BaseModel):
+    """`DELETE /api/a2a`:从某一层删掉一个条目(同名的下层会露出来)。"""
+
+    scope: Literal["global", "project"]
+    name: str
+
+
+class A2AProbeRequest(BaseModel):
+    """`POST /api/a2a/probe`:去真实端点拉一次名片。
+
+    **只探测已配置的条目**(不接受任意 URL)—— 这个端点的用途是"我配的对不对",
+    不是"帮我访问一个地址";后者会把 web 宿主变成内网探测器。
+    """
+
+    server: str = ""               # 条目名;只配了一个时可省略
+    agent: str = ""                # 条目下有多个智能体时,按 tenant 或名字选
+
+
+class A2AProbeCard(BaseModel):
+    """一张名片(探测结果)。只回展示需要的字段,不回原始 JSON —— 名片可能很大。"""
+
+    name: str = ""
+    description: str = ""
+    tenant: str = ""
+    rpc_url: str = ""
+    skills: list[A2ASkill] = Field(default_factory=list)
+
+
+class A2AProbeResult(BaseModel):
+    ok: bool = False
+    server: str = ""
+    source: str = ""               # 生效条目来自哪一层
+    discovery_url: str = ""        # 实际 GET 的地址;空 = 没走发现(合成卡)
+    elapsed_ms: int = 0
+    cards: list[A2AProbeCard] = Field(default_factory=list)
+    error: str = ""

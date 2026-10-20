@@ -126,6 +126,9 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
                           # 角色面:删除端点(`DELETE /api/agents`)。同上:没有它 →
                           # Agent 那一节只读展示(读端点一直在),不摆一个点了才 404 的键。
                           "agent_write": True,
+                          # A2A 面:条目增删改(`/api/a2a`)与名片探测(`/api/a2a/probe`)。
+                          # 同上:没有它 → A2A 那一节只读展示(读端点一直在)。
+                          "a2a_write": True,
                           # 扩展面:插件据这两个开关决定要不要发结构化 UI。
                           # `ag_ui` = 事件形状是 AG-UI;`ui_v1` = 认 details["ui"] 的词汇表
                           # (见 design/web.md §16.2)。缺哪个都退回"折叠显示原始 JSON"。
@@ -288,6 +291,82 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
         servers.pop(name)
         _write_mcp_servers(path, servers)
         return await list_mcp()
+
+    # ── A2A 条目(两层 a2a.json):读 + 增删改 + 探测 ──────
+    # 与 MCP 同一套规矩(确认头、只写读端指的那一层、值只进不回),两处不同:
+    #   · a2a.json 只有两层(global / project),**没有**角色私有那层;
+    #   · 合并是**同名深合并**,所以读端除了逐层原样,还回一份 `resolved` 生效视图 ——
+    #     否则界面上看到的永远是"某层写了什么",而不是"现在到底连的是哪"。
+
+    @app.get("/api/a2a", response_model=schemas.A2AList, dependencies=[Depends(guard)])
+    async def list_a2a() -> schemas.A2AList:
+        return _a2a_list(web.default_cwd)
+
+    @app.post("/api/a2a", status_code=201, response_model=schemas.A2AList,
+              dependencies=[Depends(guard)])
+    async def create_a2a(body: schemas.A2AWrite,
+                         confirm: str | None = Header(None, alias="X-Qi-Confirm")) -> schemas.A2AList:
+        """在 `scope` 那层新增一个条目(文件不存在就建)。"""
+        confirm_gate(confirm)
+        name = _check_a2a_name(body.entry.name)
+        path = _a2a_target(body.scope, web.default_cwd)
+        entries = _read_a2a_entries(path)
+        if name in entries:
+            raise HTTPException(status_code=409, detail=f"该层已有同名条目: {name}")
+        config = _build_a2a_config(body.entry)
+        _validate_a2a_config(name, config, scope=body.scope, cwd=web.default_cwd)
+        entries[name] = config
+        _write_a2a_entries(path, entries)
+        return _a2a_list(web.default_cwd)
+
+    @app.patch("/api/a2a", response_model=schemas.A2AList, dependencies=[Depends(guard)])
+    async def patch_a2a(body: schemas.A2APatch,
+                        confirm: str | None = Header(None, alias="X-Qi-Confirm")) -> schemas.A2AList:
+        """改一个条目:**只动送来的键**,没送的原样留着(见 `A2AEntryPatch`)。"""
+        confirm_gate(confirm)
+        target = _check_a2a_name(body.name)
+        path = _a2a_target(body.scope, web.default_cwd)
+        entries = _read_a2a_entries(path)
+        if target not in entries:
+            raise HTTPException(status_code=404, detail=f"该层没有这个条目: {target}")
+        config = _apply_a2a_patch(entries[target], body.patch)
+        new_name = target
+        if "name" in body.patch.model_fields_set and body.patch.name is not None:
+            new_name = _check_a2a_name(body.patch.name)
+            if new_name != target and new_name in entries:
+                raise HTTPException(status_code=409, detail=f"该层已有同名条目: {new_name}")
+        # 校验用的是**合并后**的那份:把 baseUrl 删掉却什么都没有,必须当场报错,
+        # 而不是写进文件里等运行时才发现。
+        _validate_a2a_config(new_name, config, scope=body.scope, cwd=web.default_cwd)
+        updated = {new_name if key == target else key: (config if key == target else value)
+                   for key, value in entries.items()}
+        _write_a2a_entries(path, updated)
+        return _a2a_list(web.default_cwd)
+
+    @app.delete("/api/a2a", response_model=schemas.A2AList, dependencies=[Depends(guard)])
+    async def delete_a2a(body: schemas.A2ADelete,
+                         confirm: str | None = Header(None, alias="X-Qi-Confirm")) -> schemas.A2AList:
+        """删一个条目。**只删这一层的键**:同名的下层声明会露出来(深合并关系没变)。"""
+        confirm_gate(confirm)
+        name = _check_a2a_name(body.name)
+        path = _a2a_target(body.scope, web.default_cwd)
+        entries = _read_a2a_entries(path)
+        if name not in entries:
+            raise HTTPException(status_code=404, detail=f"该层没有这个条目: {name}")
+        entries.pop(name)
+        _write_a2a_entries(path, entries)
+        return _a2a_list(web.default_cwd)
+
+    @app.post("/api/a2a/probe", response_model=schemas.A2AProbeResult,
+              dependencies=[Depends(guard)])
+    async def probe_a2a(body: schemas.A2AProbeRequest) -> schemas.A2AProbeResult:
+        """去真实端点拉一次名片,回答"我配的对不对"。
+
+        **只探测已配置的条目**(不收任意 URL)—— 否则这个端点就变成了内网探测器。
+        走的是 qi-a2a 工具的同一条代码路径(`fetch_cards`),所以这里能看到什么,
+        模型调用时就能看到什么。
+        """
+        return await _probe_a2a(web.default_cwd, body.server, body.agent)
 
     # ── 角色的删除(只删,不新建)────────────────────────
     # 为什么只有删除:角色的**内容**是一段提示词 + frontmatter 的工具/模型限制,它的
@@ -1279,3 +1358,312 @@ def _set_or_drop(config: dict, key: str, value: str | None) -> None:
         config[key] = value
     else:
         config.pop(key, None)
+
+
+# ── A2A 条目:路径 / 读 / 写 / 校验 / 探测(模块级,纯函数)──────────
+
+#: 表单字段 → a2a.json 的键。**只有这一张表**:读端与写端都从它来,
+#: 于是"界面上叫 base_url、文件里叫 baseUrl"这种错位没有第二处可发生。
+A2A_FILE_KEYS = (
+    ("card_url", "cardUrl"), ("base_url", "baseUrl"), ("rpc_url", "rpcUrl"),
+    ("tenant", "tenant"), ("description", "description"),
+    ("discovery", "discovery"), ("tool_prefix", "toolPrefix"),
+)
+
+
+def _a2a_target(scope: str, cwd) -> Path:
+    """这一层 a2a.json 落在哪个文件。
+
+    **路径只有一处算法**:读端走 `qi_a2a.config.scope_files()`,写端也必须走它 ——
+    读 A 写 B 是"改了却没生效"里最贵的一种。
+    """
+    try:
+        from qi_a2a.config import scope_files
+    except ImportError:
+        raise HTTPException(status_code=400, detail="没装 qi-a2a 扩展,不能改写 A2A 声明")
+    for layer, path in scope_files(cwd):
+        if layer == scope:
+            return path
+    raise HTTPException(status_code=400,
+                        detail=f"不认识的 scope: {scope}(可写:{' / '.join(schemas.A2A_SCOPES)})")
+
+
+def _check_a2a_name(name: str) -> str:
+    """条目名的规矩与 MCP 那条完全一样:**不许带首尾空白**(一个手滑的空格会造出两个
+    “同名”条目,而界面上看起来一模一样),长度给个上限。"""
+    if not name or not name.strip():
+        raise HTTPException(status_code=400, detail="条目名不能为空")
+    if name != name.strip():
+        raise HTTPException(status_code=400, detail="条目名不能带首尾空白")
+    if len(name) > 200:
+        raise HTTPException(status_code=400, detail="条目名太长(最多 200 字)")
+    return name
+
+
+def _read_a2a_entries(path: Path) -> dict:
+    """读一份 a2a.json → `{名: 声明}`;文件不存在 = **空表**(没配 ≠ 配错了)。"""
+    from qi_a2a.config import read_file
+    if not path.is_file():
+        return {}
+    try:
+        return dict(read_file(path))
+    except Exception as exc:            # noqa: BLE001 坏文件要说清是哪个文件
+        raise HTTPException(status_code=400, detail=f"{path}: 读不了({exc})")
+
+
+def _write_a2a_entries(path: Path, entries: dict) -> None:
+    """把 `entries` 写回 `path`。
+
+    · **顶层其它键原样保留**(`$schema` 这类):文件是用户手写的,不能因为改一个条目
+      就把别的键抹掉;
+    · **原子写**(临时文件 + replace):留下半份 JSON,会让"我配了但没生效"变成
+      没法诊断的事;
+    · 新文件 **0600**:`headers` 里可能直接写着明文 token。
+    """
+    from qi_a2a.config import SERVERS_KEY
+    raw: dict = {}
+    if path.is_file():
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=400, detail=f"{path}: JSON 解析失败 {exc}")
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=400, detail=f"{path}: 顶层必须是对象")
+    raw[SERVERS_KEY] = entries
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.tmp")
+    tmp.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    mode = stat.S_IMODE(path.stat().st_mode) if path.is_file() else 0o600
+    os.chmod(tmp, mode)
+    tmp.replace(path)
+
+
+def _build_a2a_config(edit) -> dict:
+    """表单 → 一份声明。**只写非空值**:默认值(600s / 流式 / 代理)由 qi-a2a 自己补,
+    抄一份到这里只会让"改了默认值"变成两处不同步。"""
+    config: dict = {}
+    for field, key in A2A_FILE_KEYS:
+        value = getattr(edit, field).strip()
+        if value:
+            config[key] = value
+    if edit.headers:
+        config["headers"] = dict(edit.headers)
+    if edit.timeout_ms is not None:
+        config["timeoutMs"] = edit.timeout_ms
+    if edit.streaming is not None:
+        config["streaming"] = edit.streaming
+    _apply_a2a_direct(config, edit.direct_tools)
+    if edit.disabled:
+        config["disabled"] = True
+    return config
+
+
+def _apply_a2a_direct(config: dict, value) -> None:
+    """`directTools` 的三种取值:`true` / 名字数组 / 关(删键)。"""
+    if isinstance(value, list) and value:
+        config["directTools"] = list(value)
+    elif value is True:
+        config["directTools"] = True
+    else:
+        config.pop("directTools", None)
+
+
+def _apply_a2a_patch(config: dict, patch) -> dict:
+    """把 `patch` 里**出现过**的键改到 `config` 的副本上;没出现的键一个都不动。
+
+    这正是"值看不见也改得动"的实现:读端不给 `headers` 的值,前端就不送这个键,
+    旧值原样留着。**送了 `null` 也读作不改**(`is not None` 那几道判断),否则界面
+    一保存就把 token 抹了。
+    """
+    out = dict(config)
+    for field, key in A2A_FILE_KEYS:
+        if field in patch.model_fields_set:
+            value = getattr(patch, field)
+            if value is not None:
+                _set_or_drop(out, key, value.strip())
+    if "headers" in patch.model_fields_set and patch.headers is not None:
+        if patch.headers:
+            out["headers"] = dict(patch.headers)
+        else:
+            out.pop("headers", None)      # 空表 = 清掉整张表
+    if "timeout_ms" in patch.model_fields_set and patch.timeout_ms is not None:
+        out["timeoutMs"] = patch.timeout_ms
+    if "streaming" in patch.model_fields_set and patch.streaming is not None:
+        out["streaming"] = patch.streaming
+    if "direct_tools" in patch.model_fields_set and patch.direct_tools is not None:
+        _apply_a2a_direct(out, patch.direct_tools)
+    if "disabled" in patch.model_fields_set and patch.disabled is not None:
+        # 空键比 `disabled: false` 更诚实(读端只认真 true,两者等价)。
+        if patch.disabled:
+            out["disabled"] = True
+        else:
+            out.pop("disabled", None)
+    return out
+
+
+def _validate_a2a_config(name: str, config: dict, *, scope: str, cwd) -> None:
+    """落盘前判一遍:**不完整的声明不会报错,它只是永远不生效** —— 那是最难查的一种。
+
+    判的是**合并后的生效结果**,不是这一层自己那份:深合并下项目层只写 `{"tenant": …}`
+    是**合法**的(端点由全局层给)。只验这一层会把这种写法误判成“缺端点”,
+    而那正是这套配置最常用的形态。
+
+    校验本身走 qi-a2a 的 `validate_entry`(结构与 URL 的规矩只有那一份);它会把 `${ENV}`
+    展开后再查,所以"环境变量没设"会当场变成一个 400,而不是文件里的一行占位符。
+    """
+    from qi_a2a.config import ConfigError, validate_entry
+    try:
+        validate_entry(name, _a2a_effective_config(cwd, scope, name, config))
+    except ConfigError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+def _a2a_effective_config(cwd, scope: str, name: str, layer_config: dict) -> dict:
+    """这一层落盘之后,**合并出来**的那份条目(校验用)。
+
+    只叠**更低**的层:高层的同一条目不该影响“这一层写完结果长什么样”。
+    只有两层,所以“更低”就是 global(写 global 时没有下层)。
+    """
+    from qi_a2a.config import load_layers, merge_config
+
+    lower: dict = {}
+    for layer, _path, entries in load_layers(cwd):
+        if layer == scope:
+            break
+        if name in entries:
+            lower = merge_config(lower, entries[name])
+    return merge_config(lower, layer_config) if lower else layer_config
+
+
+def _a2a_entry_info(name: str, config: dict, scope: str,
+                    layers: list[str] | None = None) -> schemas.A2AEntryInfo:
+    """把一份声明变成**只含结构**的视图(键名可以给,`headers` 的值一律不给)。
+
+    默认值与直连工具名都走 `qi_a2a.config.A2AEntry` —— 界面显示的超时/流式/禁用
+    必须和模型真正拿到的一致,自己再抄一遍默认值迟早会差一格。
+    """
+    from qi_a2a.config import A2AEntry, entry_tool_name, unknown_fields
+
+    entry = A2AEntry(name=name, config=config, scope=scope)   # type: ignore[arg-type]
+    return schemas.A2AEntryInfo(
+        name=name,
+        card_url=entry.card_url,
+        base_url=entry.base_url,
+        rpc_url=entry.rpc_url,
+        tenant=entry.tenant,
+        description=entry.description,
+        header_keys=sorted(entry.headers),
+        timeout_ms=entry.timeout_ms,
+        streaming=entry.streaming,
+        discovery=entry.discovery,
+        direct_tools=entry.direct_tools,
+        tool_name=entry_tool_name(entry) if entry.wants_direct() else "",
+        disabled=entry.disabled,
+        unknown_fields=unknown_fields(entry),
+        source=scope,
+        layers=list(layers or []),
+    )
+
+
+def _a2a_list(cwd) -> schemas.A2AList:
+    """两层原样 + 深合并后的生效视图。
+
+    读端**不展开 `${ENV}`**:展开等于把环境变量的值吐到 HTTP 响应里。所以这里走
+    `load_layers()`(原样)与 `resolve_layers()`(只合并不展开),两者都不校验 ——
+    一个写坏的条目不该让整个设置页 500,它的毛病会以 `unknown_fields` / 空端点显示出来。
+    """
+    try:
+        from qi_a2a.config import ConfigError, load_layers, resolve_layers
+    except ImportError:
+        return schemas.A2AList(unavailable=True)
+
+    try:
+        sources: list[schemas.A2ASource] = []
+        for scope, path, entries in load_layers(cwd):
+            sources.append(schemas.A2ASource(
+                scope=scope, path=str(path), exists=path.is_file(),
+                entries=[_a2a_entry_info(name, config, scope)
+                         for name, config in entries.items()]))
+
+        resolved = [
+            _a2a_entry_info(name, config, scope, layers)
+            for name, (config, layers, scope) in sorted(resolve_layers(cwd).items())
+        ]
+    except ConfigError as exc:
+        # 坏文件是**用户能修**的那种错:说清是哪个文件,别 500。
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return schemas.A2AList(sources=sources, resolved=resolved)
+
+
+async def _probe_a2a(cwd, server: str, agent: str) -> schemas.A2AProbeResult:
+    """去真实端点拉一次名片。
+
+    用 `resolve()`(展开 + 校验)而不是 `resolve_layers()`:探测要的就是"模型调用时
+    会看到什么",那一路是展开过的。缺环境变量之类的问题在这里变成可读的 `error`。
+    """
+    try:
+        from qi_a2a.card import CardError, cards_from_payload, discovery_url, select_card
+        from qi_a2a.client import A2AClient, RpcError
+        from qi_a2a.config import ConfigError, active
+    except ImportError:
+        return schemas.A2AProbeResult(server=server, error="没装 qi-a2a 扩展,无法探测")
+
+    try:
+        entries = active(cwd)
+    except ConfigError as exc:
+        return schemas.A2AProbeResult(server=server, error=f"a2a.json 有问题:{exc}")
+
+    if not entries:
+        return schemas.A2AProbeResult(
+            server=server,
+            error='没有任何 A2A 条目:先加一条(例如 {"baseUrl": "http://127.0.0.1:8080"})')
+    if server:
+        entry = entries.get(server)
+        if entry is None:
+            return schemas.A2AProbeResult(
+                server=server,
+                error=f"没有这个条目: {server};可选:{', '.join(sorted(entries))}")
+    elif len(entries) == 1:
+        entry = next(iter(entries.values()))
+    else:
+        return schemas.A2AProbeResult(
+            server=server,
+            error=f"配置了多个条目,请指定 server;可选:{', '.join(sorted(entries))}")
+
+    result = schemas.A2AProbeResult(server=entry.name, source=entry.scope)
+    url = discovery_url(entry)
+    result.discovery_url = url
+    started = time.monotonic()
+    try:
+        async with A2AClient(entry) as client:
+            cards = await _probe_cards(client, entry, url)
+        if agent:
+            cards = [select_card(cards, agent)]
+    except (CardError, RpcError) as exc:
+        result.error = str(exc)
+        return result
+    finally:
+        result.elapsed_ms = int((time.monotonic() - started) * 1000)
+
+    result.ok = True
+    result.cards = [
+        schemas.A2AProbeCard(
+            name=card.name, description=card.description, tenant=card.tenant,
+            rpc_url=card.rpc_url,
+            skills=[schemas.A2ASkill(**skill) for skill in card.skills])
+        for card in cards
+    ]
+    return result
+
+
+async def _probe_cards(client, entry, url):
+    """一条路径:**有发现地址就走它,没有就用配置合成卡**。
+
+    与 qi-a2a 工具的 `fetch_cards()` 同形(那边多一层"没有 url"的分支);这里显式
+    重复一次是为了不在 qi-lab 里 import 工具层 —— 探测不该把整个工具面拖进来。
+    """
+    from qi_a2a.card import card_from_entry, cards_from_payload
+
+    if not url:
+        return [card_from_entry(entry)]
+    return cards_from_payload(await client.get_json(url), entry)

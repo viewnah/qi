@@ -37,7 +37,7 @@ from qi_agent.workspaces import WorkspaceStore, normalize
 from . import (activity, agui, agents as agentapi, browse, files as fileapi,
                schemas, skills as skillapi)
 from .security import check_credentials, check_host, mask_key
-from .serve import pin_role
+from .serve import pin_role, remote_role_for
 from .state import RunBusy, WebState
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -840,6 +840,15 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
                 # 之前的接口,core 收窄成单 agent 之后流水线里已经没人读它(传了不报错、
                 # 只是没生效)。角色现在是 qi-agents 的 `before_agent_start`,
                 # 所以这里把钉住值交给它(详见 `serve.pin_role`)。
+                #
+                # **远端角色是另一条路**:它没有本地提示词,拼提示词等于没拼 ——
+                # 所以整轮转发给远端(`serve.remote_role_for` 判,与 `/api/agents` 同一份数据)。
+                remote = remote_role_for(session.cwd or web.default_cwd, inp.agent)
+                if remote is not None:
+                    async for frame in _remote_turn(remote, text, session, runtime,
+                                                     translator, inp.run_id):
+                        yield frame
+                    return
                 pin_role(runtime, inp.agent)
 
                 async def pump_stream() -> None:
@@ -1101,6 +1110,51 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
 
 def main() -> None:  # pragma: no cover - 入口由 CLI 调用
     raise SystemExit("请用 `qi lab` 启动(见 qi_agent.cli)")
+
+
+async def _remote_turn(remote: Any, text: str, session: Any, runtime: Any,
+                       translator: Any, run_id: str) -> Any:
+    """**远端角色的一整轮**:把用户这句话转给远端,回来的是答案而不是事件流。
+
+    与本地那条路的三处逐一对应(不这么做就会有"界面上说了、会话文件里没有"):
+
+    1. **落 user 消息**:本地由 `runtime.stream` 在开跑前写 —— 这里得自己写,
+       否则刷新后看不到自己说了什么;
+    2. **落 assistant 消息**:同理,远端的回答也要进会话文件,不然回放是空的;
+       两份都标 `agent_id=<远端名>`,会话文件里才看得出这轮是谁答的;
+    3. **帧**:远端没有 delta 流,所以整段包成一条完整文本消息 —— 前端不需要为
+       "远端轮"写任何特例(它收到的还是 `TextMessageStart/Content/End + RUN_FINISHED`)。
+
+    失败**不抛**:转成 `RUN_ERROR` 帧后再结束(与本地流的异常处理同一条规矩)。
+    审批中断(`input-required`)按**成功**处理 —— 远端把话带回来了,正文里写着
+    "没执行"与回退方式。
+    """
+    from qi_a2a.remote import run_remote
+
+    # 1) user 消息先落盘(与本地同序:先落 user,再跑)。
+    session_store = getattr(runtime, "sessions", None)
+    name = str(getattr(remote, "name", "") or "a2a")
+    if session_store is not None:
+        session_store.append(session, {"type": "message", "role": "user",
+                                       "content": text, "agent_id": name})
+
+    run = await run_remote(remote, text)
+    if not run.ok:
+        for frame in translator.finish_open():
+            yield agui.encode(frame)
+        yield agui.encode(translator.run_error(run.error or "远端调用失败",
+                                               code="A2AError"))
+        return
+
+    body = run.text or "(远端没有返回文本)"
+    # 2) assistant 消息落盘(远端的那段话就是这个会话的回答)。
+    if session_store is not None:
+        session_store.append(session, {"type": "message", "role": "assistant",
+                                       "content": body, "agent_id": name})
+    # 3) 帧
+    for frame in translator.remote_message(body):
+        yield agui.encode(frame)
+    yield agui.encode(translator.remote_finished(body))
 
 
 # ── 3c 的辅助:角色目录与 MCP 结构(模块级,纯读)────────────────

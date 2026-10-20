@@ -85,6 +85,37 @@ def role_is_project(cwd: Path | None, name: str | None) -> bool:
     return str(getattr(role, "source", "")) == "project"
 
 
+def remote_role_for(cwd: Path | None, name: str | None) -> Any:
+    """这个角色是不是**远端 A2A 角色**?是就返回它,否则 None。
+
+    ## 为什么这一条单独判,而不是让 `pin_role` 顺手处理
+
+    远端角色**没有本地提示词**(`role.prompt` 是空串)。`pin_role` 的做法是把正文拼进
+    系统提示词 —— 对远端角色,那等于什么都没做。于是界面上选了 `skill-debug`、
+    chip 也显示着它,而实际跑的还是基座模型:**一个会说谎的控件**,正是这个文件里
+    `pin_role` 那段注释已经警告过的那种失败。
+
+    所以"钉的是远端"这一支要**换一条执行路径**(整轮转发给远端),而不是换提示词。
+    这也是它必须发生在 `runtime.stream` **之前**的原因。
+
+    判据只看 `qi_agents.discovery` 给出的角色表 —— 与 `/api/agents`、`/agents` 命令
+    完全同一份数据,不存在"界面能选、这里认不出"的可能。
+    """
+    if not name:
+        return None
+    try:
+        from qi_agents.discovery import discover
+    except ImportError:
+        return None
+    # `cwd` 在这里可能是 str(`session.cwd` 就存成字符串):角色发现那一层要 `Path`。
+    root = Path(cwd) if isinstance(cwd, str) else (cwd or Path.cwd())
+    role = discover(root, "both").get(str(name))
+    if role is None:
+        return None
+    remote = getattr(role, "remote", None)
+    return remote if remote is not None else None
+
+
 def pin_role(runtime: QiRuntime, name: str | None) -> None:
     """把"这个客户端钉住的角色"告诉 runtime;首次调用时挂上 `before_agent_start`。
 

@@ -420,6 +420,35 @@ class AguiTranslator:
         """流意外结束(出错/被取消)时补收尾,避免客户端停在 Start 状态。"""
         return self._close_open()
 
+    # ── 远端角色:一整轮就是一段文本 ──────────────────────
+    #
+    # 远端角色(见 `serve.remote_role_for`)没有思考流、没有工具调用,只有"一段回答" ——
+    # 所以不需要复用上面那套 delta 状态机,直接合成 `TextMessageStart → Content → End`。
+    # 仍然走 `_base()`,保证 timestamp/字段形状与本地那条路同源。
+
+    def remote_message(self, text: str) -> list[dict]:
+        """把远端返回的整段文本包成一条完整的 assistant 文本消息。"""
+        if not text:
+            return []
+        message_id = self._next("msg")
+        return [
+            {**self._base("TEXT_MESSAGE_START"), "messageId": message_id,
+             "role": "assistant"},
+            {**self._base("TEXT_MESSAGE_CONTENT"), "messageId": message_id,
+             "delta": text},
+            {**self._base("TEXT_MESSAGE_END"), "messageId": message_id},
+        ]
+
+    def remote_finished(self, text: str) -> dict:
+        """远端那一轮的 `RUN_FINISHED`(与本地一样带 `result`)。
+
+        **不带 `metadata["qi.usage"]`**:远端这一轮没有 token 计量 —— 本地那条路带它
+        是因为 runner 会报 usage。前端见到 "没有 usage" 会显示“用量未记录”,那句提示
+        是为“本地轮跑了但没写 usage”的旧会话准备的,套在远端轮上是**错的**。
+        """
+        return {**self._base("RUN_FINISHED"),
+                "outcome": {"type": "success"}, "result": text}
+
 
 def _text(value: Any) -> str:
     return value if isinstance(value, str) else ""

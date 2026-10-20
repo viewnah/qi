@@ -157,6 +157,27 @@ A2A 自己的三件:
 只读的,弹层会挡着列表)。表单里 `headers` 是"留空 = 保持不变 / 填 `-` = 清空整张表"
 ——读端给不出值,所以只能这样表达。
 
+### 对话页面的「智能体」chip 也能选远端角色
+
+`/api/agents` 与 `subagent` 用的是**同一份角色表**,所以 A2A 条目会自动出现在那个
+下拉里(`source` 显示成 `a2a`)。选中之后走的是**另一条执行路径**:
+
+| | 本地角色 | 远端角色 |
+| --- | --- | --- |
+| 怎么生效 | `pin_role` 把角色正文拼进系统提示词 | **整轮转发**给远端(它没有本地正文) |
+| 帧 | 本地 runner 的 delta / 工具事件 | 一段完整 `TextMessageStart→Content→End` |
+| 落盘 | `runtime.stream` 自己写 | 自己写 user + assistant 两条 |
+
+第二行是这次修的那个 bug 的根:`pin_role` 只会拼提示词,而远端角色的 `prompt` 是空串
+——于是 chip 显示着 `skill-debug`、实际跑的还是基座模型,**一个会说谎的控件**。
+判据在 `serve.remote_role_for()`,与 `/api/agents` 同一份数据,不会出现"界面能选、
+这里认不出"。
+
+远端轮**不带** `qi.usage` 元数据(没有 token 计量),否则前端会显示"用量未记录" ——
+那句提示是为"本地轮跑了但没写 usage"的旧会话准备的。
+
+回归测试:`tests/test_lab_a2a_agent_pin.py`(8 条:分流判据、会话落盘、失败转 `RUN_ERROR`)。
+
 另有一条**零构建**的兜底页面 **`/a2a`**(原生 JS,不依赖 `npm run build`):
 它住在 `qi_lab/pages/`,**不是** `qi_lab/static/` —— 后者是 Vite 的 outDir
 (`emptyOutDir: true`),下一次构建会把不属于它的文件一起清掉。

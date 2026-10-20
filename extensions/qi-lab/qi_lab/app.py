@@ -41,6 +41,9 @@ from .serve import pin_role
 from .state import RunBusy, WebState
 
 STATIC_DIR = Path(__file__).parent / "static"
+#: 手写页面目录。**不是** Vite 的 outDir(`static/`) —— 那里 `emptyOutDir: true`,
+#: 下一次 `npm run build` 会把手写的文件一起清掉。
+PAGES_DIR = Path(__file__).parent / "pages"
 DEFAULT_WINDOW = 200          # 会话明细默认窗口(渐进恢复:老会话不因细节太多而卡住)
 
 #: SSE 心跳间隔(秒):队列空闲这么久就发一行注释,顶开“攒够字节/时间才转发”的中间层
@@ -1064,6 +1067,19 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
         confirm_gate(confirm)
         if not AuthStore().remove(provider):
             raise HTTPException(status_code=404, detail=f"凭证不存在: {provider}")
+
+    # ── 手写的页面(不经过 Vite 构建)────────────────────
+    # `static/` 是构建产物,一次 `npm run build` 就会把它清掉(emptyOutDir);所以
+    # 不需要构建的页面放在 `pages/`,由这里直接读文件下发。改完刷新即可生效。
+    @app.get("/a2a", response_class=HTMLResponse, include_in_schema=False)
+    async def a2a_page() -> str:
+        """A2A 条目的独立页面(原生 JS,不依赖前端构建产物)。"""
+        page = PAGES_DIR / "a2a.html"
+        if not page.is_file():
+            return (_PLACEHOLDER if not STATIC_DIR.is_dir() else
+                    '<!doctype html><meta charset="utf-8"><title>404</title>'
+                    '<p>页面文件不见了:qi_lab/pages/a2a.html</p>')
+        return page.read_text(encoding="utf-8")
 
     # ── 配置/装载错误 → 可读响应(而不是 500 栈) ──────────
     @app.exception_handler(ConfigError)

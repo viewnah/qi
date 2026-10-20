@@ -152,8 +152,14 @@ A2A 自己的三件:
 
 回归测试:`tests/test_lab_a2a_api.py`(35 条);契约在 `docs/api/a2a.md`。
 
-> **前端未接**:`ui/` 里还没有 A2A 面板(与 MCP 那一节同形的表单)。接口与能力位
-> (`a2a_write`)已就绪,面板可以直接照 `McpPanel.tsx` 的形状长出来。
+> **前端未接**:`ui/`(Vite + React)里还没有 A2A 面板。但**不需要 npm 也能用**:
+> 打开 **`/a2a`** 是一个手写的独立页面(原生 JS,零构建),读写同一套接口。
+> 它住在 `qi_lab/pages/`,**不放** `qi_lab/static/` —— 那是 Vite 的 outDir
+> (`emptyOutDir: true`),下一次 `npm run build` 会把不属于它的文件一起清掉。
+> 改完刷新即生效;要并进主界面时照 `McpPanel.tsx` 再写一遍即可。
+>
+> 口令与主界面一致:用 `http://user:口令@host:port/a2a` 打开,或在页顶框里填
+> (存 `sessionStorage`,不落盘)。
 
 ## 接口文档
 

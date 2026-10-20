@@ -221,3 +221,12 @@ curl -s -X POST http://127.0.0.1:3456/api/a2a/probe \
 
 `GET /api/meta` 的 `capabilities.a2a_write`。老宿主没有它 → 界面把 A2A 那一节当只读
 (读端点一直在),不摆一个点了才 404 的键。
+
+## 现成的页面:`GET /a2a`
+
+不用 `npm` 也能用 —— `GET /a2a` 是一个**手写页面**(原生 JS,零构建),读写的就是上面
+这几条接口。它**不是** `/api` 路由(不进本目录的双向对齐),也不在 Vite 的 outDir 里
+(`qi_lab/static/` 会被 `emptyOutDir` 清空),而是 `qi_lab/pages/a2a.html`,改完刷新即生效。
+
+口令与主界面一致:用 `http://user:口令@host:port/a2a` 打开,或在页顶框里填(存
+`sessionStorage`,不落盘、不写 URL)。没装 qi-a2a 时页面会直接告诉你该装什么。

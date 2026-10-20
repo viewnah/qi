@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A2A 条目 · qi-lab</title>
+<!--
+  手写的独立页面(**不进构建**)。
+
+  为什么不塞进 `qi_lab/static/`:那是 Vite 的 outDir(`emptyOutDir: true`),
+  下一次 `npm run build` 会把它整个清掉。这个文件属于源码,不属于产物。
+
+  为什么不用 React:这一页要的是一张表 + 一个表单,而 `ui/` 需要 npm install
+  与一次 build 才能改。用原生 JS 写的代价是 ~400 行,收益是**改完即生效**。
+
+  鉴权与主界面同一套:`Authorization` 头。用 `http://user:口令@host:port/a2a`
+  打开时浏览器会自己带上;也可以在本页顶部框里填口令(存 sessionStorage,
+  不落盘、不写 URL)。
+-->
+<style>
+  :root {
+    --bg: #F5F6F7; --surface: #FFFFFF; --line: #E5E5E5; --line-strong: #D4D4D4;
+    --ink: #0F1115; --ink-2: #5A6270; --ink-3: #8A929E;
+    --accent: #2F6FED; --danger: #C4342A; --ok: #1F8A54; --warn: #9A6B00;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0 24px 72px;
+    font: 14px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Microsoft YaHei", sans-serif;
+    color: var(--ink); background: var(--bg);
+  }
+  header {
+    position: sticky; top: 0; z-index: 5; display: flex; gap: 12px; align-items: center;
+    padding: 16px 0 12px; margin-bottom: 8px;
+    background: linear-gradient(var(--bg) 82%, transparent);
+  }
+  h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .01em; }
+  h1 small { font-weight: 400; color: var(--ink-3); margin-left: 8px; font-size: 12px; }
+  .spacer { flex: 1; }
+  button {
+    font: inherit; padding: 6px 12px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink);
+  }
+  button:hover { border-color: var(--ink-3); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.06); }
+  button.danger { color: var(--danger); border-color: #E9C6C2; }
+  button.danger:hover { background: #FDF3F2; border-color: var(--danger); }
+  button.ghost { border-color: transparent; background: transparent; color: var(--ink-2); }
+  button.ghost:hover { background: #ECEEF1; }
+  input, select, textarea {
+    font: inherit; padding: 5px 9px; border: 1px solid var(--line-strong);
+    border-radius: 6px; background: #fff; color: var(--ink); width: 100%;
+  }
+  textarea { resize: vertical; min-height: 62px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; }
+  input:focus, select:focus, textarea:focus { outline: 2px solid #C9DBFB; outline-offset: 1px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 14px 16px; margin-bottom: 14px;
+  }
+  .card > h2 {
+    font-size: 13px; font-weight: 600; margin: 0 0 10px;
+    color: var(--ink-2); text-transform: uppercase; letter-spacing: .05em;
+  }
+  table { width: 100%; border-collapse: collapse; }
+  th {
+    text-align: left; font-weight: 500; font-size: 12px; color: var(--ink-3);
+    padding: 0 8px 6px 0; border-bottom: 1px solid var(--line); white-space: nowrap;
+  }
+  td { padding: 8px 8px 8px 0; border-bottom: 1px solid #F0F1F2; vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  code, .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; }
+  .muted { color: var(--ink-3); }
+  .small { font-size: 12px; }
+  .tag {
+    display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 11.5px;
+    border: 1px solid var(--line-strong); color: var(--ink-2); background: #FAFAFB;
+    white-space: nowrap;
+  }
+  .tag.on { color: var(--ok); border-color: #BEDFCB; background: #F2FAF5; }
+  .tag.off { color: var(--danger); border-color: #E9C6C2; background: #FDF3F2; }
+  .tag.warn { color: var(--warn); border-color: #EADDB8; background: #FCF8EC; }
+  .row-actions { display: flex; gap: 6px; justify-content: flex-end; }
+  .notice {
+    padding: 9px 12px; border-radius: 6px; margin-bottom: 14px; font-size: 13px;
+    border: 1px solid var(--line-strong); background: #fff; white-space: pre-wrap;
+  }
+  .notice.error { color: var(--danger); border-color: #E9C6C2; background: #FDF3F2; }
+  .notice.ok { color: var(--ok); border-color: #BEDFCB; background: #F2FAF5; }
+  .notice.warn { color: var(--warn); border-color: #EADDB8; background: #FCF8EC; }
+  dialog {
+    border: 1px solid var(--line-strong); border-radius: 10px; padding: 0;
+    width: min(680px, 92vw); box-shadow: 0 12px 40px rgba(15,17,21,.16);
+  }
+  dialog::backdrop { background: rgba(15,17,21,.34); }
+  .dlg-head {
+    padding: 14px 18px; border-bottom: 1px solid var(--line); display: flex;
+    align-items: baseline; gap: 10px;
+  }
+  .dlg-head h3 { margin: 0; font-size: 14px; }
+  .dlg-body { padding: 16px 18px; display: grid; gap: 12px; grid-template-columns: 1fr 1fr; }
+  .dlg-body .full { grid-column: 1 / -1; }
+  .field { display: grid; gap: 4px; }
+  .field > label { font-size: 12px; color: var(--ink-2); }
+  .field .hint { font-size: 11.5px; color: var(--ink-3); }
+  .checks { display: flex; gap: 18px; flex-wrap: wrap; align-items: center; }
+  .checks label { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink-2); }
+  .checks input { width: auto; }
+  .dlg-foot {
+    padding: 12px 18px; border-top: 1px solid var(--line); display: flex;
+    gap: 8px; justify-content: flex-end; background: #FAFAFB;
+    border-radius: 0 0 10px 10px;
+  }
+  .probe-out { margin-top: 10px; display: grid; gap: 6px; }
+  .probe-card { padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: #FAFAFB; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>A2A 条目<small>两层 <code>a2a.json</code></small></h1>
+  <div class="spacer"></div>
+  <input id="pw" type="password" placeholder="口令(可选)" autocomplete="current-password"
+         style="width: 160px" title="宿主设了 --password 时填;也可用 http://user:口令@host:port/a2a 打开">
+  <button id="refresh" class="ghost">刷新</button>
+  <button id="add" class="primary">新增条目</button>
+</header>
+
+<div id="notices"></div>
+<div id="body" class="muted">加载中…</div>
+
+<dialog id="dlg">
+  <form id="form" method="dialog">
+    <div class="dlg-head">
+      <h3 id="dlg-title">新增条目</h3>
+      <span id="dlg-sub" class="small muted"></span>
+    </div>
+    <div class="dlg-body">
+      <div class="field">
+        <label for="f-name">条目名</label>
+        <input id="f-name" placeholder="hikqin-analysis" required>
+        <span class="hint">工具名由它派生;改名会保持这一层里的顺序</span>
+      </div>
+      <div class="field">
+        <label for="f-tenant">tenant</label>
+        <input id="f-tenant" placeholder="agent-4c4af5bf">
+        <span class="hint">固定到某个智能体;网关条目留空</span>
+      </div>
+      <div class="field full">
+        <label for="f-card">cardUrl</label>
+        <input id="f-card" placeholder="http://host:8080/a2a/agents/agent-xxx/card.json">
+        <span class="hint">给这个就够:端点与 tenant 都从名片读</span>
+      </div>
+      <div class="field">
+        <label for="f-base">baseUrl</label>
+        <input id="f-base" placeholder="http://host:8080">
+        <span class="hint">推导 <code>/a2a</code> 与 <code>/a2a/agents</code></span>
+      </div>
+      <div class="field">
+        <label for="f-rpc">rpcUrl</label>
+        <input id="f-rpc" placeholder="http://host:8080/a2a">
+        <span class="hint">与 tenant 一起用可省掉名片发现</span>
+      </div>
+      <div class="field full">
+        <label for="f-desc">description</label>
+        <input id="f-desc" placeholder="给人看的说明(不进系统提示词)">
+      </div>
+      <div class="field full">
+        <label for="f-headers">headers</label>
+        <textarea id="f-headers" placeholder="Authorization: Bearer ${HIKQIN_A2A_TOKEN}"></textarea>
+        <span class="hint" id="h-headers">每行一条 <code>键: 值</code>;值支持 <code>${ENV}</code>。只写、不回显。</span>
+      </div>
+      <div class="field">
+        <label for="f-timeout">timeoutMs</label>
+        <input id="f-timeout" type="number" min="1" placeholder="600000">
+        <span class="hint">留空 = 用默认(600000)</span>
+      </div>
+      <div class="field">
+        <label for="f-discovery">discovery</label>
+        <select id="f-discovery">
+          <option value="">默认(auto)</option>
+          <option value="single">single(只认单张卡)</option>
+          <option value="list">list(网关,数组)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="f-streaming">streaming</label>
+        <select id="f-streaming">
+          <option value="">默认(开)</option>
+          <option value="true">开</option>
+          <option value="false">关</option>
+        </select>
+        <span class="hint">名片没说能力时才由它决定</span>
+      </div>
+      <div class="field">
+        <label for="f-prefix">toolPrefix</label>
+        <input id="f-prefix" placeholder="a2a">
+      </div>
+      <div class="field full checks">
+        <label><input id="f-direct" type="checkbox"> directTools(为这个条目注册独立工具)</label>
+        <label><input id="f-disabled" type="checkbox"> disabled(关掉,但保留声明)</label>
+      </div>
+    </div>
+    <div class="dlg-foot">
+      <button type="button" class="ghost" id="dlg-cancel">取消</button>
+      <button type="submit" class="primary" id="dlg-save">保存</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+let state = { list: null, editing: null };
+let password = sessionStorage.getItem("qi-lab-a2a-pw") || "";
+
+// ── HTTP ────────────────────────────────────────────────
+function authHeaders() {
+  return password ? { Authorization: `Bearer ${password}` } : {};
+}
+
+async function call(path, init = {}) {
+  const res = await fetch(path, {
+    ...init,
+    headers: { "Content-Type": "application/json", ...authHeaders(), ...(init.headers || {}) },
+  });
+  if (res.status === 204) return null;
+  let body = null;
+  try { body = await res.json(); } catch { /* 非 JSON */ }
+  if (!res.ok) {
+    const detail = body && typeof body.detail === "string" ? body.detail
+      : body && body.detail ? JSON.stringify(body.detail)
+      : `HTTP ${res.status}`;
+    const err = new Error(detail);
+    err.status = res.status;
+    throw err;
+  }
+  return body;
+}
+
+const write = (method, path, payload) =>
+  call(path, { method, headers: { "X-Qi-Confirm": "yes" }, body: JSON.stringify(payload) });
+
+// ── 提示条 ──────────────────────────────────────────────
+function notice(text, kind = "") {
+  const el = document.createElement("div");
+  el.className = `notice ${kind}`.trim();
+  el.textContent = text;
+  $("notices").prepend(el);
+  setTimeout(() => el.remove(), kind === "error" ? 12000 : 5000);
+}
+
+function fail(err) {
+  if (err.status === 401) {
+    notice("需要口令:在右上角填,或用 http://user:口令@host:port/a2a 打开本页。", "error");
+    return;
+  }
+  notice(err.message, "error");
+}
+
+// ── 渲染 ────────────────────────────────────────────────
+function entryLine(e) {
+  const bits = [];
+  if (e.card_url) bits.push(`card=${e.card_url}`);
+  else if (e.base_url) bits.push(`base=${e.base_url}`);
+  if (e.rpc_url) bits.push(`rpc=${e.rpc_url}`);
+  if (e.tenant) bits.push(`tenant=${e.tenant}`);
+  return bits.map((b) => `<div class="mono small muted">${esc(b)}</div>`).join("");
+}
+
+function entryRow(e, { scope, editable }) {
+  const flags = [];
+  if (e.description) flags.push(`<span class="small">${esc(e.description)}</span>`);
+  if (e.disabled) flags.push('<span class="tag off">已关闭</span>');
+  if (e.tool_name) flags.push(`<span class="tag">直连 ${esc(e.tool_name)}</span>`);
+  if (e.header_keys.length) flags.push(`<span class="tag">headers: ${esc(e.header_keys.join(", "))}</span>`);
+  if (e.unknown_fields.length) flags.push(`<span class="tag warn">未识别: ${esc(e.unknown_fields.join(", "))}</span>`);
+  if (e.layers && e.layers.length > 1) flags.push(`<span class="tag">合并自 ${esc(e.layers.join(" + "))}</span>`);
+  const actions = editable ? `
+    <div class="row-actions">
+      <button class="ghost small" data-act="probe" data-name="${esc(e.name)}">探测</button>
+      <button class="ghost small" data-act="edit" data-name="${esc(e.name)}" data-scope="${esc(scope)}">编辑</button>
+      <button class="danger small" data-act="del" data-name="${esc(e.name)}" data-scope="${esc(scope)}">删除</button>
+    </div>` : "";
+  return `<tr>
+    <td><strong>${esc(e.name)}</strong>${flags.length ? "<div>" + flags.join(" ") + "</div>" : ""}</td>
+    <td>${entryLine(e)}</td>
+    <td class="small muted">${e.timeout_ms}ms · ${e.streaming ? "流式" : "非流式"} · ${esc(e.discovery)}</td>
+    <td>${actions}</td>
+  </tr>`;
+}
+
+function render() {
+  const list = state.list;
+  if (!list) return;
+  const notices = $("notices");
+  notices.innerHTML = "";
+
+  if (list.unavailable) {
+    $("body").innerHTML = `<div class="notice warn">
+      <strong>没装 qi-a2a 扩展</strong><br>
+      这一页读写的是它定义的 <code>a2a.json</code>。先 <code>qi install ./extensions/qi-a2a</code>
+      (或 <code>pip install -e extensions/qi-a2a</code>) 再刷新。</div>`;
+    $("add").disabled = true;
+    return;
+  }
+  $("add").disabled = false;
+
+  const parts = [`<div class="card">
+    <h2>合并后的生效视图(${list.resolved.length})</h2>
+    ${list.resolved.length ? `<table>
+      <thead><tr><th>条目</th><th>端点</th><th>行为</th><th></th></tr></thead>
+      <tbody>${list.resolved.map((e) => entryRow(e, { scope: e.source, editable: true })).join("")}</tbody>
+    </table>` : '<div class="muted small">还没有任何条目。点右上角「新增条目」,或直接编辑下面的文件。</div>'}
+  </div>`];
+
+  for (const src of list.sources) {
+    const label = src.scope === "global" ? "全局" : "项目";
+    parts.push(`<div class="card">
+      <h2>${label}层${src.exists ? "" : "(文件不存在)"}</h2>
+      <div class="mono small muted" style="margin-bottom:8px">${esc(src.path)}</div>
+      ${src.entries.length ? `<table>
+        <thead><tr><th>条目</th><th>端点</th><th>行为</th><th></th></tr></thead>
+        <tbody>${src.entries.map((e) => entryRow(e, { scope: src.scope, editable: true })).join("")}</tbody>
+      </table>` : '<div class="muted small">这一层没有条目。</div>'}
+    </div>`);
+  }
+
+  $("body").innerHTML = parts.join("");
+  $("body").classList.remove("muted");
+}
+
+// ── 读 ──────────────────────────────────────────────────
+async function load() {
+  try {
+    state.list = await call("/api/a2a");
+    render();
+  } catch (err) {
+    fail(err);
+    $("body").textContent = "读取失败。";
+  }
+}
+
+// ── 表单 ────────────────────────────────────────────────
+const FIELDS = {
+  name: "f-name", tenant: "f-tenant", card_url: "f-card", base_url: "f-base",
+  rpc_url: "f-rpc", description: "f-desc", timeout_ms: "f-timeout",
+  discovery: "f-discovery", streaming: "f-streaming", tool_prefix: "f-prefix",
+};
+
+function parseHeaders(text) {
+  const out = {};
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const idx = line.indexOf(":");
+    if (idx <= 0) throw new Error(`headers 里这行少了冒号: ${line}`);
+    out[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+  }
+  return out;
+}
+
+function openDialog(entry, scope) {
+  state.editing = entry ? { name: entry.name, scope } : null;
+  $("dlg-title").textContent = entry ? `编辑 ${entry.name}` : "新增条目";
+  $("dlg-sub").textContent = scope ? (scope === "global" ? "写入全局层" : "写入项目层") : "";
+  for (const [key, id] of Object.entries(FIELDS)) {
+    const value = entry ? (entry[key] ?? "") : "";
+    $(id).value = key === "timeout_ms" && entry ? entry.timeout_ms : (entry ? value : "");
+  }
+  $("f-streaming").value = entry && entry.streaming === false ? "false" : (entry ? "true" : "");
+  $("f-discovery").value = entry && entry.discovery !== "auto" ? entry.discovery : "";
+  $("f-direct").checked = Boolean(entry && entry.direct_tools);
+  $("f-disabled").checked = Boolean(entry && entry.disabled);
+  $("f-headers").value = "";
+  $("h-headers").innerHTML = entry
+    ? `已有 ${entry.header_keys.length} 个键(<code>${esc(entry.header_keys.join(", ") || "无")}</code>)。
+       留空 = <strong>保持不变</strong>;填了就整体替换;填 <code>-</code> 清空整张表。值不回显。`
+    : "每行一条 <code>键: 值</code>;值支持 <code>${ENV}</code>。只写、不回显。";
+  $("dlg").showModal();
+}
+
+function collect() {
+  const body = { name: $("f-name").value.trim() };
+  for (const key of ["tenant", "card_url", "base_url", "rpc_url", "description", "tool_prefix"]) {
+    body[key] = $(FIELDS[key]).value.trim();
+  }
+  const timeout = $("f-timeout").value.trim();
+  body.timeout_ms = timeout ? Number(timeout) : null;
+  body.discovery = $("f-discovery").value;
+  const streaming = $("f-streaming").value;
+  body.streaming = streaming === "" ? null : streaming === "true";
+  body.direct_tools = $("f-direct").checked;
+  body.disabled = $("f-disabled").checked;
+
+  const rawHeaders = $("f-headers").value;
+  if (rawHeaders.trim() === "-") {
+    body.headers = {};                       // 空表 = 清掉整张表
+  } else if (rawHeaders.trim()) {
+    body.headers = parseHeaders(rawHeaders);
+  }
+  // 留空 = 不送这个键 → PATCH 保持原值(读端本来就不给值)
+  return body;
+}
+
+async function save() {
+  const editing = state.editing;
+  const body = collect();
+  if (!body.name) throw new Error("条目名不能为空");
+  if (editing) {
+    const { name, ...patch } = body;
+    const out = {};
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === null || value === "" || key === "headers" && value === undefined) continue;
+      out[key] = value;
+    }
+    if ("headers" in patch && patch.headers !== undefined) out.headers = patch.headers;
+    if (name !== editing.name) out.name = name;
+    out.disabled = body.disabled;            // 布尔值总是送:取消勾选要真的删掉键
+    out.direct_tools = body.direct_tools;
+    state.list = await write("PATCH", "/api/a2a", { scope: editing.scope, name: editing.name, patch: out });
+  } else {
+    const entry = { ...body };
+    if (entry.timeout_ms === null) delete entry.timeout_ms;
+    if (entry.streaming === null) delete entry.streaming;
+    state.list = await write("POST", "/api/a2a", { scope: "project", entry });
+  }
+  render();
+  notice(editing ? `已更新 ${body.name}` : `已新增 ${body.name}`, "ok");
+}
+
+// ── 探测 ────────────────────────────────────────────────
+async function probe(name) {
+  try {
+    const r = await call("/api/a2a/probe", {
+      method: "POST", body: JSON.stringify({ server: name || "" }),
+    });
+    if (!r.ok) {
+      // `notice` 用 textContent,这里**不要**再 esc(否则会显示成实体字面量)
+      notice(`${r.server || name || "(全部)"} 探测失败:${r.error}`, "error");
+      return;
+    }
+    const cards = r.cards.map((c) => `<div class="probe-card">
+        <strong>${esc(c.name)}</strong>
+        <span class="tag">${esc(c.tenant || "无 tenant")}</span>
+        <div class="mono small muted">${esc(c.rpc_url)}</div>
+        ${c.skills.length ? `<div class="small">技能:${esc(c.skills.map((s) => s.name).join(" / "))}</div>` : ""}
+        ${c.description ? `<div class="small muted">${esc(c.description)}</div>` : ""}
+      </div>`).join("");
+    notice(`探测成功(${r.elapsed_ms}ms,${r.cards.length} 张卡,来源 ${r.source}
+${r.discovery_url ? "GET " + r.discovery_url : "未走发现(用配置合成卡)"})`, "ok");
+    const holder = document.createElement("div");
+    holder.className = "notice";
+    holder.innerHTML = `<div class="small">${esc(r.server)}</div><div class="probe-out">${cards}</div>`;
+    $("notices").prepend(holder);
+  } catch (err) {
+    fail(err);
+  }
+}
+
+// ── 事件 ────────────────────────────────────────────────
+$("body").addEventListener("click", async (ev) => {
+  const btn = ev.target.closest("button[data-act]");
+  if (!btn) return;
+  const { act, name, scope } = btn.dataset;
+  if (act === "probe") return probe(name);
+  if (act === "edit") {
+    const entry = state.list.resolved.find((e) => e.name === name && e.source === scope)
+      || (state.list.sources.find((s) => s.scope === scope) || {}).entries?.find((e) => e.name === name);
+    return openDialog(entry, scope);
+  }
+  if (act === "del") {
+    if (!confirm(`从「${scope === "global" ? "全局" : "项目"}」层删除条目 ${name}?\n\n同名的下层声明会露出来。`)) return;
+    try {
+      state.list = await write("DELETE", "/api/a2a", { scope, name });
+      render();
+      notice(`已删除 ${name}`, "ok");
+    } catch (err) { fail(err); }
+  }
+});
+
+$("add").addEventListener("click", () => openDialog(null, "project"));
+$("refresh").addEventListener("click", load);
+$("dlg-cancel").addEventListener("click", () => $("dlg").close());
+
+$("form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  $("dlg-save").disabled = true;
+  try {
+    await save();
+    $("dlg").close();
+  } catch (err) {
+    fail(err);                              // 弹层不关:错在哪要能就地改
+  } finally {
+    $("dlg-save").disabled = false;
+  }
+});
+
+$("pw").value = password;
+$("pw").addEventListener("change", () => {
+  password = $("pw").value.trim();
+  if (password) sessionStorage.setItem("qi-lab-a2a-pw", password);
+  else sessionStorage.removeItem("qi-lab-a2a-pw");
+  load();
+});
+
+load();
+</script>
+</body>
+</html>

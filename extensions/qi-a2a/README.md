@@ -8,6 +8,32 @@ qi 的 A2A(Agent2Agent)扩展:用标准协议调用远端智能体,内置对
 - **一个代理工具** `a2a`(约 200 token),而不是把每个远端技能塞进工具清单。
 - **协议交给官方 [`a2a-sdk`](https://pypi.org/project/a2a-sdk/)**(与 Hikqin 同版本):
   方法名、`A2A-Version` 头、proto oneof、`tenant` 装饰器都由 SDK 负责,本扩展不做协议适配。
+- **也能当角色被委派**(装了 [qi-agents](../qi-agents) 时):非网关条目会自动出现在
+  `subagent` 的角色表里(`source=a2a`)—— 见下面「两种用法」。
+
+## 两种用法:同一个智能体,两套上下文
+
+| | `a2a` 代理工具 | 远端角色(委派) |
+| --- | --- | --- |
+| 谁发起 | 主会话自己 | 模型通过 `subagent` 派活 |
+| 上下文 | **接着当前对话说**(要自己传 `contextId`) | **一次独立对话**,跑完就结束 |
+| 多轮 | 由调用方维护 `contextId` | 一次委派的输入输出就是全部 |
+| 适合 | "跟我一起聊这个" | "把这块活交给它去做" |
+| 要求 | 任何条目(网关也行) | **非网关**条目(有 `cardUrl` 或 `tenant`) |
+
+网关条目(只有 `baseUrl`)不能当角色:枚举它后面的智能体要联网拉名片,而角色发现
+跑在每次 `subagent` 调用上,那里不能联网 —— 网关继续用 `a2a` 工具带 `agent` 调。
+
+```jsonc
+{ "a2aServers": {
+    "skill-debug": { "cardUrl": "…/card.json", "description": "技能调试专家" },  // 角色 + 工具都能用
+    "hikqin":      { "baseUrl": "http://host:6091" }                            // 只能当工具的目标
+} }
+```
+
+远端角色**不能再往下派**:它是别人家的 agent,没有我们的 `subagent` 工具与预算/深度表。
+回传 `input-required` 时算委派成功(把话带回来了),接着用 `a2a(action="resume", …)`。
+
 
 ## 装
 

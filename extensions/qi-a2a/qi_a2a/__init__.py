@@ -1,11 +1,13 @@
 """qi-a2a:用 A2A 协议调用远端智能体(extension,入口 `register(api)`)。
 
-四块:
+五块:
 
 1. **两层配置** `~/.qi/agent/a2a.json` → `<cwd>/.qi/a2a.json`(同名深合并,见 `config.py`);
 2. **代理工具** `a2a`(list / card / send / resume / get / cancel,见 `proxy.py`);
 3. **直连工具** `a2a__<条目>`(opt-in,见 `direct.py`);
-4. **`/a2a` 面板**:只读诊断(来源层 / 未识别字段 / 环境变量键名),不联网。
+4. **`/a2a` 面板**:只读诊断(来源层 / 未识别字段 / 环境变量键名),不联网;
+5. **远端角色**(`remote.py`):固定 tenant 的条目导出给 qi-agents 当 `subagent` 用 ——
+   与 `a2a` 工具的区别是**上下文**:委派是一次独立对话,代理工具是接着当前对话说。
 
 一个条目通常就是**一个智能体**(一张 Agent Card);`baseUrl` 不带 `tenant` 时它是网关。
 """
@@ -20,8 +22,9 @@ from qi_agent.extensions import ExtensionApi
 from . import config
 from .direct import register_direct
 from .proxy import build_tool
+from .remote import RemoteAgent, RemoteRun, remote_agents, run_remote
 
-__all__ = ["register"]
+__all__ = ["register", "RemoteAgent", "RemoteRun", "remote_agents", "run_remote"]
 
 
 def _cwd(ctx: Any) -> Path:

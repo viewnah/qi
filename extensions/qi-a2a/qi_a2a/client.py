@@ -263,8 +263,16 @@ class A2AClient:
         return message
 
     async def send(self, card: AgentCard, text: str = "", *, context_id: str = "",
-                   task_id: str = "", decisions: list[dict] | None = None) -> SendResult:
-        """发消息或回传审批决策,聚合到终态(或 `input-required`)。"""
+                   task_id: str = "", decisions: list[dict] | None = None,
+                   on_event: Callable[[Any], None] | None = None,
+                   signal: Any = None) -> SendResult:
+        """发消息或回传审批决策,聚合到终态(或 `input-required`)。
+
+        `on_event` 每个流式事件回调一次(给委派卡片做进度用)。它必须**足够快**:
+        它在流上同步调用,慢了会拖住读取 —— 调用方应当只做"转手推给界面"。
+        `signal` 是协作式中断信号(Esc):流里每个事件之间查一次,命中即抛
+        `RpcError("已取消")` —— httpx 的超时管不了"用户不要了"这件事。
+        """
         request = SendMessageRequest(
             message=self._message(text, context_id=context_id, task_id=task_id,
                                   decisions=decisions))
@@ -273,7 +281,14 @@ class A2AClient:
         aggregate = _Aggregate()
         try:
             async for event in self._sdk(card).send_message(request):
+                if signal is not None and getattr(signal, "aborted", False):
+                    raise RpcError(f"条目 `{self.entry.name}`:已取消")
                 aggregate.consume(event)
+                if on_event is not None:
+                    try:
+                        on_event(event)
+                    except Exception:      # noqa: BLE001 进度是旁路:失败不该带倒调用
+                        pass
                 if aggregate.terminal:
                     break
         except (A2AError, httpx.HTTPError, json_format.ParseError, ValueError) as exc:

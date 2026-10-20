@@ -81,6 +81,15 @@ def register(api: ExtensionApi) -> None:
             if isinstance(notes, list):
                 notes.append(blocked)
             return None
+        if role.remote is not None:
+            # 远端角色没有本地提示词:拿它当**会话角色**等于什么也没改(而用户会以为
+            # 自己在跟远端对话)。它是**被委派**的对象,不是会话人格 —— 说清楚,
+            # 别让"设了却没反应"变成一次静默失败。
+            if isinstance(notes, list):
+                notes.append(
+                    f"{role.name} 是远端 A2A 角色,不能当会话角色;"
+                    f"让模型用 subagent 把任务委派给它(或直接用 a2a 工具)")
+            return None
         # 追加到**基座之后**(与 v1 的顺序一致:基座 → 角色层 → 项目上下文 → …)
         return {"system_prompt": f"{payload['system_prompt']}\n\n{role.prompt}".rstrip()}
 
@@ -92,15 +101,27 @@ def register(api: ExtensionApi) -> None:
     # ── 3. 列角色:补回 core 删掉的 `qi agents list`(TUI 里是 `/agents`)──
     def on_command(args: str, ctx: Any) -> None:
         scope = "both" if (args or "").strip() in ("both", "all") else DEFAULT_SCOPE
-        roles = discover(ctx.cwd, scope)
+        roles = discover(ctx.cwd, scope,
+                         trusted=bool(getattr(ctx, "project_trusted", True)))
+        local = [r for r in roles.values() if r.remote is None]
+        remote = [r for r in roles.values() if r.remote is not None]
         lines = [f"角色({scope},共 {len(roles)}):"]
         lines += [f"  {r.name}  [{r.source}]  {r.description}"
                   + ("  delegate=false" if not r.delegate else "")
                   + (f"  tools={','.join(r.tools)}" if r.tools else "")
                   + (f"  model={r.model}" if r.model else "")
-                  for r in sorted(roles.values(), key=lambda r: r.name)]
+                  for r in sorted(local, key=lambda r: r.name)]
+        if remote:
+            # 远端单列一段:它们的 `source` 是 a2a,但光看名字分不出来 ——
+            # 而那正是"为什么它没有本地工具"的答案。
+            lines.append(f"远端(来自 qi-a2a,共 {len(remote)}):")
+            lines += [f"  {r.name}  [a2a]  {r.description}"
+                      for r in sorted(remote, key=lambda r: r.name)]
         if not roles:
             lines.append(f"  (无)装角色:把 agent.md 放进 ~/.qi/agent/agents/<名>/ 或 .qi/agents/<名>/")
+        if remote:
+            lines.append("远端角色由 a2a.json 里**非网关**的条目而来(有 cardUrl 或 tenant);"
+                         "网关要继续用 `a2a` 工具带 agent 调")
         lines.append("用某个角色跑:`qi --ext agent=<名> \"任务\"`(要项目角色加 agentScope)")
         ctx.ui.notify("\n".join(lines))
 

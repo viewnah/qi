@@ -12,6 +12,12 @@ core 现在只认识运行单元 `{name, prompt, tools}`;「角色」= 一个目
 `answer_scope` 决定看哪一层:默认只 `user` ——**项目级角色是仓库控制的提示词**,
 默认不参与(对齐 pi subagent 的安全模型:要用项目角色得显式 `agentScope: "project"`,
 而且宿主会先问一句信任)。
+
+**第三类角色:远端 A2A 智能体。** 装了 qi-a2a 且它的配置里有**固定 tenant** 的条目时,
+那些条目也会出现在角色表里(`source="a2a"`,`remote` 上挂着 qi-a2a 给的句柄)。
+它们不是本地提示词,而是一次远端对话 —— 委派给它们的语义与本地子运行一致
+(独立上下文、跑完就结束),所以放在同一张表里由模型按 `description` 挑。
+合并时**本地优先**:同名时远端不会顶掉你自己写的角色。
 """
 
 from __future__ import annotations
@@ -40,13 +46,20 @@ class Role:
     #: agent 是这个工具的常态用法;`delegate: false` 才是"到此为止"的显式声明。
     #: 它只是闸之一:深度上限与 spawn 预算(见 subagent.py)对所有角色一视同仁。
     delegate: bool = True
-    source: str = "user"                # user | project
+    source: str = "user"                # user | project | a2a
     path: Path | None = None
+    #: **远端角色**的句柄(`qi_a2a.remote.RemoteAgent`);本地角色是 None。
+    #:
+    #: 它是 opaque 的:`discovery` 只管"有这么个角色",怎么建连接、怎么发消息全在
+    #: qi-a2a 那边 —— 这里多知道一点协议细节,就把两边的版本锁在一起了。
+    #: `subagent._run_one` 只看"有没有这个句柄"来分流。
+    remote: object | None = None
 
     def as_dict(self) -> dict:
         return {"name": self.name, "description": self.description, "source": self.source,
                 "tools": self.tools, "disallowed_tools": self.disallowed_tools,
                 "model": self.model, "delegate": self.delegate,
+                "remote": self.remote is not None,
                 "path": str(self.path or "")}
 
 
@@ -130,14 +143,45 @@ def _project_agents_dir(cwd: Path | None) -> Path | None:
     return home / "agents" if home.is_dir() else None
 
 
-def discover(cwd: Path | None = None, scope: AgentScope = DEFAULT_SCOPE) -> dict[str, Role]:
-    """按作用域汇总角色:`{名字: Role}`。项目级同名覆盖用户级。"""
+def discover(cwd: Path | None = None, scope: AgentScope = DEFAULT_SCOPE, *,
+             trusted: bool = True, include_remote: bool = True) -> dict[str, Role]:
+    """按作用域汇总角色:`{名字: Role}`。**本地同名覆盖远端**,项目覆盖用户。
+
+    `include_remote` 把 qi-a2a 里**固定 tenant** 的条目也当成角色(见 `qi_a2a.remote`)。
+    没装 qi-a2a / 一份条目都没有 → 空表,不影响本地角色。
+
+    合并次序(**后者赢**):远端 → 用户级 → 项目级。本地角色优先是有意的:
+    远端是别人家的,同名时不该把你自己写的 `scout` 顶掉。
+    """
     if scope not in ("user", "project", "both"):
         scope = DEFAULT_SCOPE
+    remote = discover_remote(cwd, scope, trusted=trusted) if include_remote else {}
     user = _load_dir(_global_agents_dir(), "user") if scope in ("user", "both") else {}
     project_dir = _project_agents_dir(cwd) if scope in ("project", "both") else None
     project = _load_dir(project_dir, "project") if project_dir else {}
-    return {**user, **project}          # 项目覆盖用户
+    return {**remote, **user, **project}          # 项目 > 用户 > 远端
+
+
+def discover_remote(cwd: Path | None = None, scope: AgentScope = DEFAULT_SCOPE, *,
+                    trusted: bool = True) -> dict[str, Role]:
+    """qi-a2a 的**远端角色**(固定 tenant 的条目)。
+
+    没装 qi-a2a、或它没有可用条目 → `{}`。**降级不报错**:角色发现跑在每次
+    `subagent` 调用上,一个可选的扩展不在不该把本地委派一起拦下来。
+
+    层与 `agentScope` 的对齐在 `qi_a2a.remote` 里(全局层 = user,项目层 = project),
+    项目层的信任门控也由它把关 —— 这里不另设一道。
+    """
+    try:
+        from qi_a2a.remote import remote_agents
+    except ImportError:                 # 没装 qi-a2a
+        return {}
+    found = remote_agents(cwd, trusted=trusted, scope=scope)
+    return {
+        agent.name: Role(name=agent.name, description=agent.description, prompt="",
+                         source="a2a", remote=agent)
+        for agent in found
+    }
 
 
 def project_roles(cwd: Path | None, names: list[str]) -> list[Role]:

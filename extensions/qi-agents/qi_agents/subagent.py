@@ -284,6 +284,116 @@ def _abort_signal(ctx: Any) -> Any:
     return None
 
 
+def _remote_result(role: Role, task: str, depth: int, run: Any) -> dict:
+    """远端委派的结果 → 与本地子运行同一个形状(卡、`_render`、`details` 都吃它)。
+
+    `output` / `error` / `steps` 三个键是本地那条路也在用的,不能改名 ——
+    `_render` 与 `_ui_items` 只认它们。
+    """
+    result: dict = {"agent": role.name, "task": task, "ok": bool(run.ok), "depth": depth}
+    if run.ok:
+        result["output"] = run.text or "(远端没有返回文本)"
+    else:
+        result["error"] = run.error or "远端调用失败"
+    steps = list(getattr(run, "steps", []) or [])
+    if getattr(run, "task_id", ""):
+        steps.append(f"· task {run.task_id}")
+    if steps:
+        result["steps"] = steps
+    # 远端**不能再往下派**:它是别人家的 agent,没有我们的 `subagent` 工具,
+    # 也没有我们的预算与深度表 —— 所以不带 children,深度链在这里终止。
+    return result
+
+
+async def _run_remote(role: Role, task: str, ctx: Any, *, depth: int,
+                      holder: list | None, on_update: Any) -> dict:
+    """跑一个**远端 A2A 角色**(`role.remote` 非空)。
+
+    与本地 `_run_one` 的差别都源于"它不在这个进程里":
+
+    * 没有 `run_agent`、没有工具集、没有模型继承 —— 全由远端决定;
+    * 进度只有**状态**与**最终文本**(A2A 流里没有逐字思考),所以卡上只有活动行;
+    * 失败**不抛**,与本地保持一致(一个子任务失败不该带走同批其它结果);
+    * `input-required`(远端等审批)**算成功**:它把话带回来了,只是没执行 ——
+      正文里写清回传方式,主会话手里有 qi-a2a 的 `a2a` 工具可以接着 resume。
+    """
+    name = _unique_name(role.name)
+    info = _RunInfo(depth=depth, tools=[], budget=_Budget(0), holder=holder, name=name,
+                    on_update=on_update if on_update is not None else
+                    getattr(ctx, "on_update", None))
+    REGISTRY[name] = info
+    started = time.monotonic()
+    stack = None
+    if holder:
+        stack = holder[0] if holder else None
+    elif render_mod.PENDING_CARDS:
+        stack = render_mod.PENDING_CARDS.pop(0)
+    card = None
+    adder = getattr(stack, "add_agent", None)
+    if callable(adder):
+        try:
+            parent_name = str(getattr(ctx, "agent_name", None) or "qi")
+            card = adder(name, parent_name, depth)
+        except Exception:               # noqa: BLE001 卡片是旁路
+            card = None
+
+    def _activity(line: str) -> None:
+        """一行活动 → 卡片 + 时间线(无前端时)。远端没有流式文本,只有这些。"""
+        try:
+            push = getattr(info, "on_update", None)
+            if callable(push):
+                push({"qi": {"kind": "subagent", "phase": "stream", "run": name,
+                             "role": role.name, "parent": str(
+                                 getattr(ctx, "agent_name", None) or "qi"),
+                             "depth": depth, "task": task,
+                             "mode": "text", "text": line + "\n"}})
+        except Exception:               # noqa: BLE001 直播是旁路
+            pass
+        add = getattr(card, "add_activity", None)
+        if callable(add):
+            try:
+                add(line)
+            except Exception:           # noqa: BLE001
+                pass
+
+    try:
+        from qi_a2a.remote import run_remote
+    except ImportError:                 # 装完又被卸了:当失败处理,不让工具崩
+        run = None
+    else:
+        run = await run_remote(
+            role.remote, task,
+            on_progress=_activity,
+            signal=_abort_signal(ctx),
+        )
+    REGISTRY.pop(name, None)
+
+    if run is None:
+        result = {"agent": role.name, "task": task, "ok": False, "depth": depth,
+                  "error": "qi-a2a 不在(远端角色需要它)"}
+    else:
+        result = _remote_result(role, task, depth, run)
+    elapsed = int((time.monotonic() - started) * 1000)
+    if card is not None:
+        setter = getattr(card, "set_done", None)
+        if callable(setter):
+            try:
+                setter(bool(result["ok"]),
+                       str(result.get("output") or result.get("error") or ""), [])
+            except Exception:           # noqa: BLE001
+                pass
+    ui = getattr(ctx, "ui", None)
+    if callable(getattr(ui, "notify", None)) and not getattr(ui, "has_frontend", False):
+        indent = "  " * max(0, depth - 1)
+        ui.notify(f"{indent}── {name} {'✓' if result['ok'] else '✗'} 深度{depth} "
+                  f"· {elapsed}ms ──", level="info" if result["ok"] else "error")
+        body = str(result.get("output") or result.get("error") or "")
+        for line in body.splitlines()[:DONE_SUMMARY_LINES]:
+            if line.strip():
+                ui.notify(indent + "  " + line)
+    return result
+
+
 async def _run_one(api: Any, role: Role, task: str, ctx: Any,
                    sem: asyncio.Semaphore | None = None, *,
                    parent: _RunInfo | None = None,
@@ -303,6 +413,12 @@ async def _run_one(api: Any, role: Role, task: str, ctx: Any,
     depth = parent.depth + 1 if parent is not None else 1
     if budget is None:
         budget = _Budget(SPAWN_BUDGET)
+    # **远端角色先分流**:它没有本地提示词、没有工具集、不跑 runner —— 它是一次
+    # 独立的 A2A 对话。三样东西因此都不适用:tools 闸、subagent 的剥离、模型继承。
+    # 放在这里而不是 build_tool 里,是为了让**嵌套**(远端角色又委派)走同一条路。
+    if role.remote is not None:
+        return await _run_remote(role, task, ctx, depth=depth, holder=holder,
+                                 on_update=on_update)
     # `tools: None` = **继承父**。以前这里直接把 None 交给 `runAgent`,由宿主去解析成
     # “主会话的当前集合” —— 主会话的集合里有 `subagent`,而且也不精确(嵌套时发起者
     # 清单里被剥掉的工具会被重新塞回来)。所以在扩展这一侧先把清单具象化,
@@ -674,7 +790,7 @@ def build_tool(api: Any) -> Tool:
 
         scope: AgentScope = args.get("agentScope") or "user"
         cwd = _cwd_of(ctx)
-        roles = discover(cwd, scope)
+        roles = discover(cwd, scope, trusted=bool(getattr(ctx, "project_trusted", True)))
         tasks = _tasks_of(args)
         if not tasks:
             return (f"用法:single 给 `agent` + `task`;parallel 给 `tasks:[{{agent,task}}]`;"
@@ -760,7 +876,9 @@ def build_tool(api: Any) -> Tool:
     # render_call / render_result 一起挂:只挂 result 时卡片是内置 ToolBlock,
     # tui.py 的 tool_end 会把自绘结果丢掉(见 render.py 模块文档)。
     return Tool("subagent", "把一个任务交给另一个角色(独立上下文);支持 single/parallel/chain,"
-                "拿到 subagent 的角色可按深度/预算继续往下派",
+                "拿到 subagent 的角色可按深度/预算继续往下派。"
+                "角色表里 `source=a2a` 的是**远端**智能体(qi-a2a 里非网关的条目),"
+                "委派给它就是一次远端对话 —— 它们不能再往下派",
                 _SCHEMA, run_subagent, prompt_snippet="委派任务给另一个角色",
                 render_call=render_mod.render_call,
                 render_result=render_mod.render_result)

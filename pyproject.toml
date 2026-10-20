@@ -60,4 +60,5 @@ markers = [
 asyncio_mode = "auto"
 # 扩展自带的测试放在各自目录下(与宿主 `tests/` 分开);pytest 只认这里**列出来的**目录 ——
 # 新增一个 tests 目录不同步加进来,它就是静默不跑(没报错、也没覆盖)。
-testpaths = ["tests", "extensions/qi-agents/tests", "extensions/qi-lab/tests"]
+testpaths = ["tests", "extensions/qi-agents/tests", "extensions/qi-lab/tests",
+             "extensions/qi-a2a/tests"]

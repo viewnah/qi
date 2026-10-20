@@ -487,10 +487,37 @@ export const IconLinkOutline16 = ({ size = 16, className }: IconProps) => (
 )
 
 /**
+ * A2A(Agent2Agent)那一节的字形:两个节点 + 一条有向连线。
+ *
+ * 语义是"两个 agent 之间的一次调用",不是"链接"(IconLink 讲的是绑定关系,
+ * 而 MCP 已经占了那颗)。画成描边而不是实心,是为了和 Link 的实心字形在
+ * 同一列里能一眼分开 —— 两节挨着,同色同重会让图标失去指路作用。
+ */
+export const IconShareOutline16 = ({ size = 16, className }: IconProps) => (
+  <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none">
+    <rect
+      x="1.4" y="9.4" width="4.8" height="4.8" rx="1.4"
+      stroke="currentColor" strokeWidth="1.3"
+    />
+    <rect
+      x="9.8" y="1.8" width="4.8" height="4.8" rx="1.4"
+      stroke="currentColor" strokeWidth="1.3"
+    />
+    <path
+      d="M6.1 10.3 L9.9 7.1"
+      stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"
+    />
+    <path
+      d="M7.3 7.5 L9.5 6.6"
+      stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"
+    />
+  </svg>
+);
+
+/**
  * ic_ds_database_outline_16 —— 输入卡下方那行统计里"token 用量"那颗药丸的字形
  * (dsh `StatsPills` 的 UsagePill 用的就是它)。三层圆筒 = 数据库/用量。
- */
-export const IconDatabaseOutline16 = ({ size = 16, className }: IconProps) => (
+ */export const IconDatabaseOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none">
     <ellipse cx="8" cy="3.6" rx="5.75" ry="2.4" stroke="currentColor" strokeWidth="1.25" />
     <path d="M2.25 3.6V12.3A5.75 2.4 0 0 0 13.75 12.3V3.6" stroke="currentColor" strokeWidth="1.25" />

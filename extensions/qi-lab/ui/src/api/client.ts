@@ -14,6 +14,12 @@
 import { CONTRACT_VERSION } from "./types";
 // 会话/工作区的写操作也在这里:分叉、改名、以及工作区的两个「人工决定」。
 import type {
+  A2ADeleteBody,
+  A2AList,
+  A2APatchBody,
+  A2AProbeRequest,
+  A2AProbeResult,
+  A2AWriteBody,
   AgentDeleteBody,
   AgentInfo,
   AgentList,
@@ -271,6 +277,50 @@ export const api = {
     request<McpList>("/api/mcp", {
       method: "DELETE",
       headers: { "X-Qi-Confirm": "yes" },
+      body: JSON.stringify(body),
+    }),
+
+  // ── A2A 条目(两层 a2a.json)──────────────────────────
+  //
+  // 与 MCP 同一套规矩:读端只给结构、写端一律带确认头、写操作回更新后的列表。
+  // 多一条**探测**(`POST /api/a2a/probe`):去真实端点拉一次名片,回答"配的对不对"。
+  // 探测**不需要**确认头 —— 它只读。
+
+  /** A2A 条目(逐层原样 + 深合并后的生效视图)。没装 qi-a2a → `unavailable`。 */
+  a2a: () => request<A2AList>("/api/a2a"),
+
+  createA2A: (body: A2AWriteBody) =>
+    request<A2AList>("/api/a2a", {
+      method: "POST",
+      headers: { "X-Qi-Confirm": "yes" },
+      body: JSON.stringify(body),
+    }),
+
+  /** 改一个条目:**只送要改的键**;读端给不出 `headers` 的值,所以留空就不送。 */
+  patchA2A: (body: A2APatchBody) =>
+    request<A2AList>("/api/a2a", {
+      method: "PATCH",
+      headers: { "X-Qi-Confirm": "yes" },
+      body: JSON.stringify(body),
+    }),
+
+  /** 删一个条目(只删那一层的键:同名的下层声明会露出来)。 */
+  deleteA2A: (body: A2ADeleteBody) =>
+    request<A2AList>("/api/a2a", {
+      method: "DELETE",
+      headers: { "X-Qi-Confirm": "yes" },
+      body: JSON.stringify(body),
+    }),
+
+  /**
+   * 探测一个条目:去真实端点拉名片。
+   *
+   * **失败也是 200**(`ok=false` + `error`)—— 所以这里不 try/catch 成异常:
+   * "连不上"是要显示给用户的**结果**,不是宿主错误。
+   */
+  probeA2A: (body: A2AProbeRequest) =>
+    request<A2AProbeResult>("/api/a2a/probe", {
+      method: "POST",
       body: JSON.stringify(body),
     }),
 

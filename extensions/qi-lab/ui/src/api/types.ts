@@ -424,6 +424,128 @@ export interface AgentDeleteBody {
    name: string;
 }
 
+// ── A2A 条目(两层 a2a.json)─────────────────────────────
+//
+// 与 MCP 同一套读写口径,但**只有两层**(`global` / `project`),而且合并是
+// **同名深合并** —— 所以读端除逐层原样,还回一份 `resolved`(现在到底连的是哪)。
+
+/** 可写的层(闭集,与宿主 `schemas.A2A_SCOPES` 逐字同一份)。 */
+export const A2A_SCOPES = ["global", "project"] as const;
+export type A2AScope = (typeof A2A_SCOPES)[number];
+
+export interface A2ASkill {
+   id: string;
+   name: string;
+   description: string;
+   tags: string[];
+}
+
+/**
+ * 一个 A2A 条目的**结构视图**。`headers` 只给键名 —— 值不出宿主(那是 token
+ * 最常待的地方),所以编辑表单里那一栏是"留空 = 不改"。
+ */
+export interface A2AEntryInfo {
+   name: string;
+   card_url: string;
+   base_url: string;
+   rpc_url: string;
+   tenant: string;
+   description: string;
+   header_keys: string[];
+   timeout_ms: number;
+   streaming: boolean;
+   discovery: string;
+   direct_tools: boolean | string[];
+   /** 直连工具名(`a2a__<条目>`);没开 `directTools` 时是空串 */
+   tool_name: string;
+   disabled: boolean;
+   unknown_fields: string[];
+   /** 这条声明来自哪一层;`resolved` 里是**主导层** */
+   source: string;
+   /** 参与的层(深合并的痕迹);只有 `resolved` 里有 */
+   layers: string[];
+}
+
+/** 一处 a2a.json。`exists=false` 也回 —— 前端据此区分"没这个文件"与"文件在但没写条目"。 */
+export interface A2ASource {
+   scope: A2AScope;
+   path: string;
+   exists: boolean;
+   entries: A2AEntryInfo[];
+}
+
+/** `GET /api/a2a`。`unavailable` = 没装 qi-a2a。 */
+export interface A2AList {
+   sources: A2ASource[];
+   /** 两层深合并后的生效视图(含被 `disabled` 关掉的) */
+   resolved: A2AEntryInfo[];
+   unavailable: boolean;
+}
+
+/**
+ * `POST /api/a2a` 的条目体。字段名用 snake_case(与所有 `/api` 一致),
+ * 落盘时由宿主转成 a2a.json 的 camelCase。
+ */
+export interface A2AEntryInput {
+   name: string;
+   card_url?: string;
+   base_url?: string;
+   rpc_url?: string;
+   tenant?: string;
+   description?: string;
+   /** 只进不回:读端给不出值,所以编辑时"留空 = 保持"、填 `{}` = 清空整张表 */
+   headers?: Record<string, string>;
+   timeout_ms?: number | null;
+   streaming?: boolean | null;
+   discovery?: string;
+   direct_tools?: boolean | string[];
+   tool_prefix?: string;
+   disabled?: boolean;
+}
+
+export interface A2AWriteBody {
+   scope: A2AScope;
+   entry: A2AEntryInput;
+}
+
+/** PATCH:**只有送出去的键会被改**;送 `null` 也读作"不改"。 */
+export interface A2APatchBody {
+   scope: A2AScope;
+   /** 改**之前**的名字;要改名写进 `patch.name` */
+   name: string;
+   patch: Partial<A2AEntryInput>;
+}
+
+export interface A2ADeleteBody {
+   scope: A2AScope;
+   name: string;
+}
+
+/** `POST /api/a2a/probe`:去真实端点拉一次名片(只收已配置的条目名)。 */
+export interface A2AProbeRequest {
+   server?: string;
+   agent?: string;
+}
+
+export interface A2AProbeCard {
+   name: string;
+   description: string;
+   tenant: string;
+   rpc_url: string;
+   skills: A2ASkill[];
+}
+
+/** 探测结果。**失败也是 200**:`ok=false` + `error`(那是结果,不是宿主异常)。 */
+export interface A2AProbeResult {
+   ok: boolean;
+   server: string;
+   source: string;
+   discovery_url: string;
+   elapsed_ms: number;
+   cards: A2AProbeCard[];
+   error: string;
+}
+
 // ── AG-UI:输入 ───────────────────────────────────────────
 
 export interface AguiMessage {

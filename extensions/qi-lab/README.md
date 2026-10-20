@@ -152,14 +152,16 @@ A2A 自己的三件:
 
 回归测试:`tests/test_lab_a2a_api.py`(35 条);契约在 `docs/api/a2a.md`。
 
-> **前端未接**:`ui/`(Vite + React)里还没有 A2A 面板。但**不需要 npm 也能用**:
-> 打开 **`/a2a`** 是一个手写的独立页面(原生 JS,零构建),读写同一套接口。
-> 它住在 `qi_lab/pages/`,**不放** `qi_lab/static/` —— 那是 Vite 的 outDir
-> (`emptyOutDir: true`),下一次 `npm run build` 会把不属于它的文件一起清掉。
-> 改完刷新即生效;要并进主界面时照 `McpPanel.tsx` 再写一遍即可。
->
-> 口令与主界面一致:用 `http://user:口令@host:port/a2a` 打开,或在页顶框里填
-> (存 `sessionStorage`,不落盘)。
+**界面**:设置页 → **A2A**(与 MCP / 技能同一节的形式)。上面是深合并后的
+**生效条目**,下面是逐层的原始声明;每张卡带一个「探测」,结果就地展开(探测是
+只读的,弹层会挡着列表)。表单里 `headers` 是"留空 = 保持不变 / 填 `-` = 清空整张表"
+——读端给不出值,所以只能这样表达。
+
+另有一条**零构建**的兜底页面 **`/a2a`**(原生 JS,不依赖 `npm run build`):
+它住在 `qi_lab/pages/`,**不是** `qi_lab/static/` —— 后者是 Vite 的 outDir
+(`emptyOutDir: true`),下一次构建会把不属于它的文件一起清掉。
+前端产物缺失或还没构建时,这条路径仍然可用。口令与主界面一致:
+用 `http://user:口令@host:port/a2a` 打开,或在页顶框里填(存 `sessionStorage`,不落盘)。
 
 ## 接口文档
 

@@ -153,7 +153,9 @@ describe("MCP 声明表:增删改的两侧对齐", () => {
   });
 
   it("传输闭集是同一份(差一个 = 要么 422,要么老声明存不回去)", () => {
-    const host = [...(schemasPy.match(/MCP_TRANSPORTS[\s\S]{0,240}?\)\n/) ?? "")]
+    // `\r?\n`:Python 源码在 Windows 检出时是 CRLF(仓库里存 LF)。只认 `\n` 会让这条
+    // 在 Windows 上**永远读不到**,而症状是"两边都对却报 0 个" —— 那种红会被人当成噪音。
+    const host = [...(schemasPy.match(/MCP_TRANSPORTS[\s\S]{0,240}?\)\r?\n/) ?? "")]
       .flatMap((m) => [...m.matchAll(/"([a-z-]+)"/g)])
       .map((m) => m[1]);
     const ui = [...(typesTs.match(/MCP_TRANSPORTS = \[[\s\S]*?\] as const/) ?? "")]

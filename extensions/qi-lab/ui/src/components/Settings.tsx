@@ -27,6 +27,10 @@ import { useEffect, useId, useRef, useState } from "react";
 import type { ReactNode, RefObject } from "react";
 import { api, ApiError } from "../api/client";
 import type {
+   A2AEntryInfo,
+   A2AEntryInput,
+   A2AList,
+   A2ASource,
    AgentInfo,
    ConfigView,
    ExtensionList,
@@ -38,6 +42,11 @@ import type {
    SkillInfo,
 } from "../api/types";
 import { ConfirmDialog } from "./ConfirmDialog";
+import {
+   A2ADeleteDialog,
+   A2ADialog,
+   A2ASection,
+} from "./A2APanel";
 import {
    AgentDeleteDialog,
    agentDeleteBody,
@@ -57,6 +66,7 @@ import {
    IconGaugeOutline16,
    IconLinkOutline16,
    IconPersonalizationOutline16,
+   IconShareOutline16,
    IconSkillOutline16,
 } from "./icons";
 
@@ -65,6 +75,7 @@ export type SettingsSectionKey =
    | "agents"
    | "skills"
    | "mcp"
+   | "a2a"
    | "extensions"
    | "sessions"
    | "diagnostics";
@@ -84,6 +95,7 @@ const SECTIONS: {
    { key: "agents", label: "Agent", icon: <IconAgentPresetOutline16 size={16} /> },
    { key: "skills", label: "技能", icon: <IconSkillOutline16 size={16} /> },
    { key: "mcp", label: "MCP", icon: <IconLinkOutline16 size={16} /> },
+   { key: "a2a", label: "A2A", icon: <IconShareOutline16 size={16} /> },
    {
       key: "extensions",
       label: "扩展",
@@ -145,6 +157,7 @@ export function Settings({
    returnFocusTo,
    initialSection = "models",
    mcpWrite = false,
+   a2aWrite = false,
    agentWrite = false,
    onAgentsChanged,
 }: {
@@ -166,6 +179,11 @@ export function Settings({
     */
    mcpWrite?: boolean;
    /**
+    * 宿主支不支持改写 A2A 条目(`/api/meta` 的 `a2a_write`)。老宿主 → 那一节只读
+    * (读端点与探测一直在)。
+    */
+   a2aWrite?: boolean;
+   /**
     * 宿主支不支持**删角色**(`/api/meta` 的 `agent_write`)。同上:没有它 → Agent 那一节
     * 只读展示(读端点一直在)。
     */
@@ -184,6 +202,21 @@ export function Settings({
    const [mcp, setMcp] = useState<McpList | null>(null);
    /** 老宿主没有 `/api/mcp` → 这一节降级显示,不把整页打成错误屏。 */
    const [mcpMissing, setMcpMissing] = useState(false);
+   /** A2A 条目(两层 a2a.json + 合并后的生效视图)。老宿主 / 没装 qi-a2a → 空态。 */
+   const [a2a, setA2a] = useState<A2AList | null>(null);
+   const [a2aMissing, setA2aMissing] = useState(false);
+   /** 正在增 / 改的那个条目(`null` = 没开弹层;`entry === null` = 新建)。 */
+   const [a2aTarget, setA2aTarget] = useState<{
+      scope: A2ASource["scope"];
+      path: string;
+      entry: A2AEntryInfo | null;
+   } | null>(null);
+   const [a2aRemoving, setA2aRemoving] = useState<{
+      src: A2ASource;
+      entry: A2AEntryInfo;
+   } | null>(null);
+   const [a2aError, setA2aError] = useState<string | null>(null);
+   const [a2aBusy, setA2aBusy] = useState(false);
    /** 正在增 / 改的那处声明表(`null` = 没开弹层);`server === null` = 新建。 */
    const [mcpTarget, setMcpTarget] = useState<McpTarget | null>(null);
    const [mcpRemoving, setMcpRemoving] = useState<{
@@ -315,6 +348,74 @@ export function Settings({
       };
    }, []);
 
+   /** A2A 同上:老宿主没 `/api/a2a` 就只少一节,不白屏。 */
+   useEffect(() => {
+      let alive = true;
+      void (async () => {
+         try {
+            const list = await api.a2a();
+            if (alive) setA2a(list);
+         } catch {
+            if (alive) setA2aMissing(true);
+         }
+      })();
+      return () => {
+         alive = false;
+      };
+   }, []);
+
+   /** 写完再读一遍:界面该显示宿主实际读到的样子(与 MCP 同一条规矩)。 */
+   const refreshA2A = async () => {
+      setA2a(await api.a2a());
+   };
+
+   /**
+    * 新建 / 编辑:**成功才关表单** —— 失败时输入还在,不用从头填一遍。
+    *
+    * 新建与编辑的体不一样(整条 vs 只动过的键),由弹层自己判好后分开传。
+    */
+   const submitA2A = (body: A2AEntryInput | Partial<A2AEntryInput>) => {
+      if (!a2aTarget) return;
+      setA2aError(null);
+      setA2aBusy(true);
+      void (async () => {
+         try {
+            if (a2aTarget.entry === null) {
+               await api.createA2A({
+                  scope: a2aTarget.scope,
+                  entry: body as A2AEntryInput,
+               });
+            } else {
+               await api.patchA2A({
+                  scope: a2aTarget.scope,
+                  name: a2aTarget.entry.name,
+                  patch: body,
+               });
+            }
+            await refreshA2A();
+            setA2aTarget(null);
+         } catch (err) {
+            setA2aError(err instanceof ApiError ? err.detail : String(err));
+         } finally {
+            setA2aBusy(false);
+         }
+      })();
+   };
+
+   const removeA2A = async (target: { src: A2ASource; entry: A2AEntryInfo }) => {
+      setA2aError(null);
+      setA2aBusy(true);
+      try {
+         await api.deleteA2A({ scope: target.src.scope, name: target.entry.name });
+         await refreshA2A();
+         setA2aRemoving(null);
+      } catch (err) {
+         setA2aError(err instanceof ApiError ? err.detail : String(err));
+      } finally {
+         setA2aBusy(false);
+      }
+   };
+
    const runWrite = (action: () => Promise<void>) => {
       void (async () => {
          try {
@@ -411,16 +512,10 @@ export function Settings({
    );
    return (
       <div className="set">
-         {/* 遮罩照 dsh `.mask`:同一层 `bg-mask-1` + `--dsw-mask-blur`,
-            点它关闭。`aria-hidden` 是因为"点外面关掉"有键盘等价物(`Esc`)。 */}
-         <div className="set__mask" aria-hidden="true" onClick={onClose} />
-
-         <div
-            className="set__panel"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby={titleId}
-         >
+         {/* 设置是**整页**而不是弹层:它要与工作区并列(左栏、侧栏都让位),
+            所以没有遮罩、没有"点外面关掉"—— 退出只走 `Esc` 与右上角的 ×。
+            `aria-modal` 也去掉了:它不再是覆盖在内容之上的一层。 */}
+         <div className="set__panel" aria-labelledby={titleId}>
             <nav className="set__nav" aria-label="设置分区">
                <div className="set__nav-title" id={titleId}>
                   设置
@@ -684,15 +779,12 @@ export function Settings({
                         title={`MCP(${mcpTotal})`}
                         intro={
                            <>
-                              三处声明:全局 <code>~/.qi/agent/mcp.json</code>
-                              、项目 <code>.qi/mcp.json</code>
-                              、以及各 agent 目录里的私有 <code>mcp.json</code>。
-                              本面板只做解析与门控(client 由 lazy 连接按需启动,
-                              状态快照事件尚未实现,见 design/PLAN.md),所以这里
-                              只有"声明"、没有"已连接";谁能调由它的
-                              <code>tools:</code> 决定(写 <code>mcp</code> 拿代理工具,
-                              写 <code>mcp__server__*</code> 直连),同名时
+                              三处声明:全局、项目、各 agent 私有目录。同名时{" "}
                               <strong>角色私有 &gt; 项目 &gt; 全局</strong>。
+                              这里只有"声明"、没有"已连接"(server 按需启动);
+                              谁能调用由角色的 <code>tools:</code> 决定 ——
+                              写 <code>mcp</code> 拿代理工具,写{" "}
+                              <code>mcp__server__*</code> 直连。
                               <code>env</code> / <code>headers</code> 只显示键名。
                            </>
                         }
@@ -727,8 +819,74 @@ export function Settings({
                      </Section>
                   ) : null}
 
-                  {/* MCP 的增 / 删 / 改确认层:表单在弹层里,确认前就能看见
-                      会写进哪个文件;错误也报在弹层里(遮罩挡着顶部的 notice)。 */}
+                  {section === "a2a" ? (
+                     <Section
+                        title={`A2A(${a2a?.resolved.length ?? 0})`}
+                        intro={
+                           <>
+                              两层 <code>a2a.json</code>(全局 / 项目)深合并后的
+                              <strong>生效条目</strong>就是模型实际会调的东西。
+                              一个条目通常是一张 Agent Card;<code>headers</code> 只显示键名。
+                           </>
+                        }
+                     >
+                        <A2ASection
+                           a2a={a2a}
+                           missing={a2aMissing || (a2a?.unavailable ?? false)}
+                           canWrite={a2aWrite}
+                           onAdd={(src) => {
+                              setA2aError(null);
+                              setA2aTarget({
+                                 scope: src.scope,
+                                 path: src.path,
+                                 entry: null,
+                              });
+                           }}
+                           onEdit={(src, entry) => {
+                              setA2aError(null);
+                              setA2aTarget({
+                                 scope: src.scope,
+                                 path: src.path,
+                                 entry,
+                              });
+                           }}
+                           onDelete={(src, entry) => {
+                              setA2aError(null);
+                              setA2aRemoving({ src, entry });
+                           }}
+                           onProbe={(name) => api.probeA2A({ server: name })}
+                        />
+                     </Section>
+                  ) : null}
+
+                  {a2aTarget ? (
+                     <A2ADialog
+                        target={a2aTarget}
+                        error={a2aError}
+                        busy={a2aBusy}
+                        onCancel={() => {
+                           setA2aTarget(null);
+                           setA2aError(null);
+                        }}
+                        onSubmit={submitA2A}
+                     />
+                  ) : null}
+                  {a2aRemoving ? (
+                     <A2ADeleteDialog
+                        target={a2aRemoving.src}
+                        entry={a2aRemoving.entry}
+                        error={a2aError}
+                        busy={a2aBusy}
+                        onCancel={() => {
+                           setA2aRemoving(null);
+                           setA2aError(null);
+                        }}
+                        onConfirm={() => {
+                           void removeA2A(a2aRemoving);
+                        }}
+                     />
+                  ) : null}
+
                   {mcpTarget ? (
                      <McpDialog
                         target={mcpTarget}

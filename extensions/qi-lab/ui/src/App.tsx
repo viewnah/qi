@@ -1113,6 +1113,9 @@ export function App() {
           /* 宿主支不支持**写** MCP 声明(`/api/meta` 的 `mcp_write`):
              没有它 → 那一节只读(老宿主 / 没装 qi-lab 的同款 UI)。 */
           mcpWrite={meta?.capabilities.mcp_write === true}
+          /* 宿主支不支持改写 **A2A 条目**(`/api/meta` 的 `a2a_write`)。同上:没有它 →
+             那一节只读 —— 读与「探测」一直在。 */
+          a2aWrite={meta?.capabilities.a2a_write === true}
           /* 宿主支不支持**删角色**(`/api/meta` 的 `agent_write`):没有它 → Agent 那一节
              只读 —— 读端点一直在,所以只是少一个键(与 mcp_write 同一条降级规矩)。 */
           agentWrite={meta?.capabilities.agent_write === true}

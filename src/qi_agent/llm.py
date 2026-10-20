@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
+import threading
 from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast, runtime_checkable
@@ -307,6 +309,44 @@ def _response_status_headers(resp: Any) -> tuple[int, dict[str, str]]:
     return _as_int(status), headers
 
 
+#: 惰性导入的 litellm 模块(首次导入几秒;见 `load_litellm`)。
+_litellm: Any | None = None
+_litellm_lock = threading.Lock()
+
+
+def load_litellm() -> Any:
+    """导入 litellm 并缓存结果。**同步**函数,调用方负责放到线程里。
+
+    为什么必须离开事件循环:litellm 的 import 实测 3~15 秒(冷缓存/网络差时更久),
+    而 `chat()` / `_open_stream()` 是 async 方法 —— 在里面直接 `import litellm` 会
+    阻塞整个 TUI(按回车后界面完全不动,像是卡死)。
+
+    缓存也顺带收窄了另一个坑:`litellm.acompletion` 把同步 `completion()` 丢进线程池,
+    线程内部再创建 `OpenAIChatCompletion.async_streaming()` 协程交回事件循环。若取消
+    恰好落在"线程还在 import/初始化"这一段,协程会在取消后才被创建、永远没人 await,
+    解释器退出时就会报 `RuntimeWarning: ... was never awaited`。先把 import 做完再发
+    请求之后,这段窗口只剩 provider 的同步准备,基本撞不上(极端情况由
+    `qi_agent/__init__.py` 的窄范围警告过滤兜底)。
+    """
+    global _litellm
+    module = _litellm
+    if module is not None:
+        return module
+    with _litellm_lock:
+        if _litellm is None:
+            import litellm
+            _litellm = litellm
+        return _litellm
+
+
+async def litellm_module() -> Any:
+    """异步取 litellm:首次导入走后台线程,**永远不占事件循环**。"""
+    module = _litellm
+    if module is not None:
+        return module
+    return await asyncio.to_thread(load_litellm)
+
+
 def _as_int(value: Any, default: int = 0) -> int:
     """把可能不是数字的值收成 int(取不到 HTTP 状态不该让事件派发抛错)。"""
     try:
@@ -521,7 +561,7 @@ class LiteLLMClient:
 
     async def chat(self, messages: list[ChatMessage], tools: list[dict] | None = None,
                    temperature: float | None = None) -> ChatResponse:
-        import litellm
+        litellm = await litellm_module()
 
         kwargs = await self._prepare_headers(
             await self._prepare_request(self._base_kwargs(messages, tools, temperature)))
@@ -558,7 +598,7 @@ class LiteLLMClient:
 
     async def _open_stream(self, messages: list[ChatMessage], tools: list[dict] | None,
                            temperature: float | None, with_usage: bool) -> AsyncIterator[Any]:
-        import litellm
+        litellm = await litellm_module()
 
         kwargs = await self._prepare_headers(
             await self._prepare_request(self._base_kwargs(messages, tools, temperature)))

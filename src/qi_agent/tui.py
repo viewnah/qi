@@ -54,7 +54,7 @@ from .auth import AuthStore
 from .config import (ConfigError, ResolvedModel, resolve_default_model, resolve_model,
                      selectable_models)
 from .llm import (DEFAULT_THINKING_LEVEL, THINKING_LEVELS, LiteLLMClient, ThinkingLLMClient,
-                  normalize_thinking_level)
+                  load_litellm, normalize_thinking_level)
 from .loader import LoadError
 from .registry import ToolCatalog
 from .runtime import MAX_TOOL_ENTRY_CHARS, QiRuntime, no_model_selected_message
@@ -3122,6 +3122,9 @@ class QiTui(App):
         self._refresh_footer()
         self._sync_log_height()
         self.query_one("#editor", TextArea).focus()
+        # litellm 的 import 要几秒(见 llm.load_litellm):启动后先在后台热一次,
+        # 第一条消息不用替它等;绝不能放回事件循环里(那会把界面冻住)。
+        self.run_worker(asyncio.to_thread(load_litellm), exclusive=False, exit_on_error=False)
         if self._initial_prompt and self._rt is not None:
             self.call_after_refresh(self._submit, self._initial_prompt)
 

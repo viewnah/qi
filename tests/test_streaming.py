@@ -12,6 +12,9 @@ litellm 用 monkeypatch 的假 `acompletion` 替换:不联网、不依赖 provid
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -593,3 +596,51 @@ def test_midstream_drop_keeps_the_streaming_channel(tmp_path, fake_litellm):
     assert "agent 级重试" in err, "文案要指向真正做事的那一层"
     assert client._stream_broken is False, "中途断 ≠ “流式打不开”:不换通道"
     assert len(fake.stream_calls) == 2, "第二次仍然是流式请求(与 pi 一致)"
+
+
+# ── 7. litellm 的 import 不能占事件循环 ────────────────────
+
+@pytest.mark.asyncio
+async def test_litellm_import_runs_off_the_event_loop(monkeypatch):
+    """首次 import litellm 必须在线程里跑 —— 否则第一条消息把整个 TUI 冻住。
+
+    实测 3~15 秒(冷缓存/杀软/网络差时更久),期间连 Ctrl+C 的按键事件都轮不到处理。
+    """
+    import qi_agent.llm as llm_mod
+
+    seen: list[str] = []
+
+    def slow_load():
+        seen.append(threading.current_thread().name)
+        time.sleep(0.2)
+        return SimpleNamespace(name="fake-litellm")
+
+    monkeypatch.setattr(llm_mod, "_litellm", None)
+    monkeypatch.setattr(llm_mod, "load_litellm", slow_load)
+
+    ticks = 0
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    tick_task = asyncio.create_task(ticker())
+    module = await llm_mod.litellm_module()
+    tick_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await tick_task
+
+    assert module.name == "fake-litellm"
+    assert ticks >= 5, "import 期间事件循环必须还能跑"
+    assert seen and seen[0] != threading.current_thread().name
+
+
+def test_load_litellm_reuses_the_cached_module(monkeypatch):
+    """导入只做一次:缓存之后连线程都不用再起。"""
+    import qi_agent.llm as llm_mod
+
+    sentinel = SimpleNamespace(name="cached")
+    monkeypatch.setattr(llm_mod, "_litellm", sentinel)
+    assert llm_mod.load_litellm() is sentinel

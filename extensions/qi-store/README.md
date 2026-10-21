@@ -5,7 +5,7 @@ A2A 名片装进 qi 自己的配置目录。
 
 > **状态：P0–P3 已落地（2026-10-21）** —— 命令行九条 + qi-lab 面板（`/api/store/*` 七条 +
 > 设置面「商店」一节：**四类标签 + 页面登录**）。测试：qi-store 91 条 + qi-lab 商店 API 17 条。
-> 四类 kind 全部可用：skill / mcp / a2a / **agent**（模板蓝图 → 角色目录）。
+> 四类 kind 全部可用：skill / mcp / a2a / **agent**（离线包 → 角色目录）。
 > 未做：`extension` kind（上游已有 PEP 503 索引，让 `qi install` 直连即可）。
 > 本文就是实现规格 —— 命令面、契约、落位表、退出码都钉在这里；不一致时以本文为准
 > （改实现要同时改这里）。
@@ -23,7 +23,7 @@ A2A 名片装进 qi 自己的配置目录。
 | `download` 只取件（不落配置、不记账） | 不替用户决定资产是否可信（只透出上游的 `scan_status`） |
 
 支持的 kind：**`skill` / `mcp` / `a2a` / `agent`**。
-`agent` 是**格式对齐工作量最大**的一个（模板蓝图 → qi-agents 的角色目录），
+`agent` 是**格式对齐工作量最大**的一个（hikqin 离线包 → qi-agents 的角色目录），
 转换规则单独写在 §4.5。
 
 ## 1. 装
@@ -312,49 +312,59 @@ qi-mcp 在连接那一刻从 `os.environ` 读。
 tenant 的条目注册成远端角色（`subagent` 的 `agent` 参数即可选到）。
 
 
-## 4.5 agent：模板蓝图 → 角色目录
 
-上游给的是**模板蓝图**（`GET /api/agent-templates/{id}` 的 `data.content`，`format_version: 1`），
-qi 要的是 **qi-agents 的角色目录**：
+## 4.5 agent：离线包 → 角色目录
+
+**商店的 Agent 就是 `GET /api/agents`**（你账号能看到的全部智能体，草稿与已发布都列——
+`publish_status` 只是徽标，可见性由账号决定）。取货走**离线包**：
+
+```
+GET /api/agents/{id}/download   →  zip（Agent Plugins 1.0.0）
+  agent-<名>/plugin.json        私有配置在 extensions["com.hikqin.agent"]（format_version: 2）
+  agent-<名>/mcp.json           规范子集（type/url/headers，不含密钥）
+  agent-<名>/skills/<名>/…      技能是**真文件**（不是 base64）
+```
+
+qi 要的是 qi-agents 的"一个目录一个自包含包"：
 
 ```
 ~/.qi/agent/agents/<名>/
   agent.md              frontmatter(name / description / tools / model) + 正文 = system_prompt
   mcp.json              角色私有 MCP 声明（qi-agents 读，qi-mcp 连）
-  skills/<名>/SKILL.md  角色私有技能（蓝图里 base64 内联）
+  skills/<名>/SKILL.md  角色私有技能
 ```
 
-| 蓝图 | 落到 | 处理 |
+| 包里 | 落到 | 处理 |
 | --- | --- | --- |
-| `name` / `description` | frontmatter | 名字走路径校验；没有 description 时给兜底并说明（模型靠它挑角色） |
-| `system_prompt` | agent.md 正文 | **空 → 直接失败**（角色没有正文等于没有角色） |
-| `skills[].files`（base64） | `<角色>/skills/<名>/…` | 校验根上有 `SKILL.md` 且有 `description`（qi 的硬规则），不合格就跳过并说明 |
-| `mcp_services[]` | `<角色>/mcp.json` | 复用 mcp kind 的转换；`tool_names` → `includeTools` |
-| `sub_agents[]` | **同级**角色目录 | qi 没有嵌套，摊平；与已有角色**同名就跳过**并说明 |
-| `model` | frontmatter `model:` | **只在本地 `models.json` 里真有这个 `provider/id` 时才写** |
-| `opening_*` / `data_sources` / `knowledge_bases` / `config` / `interrupt_on` | — | qi 没有对应物 → 丢弃，并在计划里列出（`已丢弃：数据源×1、开场白…`） |
+| `system_prompt` | agent.md 正文 | **空 → 直接失败**；整段是**字面**反斜杠-n 时还原成换行（见下） |
+| `skills[]`（`package_path` 指目录） | `<角色>/skills/<名>/` | 复制真文件；校验根上有 `SKILL.md` + description 非空，不合格跳过并说明 |
+| `mcp_services[]`（**私有**清单，比规范 mcp.json 全） | `<角色>/mcp.json` | 复用 mcp kind 的转换；`tool_names` → `includeTools`；stdio 也认 |
+| `sub_agents[]`（同一份清单里递归） | **同级**角色目录 | qi 没有嵌套；同名就跳过并说明 |
+| `model` | frontmatter `model:` | 只在本地 `models.json` 里有这个 `provider/name` 时才写。**`api_key` 是 AES 密文，一个字节都不碰** |
+| `opening_*` / `data_sources` / `knowledge_bases` / `config` / `interrupt_on` | — | qi 没有对应物 → 丢弃，并在计划里列出 |
 
-### `tools:` 的取舍（这个 kind 最容易踩的一处）
+### `tools:` 的取舍（最容易踩的一处）
 
 qi-agents 的语义是：**`tools:` 不写 = 没有任何 MCP 访问，而且连都不连**；而角色私有 server
 只能靠 `mcp__<名>__*` 直连（`mcp` 代理看不见私有 server）。所以：
 
-- 蓝图里**没有** MCP → **不写** `tools:`（= 继承父，零改动）；
-- 蓝图里**有** MCP → 必须写 `tools:`，而写了就等于“点名的才有”，于是把内置编码工具一起写上：
+- 包里**没有** MCP → **不写** `tools:`（= 继承父，零改动）；
+- 包里**有** MCP → 必须写，而写了就等于"点名的才有"，于是把内置编码工具一起列上：
 
 ```yaml
 tools: read, ls, find, grep, write, edit, bash, powershell, mcp__ppt-tools__*, subagent
 ```
 
-`subagent` 只在蓝图有 `sub_agents` 时加。这不是提权方向（它是收窄），但确实是**替用户做了个
-决定** —— 所以计划里会写一行 `已写 tools(MCP 需要显式点名;内置工具按默认编码集列出)`，
-要改就改 `agent.md`（它是用户的文件）。
+`subagent` 只在有子智能体时加。方向是收窄不是提权，但确实是替用户做了个决定 —— 计划里会写
+一行说明，要改就改 `agent.md`（那是用户的文件）。
 
-### 装完要知道的两件事
+### 上游数据的两个坑（都已处理）
 
-1. **模型可能没写**：蓝图里的 `api_key` 是剥离状态，所以只有在本地 `models.json` 里已经解析出
-   同名 `provider/id` 时才写 `model:`；否则计划里会说 `本地 models.json 里没有 stub/m1`。
-2. **子智能体是同级角色**：它们会各自出现在 `subagent` 的角色表里，也能被直接指派。
+1. **`api_key` 是 AES 密文**：qi 没有那把密钥，所以只取 `provider`/`name` 去本地 `models.json`
+   找；找不到就不写 `model:`（计划里说明）。密文**一个字节都不会落盘**（有测试盯）。
+2. **`system_prompt` 里的字面反斜杠-n**：上游部分智能体录入时多转义了一层，导出来是一串
+   两个字符的 `\n`，模型看到的是一整行带反斜杠的文本。判据收紧成"**整段一个真换行都没有**"
+   才还原（真有换行、又夹着字面写法的——比如在讲转义字符——不动），并在计划里说出来。
 
 ## 5. 退出码与输出
 
@@ -499,7 +509,7 @@ extensions/qi-store/
 | **P1** ✅ | `search`/`info`/`install`/`download`/`list`/`uninstall`，skill + mcp + a2a，编号选择器 | `qi store install ppt-generator` → 技能落盘且 **qi 的 loader 真能扫到**；`uninstall` 干净（**已过，75 条**） |
 | **P2** ✅ | `check` / `upgrade` / `sync` + `wanted[]` 声明层 | 上游更新后 `check` 报漂移，`upgrade` 保持原落点并备份旧版，`sync` 只补不删（**已过，90 条**） |
 | **P3** ✅ | qi-lab：`/api/store/*`（7 条）+ 设置面「商店」一节 | `qi lab` 里搜到 → 看计划 → 装 → 技能面板立刻出现（**已过：qi-store 91 + qi-lab 商店 API 13**） |
-| **P4** ✅ | `agent` kind（模板蓝图 → 角色目录：agent.md + 私有 mcp.json + 私有 skills + 子角色摊平） | 装完 `qi` 的角色表里能看到、能被 `subagent` 指派（**已过：qi-store 108 条**） |
+| **P4** ✅ | `agent` kind（离线包 → 角色目录：agent.md + 私有 mcp.json + 私有 skills + 子角色摊平） | 装完 `qi` 的角色表里能看到、能被 `subagent` 指派（**已过：qi-store 108 条**） |
 | **P5** | `extension` kind（让 `qi install --index-url <hikqin>/api/pypi/simple/` 直连） | — |
 
 ## 11. 落地记录（实测，不是计划）
@@ -562,7 +572,7 @@ extensions/qi-store/
 | --- | --- |
 | `agent` kind 的**丢弃项** | `opening_*` / `data_sources` / `knowledge_bases` / `config` / `interrupt_on` 在 qi 里没有对应物 → 丢弃并列在计划里。蓝图里的 `api_key` 是剥离状态，所以 `model:` 只在本地 `models.json` 已有同名条目时才写（见 §4.5） |
 | **project scope 不走 `trust.json`** | 与设计稿不同：扩展不去复制宿主的信任判定（那是内部语义），改成**每次安装都要人点头**（`-y` 或交互确认），非 tty 且没 `-y` 就拒绝。比“读一个我们并不拥有的状态”更诚实 |
-| `version` | 上游没有 semver → 用**内容哈希**当版本（`sig:` 前缀提醒它不是上游给的版本号）。真正的 `version` 字段是 hikqin 侧的事 |
+| `version` | 上游没有 semver → 用**内容指纹**当版本（`sig:` 前缀提醒它不是上游给的版本号）。**skill / mcp / a2a 是内容指纹；agent 只是结构指纹**（名字 + 模型 + 资源计数 + 创建时间）—— 算真内容要下载 6 个包，太重。所以 agent 的"可升级"只在结构调整时出现 |
 | `install` 会 +1 下载计数 | skill 的取包端点就是 `GET /api/skills/{id}/download`，上游会 `download_count++`。这是我们对上游唯一的数据影响，也是“装了多少”的唯一信号 |
 | `download` 对 mcp/a2a | 产物是 `mcp-<key>.json` / `a2a-<key>.json`（一段可直接粘贴的 JSON），**不挑落点** —— 它可能是某个角色私有的 `mcp.json` |
 | 卸载会删空文件 | `mcp.json` / `a2a.json` 被我们删空（`{}`）时直接删文件；但**只要里面还有别人的键就绝不删** |

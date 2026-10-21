@@ -28,7 +28,7 @@ READ_PATHS = (
     "/auth/me",
     "/skills",
     "/mcp/servers",
-    "/agent-templates",
+    "/agents",
     "/a2a",
     "/.well-known",
 )

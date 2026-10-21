@@ -75,9 +75,11 @@
 `missing[]` 说明**哪一类没查成**（未登录 / 网络）——界面必须显示，否则"商店是空的"
 是最坏的误解（`skill` / `mcp` / `agent` 需要登录，`a2a` 公开）。
 
-四类 kind：`skill` / `mcp` / `a2a` / `agent`。`agent` 的转换规则（模板蓝图 → qi-agents 的
-角色目录：`agent.md` + 私有 `mcp.json` + 私有 `skills/` + 子角色摊平）在 qi-store 的
-`README.md` §4.5，这里只记接口形状。
+四类 kind：`skill` / `mcp` / `a2a` / `agent`。
+
+- `agent` 的目录是 **`GET /api/agents`**（你账号能看到的全部智能体，草稿与已发布都列），
+  取货走 `/api/agents/{id}/download` 的**离线包**；转换规则（包 → qi-agents 的角色目录：
+  `agent.md` + 私有 `mcp.json` + 私有 `skills/` + 子角色摊平）在 qi-store 的 `README.md` §4.5。
 
 ## GET /api/store/installed
 

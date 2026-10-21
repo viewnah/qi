@@ -37,7 +37,9 @@ def test_whitelist_rejects_unlisted_paths():
     assert is_readable("/skills")
     assert is_readable("/skills/4/files")
     assert is_readable("/mcp/servers/3")
-    assert not is_readable("/agents")
+    assert is_readable("/agents")               # 离线包(agent kind)
+    assert is_readable("/agents/agent-1/download")
+    assert not is_readable("/admin/overview")   # 管理面:商店永远不碰
     assert not is_readable("/skillsx")          # 前缀相似但不同段,不算
     assert not is_readable("/a2ax/1")
 

@@ -1,0 +1,70 @@
+[
+  {
+    "name": "技能调试",
+    "description": "技能调试",
+    "supportedInterfaces": [
+      {
+        "url": "http://10.1.43.6:6091/a2a",
+        "protocolBinding": "JSONRPC",
+        "tenant": "agent-4c4af5bf",
+        "protocolVersion": "1.0"
+      }
+    ],
+    "provider": {
+      "organization": "Hikqin"
+    },
+    "version": "1.0.0",
+    "capabilities": {
+      "streaming": true,
+      "pushNotifications": false
+    },
+    "defaultInputModes": [
+      "text"
+    ],
+    "defaultOutputModes": [
+      "text",
+      "task-status"
+    ],
+    "skills": [
+      {
+        "id": "agent-4c4af5bf-skill-1",
+        "name": "技能调试",
+        "description": "技能调试"
+      }
+    ]
+  },
+  {
+    "name": "我的ppt 制作大师",
+    "description": "我的ppt 制作大师",
+    "supportedInterfaces": [
+      {
+        "url": "http://10.1.43.6:6091/a2a",
+        "protocolBinding": "JSONRPC",
+        "tenant": "agent-619a1093",
+        "protocolVersion": "1.0"
+      }
+    ],
+    "provider": {
+      "organization": "Hikqin"
+    },
+    "version": "1.0.0",
+    "capabilities": {
+      "streaming": true,
+      "pushNotifications": false
+    },
+    "defaultInputModes": [
+      "text"
+    ],
+    "defaultOutputModes": [
+      "text",
+      "task-status"
+    ],
+    "skills": [
+      {
+        "id": "agent-619a1093-skill-1",
+        "name": "我的ppt 制作大师",
+        "description": "我的ppt 制作大师"
+      }
+    ]
+  }
+]

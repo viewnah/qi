@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "qi-store"
+version = "0.1.0"
+description = "qi 的应用商店:从 hikqin 安装 MCP server 配置 / Skill 包 / A2A 名片"
+readme = "README.md"
+requires-python = ">=3.12"
+# 宿主 qi-agent 由 qi 自己装着,不写进 dependencies(写进去会让 pip 把宿主降级,
+# 见 docs/extensions.md §10)。http 是本扩展自己的依赖。
+dependencies = ["httpx>=0.27"]
+
+[project.entry-points."qi.extensions"]
+store = "qi_store:register"
+
+[tool.hatch.build.targets.wheel]
+packages = ["qi_store"]

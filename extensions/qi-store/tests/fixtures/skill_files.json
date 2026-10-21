@@ -1,0 +1,27 @@
+{
+  "skill_id": 4,
+  "skill_name": "ppt-generator",
+  "current_path": "",
+  "files": [
+    {
+      "name": "references",
+      "relative_path": "references",
+      "is_directory": true,
+      "is_key_file": false
+    },
+    {
+      "name": "scripts",
+      "relative_path": "scripts",
+      "is_directory": true,
+      "is_key_file": false
+    },
+    {
+      "name": "SKILL.md",
+      "relative_path": "SKILL.md",
+      "file_type": "md",
+      "file_size": 14079,
+      "is_directory": false,
+      "is_key_file": true
+    }
+  ]
+}

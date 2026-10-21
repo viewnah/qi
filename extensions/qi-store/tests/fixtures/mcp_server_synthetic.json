@@ -1,0 +1,21 @@
+{
+  "_note": "合成样本,不是真实响应:线上实例的 /api/mcp/servers 为空。字段形状取自 app/schemas/mcp_server.py 的 MCPServerDetail(auth_config 不在响应里,这就是上游不下发密钥的证据)。",
+  "id": 3,
+  "name": "ppt-tools",
+  "transport": "streamable-http",
+  "description": "PPT 渲染工具集",
+  "icon": null,
+  "url": "https://mcp.example.com/mcp",
+  "auth_type": "bearer",
+  "enabled": true,
+  "headers": {
+    "X-Tenant": "demo"
+  },
+  "connection_status": "unavailable",
+  "last_connected_at": null,
+  "last_error": null,
+  "created_at": "2026-10-18T02:00:00",
+  "updated_at": "2026-10-18T02:00:00",
+  "tool_count": 3,
+  "owner_name": "admin"
+}

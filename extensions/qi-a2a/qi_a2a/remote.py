@@ -51,7 +51,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .card import CardError, cards_from_payload, discovery_url, select_card
-from .client import A2AClient, RpcError, SendResult, state_name
+from .client import A2AClient, RpcError, SendResult, state_name, text_of
 from .config import A2AEntry, ConfigError, active
 
 #: `agentScope` → 允许的层。与 qi-agents 的词汇逐字一致(`user` / `project` / `both`)。
@@ -131,12 +131,21 @@ def remote_agents(cwd: Path | None = None, *, trusted: bool = True,
 
 async def run_remote(agent: RemoteAgent, task: str, *,
                      on_progress: Callable[[str], None] | None = None,
+                     on_text: Callable[..., None] | None = None,
                      on_event: Callable[[Any], None] | None = None,
                      signal: Any = None) -> RemoteRun:
     """把 `task` 交给远端智能体,**一次独立对话**(不传 `contextId`)。
 
     为什么不复用 `contextId`:委派 = 独立上下文(与本地子运行同一条语义)。
     复用会把上一次委派的内容带进这一次,而调用方(模型)根本不知道那件事发生过。
+
+    `on_text` 是**正文增量**(A2A 的 `artifactUpdate`),签名 `(delta, *, replace)`:
+
+    * `replace=True` 表示"之前收到的作废,从这段重新开始" —— A2A 的 `append` 缺省为
+      false,Hikqin 实测首片正是这样发的。界面要据此把已显示的内容清掉,否则重放的
+      那一句会和旧内容粘在一起。
+    * 只有流式(`message/stream`)才有增量;非流式(`message/send`)一次给全,
+      此时 `on_text` 不会被调用 —— 调用方要拿 `RemoteRun.text` 兜底。
 
     失败**不抛**:远端连不上是一个结果,不是宿主异常 —— 与本地子运行同一条规矩。
     """
@@ -161,8 +170,17 @@ async def run_remote(agent: RemoteAgent, task: str, *,
             say(f"· 发送({len(task)} 字)")
 
             def _event(event: Any) -> None:
+                kind = event.WhichOneof("payload")
+                # 正文增量:界面上要"边收边显示",而不是等整轮跑完再一次性贴上。
+                # 这里只做**转发**,聚合仍由 client 的 `_Aggregate` 负责 ——
+                # 两边各算一遍必然会在某处不一致(比如 append 语义)。
+                if kind == "artifact_update" and on_text is not None:
+                    update = event.artifact_update
+                    piece = text_of(update.artifact.parts)
+                    if piece:
+                        on_text(piece, replace=not bool(update.append))
                 # 进度:状态变化记一行(`working` 不必记,它是起手式),其余原样转出去
-                if event.WhichOneof("payload") == "status_update":
+                if kind == "status_update":
                     state = event.status_update.status.state
                     name = state_name(state)
                     if name and name != "working" and name not in run.steps:

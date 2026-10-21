@@ -165,7 +165,7 @@ A2A 自己的三件:
 | | 本地角色 | 远端角色 |
 | --- | --- | --- |
 | 怎么生效 | `pin_role` 把角色正文拼进系统提示词 | **整轮转发**给远端(它没有本地正文) |
-| 帧 | 本地 runner 的 delta / 工具事件 | 一段完整 `TextMessageStart→Content→End` |
+| 帧 | 本地 runner 的 delta / 工具事件 | 远端的 `artifactUpdate` **逐片转发**成 `TEXT_MESSAGE_CONTENT` |
 | 落盘 | `runtime.stream` 自己写 | 自己写 user + assistant 两条 |
 
 第二行是这次修的那个 bug 的根:`pin_role` 只会拼提示词,而远端角色的 `prompt` 是空串
@@ -173,10 +173,17 @@ A2A 自己的三件:
 判据在 `serve.remote_role_for()`,与 `/api/agents` 同一份数据,不会出现"界面能选、
 这里认不出"。
 
+**流式**:A2A 的 `artifactUpdate` 本来就是增量的,所以远端轮**边收边发**
+(`TEXT_MESSAGE_CONTENT` 一片一帧),而不是等整轮跑完再贴上 —— 后者在长回答上就是
+"界面空着十几秒,然后突然出现一大段"。桥接用一条 `asyncio.Queue`:`run_remote` 是
+协程,`_remote_turn` 是 async generator,两者之间只能这样转。非流式远端(一个增量都
+没有)回落到 `run.text` 整段发一次。
+
 远端轮**不带** `qi.usage` 元数据(没有 token 计量),否则前端会显示"用量未记录" ——
 那句提示是为"本地轮跑了但没写 usage"的旧会话准备的。
 
 回归测试:`tests/test_lab_a2a_agent_pin.py`(8 条:分流判据、会话落盘、失败转 `RUN_ERROR`)。
+流式那一段的用例在同一个文件里(增量一帧一片、非流式兜底、落盘用聚合全文)。
 
 另有一条**零构建**的兜底页面 **`/a2a`**(原生 JS,不依赖 `npm run build`):
 它住在 `qi_lab/pages/`,**不是** `qi_lab/static/` —— 后者是 Vite 的 outDir

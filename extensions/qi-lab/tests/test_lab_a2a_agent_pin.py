@@ -110,9 +110,14 @@ def test_agents_endpoint_lists_the_remote_role(tmp_path, monkeypatch, minimal_co
 # ── 一整轮 ──────────────────────────────────────────────
 
 def _fake_remote(monkeypatch, *, text: str = "", ok: bool = True,
-                 error: str = "", steps: list[str] | None = None) -> None:
+                 error: str = "", steps: list[str] | None = None,
+                 chunks: list[str] | None = None) -> None:
     """把 `qi_a2a.remote.run_remote` 换成假的:这里测的是**会话与帧**,
-    不是 A2A 协议(那在 qi-a2a 自己的用例里)。"""
+    不是 A2A 协议(那在 qi-a2a 自己的用例里)。
+
+    `chunks` 给了就装作"流式远端":逐个回调 `on_text`(首片 `replace=True`,
+    与 A2A 的 `append` 缺省语义一致)。不给就当作非流式(一次给全)。
+    """
     from qi_a2a import remote as remote_mod
 
     class Run:
@@ -124,7 +129,11 @@ def _fake_remote(monkeypatch, *, text: str = "", ok: bool = True,
             self.task_id = "t1"
             self.context_id = "c1"
 
-    async def fake(_agent, _task, **_kwargs):
+    async def fake(_agent, _task, **kwargs):
+        emit = kwargs.get("on_text")
+        if chunks and emit is not None:
+            for index, piece in enumerate(chunks):
+                emit(piece, replace=index == 0)
         return Run()
 
     monkeypatch.setattr(remote_mod, "run_remote", fake)
@@ -203,6 +212,63 @@ def test_remote_failure_becomes_run_error(tmp_path, monkeypatch, minimal_config)
 
     assert errors, [f["type"] for f in frames]
     assert "连不上" in errors[0]["message"]
+
+
+# ── 流式 ────────────────────────────────────────────────
+#
+# 远端的 `artifactUpdate` 本来就是增量的。以前这里等整轮跑完才贴上,长回答上就是
+# "界面空着十几秒,然后突然出现一大段" —— 那正是用户报的那个现象。
+
+def test_streaming_remote_emits_one_content_frame_per_chunk(tmp_path, monkeypatch,
+                                                            minimal_config):
+    project = _env(tmp_path, monkeypatch)
+    _a2a(minimal_config)
+    _fake_remote(monkeypatch, text="你" + "好呀",
+                 chunks=["你", "好", "呀"])
+    client = _client(project)
+    session = _session(client, project)
+
+    frames = _stream(client, session["id"], "remote-one")
+    contents = [f["delta"] for f in frames if f["type"] == "TEXT_MESSAGE_CONTENT"]
+
+    # **每个增量一帧**(不是一整段):前端才能边收边画
+    assert contents == ["你", "好", "呀"]
+    assert sum(1 for f in frames if f["type"] == "TEXT_MESSAGE_START") == 1
+    assert sum(1 for f in frames if f["type"] == "TEXT_MESSAGE_END") == 1
+    assert frames[-1]["type"] == "RUN_FINISHED"
+    assert frames[-1]["result"] == "你好呀"
+
+
+def test_streaming_remote_persists_the_aggregated_text(tmp_path, monkeypatch,
+                                                       minimal_config):
+    """会话文件记**聚合后的全文**(不是最后一帧增量)—— 重放才完整。"""
+    project = _env(tmp_path, monkeypatch)
+    _a2a(minimal_config)
+    _fake_remote(monkeypatch, text="你好呀", chunks=["你", "好", "呀"])
+    client = _client(project)
+    session = _session(client, project)
+
+    _stream(client, session["id"], "remote-one")
+
+    detail = client.get(f"/api/sessions/{session['id']}").json()
+    assistant = [e for e in detail["entries"]
+                 if e.get("type") == "message" and e.get("role") == "assistant"]
+    assert assistant and assistant[-1]["content"] == "你好呀"
+
+
+def test_non_streaming_remote_still_sends_the_whole_text(tmp_path, monkeypatch,
+                                                         minimal_config):
+    """非流式远端(一个增量都没有)要兜底整段发 —— 否则界面是空的。"""
+    project = _env(tmp_path, monkeypatch)
+    _a2a(minimal_config)
+    _fake_remote(monkeypatch, text="一次给全")      # 不给 chunks
+    client = _client(project)
+    session = _session(client, project)
+
+    frames = _stream(client, session["id"], "remote-one")
+    contents = [f["delta"] for f in frames if f["type"] == "TEXT_MESSAGE_CONTENT"]
+
+    assert contents == ["一次给全"]
 
 
 def test_local_role_still_goes_through_pin_role(tmp_path, monkeypatch, minimal_config):

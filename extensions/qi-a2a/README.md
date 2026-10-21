@@ -34,6 +34,20 @@ qi 的 A2A(Agent2Agent)扩展:用标准协议调用远端智能体,内置对
 远端角色**不能再往下派**:它是别人家的 agent,没有我们的 `subagent` 工具与预算/深度表。
 回传 `input-required` 时算委派成功(把话带回来了),接着用 `a2a(action="resume", …)`。
 
+## 正文是流式的
+
+A2A 的 `artifactUpdate` 本来就是增量的,所以 `run_remote` 把它**逐片转发**出去
+(`on_text(delta, *, replace)`),而不是等整轮跑完再给一整段:
+
+| 参数 | 含义 |
+| --- | --- |
+| `replace=True` | 之前收到的作废,从这段重新开始(A2A 的 `append` 缺省为 false,Hikqin 首片就是这样) |
+| `replace=False` | 追加 |
+
+聚合仍由 `client` 的 `_Aggregate` 负责(`run.text` 是权威全文)—— 两边各算一遍必然会在
+某处不一致。非流式远端(`message/send`)一次给全,`on_text` 不会被调用,调用方拿
+`run.text` 兜底。qi-lab 的对话页面据此边收边画。
+
 
 ## 装
 

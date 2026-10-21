@@ -133,8 +133,13 @@ CARD = {
 
 
 def _fake_client(monkeypatch, result: SendResult, *, card=CARD,
-                 calls: list | None = None, fail: Exception | None = None) -> None:
-    """把 `A2AClient` 换成假的:这里测的是**委派语义**,不是协议。"""
+                 calls: list | None = None, fail: Exception | None = None,
+                 events: list | None = None) -> None:
+    """把 `A2AClient` 换成假的:这里测的是**委派语义**,不是协议。
+
+    `events` 给了就按顺序把它们喂给 `on_event`(模拟流式)—— 用来验 `on_text` 的
+    增量转发与 `append` 语义。
+    """
     from qi_a2a import client as a2a_client
 
     class Fake:
@@ -155,10 +160,30 @@ def _fake_client(monkeypatch, result: SendResult, *, card=CARD,
         async def send(self, card_, text="", **kwargs):
             if calls is not None:
                 calls.append({"text": text, **kwargs})
+            emit = kwargs.get("on_event")
+            if events and emit is not None:
+                for event in events:
+                    emit(event)
             return result
 
     monkeypatch.setattr(a2a_client, "A2AClient", Fake)
     monkeypatch.setattr(remote, "A2AClient", Fake)
+
+
+def _artifact_event(text: str, *, append: bool = False):
+    """造一个 `artifactUpdate` 事件(形状照实测:Hikqin 首片不带 append)。"""
+    from a2a.types import StreamResponse
+
+    event = StreamResponse()
+    update = event.artifact_update
+    update.task_id = "t1"
+    update.artifact.artifact_id = "reply"
+    if append:
+        update.append = True
+    if text:
+        part = update.artifact.parts.add()
+        part.text = text
+    return event
 
 
 def _agent(tmp_path: Path, monkeypatch, **cfg) -> remote.RemoteAgent:
@@ -244,3 +269,43 @@ async def test_abort_signal_stops_the_run(tmp_path, monkeypatch):
     # 假客户端不看 signal,这里只钉"参数被传下去了"这件事的**形状**:
     # 真判断在 A2AClient.send 里(它每个事件之间查一次)。
     assert run is not None
+
+
+# ── 正文增量(`on_text`)────────────────────────────────
+#
+# 界面要"边收边显示"。`run_remote` 只做转发,聚合仍归 client —— 两边各算一遍
+# 必然会在某处不一致(比如 append 语义)。
+
+@pytest.mark.asyncio
+async def test_text_deltas_follow_the_append_semantics(tmp_path, monkeypatch):
+    """首片 `append` 缺省 = **替换**(`replace=True`),后续 `append=true` = 追加。"""
+    agent = _agent(tmp_path, monkeypatch)
+    _fake_client(monkeypatch, SendResult(text="你好呀", state="completed"), events=[
+        _artifact_event("你"),                          # 首片:不带 append
+        _artifact_event("好", append=True),
+        _artifact_event("呀", append=True),
+        _artifact_event(""),                            # 空增量:不该回调
+    ])
+
+    got: list[tuple[str, bool]] = []
+
+    async def go():
+        return await remote.run_remote(
+            agent, "任务", on_text=lambda d, *, replace=False: got.append((d, replace)))
+
+    await go()
+
+    assert got == [("你", True), ("好", False), ("呀", False)]
+
+
+@pytest.mark.asyncio
+async def test_no_text_callback_when_remote_never_streams(tmp_path, monkeypatch):
+    """非流式远端一个增量都不吐 —— 调用方要拿 `run.text` 兜底(这条钉住"不回调")。"""
+    agent = _agent(tmp_path, monkeypatch)
+    _fake_client(monkeypatch, SendResult(text="一次给全", state="completed"))
+
+    got: list[str] = []
+    run = await remote.run_remote(agent, "任务", on_text=lambda d, **_: got.append(d))
+
+    assert got == []
+    assert run.text == "一次给全"

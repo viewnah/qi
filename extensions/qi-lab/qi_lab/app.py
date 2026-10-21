@@ -1114,7 +1114,7 @@ def main() -> None:  # pragma: no cover - 入口由 CLI 调用
 
 async def _remote_turn(remote: Any, text: str, session: Any, runtime: Any,
                        translator: Any, run_id: str) -> Any:
-    """**远端角色的一整轮**:把用户这句话转给远端,回来的是答案而不是事件流。
+    """**远端角色的一整轮**:把用户这句话转给远端,**边收边发**。
 
     与本地那条路的三处逐一对应(不这么做就会有"界面上说了、会话文件里没有"):
 
@@ -1122,8 +1122,14 @@ async def _remote_turn(remote: Any, text: str, session: Any, runtime: Any,
        否则刷新后看不到自己说了什么;
     2. **落 assistant 消息**:同理,远端的回答也要进会话文件,不然回放是空的;
        两份都标 `agent_id=<远端名>`,会话文件里才看得出这轮是谁答的;
-    3. **帧**:远端没有 delta 流,所以整段包成一条完整文本消息 —— 前端不需要为
-       "远端轮"写任何特例(它收到的还是 `TextMessageStart/Content/End + RUN_FINISHED`)。
+    3. **帧**:远端的 `artifactUpdate` 本来就是增量的,所以这里**边收边发**
+       `TEXT_MESSAGE_CONTENT` —— 等整轮跑完再一次性贴上,长回答上就表现为
+       "界面空着十几秒,然后突然出现一大段"。
+
+    **桥接**:`run_remote` 是协程(它内部把整个 A2A 流跑完),而这里是 async generator
+    (要边 yield 边等)。两者之间用一条 `asyncio.Queue`:回调往里塞,生成器从里取。
+    队列里放**哨兵化的元组**(`("end", None)`)而不是裸值 —— 内容本身也可能是空串,
+    用 `None` 表示结束迟早会和"空增量"撞上。
 
     失败**不抛**:转成 `RUN_ERROR` 帧后再结束(与本地流的异常处理同一条规矩)。
     审批中断(`input-required`)按**成功**处理 —— 远端把话带回来了,正文里写着
@@ -1138,23 +1144,76 @@ async def _remote_turn(remote: Any, text: str, session: Any, runtime: Any,
         session_store.append(session, {"type": "message", "role": "user",
                                        "content": text, "agent_id": name})
 
-    run = await run_remote(remote, text)
-    if not run.ok:
-        for frame in translator.finish_open():
-            yield agui.encode(frame)
-        yield agui.encode(translator.run_error(run.error or "远端调用失败",
-                                               code="A2AError"))
-        return
+    queue: asyncio.Queue = asyncio.Queue()
+    streamed = False          # 远端吐过增量吗(没吐就用 `run.text` 兜底整段发)
 
-    body = run.text or "(远端没有返回文本)"
-    # 2) assistant 消息落盘(远端的那段话就是这个会话的回答)。
-    if session_store is not None:
-        session_store.append(session, {"type": "message", "role": "assistant",
-                                       "content": body, "agent_id": name})
-    # 3) 帧
-    for frame in translator.remote_message(body):
-        yield agui.encode(frame)
-    yield agui.encode(translator.remote_finished(body))
+    def on_text(delta: str, *, replace: bool = False) -> None:
+        queue.put_nowait(("text", (delta, replace)))
+
+    async def drive() -> None:
+        try:
+            run = await run_remote(remote, text, on_text=on_text)
+        except Exception as exc:        # noqa: BLE001 桥的一侧只负责转交
+            queue.put_nowait(("failed", f"{type(exc).__name__}: {exc}"))
+        else:
+            queue.put_nowait(("done", run))
+        finally:
+            queue.put_nowait(("end", None))
+
+    task = asyncio.create_task(drive())
+    try:
+        while True:
+            kind, payload = await queue.get()
+            if kind == "end":
+                break
+            if kind == "text":
+                delta, replace = payload
+                if not delta:
+                    continue
+                if replace and streamed:
+                    # 远端重来了一段(`append=false`):把已发的那条收尾,下一段开新的
+                    for frame in translator.remote_reset():
+                        yield agui.encode(frame)
+                    streamed = False
+                for frame in translator.remote_delta(delta):
+                    yield agui.encode(frame)
+                streamed = True
+                continue
+            if kind == "failed":
+                for frame in translator.remote_reset():
+                    yield agui.encode(frame)
+                yield agui.encode(translator.run_error(str(payload), code="A2AError"))
+                return
+            if kind == "done":
+                run = payload
+                if not run.ok:
+                    for frame in translator.remote_reset():
+                        yield agui.encode(frame)
+                    yield agui.encode(translator.run_error(
+                        run.error or "远端调用失败", code="A2AError"))
+                    return
+                body = run.text or "(远端没有返回文本)"
+                if not streamed:
+                    # 非流式远端(或流里一个增量都没有):兜底整段发一次
+                    for frame in translator.remote_message(body):
+                        yield agui.encode(frame)
+                else:
+                    # 流式已经发过正文:这里只补收尾,不重复发内容
+                    for frame in translator.remote_reset():
+                        yield agui.encode(frame)
+                # 2) assistant 消息落盘 —— 用**聚合后的全文**,不是拼接的 delta:
+                #    两者在 `append=false` 时不一致,而会话文件该记最终那一份。
+                if session_store is not None:
+                    session_store.append(session, {"type": "message", "role": "assistant",
+                                                   "content": body, "agent_id": name})
+                # 3) 收尾帧
+                yield agui.encode(translator.remote_finished(body))
+                return
+    finally:
+        # 取消(客户端 abort / 掉线):把后台那个协程收掉 —— 否则它会继续读到
+        # 进程结束,期间的输出没人接。
+        if not task.done():
+            task.cancel()
 
 
 # ── 3c 的辅助:角色目录与 MCP 结构(模块级,纯读)────────────────

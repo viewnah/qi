@@ -420,24 +420,29 @@ class AguiTranslator:
         """流意外结束(出错/被取消)时补收尾,避免客户端停在 Start 状态。"""
         return self._close_open()
 
-    # ── 远端角色:一整轮就是一段文本 ──────────────────────
+    # ── 远端角色:边收边发 ──────────────────────────────
     #
-    # 远端角色(见 `serve.remote_role_for`)没有思考流、没有工具调用,只有"一段回答" ——
-    # 所以不需要复用上面那套 delta 状态机,直接合成 `TextMessageStart → Content → End`。
-    # 仍然走 `_base()`,保证 timestamp/字段形状与本地那条路同源。
+    # 远端角色走的是 A2A 的 `artifactUpdate`,本来就是增量的 —— 所以这里不复用
+    # "整段一次发完"的老写法(那会让界面在远端跑完之前一直空着)。
+    # 三个方法对应 AG-UI 的三段式,懒开:第一次有内容时才 `TEXT_MESSAGE_START`。
+
+    def remote_reset(self) -> list[dict]:
+        """远端重来了一段(`append=false`):把已经发出去的那条收尾。
+
+        下一次 `remote_delta` 会自己开一条新的。不收尾就会把"重放"的内容接在旧内容
+        后面 —— 界面上看是同一句话出现两遍。
+        """
+        return self._close_open()
+
+    def remote_delta(self, delta: str) -> list[dict]:
+        """远端正文增量。`_emit_text` 已经处理"没开就开",这里只是给它一个公开名字。"""
+        return self._emit_text(delta)
 
     def remote_message(self, text: str) -> list[dict]:
-        """把远端返回的整段文本包成一条完整的 assistant 文本消息。"""
+        """把整段文本一次发完(**非流式**远端 / 流式没吐过任何增量时兜底)。"""
         if not text:
             return []
-        message_id = self._next("msg")
-        return [
-            {**self._base("TEXT_MESSAGE_START"), "messageId": message_id,
-             "role": "assistant"},
-            {**self._base("TEXT_MESSAGE_CONTENT"), "messageId": message_id,
-             "delta": text},
-            {**self._base("TEXT_MESSAGE_END"), "messageId": message_id},
-        ]
+        return self._emit_text(text) + self._close_open()
 
     def remote_finished(self, text: str) -> dict:
         """远端那一轮的 `RUN_FINISHED`(与本地一样带 `result`)。

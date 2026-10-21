@@ -488,22 +488,21 @@ def cmd_install(args: argparse.Namespace, *, cfg: StoreConfig, http_factory: Any
             names = ", ".join(planned.item.id for planned in unsafe)
             if not _confirm(f"{names} 被上游标记为高危,仍要安装?"):
                 raise Cancelled("已取消")
-        _print_plan(plan, source, scope)
+        if not args.json:
+            # --json 的输出必须是**纯 JSON**:表格与后续的"已安装"行都会污染它
+            _print_plan(plan, source, scope)
         if plan.conflicts and not args.force:
             raise Conflict(
                 "目标已存在(不是本账本装的):"
                 + ";".join(p.conflict or "" for p in plan.conflicts),
                 hint="确认要覆盖请加 --force(会先备份)",
             )
-        if args.json:
-            console.print_json(json.dumps([{
-                "id": planned.item.id, "name": planned.item.name,
-                "version": planned.item.version, "target": str(planned.target),
-                "targets": [str(action.target) for action in planned.actions],
-                "needs_config": planned.needs_config, "conflict": planned.conflict,
-            } for planned in plan.items], ensure_ascii=False))
         if args.dry_run:
-            console.print("[dim]--dry-run:没有写任何东西[/dim]")
+            if args.json:
+                console.print_json(json.dumps({"dryRun": True, "plan": _plan_json(plan)},
+                                              ensure_ascii=False))
+            else:
+                console.print("[dim]--dry-run:没有写任何东西[/dim]")
             return EXIT_OK
         _confirm("继续?", assume_yes=args.yes)
         records = installer.apply(plan, ledger=ledger, store=source.name,
@@ -511,6 +510,13 @@ def cmd_install(args: argparse.Namespace, *, cfg: StoreConfig, http_factory: Any
     finally:
         if ctx.client is not None:
             ctx.client.close()
+
+    if args.json:
+        console.print_json(json.dumps({
+            "plan": _plan_json(plan),
+            "installed": [record.as_dict() for record in records],
+        }, ensure_ascii=False))
+        return EXIT_OK
 
     for record in records:
         console.print(f"[green]已安装[/green] {record.itemId} → {record.target}")
@@ -520,6 +526,17 @@ def cmd_install(args: argparse.Namespace, *, cfg: StoreConfig, http_factory: Any
         for name in needs:
             console.print(f"  export {name}=…")
     return EXIT_OK
+
+
+def _plan_json(plan: planner.Plan) -> list[dict[str, Any]]:
+    """计划 → 机器格式。`note` 里装着"为什么这么转 / 丢弃了什么 / 为什么没写 model"。"""
+    return [{
+        "id": planned.item.id, "name": planned.item.name,
+        "version": planned.item.version, "target": str(planned.target),
+        "note": planned.note,
+        "targets": [str(action.target) for action in planned.actions],
+        "needsConfig": planned.needs_config, "conflict": planned.conflict,
+    } for planned in plan.items]
 
 
 def _print_plan(plan: planner.Plan, source: Source, scope: str) -> None:
@@ -569,14 +586,22 @@ def cmd_download(args: argparse.Namespace, *, cfg: StoreConfig, http_factory: An
             # mcp / a2a:产物就是一段 JSON。**不碰配置目录** —— 放哪由人决定
             # (它可能是某个角色私有的 mcp.json,商店不该假设)
             planned = module.plan(item, ctx)
-            for action in planned.actions:
-                if hasattr(action, "section"):
-                    payload = {action.section: {action.key: action.value}}
-                    path = out_dir / f"{item.kind}-{action.key}.json"
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-                                    encoding="utf-8")
-                    written.append(path)
+            fragments = [action for action in planned.actions
+                         if hasattr(action, "section")]
+            if not fragments:
+                # agent 这类是**多文件目录**,"只取一件"对它没意义 —— 说清楚,
+                # 而不是静默写出 0 个文件还报成功。
+                raise UsageError(
+                    f"{item.kind} 不支持 download(它是多文件的目录)",
+                    hint=f"用 `qi store install {item.id}` 装,或 `qi store info {item.id}` 看内容",
+                )
+            for action in fragments:
+                payload = {action.section: {action.key: action.value}}
+                path = out_dir / f"{item.kind}-{action.key}.json"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                                encoding="utf-8")
+                written.append(path)
     finally:
         if ctx.client is not None:
             ctx.client.close()

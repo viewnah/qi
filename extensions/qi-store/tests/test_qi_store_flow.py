@@ -52,10 +52,10 @@ def _catalog(transport) -> object:
     return load_catalog(client, store_name="hikqin", allow_cache=False)
 
 
-def test_catalog_projects_all_three_kinds():
+def test_catalog_projects_all_four_kinds():
     catalog = _catalog(upstream())
     kinds = {item.kind for item in catalog.items}
-    assert kinds == {"skill", "mcp", "a2a"}
+    assert kinds == {"agent", "skill", "mcp", "a2a"}
     skill = catalog.find("skill:4")
     assert skill.name == "ppt-generator"
     assert skill.safety["scan_status"] == "safe"
@@ -352,7 +352,7 @@ def test_install_unknown_name_suggests_search(logged_in, capsys):
 
 def test_usage_errors_and_help_return_codes(logged_in):
     """argparse 的用法错误也走同一个退出码来源(2),--help 是 0。"""
-    assert cli.run(["search", "-k", "agent"], cwd=logged_in,
+    assert cli.run(["search", "-k", "nosuch"], cwd=logged_in,
                    http_factory=factory(upstream())) == EXIT_USAGE
     assert cli.run(["install", "--nope"], cwd=logged_in,
                    http_factory=factory(upstream())) == EXIT_USAGE
@@ -435,3 +435,18 @@ def test_missing_record_can_be_cleaned_with_uninstall(logged_in, capsys):
     assert cli.run(["uninstall", "skill:4", "-y"], cwd=logged_in,
                    http_factory=factory(upstream())) == EXIT_OK
     assert Ledger.load().find("skill:4") is None
+
+
+def test_env_token_is_used_by_every_command(store_home, project, monkeypatch, capsys):
+    """`QI_STORE_TOKEN` 是 CI 通道,文档说"优先于文件" —— 那就不该只有 `whoami` 认它。
+
+    只配置源(不登录)+ 环境变量令牌 → `search` / `install` 都要能用。
+    """
+    config.save_auth("hikqin", None, base_url="http://h:6091")
+    monkeypatch.setenv("QI_STORE_TOKEN", jwt())
+    capsys.readouterr()
+    assert cli.run(["search", "-k", "skill"], cwd=project,
+                   http_factory=factory(upstream())) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "ppt-generator" in out
+    assert "未登录" not in out          # 有 env 令牌就不该报未登录

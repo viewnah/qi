@@ -1,0 +1,23 @@
+[
+  {
+    "id": 1,
+    "name": "ppt 制作大师",
+    "description": "主要用来将需求转换为演示文稿",
+    "usage_count": 1,
+    "created_by": "user-builtin-admin",
+    "created_by_name": "admin",
+    "resource_summary": {
+      "sub_agent": 0,
+      "model": 1,
+      "mcp": 0,
+      "skill": 0,
+      "data_source": 0,
+      "knowledge_base": 0
+    },
+    "agent_type": "react",
+    "is_multi_agent": false,
+    "is_pinned": false,
+    "created_at": "2026-10-19T06:46:32",
+    "updated_at": "2026-10-19T06:46:51"
+  }
+]

@@ -282,7 +282,8 @@ def test_search_reports_missing_kind_instead_of_silence(project, fake_upstream, 
     with _client(project) as client:
         body = client.get("/api/store/search").json()
     assert body["items"] == []
-    assert {m["kind"] for m in body["missing"]} == {"skill", "mcp"}
+    # 三个要登录的类都没查成,a2a 仍然列着(空)
+    assert {m["kind"] for m in body["missing"]} == {"agent", "skill", "mcp"}
 
 
 # ── plan / install / uninstall ─────────────────────────
@@ -426,16 +427,17 @@ def test_store_endpoints_never_echo_tokens(project, fake_upstream):
             assert token not in client.get(path).text
 
 
-def test_search_for_an_unimplemented_kind_explains_instead_of_400(project, fake_upstream):
-    """`agent` 这一类没实现 —— 面板要把理由显示在标签里,而不是弹一个错误框。"""
+def test_search_for_an_unknown_kind_is_400_with_the_available_list(project, fake_upstream):
+    """不认识的 kind 是**用法错误**(400),不能悄悄返回空列表。
+
+    注意 `agent` 已经实现了(模板蓝图 → 角色目录),所以这条不能拿它当"未实现"的例子 ——
+    那一类走的是和其他三类一样的目录查询。
+    """
     _seed_store()
     with _client(project) as client:
-        response = client.get("/api/store/search", params={"kind": "agent"})
-    assert response.status_code == 200
-    body = response.json()
-    assert body["items"] == []
-    assert body["missing"][0]["kind"] == "agent"
-    assert "格式" in body["missing"][0]["reason"]
+        response = client.get("/api/store/search", params={"kind": "nosuch"})
+    assert response.status_code == 400
+    assert "agent" in response.json()["detail"]        # 可用项要列出来
 
 
 def test_install_skill_is_visible_to_the_next_skills_read(project, fake_upstream, minimal_config):

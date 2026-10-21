@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import os
+
 from typing import Any
 
 from . import config
@@ -25,7 +27,16 @@ def open_client(source: Source, http_factory: Any = None, *,
     `http_factory` 是测试的注入点(`httpx.MockTransport`);生产传 `None` 走真实 httpx。
     `on_auth_change` 允许调用方**自己**决定怎么落盘(默认就是写用户级 `store.json`)——
     早先它是写死的,于是 `service.login` 再传一个就变成重复关键字。
+
+    `QI_STORE_TOKEN` 在这里统一生效:文档里说它"优先于文件"(CI 通道),那只在
+    `whoami` 里认是不够的 —— 命令行的每条取货命令都得能用它。
     """
+    from . import paths
+
+    override = kwargs.pop("token_override", None) or os.environ.get(paths.QI_STORE_TOKEN)
+    if override:
+        kwargs["token_override"] = override
+
     def _save(auth: dict[str, Any] | None) -> None:
         config.save_auth(source.name, auth, base_url=source.base_url)
 

@@ -54,10 +54,10 @@ def test_no_subcommand_prints_help_and_returns_usage(capsys):
     assert "store" in capsys.readouterr().err
 
 
-def test_agent_kind_is_not_a_command_yet(capsys):
-    """`agent` 是**留槽未实现**的 kind:报错要说理由与可用项,而不是“P1”。"""
+def test_unknown_subcommand_falls_back_to_argparse(capsys):
+    """不认识的子命令交回 argparse(退出码 2 + 可用项清单),不自作主张。"""
     assert cli.run(["agent"]) == EXIT_USAGE
-    assert "格式" in capsys.readouterr().err
+    assert "invalid choice" in capsys.readouterr().err
 
 
 # ── login ───────────────────────────────────────────────

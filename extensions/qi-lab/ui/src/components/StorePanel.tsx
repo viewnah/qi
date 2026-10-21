@@ -27,12 +27,12 @@ import type {
 } from "../api/types";
 import { ConfirmDialog } from "./ConfirmDialog";
 
-/** 四个标签:与设置面左侧的节名对齐;`agent` 目前是"留槽未实现"。 */
+/** 四个标签:与设置面左侧的节名对齐(Agent / 技能 / MCP / A2A)。 */
 const TABS: { kind: StoreKind | "agent"; label: string; hint: string }[] = [
    {
       kind: "agent",
       label: "Agent",
-      hint: "hikqin 的智能体模板与 qi 的角色目录格式还没对齐(且蓝图里的 model/api_key 是剥离状态),装下去跑不起来 —— 所以这一类暂不提供。",
+      hint: "hikqin 的智能体模板 → qi 的角色目录(agent.md + 私有 mcp.json + 私有 skills/);子智能体摊平成同级角色。",
    },
    { kind: "skill", label: "技能", hint: "一个目录 + SKILL.md;装到 ~/.qi/agent/skills/。" },
    { kind: "mcp", label: "MCP", hint: "只写 mcp.json 里的一个键;令牌以环境变量名落盘。" },
@@ -83,12 +83,6 @@ export function StorePanel({ canWrite }: { canWrite: boolean }) {
 
    const search = useCallback(
       async (which: Tab = tab) => {
-         if (which.kind === "agent") {
-            // 这一类不查上游:理由写在标签里,比"0 条结果"诚实
-            setItems([]);
-            setMissing([]);
-            return;
-         }
          setBusy(true);
          setError(null);
          try {
@@ -288,7 +282,7 @@ export function StorePanel({ canWrite }: { canWrite: boolean }) {
                   ) : null}
                </div>
 
-               {tab.kind === "agent" ? null : (
+               {(
                   <div className="set-store__search">
                      <input
                         value={query}
@@ -350,9 +344,7 @@ export function StorePanel({ canWrite }: { canWrite: boolean }) {
             {error ? <p className="set-store__error">{error}</p> : null}
             {done ? <p className="set-store__done">{done}</p> : null}
 
-            {tab.kind === "agent" ? (
-               <p className="set-sec__empty">{tab.hint}</p>
-            ) : missing.length > 0 ? (
+            {missing.length > 0 ? (
                <p className="set-store__warn">
                   {missing
                      .map((m) => `${m.kind} 没查成:${m.reason}`)
@@ -361,9 +353,9 @@ export function StorePanel({ canWrite }: { canWrite: boolean }) {
                </p>
             ) : null}
 
-            {tab.kind !== "agent" ? <p className="set-store__hint">{tab.hint}</p> : null}
+            <p className="set-store__hint">{tab.hint}</p>
 
-            {tab.kind !== "agent" ? (
+            {(
                items.length === 0 ? (
                   <p className="set-sec__empty">
                      {busy ? "查询中…" : `这一类的目录里没有匹配的条目。`}
@@ -414,7 +406,7 @@ export function StorePanel({ canWrite }: { canWrite: boolean }) {
                      </tbody>
                   </table>
                )
-            ) : null}
+            )}
 
             <h3 className="set-store__h">
                这一类的已装({installedHere.length})

@@ -32,7 +32,7 @@ const TABS: { kind: StoreKind | "agent"; label: string; hint: string }[] = [
    {
       kind: "agent",
       label: "Agent",
-      hint: "hikqin 的智能体(离线包)→ qi 的角色目录(agent.md + 私有 mcp.json + 私有 skills/);子智能体摊平成同级角色。",
+      hint: "hikqin 的智能体(取详情,再逐个取它的 MCP / 技能)→ qi 的角色目录:agent.md + 私有 mcp.json + 私有 skills/,子智能体摊平成同级角色。",
    },
    { kind: "skill", label: "技能", hint: "一个目录 + SKILL.md;装到 ~/.qi/agent/skills/。" },
    { kind: "mcp", label: "MCP", hint: "只写 mcp.json 里的一个键;令牌以环境变量名落盘。" },

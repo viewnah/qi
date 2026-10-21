@@ -46,8 +46,9 @@ SKILL_ZIP = make_zip({"ppt-generator/SKILL.md": SKILL_MD,
 SKILLS = json.loads((FIXTURES / "skills.json").read_text(encoding="utf-8"))
 A2A = json.loads((FIXTURES / "a2a_agents.json").read_text(encoding="utf-8"))
 MCP_SERVER = json.loads((FIXTURES / "mcp_server_synthetic.json").read_text(encoding="utf-8"))
-#: 真实离线包的清单(抓的部署实例;`api_key` 已换成占位 —— 那是 AES 密文,别当密钥)
-AGENT_PACKAGE = json.loads((FIXTURES / "agent_package.json").read_text(encoding="utf-8"))
+#: 真实响应:列表页与详情(抓的部署实例) —— 形状的事实来源
+AGENTS_LIST_REAL = json.loads((FIXTURES / "agents_list.json").read_text(encoding="utf-8"))
+AGENT_DETAIL_REAL = json.loads((FIXTURES / "agent_detail.json").read_text(encoding="utf-8"))
 
 #: 目录页 `/api/agents` 的合成样本(真实实例上是你自己的 6 个智能体)。
 #: 一条已发布、一条草稿 —— 商店**两个都列**(可见性由账号决定,发布状态只是运营信息)。
@@ -63,94 +64,93 @@ AGENT_LIST = [
 ]
 
 
-def agent_package(*, mcp: bool = True, skills: bool = True,
-                  sub_agents: bool = True, with_files: bool = True,
-                  description: str = "拆大纲再排版",
-                  system_prompt: str = "你是 PPT 工厂的调度员。先把需求拆成大纲,再交给子智能体排版。",
-                  names: dict | None = None,
-                  sub_name: str = "outline-writer") -> bytes:
-    """**合成**一份 hikqin 离线包(zip)。
+AGENT_FACTORY_ID = "agent-factory"
+AGENT_CHILD_ID = "agent-outline-child"
 
-    形状照上游 `app/services/agent/package.py`:`plugin.json` 在插件根,
-    hikqin 的私有配置在 `extensions["com.hikqin.agent"]`(format_version 2),
-    技能是真文件、按 `package_path` 定位。合成而不是塞一个二进制 fixture:
-    二进制 blob 在 diff 里读不出"包长什么样"。
+
+def agent_detail(*, mcp: bool = True, skills: bool = True, sub_agents: bool = True,
+                 description: str = "拆大纲再排版",
+                 system_prompt: str = "你是 PPT 工厂的调度员。先把需求拆成大纲,再交给子智能体排版。",
+                 name: str = "PPT 工厂", model: dict | None = None,
+                 tool_names: list[str] | None = None) -> dict:
+    """一份**合成**的 `GET /api/agents/{id}` 详情(真实实例上没有带 MCP/子智能体的样本)。
+
+    形状照上游 `AgentResponse`:MCP 只给 `mcp_service_id` + `tool_names`(`config` 恒为
+    `{}`),技能只给 `skill_id`,子智能体只给 `child_agent_id` —— 细节都要再取一次。
     """
-    names = names or {}
-    agent = {
-        "format_version": 2, "exported_at": "2026-10-21T08:00:00Z",
-        "id": "agent-factory", "name": names.get("agent", "PPT 工厂"),
-        "description": description, "icon": None, "agent_type": "react",
-        "system_prompt": system_prompt,
+    return {
+        "id": AGENT_FACTORY_ID, "name": name, "description": description,
+        "icon": None, "agent_type": "react", "system_prompt": system_prompt,
         "config": {"max_iterations": 10, "timeout": 300},
         "opening_enabled": True, "opening_message": "说说你想要什么 PPT",
         "opening_suggestions": ["帮我做季度汇报"],
         "interrupt_on": {}, "status": "ready", "publish_status": "published",
-        "model": {"id": 3, "name": "m1", "provider": "stub", "model_type": "chat",
-                  "api_endpoint": "https://api.example.com/v1",
-                  # 上游导出的是 AES 密文 —— 不是给我们用的密钥,qi 也解不开
-                  "api_key": "eyJpdiI6ICJmYWtlIn0="},
+        "model": model if model is not None else {
+            "model_id": 3, "model_name": "m1", "provider": "stub"},
         "mcp_services": ([{
-            "id": 3, "name": "ppt-tools", "description": "PPT 渲染", "icon": None,
-            "transport": "streamable-http", "url": "https://mcp.example.com/mcp",
-            "auth_type": "bearer", "auth_config": None,
-            "headers": {"X-Tenant": "demo"}, "enabled": True,
-            "tool_names": ["render", "export"], "tools": [],
+            "mcp_service_id": 3, "tool_names": tool_names,
+            "mcp_service_name": "ppt-tools", "description": "PPT 渲染",
+            "url": "https://mcp.example.com/mcp", "connection_status": "available",
+            "server_enabled": True, "enabled": True, "tools_count": 2,
+            "tools": [], "config": {},
         }] if mcp else []),
-        "skills": ([{"skill_id": 9, "name": "ppt-style", "description": "PPT 配色与版式规范",
-                     "status": "parsed", "skill_metadata": {},
-                     "package_path": "skills/ppt-style"}] if skills else []),
-        "data_sources": [{"id": 1, "name": "sales-db", "db_type": "mysql",
-                          "password": "<cipher>", "requires_config": True}],
+        "skill_bindings": ([{"skill_id": 9, "name": "ppt-style",
+                             "description": "PPT 配色与版式规范"}] if skills else []),
+        "data_sources": [{"data_source_id": 1, "name": "sales-db", "db_type": "mysql"}],
         "knowledge_bases": [],
-        "sub_agents": ([{
-            "id": "agent-outline-child", "name": sub_name, "description": "只写大纲",
-            "agent_type": "react",
-            "system_prompt": "你只负责把需求写成大纲,不排版。",
-            "config": {}, "opening_enabled": False, "opening_message": "",
-            "opening_suggestions": [], "interrupt_on": {}, "status": "ready",
-            "publish_status": "draft", "model": None, "mcp_services": [],
-            "skills": ([{"skill_id": 10, "name": "outline-style",
-                         "description": "大纲模板", "status": "parsed",
-                         "skill_metadata": {},
-                         "package_path": "skills/outline-style"}] if skills else []),
-            "data_sources": [], "knowledge_bases": [], "sub_agents": [],
-        }] if sub_agents else []),
+        "sub_agents": ([{"id": "link-1", "child_agent_id": AGENT_CHILD_ID,
+                         "name": "outline-writer", "description": "只写大纲",
+                         "status": "ready"}] if sub_agents else []),
+        "subagents": [],
+        "created_at": "2026-10-19T01:00:00", "updated_at": "2026-10-20T01:00:00",
     }
-    plugin = {
-        "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-        "name": "ppt-factory", "description": "hikqin 智能体: PPT 工厂",
-        "version": "1.0.0", "keywords": ["hikqin", "agent"],
-        "extensions": {"com.hikqin.agent": agent},
+
+
+def agent_child_detail(**overrides) -> dict:
+    detail = {
+        "id": AGENT_CHILD_ID, "name": "outline-writer", "description": "只写大纲",
+        "icon": None, "agent_type": "react",
+        "system_prompt": "你只负责把需求写成大纲,不排版。",
+        "config": {}, "opening_enabled": False, "opening_message": "",
+        "opening_suggestions": [], "interrupt_on": {}, "status": "ready",
+        "publish_status": "draft", "model": None, "mcp_services": [],
+        "skill_bindings": [{"skill_id": 10, "name": "outline-style",
+                            "description": "大纲模板"}],
+        "data_sources": [], "knowledge_bases": [], "sub_agents": [], "subagents": [],
+        "created_at": "2026-10-19T01:00:00", "updated_at": "2026-10-19T01:00:00",
     }
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w") as archive:
-        root = "agent-ppt-factory/"
-        archive.writestr(root + "plugin.json", json.dumps(plugin, ensure_ascii=False))
-        if mcp:
-            archive.writestr(root + "mcp.json", json.dumps({"mcpServers": {
-                "ppt-tools": {"type": "streamable-http",
-                              "url": "https://mcp.example.com/mcp"}}}))
-        if with_files and skills:
-            archive.writestr(
-                root + "skills/ppt-style/SKILL.md",
-                "---\nname: ppt-style\ndescription: PPT 配色与版式规范\n---\n\n按规范排版。\n")
-            archive.writestr(root + "skills/ppt-style/scripts/check.py", 'print("ok")\n')
-            archive.writestr(
-                root + "skills/outline-style/SKILL.md",
-                "---\nname: outline-style\ndescription: 大纲模板\n---\n\n用这个模板。\n")
-    return buffer.getvalue()
+    detail.update(overrides)
+    return detail
+
+
+def skill_zip_for(name: str, description: str) -> bytes:
+    """一个技能 zip(顶层目录 = 技能名,内含 SKILL.md)—— 与上游 `create_skill_zip` 同形。"""
+    return make_zip({
+        f"{name}/SKILL.md": f"---\nname: {name}\ndescription: {description}\n---\n\n正文\n",
+        f"{name}/scripts/check.py": 'print("ok")\n',
+    })
+
+
+#: 默认技能 zip:技能 9 与 10(agent 详情里引用的那两个)
+SKILL_ZIPS = {
+    9: skill_zip_for("ppt-style", "PPT 配色与版式规范"),
+    10: skill_zip_for("outline-style", "大纲模板"),
+}
 
 
 def upstream(*, mcp_servers: list[dict] | None = None,
              skill_zip: bytes = SKILL_ZIP,
              skills: dict | None = None,
              agents: list[dict] | None = None,
-             package: bytes | None = None) -> httpx.MockTransport:
+             details: dict | None = None,
+             skill_zips: dict | None = None) -> httpx.MockTransport:
     """假上游:形状照 `tests/fixtures/` 的真实响应。"""
     servers = MCP_SERVER if mcp_servers is None else mcp_servers
     agent_rows = AGENT_LIST if agents is None else agents
-    package_bytes = agent_package() if package is None else package
+    detail_map = {AGENT_FACTORY_ID: agent_detail(), AGENT_CHILD_ID: agent_child_detail()}
+    if details is not None:
+        detail_map = details
+    zips = SKILL_ZIPS if skill_zips is None else skill_zips
 
     def handler(request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -159,6 +159,12 @@ def upstream(*, mcp_servers: list[dict] | None = None,
         if path == "/api/skills/4/download":
             return httpx.Response(200, content=skill_zip,
                                   headers={"Content-Type": "application/zip"})
+        if path.startswith("/api/skills/") and path.endswith("/download"):
+            skill_id = int(path.split("/")[3])
+            if skill_id in zips:
+                return httpx.Response(200, content=zips[skill_id],
+                                      headers={"Content-Type": "application/zip"})
+            return httpx.Response(404, json={"code": 404, "message": path})
         if path == "/api/skills/4/files":
             return httpx.Response(200, json={"skill_id": 4, "skill_name": "ppt-generator",
                                              "files": [{"name": "SKILL.md",
@@ -170,12 +176,21 @@ def upstream(*, mcp_servers: list[dict] | None = None,
                              | ({"headers": server["headers"]} if server.get("headers") else {}))
             return httpx.Response(200, json={"total": len(items), "page": 1,
                                              "page_size": 100, "items": items})
+        if path.startswith("/api/mcp/servers/"):
+            server_id = path.rsplit("/", 1)[-1]
+            known = {str(server.get("id")) for server in
+                     ([servers] if isinstance(servers, dict) else servers)}
+            if server_id in known:
+                return httpx.Response(200, json=MCP_SERVER)
+            return httpx.Response(404, json={"code": 404, "message": path})
         if path == "/api/agents":
             return httpx.Response(200, json={"total": len(agent_rows), "page": 1,
                                              "page_size": 50, "items": agent_rows})
-        if path.startswith("/api/agents/") and path.endswith("/download"):
-            return httpx.Response(200, content=package_bytes,
-                                  headers={"Content-Type": "application/zip"})
+        if path.startswith("/api/agents/"):
+            agent_id = path.rsplit("/", 1)[-1]
+            if agent_id in detail_map:
+                return httpx.Response(200, json=detail_map[agent_id])
+            return httpx.Response(404, json={"code": 404, "message": path})
         if path == "/a2a/agents":
             return httpx.Response(200, json=A2A)
         return httpx.Response(404, json={"code": 404, "message": f"no {path}"})

@@ -1,0 +1,62 @@
+{
+  "id": "agent-4c4af5bf",
+  "name": "技能调试",
+  "model": {
+    "model_id": 3,
+    "model_name": "mimo-v2.6-flash",
+    "provider": "openai"
+  },
+  "model_id": 3,
+  "agent_type": "react",
+  "system_prompt": "你是一个技能开发专家，擅长调试、验证和创建各种技能。你可以帮助用户分析技能配置问题、验证技能执行流程、调试技能输出结果，还可以根据用户需求创建新的技能。精通技能开发的最佳实践和规范。\\n\\n### 技能发现与使用（重要）\\n\\n你的技能有两个来源，行为不同：\\n\\n- `/skills/<技能名>/` — 只读的共享技能库。系统提示中 Available Skills 列表来自这里。\\n\\n- `/workspace/<技能名>/` — 待调试的技能或用户新建的技能。**这个目录不会出现在 Available Skills 列表里**，但其中同样以 `<技能名>/SKILL.md` 作为技能入口（含 `name` / `description` 的 YAML frontmatter 加 Markdown 正文）。\\n\\n收到用户请求后，先判断它是否属于/workspace 下「某个技能能帮上忙」的任务型请求（例如需要特定流程、脚本、参考资料或专业领域做法）。如果是，则调用该技能。\\n\\n**如果 `/workspace` 下没有匹配的技能**，再检查系统提示中 Available Skills 列表（来源为只读的 `/skills/`）；那里命中的技能，用 `read /skills/<技能名>/SKILL.md` 获取完整说明后按其执行。\\n\\n**如果没有找到任何匹配的技能**，就按你自己的能力正常完成用户的任务，不要强行套用不相关的技能，也不要向用户罗列「我有哪些技能」。",
+  "config": {
+    "max_iterations": 10,
+    "timeout": 300,
+    "enable_memory": true,
+    "memory": {
+      "enabled": false,
+      "strategy": "budget",
+      "budget_ratio": 0.15,
+      "progressive_threshold": 5,
+      "extraction_triggers": [],
+      "extraction_rounds": 5,
+      "injected_memory_keys": [],
+      "inject_user_memories": true,
+      "inject_memory_index": false,
+      "injected_imported_keys": []
+    },
+    "summarization": {
+      "enabled": false,
+      "trigger_type": "auto",
+      "keep_type": "auto"
+    }
+  },
+  "status": "ready",
+  "status_display": "ready",
+  "publish_status": "draft",
+  "interrupt_on": {},
+  "a2a_published": true,
+  "a2a_skills": [],
+  "is_builtin": false,
+  "opening_enabled": true,
+  "opening_message": "我是PPT制作大师",
+  "opening_suggestions": [
+    "简单介绍一下你的主要功能与用途",
+    "介绍一下你有几种风格"
+  ],
+  "execution_count": 0,
+  "mcp_services": [],
+  "data_sources": [],
+  "skill_bindings": [
+    {
+      "skill_id": 3,
+      "name": "skill-creator",
+      "description": "Guide for creating effective skills. This skill should be used when users want to create a new skill (or update an existing skill) that extends Claude's capabilities with specialized knowledge, workflows, or tool integrations."
+    }
+  ],
+  "subagents": [],
+  "knowledge_bases": [],
+  "sub_agents": [],
+  "created_at": "2026-10-19T00:57:40",
+  "updated_at": "2026-10-21T01:12:26.110707"
+}

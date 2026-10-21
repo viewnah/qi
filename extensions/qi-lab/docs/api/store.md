@@ -77,9 +77,10 @@
 
 四类 kind：`skill` / `mcp` / `a2a` / `agent`。
 
-- `agent` 的目录是 **`GET /api/agents`**（你账号能看到的全部智能体，草稿与已发布都列），
-  取货走 `/api/agents/{id}/download` 的**离线包**；转换规则（包 → qi-agents 的角色目录：
-  `agent.md` + 私有 `mcp.json` + 私有 `skills/` + 子角色摊平）在 qi-store 的 `README.md` §4.5。
+- `agent` 的目录是 **`GET /api/agents`**（你账号能看到的全部智能体，草稿与已发布都列）；
+  安装时先取详情（`/api/agents/{id}`），再按需把它的 MCP（`/api/mcp/servers/{id}`）与
+  技能（`/api/skills/{id}/download`）逐个取成原始形状，自己拼成 qi-agents 的角色目录。
+  规则在 qi-store 的 `README.md` §4.5，这里只记接口形状。
 
 ## GET /api/store/installed
 

@@ -121,8 +121,12 @@ def _locate(names: list[str]) -> tuple[bool, str]:
     return True, rel.split("/", 1)[1]
 
 
-def inspect(data: bytes, item: StoreItem) -> tuple[dict, list[str], bool]:
-    """校验并返回 `(frontmatter, 去顶层后的文件列表, strip_top)`。plan 与 download 共用。"""
+def read_zip(data: bytes, *, name: str) -> tuple[dict, list[str], bool]:
+    """校验一个技能 zip,返回 `(frontmatter, 去顶层后的文件列表, strip_top)`。
+
+    skill kind 的 `plan` / `download` 与 **agent kind**(角色私有技能也从这些 zip 来)
+    共用这一套校验 —— 两边对"什么算一个能用的技能"必须同一口径。
+    """
     names = _members(data)
     strip_top, rel = _locate(names)
     archive = zipfile.ZipFile(io.BytesIO(data))
@@ -134,16 +138,33 @@ def inspect(data: bytes, item: StoreItem) -> tuple[dict, list[str], bool]:
     front = read_frontmatter(text)
     if not str(front.get("description") or "").strip():
         raise UsageError(
-            f"技能 `{item.name}` 没有 description —— qi 会看不见它",
+            f"技能 `{name}` 没有 description —— qi 会看不见它",
             hint="这是上游技能包的问题(没有 description 的技能不进提示词),装了也白装",
         )
     return front, [n[len(prefix):] if prefix and n.startswith(prefix) else n for n in names], \
         strip_top
 
 
+def zip_payload(data: bytes, *, name: str) -> tuple[dict, dict[str, bytes]]:
+    """校验一个技能 zip,返回 `(frontmatter, {去顶层后的相对路径: 内容})`。
+
+    与 `read_zip` 同一套校验,只是把内容也读出来 —— agent kind 把角色的私有技能落成真文件,
+    需要的正是"文件名 + 内容"。
+    """
+    front, _names, strip_top = read_zip(data, name=name)
+    archive = zipfile.ZipFile(io.BytesIO(data))
+    members = [info.filename for info in archive.infolist() if not info.is_dir()]
+    prefix = members[0].split("/", 1)[0] + "/" if strip_top else ""
+    payload: dict[str, bytes] = {}
+    for raw in members:
+        rel = raw[len(prefix):] if prefix and raw.startswith(prefix) else raw
+        payload[rel] = archive.read(raw)
+    return front, payload
+
+
 def plan(item: StoreItem, ctx: PlanContext) -> Planned:
     data = fetch_zip(item, ctx)
-    front, names, strip_top = inspect(data, item)
+    front, names, strip_top = read_zip(data, name=item.name)
     name = check_name(ctx.name_override or item.name, "技能")
     target = ctx.skills_root() / name
     declared = str(front.get("name") or "").strip()
@@ -164,7 +185,7 @@ def plan(item: StoreItem, ctx: PlanContext) -> Planned:
 def download(item: StoreItem, ctx: PlanContext, out_dir: Path, *, raw: bool = False) -> list[Path]:
     """`download` 子命令:只取件。`raw=True` 保留上游 zip,**不碰配置目录**。"""
     data = fetch_zip(item, ctx)
-    _front, names, strip_top = inspect(data, item)   # 即使只取件也校验:先知道它是不是能用
+    _front, names, strip_top = read_zip(data, name=item.name)  # 取件也校验:先知道能不能用
     name = check_name(ctx.name_override or item.name, "技能")
     out_dir.mkdir(parents=True, exist_ok=True)
     if raw:

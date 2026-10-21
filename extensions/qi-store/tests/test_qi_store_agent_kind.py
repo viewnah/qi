@@ -1,18 +1,18 @@
-"""`agent` kind:hikqin 的**离线包** → qi 的角色目录。
+"""`agent` kind:hikqin 的**智能体详情** → qi 的角色目录。
 
-源是 `GET /api/agents/{id}/download`(Agent Plugins 1.0.0 的 zip),不是模板蓝图 ——
-"远端有 6 个智能体"说的是 `/api/agents`;模板(`/api/agent-templates`)是另一类东西
-(管理员维护的蓝图,一条两条)。
+源是 `GET /api/agents`(目录)+ `GET /api/agents/{id}`(详情),MCP/技能的细节**自己再取**
+(`/api/mcp/servers/{id}`、`/api/skills/{id}/download`)—— 上游没有"直接给我一个 qi 能用的包"
+这种接口,离线包与模板蓝图都是别的格式。
 
 每条转换都单独钉:
 
+* 目录 = `/api/agents`,草稿与已发布都列(`publish_status` 只是徽标);
 * frontmatter 写什么、什么时候**不**写 `model:` / `tools:`;
-* 私有 `mcp.json`(用私有清单而不是规范 mcp.json:`tool_names` + stdio 都在私有那份里);
-* 技能是**真文件**,按 `package_path` 复制到 `<角色>/skills/<名>/`;
-* 子智能体**平铺成同级角色**(qi 没有嵌套),同名要跳过而不是互盖;
-* 丢弃的段落(`opening` / `data_sources` / `config`)要在计划里说出来;
-* 卸载要把主角色 + 子角色一起清掉;
-* `api_key` 是 AES 密文 —— 一个字节都不该出现在本地。
+* `tool_names` 为 `None` 与为列表**含义不同**(全部工具 vs 白名单 → `includeTools`);
+* 技能从 zip 取,落到 `<角色>/skills/<名>/`;
+* 子智能体要**各自再取详情**(详情里只有 id),平铺成同级角色;同名跳过、成环跳过;
+* 取不到某个 server / 技能时**降级**(记一笔,角色照样装),而不是整个失败;
+* 丢弃的段落要在计划里说出来;卸载要把主角色 + 子角色一起清掉。
 """
 
 from __future__ import annotations
@@ -23,7 +23,17 @@ from qi_store import cli, config, paths
 from qi_store.errors import EXIT_OK, EXIT_USAGE
 from qi_store.ledger import Ledger
 
-from qstore_testkit import AGENT_PACKAGE, agent_package, factory, jwt, upstream
+from qstore_testkit import (
+    AGENT_CHILD_ID,
+    AGENT_DETAIL_REAL,
+    AGENT_FACTORY_ID,
+    agent_child_detail,
+    agent_detail,
+    factory,
+    jwt,
+    skill_zip_for,
+    upstream,
+)
 
 
 def seed(*, models: bool = True) -> None:
@@ -31,7 +41,7 @@ def seed(*, models: bool = True) -> None:
                      base_url="http://h:6091")
     config.save_default("hikqin")
     if models:
-        # 与合成包里的 model 对齐:provider=stub / name=m1
+        # 与合成详情里的 model 对齐:provider=stub / model_name=m1
         (paths.global_agent_dir() / "models.json").write_text(json.dumps({
             "providers": {"stub": {"api": "openai-completions",
                                    "models": [{"id": "m1"}]}},
@@ -57,6 +67,13 @@ def body(role) -> str:
     return (role / "agent.md").read_text(encoding="utf-8").split("---", 2)[2].strip()
 
 
+def install(*, package=None, **upstream_kwargs) -> int:
+    """装 `agent:agent-factory`(或 `package` 指定的那一条)。"""
+    target = package or f"agent:{AGENT_FACTORY_ID}"
+    return cli.run(["install", target, "-y"],
+                   http_factory=factory(upstream(**upstream_kwargs)))
+
+
 # ── 目录:Agent 就是 `/api/agents` ───────────────────────
 
 
@@ -69,22 +86,18 @@ def test_catalog_lists_every_visible_agent(store_home, capsys):
     assert "PPT 工厂" in out and "我的助手" in out
 
 
-def test_publish_status_is_a_badge_not_a_filter(store_home):
+def test_publish_status_is_a_badge_not_a_filter():
     from qi_store.kinds import agent as agent_kind
 
-    items = agent_kind.fetch(_client())
-    badges = {item.name: item.badges["publish"] for item in items}
-    assert badges == {"PPT 工厂": "published", "我的助手": "draft"}
-
-
-def _client():
-    from qi_store.client import StoreClient
     import httpx
 
+    from qi_store.client import StoreClient
     from qi_store.config import Source
 
     source = Source(name="hikqin", base_url="http://h:6091", auth={"access": jwt()})
-    return StoreClient(source, http=httpx.Client(transport=upstream()))
+    client = StoreClient(source, http=httpx.Client(transport=upstream()))
+    badges = {item.name: item.badges["publish"] for item in agent_kind.fetch(client)}
+    assert badges == {"PPT 工厂": "published", "我的助手": "draft"}
 
 
 # ── 转换 ───────────────────────────────────────────────
@@ -92,8 +105,7 @@ def _client():
 
 def test_install_writes_a_self_contained_role(store_home):
     seed()
-    assert cli.run(["install", "agent:agent-factory", "-y"],
-                   http_factory=factory(upstream())) == EXIT_OK
+    assert install() == EXIT_OK
 
     role = agents_root() / "PPT 工厂"
     fields = frontmatter(role)
@@ -103,123 +115,154 @@ def test_install_writes_a_self_contained_role(store_home):
     assert body(role) == "你是 PPT 工厂的调度员。先把需求拆成大纲,再交给子智能体排版。"
 
 
-def test_mcp_uses_the_private_manifest(store_home):
+def test_mcp_details_are_fetched_per_server(store_home):
+    """详情里只有 `mcp_service_id` + `tool_names`,细节回 `/api/mcp/servers/{id}` 取。"""
     seed()
-    cli.run(["install", "agent:agent-factory", "-y"], http_factory=factory(upstream()))
-
+    install()
     role = agents_root() / "PPT 工厂"
     entry = json.loads((role / "mcp.json").read_text(encoding="utf-8"))["mcpServers"]["ppt-tools"]
     assert entry["type"] == "streamable-http"
     assert entry["url"] == "https://mcp.example.com/mcp"
     assert entry["headers"] == {"X-Tenant": "demo"}
-    assert entry["auth"] == "bearer"                     # auth_config 没给值 → 引用
+    assert entry["auth"] == "bearer"
     assert entry["bearerTokenEnv"] == "PPT_TOOLS_TOKEN"
-    assert entry["includeTools"] == ["render", "export"]  # 私有清单里的 tool_names
+    # 合成详情里 tool_names=None = 全部工具 → **不写** includeTools
+    assert "includeTools" not in entry
 
-    # **有 MCP 就必须写 tools**(qi-agents:不写 = 一行 MCP 工作都不做);
-    # 写了就是"点名的才有",所以内置工具也要在。
     tools = frontmatter(role)["tools"]
-    assert "mcp__ppt-tools__*" in tools
-    assert "read" in tools and "bash" in tools
-    assert "subagent" in tools                            # 有子智能体
-
-    record = Ledger.load().find("agent:agent-factory")
+    assert "mcp__ppt-tools__*" in tools and "read" in tools and "subagent" in tools
+    record = Ledger.load().find(f"agent:{AGENT_FACTORY_ID}")
     assert record is not None and record.needs_config == ["PPT_TOOLS_TOKEN"]
 
 
-def test_skills_are_copied_from_the_package(store_home):
+def test_tool_names_whitelist_becomes_include_tools(store_home):
+    """hikqin 的 `tool_names`:None = 全部,列表 = 白名单(→ qi-mcp 的 includeTools)。"""
     seed()
-    cli.run(["install", "agent:agent-factory", "-y"], http_factory=factory(upstream()))
+    details = {AGENT_FACTORY_ID: agent_detail(tool_names=["render", "export"]),
+               AGENT_CHILD_ID: agent_child_detail()}
+    install(details=details)
+    entry = json.loads((agents_root() / "PPT 工厂" / "mcp.json").read_text(encoding="utf-8"))
+    assert entry["mcpServers"]["ppt-tools"]["includeTools"] == ["render", "export"]
 
+
+def test_skills_come_from_the_skill_zip(store_home):
+    seed()
+    install()
     skill = agents_root() / "PPT 工厂" / "skills" / "ppt-style"
     assert "description: PPT 配色与版式规范" in (skill / "SKILL.md").read_text(encoding="utf-8")
     assert (skill / "scripts" / "check.py").read_text(encoding="utf-8") == 'print("ok")\n'
 
 
-def test_sub_agents_become_siblings_with_their_own_skills(store_home):
+def test_sub_agents_are_fetched_and_become_siblings(store_home):
+    """详情里的 `sub_agents[]` 只有 id/名字 → 各自再取一次详情,平铺成同级角色。"""
     seed()
-    cli.run(["install", "agent:agent-factory", "-y"], http_factory=factory(upstream()))
-
+    install()
     outline = agents_root() / "outline-writer"
     assert frontmatter(outline)["description"] == "只写大纲"
     assert body(outline).startswith("你只负责把需求写成大纲")
-    # 子角色没有 MCP → 不写 tools(继承父),也没有 mcp.json
-    assert "tools" not in frontmatter(outline)
-    assert not (outline / "mcp.json").exists()
-    # 包里的技能都摊在同一个 skills/ 根下,靠 package_path 区分 —— 子角色只拿自己那份
+    assert "tools" not in frontmatter(outline)          # 没有 MCP → 继承父
     assert (outline / "skills" / "outline-style" / "SKILL.md").is_file()
-    assert not (outline / "skills" / "ppt-style").exists()
 
 
 def test_dropped_sections_are_stated_in_the_plan(store_home, capsys):
     seed()
     capsys.readouterr()
-    cli.run(["install", "agent:agent-factory", "--dry-run"],
+    cli.run(["install", f"agent:{AGENT_FACTORY_ID}", "--dry-run"],
             http_factory=factory(upstream()))
     out = capsys.readouterr().out
-    assert "已丢弃" in out
-    assert "数据源" in out and "开场白" in out
+    assert "已丢弃" in out and "数据源" in out and "开场白" in out
 
 
 def test_model_is_skipped_when_local_models_lack_it(store_home, capsys):
     seed(models=False)
     capsys.readouterr()
-    assert cli.run(["install", "agent:agent-factory", "--json", "--dry-run"],
+    assert cli.run(["install", f"agent:{AGENT_FACTORY_ID}", "--json", "--dry-run"],
                    http_factory=factory(upstream())) == EXIT_OK
     payload = json.loads(capsys.readouterr().out)
     assert "models.json" in payload["plan"][0]["note"]
-    assert cli.run(["install", "agent:agent-factory", "-y"],
-                   http_factory=factory(upstream())) == EXIT_OK
+    assert install() == EXIT_OK
     assert "model" not in frontmatter(agents_root() / "PPT 工厂")
-
-
-def test_encrypted_api_key_never_lands_on_disk(store_home):
-    """包里的 `api_key` 是 AES 密文 —— 我们只取 provider/name,一个字节都不该落盘。"""
-    seed()
-    cli.run(["install", "agent:agent-factory", "-y"], http_factory=factory(upstream()))
-    role = agents_root() / "PPT 工厂"
-    for path in role.rglob("*"):
-        if path.is_file():
-            text = path.read_text(encoding="utf-8", errors="replace")
-            assert "eyJpdiI6ICJmYWtlIn0" not in text
-            assert "api_key" not in text
 
 
 def test_role_without_mcp_omits_tools(store_home):
     """没有 MCP 时**不写** `tools:`(= 继承父)。写了就是收窄,没必要就别动。"""
     seed()
-    cli.run(["install", "agent:agent-factory", "-y"],
-            http_factory=factory(upstream(package=agent_package(mcp=False))))
+    details = {AGENT_FACTORY_ID: agent_detail(mcp=False),
+               AGENT_CHILD_ID: agent_child_detail()}
+    install(details=details)
     assert "tools" not in frontmatter(agents_root() / "PPT 工厂")
+    assert not (agents_root() / "PPT 工厂" / "mcp.json").exists()
 
 
-def test_skill_without_description_is_skipped(store_home, capsys):
-    """qi 的硬规则:没有 description 的技能等于不存在 —— 装了也白装,所以跳过。"""
+def test_literal_backslash_n_in_prompt_is_unescaped(store_home, capsys):
+    """上游录 prompt 时多转义了一层 → 导出的是一串**字面**反斜杠-n。"""
     seed()
-    package = agent_package(skills=False)      # 清单里没有技能 → 文件不会被引用
     capsys.readouterr()
-    cli.run(["install", "agent:agent-factory", "-y"],
-            http_factory=factory(upstream(package=package)))
-    assert not (agents_root() / "PPT 工厂" / "skills").exists()
+    details = {AGENT_FACTORY_ID: agent_detail(system_prompt="第一段\\n\\n第二段"),
+               AGENT_CHILD_ID: agent_child_detail()}
+    assert cli.run(["install", f"agent:{AGENT_FACTORY_ID}", "--json", "--dry-run"],
+                   http_factory=factory(upstream(details=details))) == EXIT_OK
+    payload = json.loads(capsys.readouterr().out)
+    assert "字面" in payload["plan"][0]["note"]
+
+    install(details=details)
+    assert body(agents_root() / "PPT 工厂") == "第一段\n\n第二段"
+
+
+def test_prompt_with_real_newlines_is_left_alone(store_home):
+    """真有换行、又夹着字面写法的(比如在讲转义)不动 —— 只修"全是字面"的那种。"""
+    seed()
+    details = {AGENT_FACTORY_ID: agent_detail(system_prompt="第一段\n讲一下 \\n 这个写法"),
+               AGENT_CHILD_ID: agent_child_detail()}
+    install(details=details)
+    assert "\\n" in body(agents_root() / "PPT 工厂")
+
+
+def test_missing_mcp_server_details_degrade_instead_of_failing(store_home, capsys):
+    """一个 server 取不到不该让整个角色装不了 —— 记一笔,不写那个条目。"""
+    seed()
+    capsys.readouterr()
+    details = {AGENT_FACTORY_ID: agent_detail(), AGENT_CHILD_ID: agent_child_detail()}
+    details[AGENT_FACTORY_ID]["mcp_services"][0]["mcp_service_id"] = 999   # 404
+    assert cli.run(["install", f"agent:{AGENT_FACTORY_ID}", "-y"],
+                   http_factory=factory(upstream(details=details))) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "跳过 MCP" in out
+    role = agents_root() / "PPT 工厂"
+    assert (role / "agent.md").is_file()
+    assert not (role / "mcp.json").exists()
+
+
+def test_missing_skill_zip_degrades_instead_of_failing(store_home, capsys):
+    seed()
+    capsys.readouterr()
+    assert cli.run(["install", f"agent:{AGENT_FACTORY_ID}", "-y"],
+                   http_factory=factory(upstream(skill_zips={}))) == EXIT_OK
+    out = capsys.readouterr().out
+    assert "跳过技能" in out
+    assert (agents_root() / "PPT 工厂" / "agent.md").is_file()
+
+
+def test_sub_agent_pointing_back_to_the_parent_is_skipped(store_home, capsys):
+    """成环要挡住,不然递归取详情会一直转。"""
+    seed()
+    child = agent_child_detail(sub_agents=[{"id": "link-2", "child_agent_id": AGENT_FACTORY_ID,
+                                            "name": "PPT 工厂"}])
+    details = {AGENT_FACTORY_ID: agent_detail(), AGENT_CHILD_ID: child}
+    capsys.readouterr()
+    assert install(details=details) == EXIT_OK
+    assert "成环" in capsys.readouterr().out
 
 
 def test_sub_agent_with_the_same_name_is_skipped(store_home, capsys):
     """同名互盖的症状是"装了 A、跑成 B"—— 宁可少装一个并说出来。"""
     seed()
-    package = agent_package(names={"agent": "outline-writer"}, sub_name="outline-writer")
+    details = {AGENT_FACTORY_ID: agent_detail(name="PPT 工厂"),
+               AGENT_CHILD_ID: agent_child_detail(name="PPT 工厂")}
     capsys.readouterr()
-    cli.run(["install", "agent:agent-factory", "-y"],
-            http_factory=factory(upstream(package=package)))
+    install(details=details)
     assert "同名" in capsys.readouterr().out
-
-
-def test_dropped_labels_are_not_repeated():
-    """`opening_enabled` 与 `opening_message` 是同一件事,只该出现一次"开场白"。"""
-    from qi_store.kinds import agent as agent_kind
-
-    manifest = AGENT_PACKAGE["plugin.json"]["extensions"]["com.hikqin.agent"]
-    dropped = agent_kind._dropped(manifest)
-    assert sum(1 for bit in dropped if bit.startswith("开场白")) == 1
+    assert frontmatter(agents_root() / "PPT 工厂")["description"] == "拆大纲再排版"
 
 
 # ── 账本 / 卸载 ────────────────────────────────────────
@@ -227,105 +270,56 @@ def test_dropped_labels_are_not_repeated():
 
 def test_uninstall_removes_main_and_sub_roles(store_home):
     seed()
-    cli.run(["install", "agent:agent-factory", "-y"], http_factory=factory(upstream()))
+    install()
     assert (agents_root() / "PPT 工厂").is_dir()
     assert (agents_root() / "outline-writer").is_dir()
 
-    assert cli.run(["uninstall", "agent:agent-factory", "-y"],
+    assert cli.run(["uninstall", f"agent:{AGENT_FACTORY_ID}", "-y"],
                    http_factory=factory(upstream())) == EXIT_OK
     assert not (agents_root() / "PPT 工厂").exists()
     assert not (agents_root() / "outline-writer").exists()
     assert not agents_root().exists()          # 空目录也清掉
-    assert Ledger.load().find("agent:agent-factory") is None
+    assert Ledger.load().find(f"agent:{AGENT_FACTORY_ID}") is None
 
 
 def test_existing_role_dir_is_a_conflict(store_home):
-    """目标已存在且不是本账本装的 → 冲突(退出码 5),不静默覆盖。"""
     seed()
     role = agents_root() / "PPT 工厂"
     role.mkdir(parents=True)
     (role / "agent.md").write_text("---\nname: x\ndescription: 我自己的\n---\n我的\n",
                                    encoding="utf-8")
-    assert cli.run(["install", "agent:agent-factory", "-y"],
-                   http_factory=factory(upstream())) == 5
+    assert install() == 5
     assert "我自己的" in (role / "agent.md").read_text(encoding="utf-8")
 
 
 def test_download_is_refused_for_agents(store_home, capsys, tmp_path):
     """agent 是多文件目录,`download`(单件搬运)对它没意义 —— 明确拒绝。"""
     seed()
-    assert cli.run(["download", "agent:agent-factory", "-o", str(tmp_path / "out")],
+    assert cli.run(["download", f"agent:{AGENT_FACTORY_ID}", "-o", str(tmp_path / "out")],
                    http_factory=factory(upstream())) == EXIT_USAGE
     assert "download" in capsys.readouterr().err
 
 
-# ── 格式防护 ───────────────────────────────────────────
+# ── 真实详情的形状 ──────────────────────────────────────
 
 
-def test_unknown_package_format_is_refused(store_home, capsys):
+def test_real_agent_detail_shape_is_understood(store_home, capsys):
+    """拿抓下来的**真实**详情跑一遍:字段名/嵌套层级变了就会红。"""
     seed()
-    package = agent_package()
-    # 把 format_version 改成 3(上游改了格式的信号)
-    import io
-    import zipfile
-
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(io.BytesIO(package)) as src, zipfile.ZipFile(buffer, "w") as dst:
-        for name in src.namelist():
-            data = src.read(name)
-            if name.endswith("plugin.json"):
-                doc = json.loads(data)
-                doc["extensions"]["com.hikqin.agent"]["format_version"] = 3
-                data = json.dumps(doc, ensure_ascii=False).encode()
-            dst.writestr(name, data)
-
-    assert cli.run(["install", "agent:agent-factory", "-y"],
-                   http_factory=factory(upstream(package=buffer.getvalue()))) == EXIT_USAGE
-    assert "format_version" in capsys.readouterr().err
-
-
-def test_package_without_the_namespace_is_refused(store_home, capsys):
-    seed()
-    import io
-    import zipfile
-
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w") as archive:
-        archive.writestr("agent-x/plugin.json", json.dumps({"name": "x", "extensions": {}}))
-    assert cli.run(["install", "agent:agent-factory", "-y"],
-                   http_factory=factory(upstream(package=buffer.getvalue()))) == EXIT_USAGE
-    assert "com.hikqin.agent" in capsys.readouterr().err
-
-
-def test_empty_system_prompt_is_refused(store_home, capsys):
-    seed()
-    package = agent_package(system_prompt="   ")
-    assert cli.run(["install", "agent:agent-factory", "-y"],
-                   http_factory=factory(upstream(package=package))) == EXIT_USAGE
-    assert "system_prompt" in capsys.readouterr().err
-
-
-def test_literal_backslash_n_in_prompt_is_unescaped(store_home, capsys):
-    """上游录 prompt 时多转义了一层 → 导出的是一串**字面**反斜杠-n。"""
-    seed()
-    capsys.readouterr()
-    # 注意:这里是**两个字符**(反斜杠 + n),不是换行 —— 上游导出的就是这种
-    package = agent_package(system_prompt="第一段\\n\\n第二段")
-    # 表格里的 note 会按终端宽度换行,断言用 --json
-    assert cli.run(["install", "agent:agent-factory", "--json", "--dry-run"],
-                   http_factory=factory(upstream(package=package))) == EXIT_OK
-    payload = json.loads(capsys.readouterr().out)
-    assert "字面" in payload["plan"][0]["note"]
-
-    assert cli.run(["install", "agent:agent-factory", "-y"],
-                   http_factory=factory(upstream(package=package))) == EXIT_OK
-    assert body(agents_root() / "PPT 工厂") == "第一段\n\n第二段"
-
-
-def test_prompt_with_real_newlines_is_left_alone(store_home):
-    """真有换行、又夹着字面写法的(比如在讲转义)不动 —— 只修"全是字面"的那种。"""
-    seed()
-    package = agent_package(system_prompt="第一段\n讲一下 \\n 这个写法")
-    cli.run(["install", "agent:agent-factory", "-y"],
-            http_factory=factory(upstream(package=package)))
-    assert "\\n" in body(agents_root() / "PPT 工厂")
+    agent_id = AGENT_DETAIL_REAL["id"]
+    details = {agent_id: AGENT_DETAIL_REAL}
+    zips = {3: skill_zip_for("skill-creator", "Guide for creating effective skills.")}
+    agents = [{"id": agent_id, "name": AGENT_DETAIL_REAL["name"],
+               "description": AGENT_DETAIL_REAL.get("description"), "model_name": None,
+               "mcp_services_count": 0, "skills_count": 1, "subagents_count": 0,
+               "agent_type": "react", "status": "ready", "publish_status": "draft",
+               "created_at": "2026-10-16T10:00:00"}]
+    assert cli.run(["install", f"agent:{agent_id}", "-y"],
+                   http_factory=factory(upstream(agents=agents, details=details,
+                                                 skill_zips=zips))) == EXIT_OK
+    role = agents_root() / AGENT_DETAIL_REAL["name"]
+    assert "description" in frontmatter(role)
+    # 真实 prompt 里是字面反斜杠-n(上游录入时多转义了一层)→ 已还原成换行
+    assert "\n" in body(role)
+    assert "\\\\n" not in body(role)
+    assert (role / "skills" / "skill-creator" / "SKILL.md").is_file()

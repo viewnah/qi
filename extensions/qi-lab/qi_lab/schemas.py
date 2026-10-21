@@ -671,3 +671,182 @@ class A2AProbeResult(BaseModel):
     elapsed_ms: int = 0
     cards: list[A2AProbeCard] = Field(default_factory=list)
     error: str = ""
+
+
+# ── 商店(qi-store)──────────────────────────────────────
+#
+# 字段一律 camelCase(与前端一致),值**只出展示需要的东西**:
+# 上游的原始 JSON、令牌、headers 的值都不经这里出宿主。
+#
+# 第二个不变量:**qi-store 没装不是 500** —— `available=false` + `error`,界面据此说清楚
+# (与 `/api/agents`、`/api/mcp` 的 `unavailable` 同一套口径)。
+
+
+class StoreSource(BaseModel):
+    name: str
+    baseUrl: str = ""
+    default: bool = False
+    loggedIn: bool = False
+    login: str = ""
+    role: str = ""
+    expiresAt: int | None = None
+    expiresIn: int | None = None
+
+
+class StoreStatus(BaseModel):
+    available: bool = False
+    sources: list[StoreSource] = Field(default_factory=list)
+    defaultScope: str = "global"
+    wanted: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    storeFile: str = ""
+    error: str = ""
+
+
+class StoreItemOut(BaseModel):
+    id: str
+    kind: str
+    name: str
+    description: str = ""
+    version: str = ""
+    updatedAt: str = ""
+    requiresConfig: bool = False
+    safety: dict = Field(default_factory=dict)
+    badges: dict = Field(default_factory=dict)
+    installed: bool = False
+    installedVersion: str | None = None
+    updateAvailable: bool = False
+
+
+class StoreMissing(BaseModel):
+    kind: str
+    reason: str
+
+
+class StoreList(BaseModel):
+    available: bool = False
+    store: str = ""
+    items: list[StoreItemOut] = Field(default_factory=list)
+    total: int = 0
+    #: 哪一类没查成(未登录 / 网络)。界面要把它显示出来 —— 否则"商店是空的"是最坏的误解
+    missing: list[StoreMissing] = Field(default_factory=list)
+    cachedAt: int | None = None
+    error: str = ""
+
+
+class StoreInstalledItem(BaseModel):
+    id: str
+    kind: str
+    name: str
+    version: str = ""
+    scope: str = ""
+    target: str = ""
+    needsConfig: list[str] = Field(default_factory=list)
+    installedAt: str = ""
+    upstreamUpdatedAt: str = ""
+    #: **磁盘上还在不在**(账本只记"装过什么";从 A2A/MCP 那两节删掉、手改 json、
+    #: `rm -rf` 目录都不经过商店)。false → 界面标"已不在配置里"并给一颗「清理账本」。
+    present: bool = True
+    #: `present=false` 时的人话原因(直接显示)
+    missingReason: str = ""
+
+
+class StoreInstalled(BaseModel):
+    available: bool = False
+    items: list[StoreInstalledItem] = Field(default_factory=list)
+    error: str = ""
+
+
+class StorePlanItem(BaseModel):
+    id: str
+    name: str
+    note: str = ""
+    targets: list[str] = Field(default_factory=list)
+    needsConfig: list[str] = Field(default_factory=list)
+    conflict: str | None = None
+    unsafe: bool = False
+
+
+class StorePlan(BaseModel):
+    available: bool = False
+    scope: str = "global"
+    items: list[StorePlanItem] = Field(default_factory=list)
+    skipped: list[dict] = Field(default_factory=list)
+    needsConfig: list[str] = Field(default_factory=list)
+    #: 有冲突且没 `force` → 界面必须先让用户选"覆盖"再重发
+    blocked: bool = False
+    error: str = ""
+
+
+class StorePlanRequest(BaseModel):
+    ids: list[str] = Field(default_factory=list)      # id 或名称;空 = 400
+    scope: Literal["global", "project"] | None = None
+    force: bool = False
+
+
+class StoreInstallRequest(StorePlanRequest):
+    allowUnsafe: bool = False
+
+
+class StoreInstallResult(BaseModel):
+    available: bool = False
+    scope: str = "global"
+    installed: list[StoreInstalledItem] = Field(default_factory=list)
+    skipped: list[dict] = Field(default_factory=list)
+    needsConfig: list[str] = Field(default_factory=list)
+    error: str = ""
+
+
+class StoreUninstallRequest(BaseModel):
+    id: str = ""
+    scope: Literal["global", "project"] | None = None
+
+
+class StoreUninstallResult(BaseModel):
+    available: bool = False
+    id: str = ""
+    #: 条目类型 —— 宿主据此决定要不要重扫技能缓存
+    kind: str = ""
+    removed: list[str] = Field(default_factory=list)
+    error: str = ""
+
+
+class StoreCheckItem(BaseModel):
+    id: str
+    name: str = ""
+    scope: str = ""
+    version: str = ""
+    upstreamVersion: str | None = None
+    #: up-to-date | update | gone(上游没了) | missing(本地没了)
+    status: str = ""
+    #: `missing` 时的具体原因(哪个键/哪个文件不在了)
+    detail: str = ""
+
+
+class StoreCheck(BaseModel):
+    available: bool = False
+    items: list[StoreCheckItem] = Field(default_factory=list)
+    wantedMissing: list[dict] = Field(default_factory=list)
+    error: str = ""
+
+
+class StoreLoginRequest(BaseModel):
+    """`POST /api/store/login`:用**终端账号**换一个令牌。
+
+    密码只在这一层用一次:`qi_store.service.login` 把它交给上游就丢,不落盘、不日志、
+    不回显 —— 响应是 `StoreStatus`(只有登录态),**令牌一个字节都不出去**。
+
+    写操作,所以和其它写端点一样要 `X-Qi-Confirm: yes`(它会往磁盘写凭证)。
+    """
+
+    login: str = Field(min_length=1)
+    password: str = Field(min_length=1)
+    #: 第一次登录时必须给(还没有源);之后可省略,沿用已配置的地址
+    baseUrl: str = ""
+    #: 多源时选一个;省略 = defaultStore
+    store: str = ""
+
+
+class StoreLogoutRequest(BaseModel):
+    store: str = ""
+    all: bool = False

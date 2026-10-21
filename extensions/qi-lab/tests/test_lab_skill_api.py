@@ -384,3 +384,39 @@ def test_import_is_428_without_the_confirm_header(client, tmp_path):
     src = _skill_dir(tmp_path / "s2", name="s2")
     assert client.post("/api/skills/import",
                        json={"scope": "project", "source": str(src)}).status_code == 428
+
+
+# ── 重扫缓存(POST /api/skills/reload)──────────────────────
+#
+# `/api/skills` 读的是 `runtime.top_skills`(按 cwd 缓存的快照)。缓存只在**写端点**里
+# 重扫,于是"没经过本宿主"的变更(手工拷目录、另一个进程/CLI 装的、改了 frontmatter)
+# 在页面上永远看不见。这条端点就是那颗显式开关(TUI 的 `/reload` 的 web 对应物)。
+
+
+def test_reload_picks_up_out_of_band_changes(client, project):
+    """先 GET(把缓存建起来)→ 直接写盘(绕过所有端点)→ reload → 出现。"""
+    assert "hand-made" not in _listed(client, "qi-project")
+
+    skill_dir = _project_root(project) / "hand-made"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("---\nname: hand-made\ndescription: 手写\n---\n正文\n",
+                                       encoding="utf-8")
+    # 没有 reload 之前:磁盘上有,清单里没有(正是用户报的那个现象)
+    assert "hand-made" not in _listed(client, "qi-project")
+
+    r = client.post("/api/skills/reload", headers=YES)
+    assert r.status_code == 200
+    assert "hand-made" in [s["name"] for s in r.json()["skills"]]
+
+
+def test_reload_requires_the_confirm_header(client):
+    """它不写文件,但仍要确认头 —— 保住"所有 POST /api/skills* 一致"这条规矩。"""
+    assert client.post("/api/skills/reload").status_code == 428
+
+
+def test_reload_is_read_only(client, project):
+    """没有任何文件被改动/新建(区别于 `POST /api/skills`)。"""
+    before = {p.name for p in _project_root(project).iterdir()} if _project_root(project).is_dir() else set()
+    assert client.post("/api/skills/reload", headers=YES).status_code == 200
+    after = {p.name for p in _project_root(project).iterdir()} if _project_root(project).is_dir() else set()
+    assert after == before

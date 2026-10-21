@@ -26,7 +26,7 @@ REPO = Path(__file__).resolve().parents[3]
 
 # 这些是**独立发行包**(不装进 venv),连同宿主 `src/` 一起放进 path 才能 import 源码
 for _rel in ("extensions/qi-agents", "extensions/qi-mcp", "extensions/qi-web",
-             "extensions/qi-lab", "extensions/qi-a2a", "src"):
+             "extensions/qi-lab", "extensions/qi-a2a", "extensions/qi-store", "src"):
     _path = REPO / _rel
     if _path.is_dir() and str(_path) not in sys.path:
         sys.path.insert(0, str(_path))

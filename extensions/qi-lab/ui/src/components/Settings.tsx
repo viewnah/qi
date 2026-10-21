@@ -23,7 +23,7 @@
  * 唯一可写动作是**凭证**:必须过二次确认层(显示目标文件绝对路径 + 掩码值),
  * 请求再带 `X-Qi-Confirm: yes`(后端也拦,双保险)。
  */
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { ReactNode, RefObject } from "react";
 import { api, ApiError } from "../api/client";
 import type {
@@ -42,6 +42,7 @@ import type {
    SkillInfo,
 } from "../api/types";
 import { ConfirmDialog } from "./ConfirmDialog";
+import { StorePanel } from "./StorePanel";
 import {
    A2ADeleteDialog,
    A2ADialog,
@@ -74,6 +75,7 @@ export type SettingsSectionKey =
    | "models"
    | "agents"
    | "skills"
+   | "store"
    | "mcp"
    | "a2a"
    | "extensions"
@@ -101,6 +103,9 @@ const SECTIONS: {
       label: "扩展",
       icon: <IconPersonalizationOutline16 size={16} />,
    },
+   // 商店排在「扩展」之后:它本身就是一个扩展(qi-store)提供的能力,
+   // 放在扩展解释完之后出现,读起来是"扩展里还有一个叫商店的"
+   { key: "store", label: "商店", icon: <IconShareOutline16 size={16} /> },
    { key: "sessions", label: "会话与路径", icon: <IconFolderOpen16 size={16} /> },
    { key: "diagnostics", label: "诊断", icon: <IconGaugeOutline16 size={16} /> },
 ];
@@ -159,6 +164,8 @@ export function Settings({
    mcpWrite = false,
    a2aWrite = false,
    agentWrite = false,
+   storeWrite = false,
+   skillWrite = false,
    onAgentsChanged,
 }: {
    config: ConfigView | null;
@@ -189,6 +196,13 @@ export function Settings({
     */
    agentWrite?: boolean;
    /**
+    * 宿主真的装上了 qi-store(`/api/meta` 的 `store_write`)。没有它 → 商店那一节
+    * 只读展示(读端点一直在),不摆"点了才 404"的安装键。
+    */
+   storeWrite?: boolean;
+   /** 宿主支持写技能端点(`/api/meta` 的 `skill_write`)。没有它 → 「重新扫描」不摆。 */
+   skillWrite?: boolean;
+   /**
     * 角色删掉之后回调:上层(左下角的角色菜单)持的是**另一份**清单,不通知它就会
     * 出现"菜单里还留着一个已经不存在的角色"。`onChanged` 不管这个 —— 它只回读 `/api/config`。
     */
@@ -198,6 +212,8 @@ export function Settings({
    const [section, setSection] = useState<SettingsSectionKey>(initialSection);
    const [agents, setAgents] = useState<AgentInfo[]>([]);
    const [skills, setSkills] = useState<SkillInfo[]>([]);
+   /** 「重新扫描」进行中 —— 只锁那一颗键,不锁整页 */
+   const [skillsBusy, setSkillsBusy] = useState(false);
    const [extensions, setExtensions] = useState<string[]>([]);
    const [mcp, setMcp] = useState<McpList | null>(null);
    /** 老宿主没有 `/api/mcp` → 这一节降级显示,不把整页打成错误屏。 */
@@ -306,6 +322,39 @@ export function Settings({
       return () => document.removeEventListener("keydown", onKeyDown, true);
    }, [onClose, editing, removing, mcpTarget, mcpRemoving, agentRemoving]);
 
+   /**
+    * 技能清单**每次进这一节都重读**。
+    *
+    * 商店里装/卸技能会改磁盘与 `runtime.top_skills`(后端已在写端点里 `refresh_skills()`),
+    * 而本组件只在**挂载**时拉过一次清单 —— 从商店切回「技能」时看到的是旧快照。
+    * 一条请求换“装完立刻能看到”,值。
+    */
+   const reloadSkills = useCallback(async () => {
+      setSkillsBusy(true);
+      try {
+         const list = await api.reloadSkills();
+         setSkills(list.skills);
+      } catch (err) {
+         onError(err instanceof ApiError ? err.detail : String(err));
+      } finally {
+         setSkillsBusy(false);
+      }
+   }, [onError]);
+
+   useEffect(() => {
+      if (section !== "skills") return;
+      let alive = true;
+      void api
+         .skills()
+         .then((list) => {
+            if (alive) setSkills(list.skills);
+         })
+         .catch(() => undefined);        // 读失败保持旧清单:这一节不该把整页打红
+      return () => {
+         alive = false;
+      };
+   }, [section]);
+
    useEffect(() => {
       let alive = true;
       void (async () => {
@@ -330,15 +379,22 @@ export function Settings({
 
    /**
     * MCP 是**可选能力**:老宿主没这个端点(404)。单独一趟请求 + 单独处理失败
-    * —— 与 App 里 `/api/workspaces` 的降级同一条规矩(design/web.md §18.5):
+    * —— 与 App 里 \`/api/workspaces\` 的降级同一条规矩(design/web.md §18.5):
     * 少一节内容比整页白屏好。
+    *
+    * **每次进这一节重读**:商店里装的 MCP 不在本页写路径上,只靠挂载时那一次请求
+    * 会让"装完了这节也看不到"。
     */
    useEffect(() => {
+      if (section !== "mcp") return;
       let alive = true;
       void (async () => {
          try {
             const list = await api.mcp();
-            if (alive) setMcp(list);
+            if (alive) {
+               setMcp(list);
+               setMcpMissing(false);
+            }
          } catch {
             if (alive) setMcpMissing(true);
          }
@@ -346,15 +402,22 @@ export function Settings({
       return () => {
          alive = false;
       };
-   }, []);
+   }, [section]);
 
-   /** A2A 同上:老宿主没 `/api/a2a` 就只少一节,不白屏。 */
+   /**
+    * A2A 同上:老宿主没 \`/api/a2a\` 就只少一节,不白屏。同样**每次进这一节重读**
+    * (商店装 A2A 条目走的是另一条写路径)。
+    */
    useEffect(() => {
+      if (section !== "a2a") return;
       let alive = true;
       void (async () => {
          try {
             const list = await api.a2a();
-            if (alive) setA2a(list);
+            if (alive) {
+               setA2a(list);
+               setA2aMissing(false);
+            }
          } catch {
             if (alive) setA2aMissing(true);
          }
@@ -362,7 +425,7 @@ export function Settings({
       return () => {
          alive = false;
       };
-   }, []);
+   }, [section]);
 
    /** 写完再读一遍:界面该显示宿主实际读到的样子(与 MCP 同一条规矩)。 */
    const refreshA2A = async () => {
@@ -745,6 +808,28 @@ export function Settings({
                            </>
                         }
                      >
+                        {/*
+                          「重新扫描」:清单读的是 runtime 的**缓存**(按 cwd,只加载一次),
+                          所以"没经过本宿主"的变更(手工拷目录、另一个进程装的、改了
+                          frontmatter)在这一页永远看不见。TUI 有 `/reload`,web 以前只能
+                          重启进程 —— 现在有这一颗键。它**不改任何文件**。
+                        */}
+                        {skillWrite ? (
+                           <div className="set-skill__bar">
+                              <button
+                                 type="button"
+                                 className="btn"
+                                 disabled={skillsBusy}
+                                 onClick={() => void reloadSkills()}
+                              >
+                                 {skillsBusy ? "扫描中…" : "重新扫描"}
+                              </button>
+                              <span className="set-skill__hint">
+                                 改了 <code>~/.qi/agent/skills/</code> 或从别处装了技能,
+                                 点它让缓存跟上磁盘
+                              </span>
+                           </div>
+                        ) : null}
                         {skills.length === 0 ? (
                            <p className="set-sec__empty">
                               没有发现技能。放在 <code>~/.qi/agent/skills/</code>
@@ -962,6 +1047,21 @@ export function Settings({
                               ))}
                            </ul>
                         )}
+                     </Section>
+                  ) : null}
+
+                  {section === "store" ? (
+                     <Section
+                        title="商店"
+                        intro={
+                           <>
+                              从 hikqin 应用商店装 MCP 声明 / 技能包 / A2A 名片。
+                              装配前会先给出计划(写哪里 / 会不会撞 / 要补什么)。
+                              登录在这里就能做;密码只交给上游一次,不落盘、不回显。
+                           </>
+                        }
+                     >
+                        <StorePanel canWrite={storeWrite} />
                      </Section>
                   ) : null}
 

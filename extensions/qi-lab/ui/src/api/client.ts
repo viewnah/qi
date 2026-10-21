@@ -46,6 +46,17 @@ import type {
   SessionList,
   SessionSummary,
   SkillList,
+  StoreCheck,
+  StoreInstallBody,
+  StoreInstallResult,
+  StoreInstalled,
+  StoreList,
+  StoreLoginBody,
+  StoreLogoutBody,
+  StorePlan,
+  StorePlanBody,
+  StoreStatus,
+  StoreUninstallResult,
   WorkspaceDeleted,
   WorkspaceNames,
 } from "./types";
@@ -245,6 +256,80 @@ export const api = {
 
   skills: () => request<SkillList>("/api/skills"),
 
+  /**
+   * 重扫技能目录(不改任何文件,只让 runtime 的缓存跟上磁盘)。
+   *
+   * 需要它的场景:技能不是经本宿主写的 —— 手工拷目录、另一个进程装的、改了 frontmatter。
+   * 带确认头是为了保住"所有 POST /api/skills* 都要确认头"这条规矩。
+   */
+  reloadSkills: () =>
+    request<SkillList>("/api/skills/reload", {
+      method: "POST",
+      headers: { "X-Qi-Confirm": "yes" },
+      body: JSON.stringify({}),
+    }),
+
+  // ── 商店(qi-store)──────────────────────────────────────
+  //
+  // 这一组**全部经过 qi-lab 后端代理**:浏览器不直连 hikqin(token 不进浏览器,
+  // 也不依赖上游的 CORS)。登录**不在这里** —— 凭证只在终端写(`qi store login`)。
+
+  storeStatus: () => request<StoreStatus>("/api/store/status"),
+
+  /**
+   * 登录:用终端账号换令牌。**密码只在这一跳里存在** —— 交给上游就丢,
+   * 响应只有登录态(令牌不出宿主)。写凭证,所以带确认头。
+   */
+  storeLogin: (body: StoreLoginBody) =>
+    request<StoreStatus>("/api/store/login", {
+      method: "POST",
+      headers: { "X-Qi-Confirm": "yes" },
+      body: JSON.stringify(body),
+    }),
+
+  /** 退出:删本地凭证(上游没有吊销接口)。幂等。 */
+  storeLogout: (body: StoreLogoutBody = {}) =>
+    request<StoreStatus>("/api/store/logout", {
+      method: "POST",
+      headers: { "X-Qi-Confirm": "yes" },
+      body: JSON.stringify(body),
+    }),
+
+  storeSearch: (q: string, kind?: string, offline = false) => {
+    const params = new URLSearchParams();
+    if (q) params.set("q", q);
+    if (kind) params.set("kind", kind);
+    if (offline) params.set("offline", "true");
+    const tail = params.toString();
+    return request<StoreList>(`/api/store/search${tail ? `?${tail}` : ""}`);
+  },
+
+  storeInstalled: () => request<StoreInstalled>("/api/store/installed"),
+
+  storeCheck: (offline = false) =>
+    request<StoreCheck>(`/api/store/check${offline ? "?offline=true" : ""}`),
+
+  /** 装配前先看计划:写哪里 / 会不会撞 / 要补什么。**不写任何东西**。 */
+  storePlan: (body: StorePlanBody) =>
+    request<StorePlan>("/api/store/plan", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  /** 安装:确认弹层之后才发(与其它写端点同一条 `X-Qi-Confirm` 闸)。 */
+  storeInstall: (body: StoreInstallBody) =>
+    request<StoreInstallResult>("/api/store/install", {
+      method: "POST",
+      headers: { "X-Qi-Confirm": "yes" },
+      body: JSON.stringify(body),
+    }),
+
+  storeUninstall: (id: string, scope?: "global" | "project") =>
+    request<StoreUninstallResult>("/api/store/uninstall", {
+      method: "POST",
+      headers: { "X-Qi-Confirm": "yes" },
+      body: JSON.stringify({ id, scope: scope ?? null }),
+    }),
   extensions: () => request<ExtensionList>("/api/extensions"),
 
   /** MCP 声明(全局 / 项目 / agent 私有)。老宿主回 404 → 调用方降级,不当作致命错误。 */

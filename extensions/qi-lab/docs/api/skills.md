@@ -242,3 +242,23 @@ curl -X POST http://127.0.0.1:3456/api/skills/import \
 - 通用约定(确认头、错误形状、能力位 `skill_write`):[`README.md`](README.md)
 - 回归测试:`extensions/qi-lab/tests/test_lab_skill_api.py`(35 条:闸、两个根、三不变量、重扫、zip 防御);
   文档与路由的双向对齐由 `extensions/qi-lab/tests/test_lab_docs_api.py` 钉住
+
+## 重扫:`POST /api/skills/reload`
+
+返回更新后的 `SkillList`。**不改任何文件**,只让 `runtime.top_skills` 跟上磁盘。
+
+为什么需要它:`GET /api/skills` 与系统提示词读的都是 `runtime.top_skills`(按 cwd 缓存的
+快照),而缓存只在**写端点**里重扫。于是任何"没经过本宿主"的变更 —— 手工往
+`~/.qi/agent/skills/` 拷目录、另一个进程(CLI / `qi store`)装的、编辑器改了 frontmatter
+—— 在页面上永远看不见,**刷新浏览器也没用**(那只是再发一次同一个 GET)。TUI 有
+`/reload`,这是它的 web 对应物。
+
+| 项 | 契约 |
+| --- | --- |
+| 确认头 | **要**(哪怕是只读的重扫)。理由不是防误操作,而是保住"`/api/skills` 系列的 POST 一律带确认头"这条一眼可记的规矩 |
+| 副作用 | 只重建 `runtime.top_skills`;不派发 `resources_discover`、不重启会话(与 `QiRuntime.reload()` 的区别见 `state.py` 的 `refresh_skills`) |
+| 失败 | 读盘失败保留旧清单(不 500):那次变更已经落盘了,报错只会让调用方反复重试 |
+
+> 商店(`/api/store/install|uninstall`)装了/卸了 **skill** 时会自动调同一个
+> `refresh_skills()`,不需要再点这颗键。MCP / A2A 没有等价缓存(读端点每次重读文件),
+> 但模型侧的 MCP 清单在会话开始时取,装完要新会话才用得上。

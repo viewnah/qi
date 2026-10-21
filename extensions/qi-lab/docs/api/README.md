@@ -1,7 +1,7 @@
 # qi-lab HTTP API
 
 `qi_lab/app.py` 是这些接口的**唯一真相**;本文与代码同仓,改端点的人顺手改这里。
-`extensions/qi-lab/tests/test_lab_docs_api.py` 会把 `create_app()` 实际注册的 40 条 `/api` 路由逐条对着
+`extensions/qi-lab/tests/test_lab_docs_api.py` 会把 `create_app()` 实际注册的每一条 `/api` 路由逐条对着
 本文目录查一遍 —— 少写一个就红,防止"文档说有、代码已删"与"代码有、文档没有"两种漂移。
 
 ## 起服务
@@ -159,6 +159,16 @@ curl -X PATCH http://127.0.0.1:3456/api/mcp -H 'X-Qi-Confirm: yes' -H 'Content-T
 | POST | `POST /api/skills` | 新建技能(201,需确认头) | `skills.md` |
 | DELETE | `DELETE /api/skills` | 删技能(整目录,需确认头) | `skills.md` |
 | POST | `POST /api/skills/import` | 从本机路径导入技能(201,需确认头) | `skills.md` |
+| POST | `POST /api/skills/reload` | 重扫技能目录(需确认头;不改文件,只刷缓存) | `skills.md` |
+| GET | `GET /api/store/status` | 商店源与登录状态(不发请求) | `store.md` |
+| POST | `POST /api/store/login` | 登录(需确认头;密码只过一次,令牌不回浏览器) | `store.md` |
+| POST | `POST /api/store/logout` | 退出(需确认头;删本地凭证,上游无吊销) | `store.md` |
+| GET | `GET /api/store/search` | 搜索条目(带已装状态,含"哪一类没查成") | `store.md` |
+| GET | `GET /api/store/installed` | 已装条目(读账本,离线可用) | `store.md` |
+| POST | `POST /api/store/plan` | 只算不写:写哪里 / 冲突 / 待补配置 | `store.md` |
+| POST | `POST /api/store/install` | 安装(需确认头;高危要 allowUnsafe) | `store.md` |
+| POST | `POST /api/store/uninstall` | 卸载(需确认头;只删自己写的) | `store.md` |
+| GET | `GET /api/store/check` | 账本 ↔ 上游对比 + 声明未装 | `store.md` |
 | GET | `GET /api/extensions` | 已装载的扩展名 | `config.md` |
 | POST | `POST /api/auth/{provider}` | 写入凭证(204,需确认头) | `config.md` |
 | DELETE | `DELETE /api/auth/{provider}` | 删除凭证(204,需确认头) | `config.md` |
@@ -177,6 +187,7 @@ curl -X PATCH http://127.0.0.1:3456/api/mcp -H 'X-Qi-Confirm: yes' -H 'Content-T
 | [`a2a.md`](a2a.md) | A2A 条目:两层深合兼、确认头、`null` = 不改、名片探测 |
 | [`agents.md`](agents.md) | 角色:读(元数据,不回正文)与删除(两层、按显示名、整目录、只删该层) |
 | [`config.md`](config.md) | 配置/模型/扩展的只读视图,凭证写入 |
-| [`skills.md`](skills.md) | 技能:读(六层来源)与添加 / 删除 / 导入(确认头、可写边界、zip 防御) |
+| [`skills.md`](skills.md) | 技能:读(六层来源)与添加 / 删除 / 导入 / 重扫缓存(确认头、可写边界、zip 防御) |
 | [`workspaces.md`](workspaces.md) | 工作区显示名、删除语义、目录选择器 |
 | [`files.md`](files.md) | 文件三端点:边界、排序、限额、预览白名单 |
+| [`store.md`](store.md) | 商店:hikqin 条目 → 本地落盘;四类标签、登录(密码只过一次)、确认头、高危闸、失败映射 |

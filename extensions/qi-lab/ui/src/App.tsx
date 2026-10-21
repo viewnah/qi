@@ -1119,6 +1119,11 @@ export function App() {
           /* 宿主支不支持**删角色**(`/api/meta` 的 `agent_write`):没有它 → Agent 那一节
              只读 —— 读端点一直在,所以只是少一个键(与 mcp_write 同一条降级规矩)。 */
           agentWrite={meta?.capabilities.agent_write === true}
+          /* 装了 qi-store 才摆安装/卸载键(`/api/meta` 的 store_write):
+             后端是真去 import 一次的结论,不是写死的 True。 */
+          storeWrite={meta?.capabilities.store_write === true}
+          /* 技能写端点(`/api/meta` 的 `skill_write`):没有它就不摆「重新扫描」。 */
+          skillWrite={meta?.capabilities.skill_write === true}
           /* 角色删完回灌左下角那个角色菜单:它读的是 App 这份 state,不读设置面自己
              那份 —— 不通知它就会留着一个已经不存在的角色。失败时保持原样(不置空)。 */
           onAgentsChanged={() =>

@@ -74,6 +74,19 @@ h1{{font-size:18px}}</style>
 <p>构建产物会被放进 <code>extensions/qi-lab/qi_lab/static/</code>,刷新本页即可。</p>"""
 
 
+def _store_available() -> bool:
+    """`qi-store` 装了吗?(只 import,不发请求)。
+
+    面板据此决定摆不摆"安装 / 卸载"按钮 —— 与 `mcp_write` 同一条降级规矩:
+    少一排按钮比点了才吃 404 好。
+    """
+    try:
+        import qi_store.service  # noqa: F401
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
 def create_app(cwd: Path | str | None = None, password: str | None = None,
                allowed_hosts: list[str] | None = None, bind_host: str = "127.0.0.1",
                state: WebState | None = None,
@@ -132,6 +145,9 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
                           # A2A 面:条目增删改(`/api/a2a`)与名片探测(`/api/a2a/probe`)。
                           # 同上:没有它 → A2A 那一节只读展示(读端点一直在)。
                           "a2a_write": True,
+                          # 商店面:**真的去 import 一次** qi-store,而不是写死 True ——
+                          # 没装这个扩展时那一节必须自己说清楚,而不是摆一排点了就 404 的键。
+                          "store_write": _store_available(),
                           # 扩展面:插件据这两个开关决定要不要发结构化 UI。
                           # `ag_ui` = 事件形状是 AG-UI;`ui_v1` = 认 details["ui"] 的词汇表
                           # (见 design/web.md §16.2)。缺哪个都退回"折叠显示原始 JSON"。
@@ -467,6 +483,27 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
             skillapi.import_skill(root, body.source, body.name)
         except skillapi.SkillError as exc:
             raise _skill_error(exc) from exc
+        web.refresh_skills()
+        return await list_skills()
+
+    @app.post("/api/skills/reload", response_model=schemas.SkillList,
+              dependencies=[Depends(guard)])
+    async def reload_skills(confirm: str | None = Header(None, alias="X-Qi-Confirm")
+                            ) -> schemas.SkillList:
+        """重扫技能目录。**不改任何文件,只让缓存跟上磁盘。**
+
+        为什么需要它:
+
+        * `/api/skills` 读的是 `runtime.top_skills`(按 cwd 缓存的快照);
+        * 缓存只在**写端点**里重扫 —— 于是一段"没经过本宿主"的变更(手工拷目录、
+          另一个进程/CLI 装的、编辑器改了 frontmatter)在页面上永远看不见;
+        * TUI 有 `/reload`,web 以前只能重启进程。
+
+        仍然要确认头:不是为了防误操作(它不写文件),而是为了保住
+        **"所有 `POST /api/skills*` 一律带确认头"** 这条一眼可记的规矩 ——
+        以后新增端点的人不需要判断"这个算不算写"。
+        """
+        confirm_gate(confirm)
         web.refresh_skills()
         return await list_skills()
 
@@ -1063,6 +1100,179 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
     async def list_extensions() -> schemas.ExtensionList:
         runtime = web.runtime_for(web.default_cwd)
         return schemas.ExtensionList(extensions=list(runtime.extensions))
+
+    # ── 商店(qi-store)──────────────────────────────────
+    #
+    # 消费方式与 `qi_mcp.config` / `qi_agents.discovery` 一致:**进程内懒 import**。
+    # qi-store 没装 → 回 `available=false`,不让整页 500。
+    #
+    # 三条规矩:
+    # 1. **所有网络调用走 `asyncio.to_thread`**:qi_store 是同步客户端(httpx.Client),
+    #    直接在事件循环里调会把整页卡住;两套客户端也不值得为面板再写一份;
+    # 2. **写操作过 `confirm_gate`**(`X-Qi-Confirm: yes`),与 `/api/mcp` `/api/a2a` 同一条;
+    # 3. **没有 login 端点**:密码不经手浏览器 —— 面板只读 `status`,登录去终端 `qi store login`。
+
+    def _store():
+        """拿到 qi_store 模块;没装/坏了 → None + 原因(调用方回 available=false)。"""
+        try:
+            from qi_store import service  # noqa: F401
+            return service, ""
+        except Exception as exc:  # noqa: BLE001
+            return None, f"{type(exc).__name__}: {exc}"
+
+    def _store_error(exc: Exception) -> HTTPException:
+        """`StoreError` 的 `exit_code` → HTTP 状态码。
+
+        映射是**语义**的,不是数字对齐:2=你给错了(400)、3=该登录(401)、
+        4=没这个条目(404)、5=撞了(409)、其余算上游/磁盘问题(502)。
+        """
+        from qi_store.errors import (EXIT_AUTH, EXIT_CONFLICT, EXIT_NOT_FOUND,
+                                     EXIT_USAGE, StoreError)
+
+        if not isinstance(exc, StoreError):
+            return HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
+        status = {EXIT_USAGE: 400, EXIT_AUTH: 401, EXIT_NOT_FOUND: 404,
+                  EXIT_CONFLICT: 409}.get(exc.exit_code, 502)
+        detail = str(exc) + (f"（{exc.hint}）" if exc.hint else "")
+        return HTTPException(status_code=status, detail=detail)
+
+    async def _in_store(fn, /, **kwargs):
+        """在线程里跑一次 qi_store 调用,并把 `StoreError` 映射成 HTTP 错误。"""
+        try:
+            return await asyncio.to_thread(fn, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            raise _store_error(exc) from exc
+
+    @app.get("/api/store/status", response_model=schemas.StoreStatus,
+             dependencies=[Depends(guard)])
+    async def store_status() -> schemas.StoreStatus:
+        service, reason = _store()
+        if service is None:
+            return schemas.StoreStatus(available=False, error=reason)
+        try:
+            data = await asyncio.to_thread(service.status, web.default_cwd)
+        except Exception as exc:  # noqa: BLE001
+            # 配置坏了也不报 500:面板要能画出来并告诉你哪一步坏了
+            return schemas.StoreStatus(available=False, error=str(exc))
+        return schemas.StoreStatus(**data)
+
+    # ── 登录 / 退出 ────────────────────────────────────────
+    #
+    # **密码只在这里过一次**:service.login 把它交给上游就丢,响应是 StoreStatus
+    # (只有登录态),令牌不出宿主。写凭证 = 写操作 → 与其它写端点同一条确认闸。
+
+    @app.post("/api/store/login", response_model=schemas.StoreStatus,
+              dependencies=[Depends(guard)])
+    async def store_login(body: schemas.StoreLoginRequest,
+                          confirm: str | None = Header(None, alias="X-Qi-Confirm")
+                          ) -> schemas.StoreStatus:
+        confirm_gate(confirm)
+        service, reason = _store()
+        if service is None:
+            return schemas.StoreStatus(available=False, error=reason)
+        try:
+            data = await asyncio.to_thread(
+                service.login, web.default_cwd,
+                login=body.login.strip(), password=body.password,
+                base_url=body.baseUrl.strip() or None, store=body.store.strip() or None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise _store_error(exc) from exc
+        return schemas.StoreStatus(**data)
+
+    @app.post("/api/store/logout", response_model=schemas.StoreStatus,
+              dependencies=[Depends(guard)])
+    async def store_logout(body: schemas.StoreLogoutRequest,
+                           confirm: str | None = Header(None, alias="X-Qi-Confirm")
+                           ) -> schemas.StoreStatus:
+        confirm_gate(confirm)
+        service, reason = _store()
+        if service is None:
+            return schemas.StoreStatus(available=False, error=reason)
+        data = await _in_store(service.logout, cwd=web.default_cwd,
+                               store=body.store.strip() or None, all_stores=body.all)
+        return schemas.StoreStatus(**data)
+
+    @app.get("/api/store/search", response_model=schemas.StoreList,
+             dependencies=[Depends(guard)])
+    async def store_search(q: str | None = Query(None),
+                           kind: str | None = Query(None),
+                           limit: int = Query(0, ge=0, le=200),
+                           offline: bool = Query(False)) -> schemas.StoreList:
+        service, reason = _store()
+        if service is None:
+            return schemas.StoreList(available=False, error=reason)
+        data = await _in_store(service.search, cwd=web.default_cwd, q=q, kind=kind,
+                               limit=limit, offline=offline)
+        return schemas.StoreList(**data)
+
+    @app.get("/api/store/installed", response_model=schemas.StoreInstalled,
+             dependencies=[Depends(guard)])
+    async def store_installed() -> schemas.StoreInstalled:
+        service, reason = _store()
+        if service is None:
+            return schemas.StoreInstalled(available=False, error=reason)
+        data = await _in_store(service.installed, cwd=web.default_cwd)
+        return schemas.StoreInstalled(**data)
+
+    @app.get("/api/store/check", response_model=schemas.StoreCheck,
+             dependencies=[Depends(guard)])
+    async def store_check(offline: bool = Query(False)) -> schemas.StoreCheck:
+        service, reason = _store()
+        if service is None:
+            return schemas.StoreCheck(available=False, error=reason)
+        data = await _in_store(service.check, cwd=web.default_cwd, offline=offline)
+        return schemas.StoreCheck(**data)
+
+    @app.post("/api/store/plan", response_model=schemas.StorePlan,
+              dependencies=[Depends(guard)])
+    async def store_plan(body: schemas.StorePlanRequest) -> schemas.StorePlan:
+        """**只算不写**。前端装配前必须先看这个(写哪里/会不会撞/要补什么)。"""
+        if not body.ids:
+            raise HTTPException(status_code=400, detail="ids 不能为空")
+        service, reason = _store()
+        if service is None:
+            return schemas.StorePlan(available=False, error=reason)
+        data = await _in_store(service.plan, cwd=web.default_cwd, ids=body.ids,
+                               scope=body.scope, force=body.force)
+        return schemas.StorePlan(**data)
+
+    @app.post("/api/store/install", response_model=schemas.StoreInstallResult,
+              dependencies=[Depends(guard)])
+    async def store_install(body: schemas.StoreInstallRequest,
+                            confirm: str | None = Header(None, alias="X-Qi-Confirm")
+                            ) -> schemas.StoreInstallResult:
+        confirm_gate(confirm)
+        if not body.ids:
+            raise HTTPException(status_code=400, detail="ids 不能为空")
+        service, reason = _store()
+        if service is None:
+            return schemas.StoreInstallResult(available=False, error=reason)
+        data = await _in_store(service.install, cwd=web.default_cwd, ids=body.ids,
+                               scope=body.scope, force=body.force,
+                               allow_unsafe=body.allowUnsafe)
+        if any(item.get("kind") == "skill" for item in data["installed"]):
+            # 技能落在磁盘上还不够:**runtime 按 cwd 缓存 `top_skills`**,不重扫就会出现
+            # "GET /api/skills 说它在、模型却用不上"。与 `POST /api/skills` 同一条处置。
+            web.refresh_skills()
+        return schemas.StoreInstallResult(**data)
+
+    @app.post("/api/store/uninstall", response_model=schemas.StoreUninstallResult,
+              dependencies=[Depends(guard)])
+    async def store_uninstall(body: schemas.StoreUninstallRequest,
+                              confirm: str | None = Header(None, alias="X-Qi-Confirm")
+                              ) -> schemas.StoreUninstallResult:
+        confirm_gate(confirm)
+        if not body.id:
+            raise HTTPException(status_code=400, detail="id 不能为空")
+        service, reason = _store()
+        if service is None:
+            return schemas.StoreUninstallResult(available=False, error=reason)
+        data = await _in_store(service.uninstall, cwd=web.default_cwd, id=body.id,
+                               scope=body.scope)
+        if data.get("kind") == "skill":
+            web.refresh_skills()      # 卸掉的技能也要从缓存里消失,否则模型还能用
+        return schemas.StoreUninstallResult(**data)
 
     @app.post("/api/auth/{provider}", status_code=204, dependencies=[Depends(guard)])
     async def set_auth(provider: str, body: schemas.AuthWrite,

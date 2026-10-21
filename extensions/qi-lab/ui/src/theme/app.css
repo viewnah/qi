@@ -3983,3 +3983,183 @@ pre,
  font-size: 13px;
  line-height: 18px;
 }
+
+/* ── 商店节(设置面)──────────────────────────────────────────
+   三块:顶栏(源 + 登录态 + 搜索)、可装条目表、已装表。
+   颜色全走令牌 —— 这一节没有"新语义",都是已有的 label / border / state。 */
+.set-store {
+ display: flex;
+ flex-direction: column;
+ gap: 4px;
+}
+
+.set-store__bar {
+ display: flex;
+ flex-wrap: wrap;
+ align-items: center;
+ justify-content: space-between;
+ gap: 12px;
+ padding: 12px 0 4px;
+}
+
+.set-store__src {
+ display: flex;
+ flex-wrap: wrap;
+ gap: 12px;
+ color: var(--dsw-alias-label-secondary);
+ font: var(--dsw-font-xxs-12);
+}
+
+.set-store__search {
+ display: flex;
+ gap: 8px;
+ align-items: center;
+}
+
+/* 输入框与 `.dialog__input` 同一套:内衬 6/10、半径 md、发丝线边框。 */
+.set-store__search input,
+.set-store__search select {
+ box-sizing: border-box;
+ padding: 6px 10px;
+ border: 0.5px solid var(--dsw-alias-border-l4);
+ border-radius: var(--dsw-radius-md);
+ background: var(--dsw-specific-input-major);
+ color: var(--dsw-alias-label-primary);
+ font: var(--dsw-font-xxs-12);
+}
+
+.set-store__search input {
+ min-width: 220px;
+}
+
+.set-store__on {
+ color: var(--dsw-alias-state-success);
+}
+
+.set-store__off {
+ color: var(--dsw-alias-label-tertiary);
+}
+
+.set-store__warn {
+ color: var(--dsw-alias-state-warning);
+ font: var(--dsw-font-xxs-12);
+}
+
+.set-store__error {
+ color: var(--dsw-alias-state-error-primary);
+ font: var(--dsw-font-xxs-12);
+}
+
+.set-store__done {
+ color: var(--dsw-alias-state-success);
+ font: var(--dsw-font-xxs-12);
+}
+
+/* id / 落点是**机器串**:等宽、次要色、允许硬断(路径很长)。 */
+.set-store__id,
+.set-store__path {
+ color: var(--dsw-alias-label-tertiary);
+ font-family: var(--ds-font-family-code);
+ font-size: 11px;
+ overflow-wrap: anywhere;
+}
+
+.set-store__h {
+ margin: 20px 0 0;
+ color: var(--dsw-alias-label-primary);
+ font: var(--dsw-font-xs-13);
+}
+
+/* 商店的四个标签:与设置面左侧同一套"胶囊"语汇,但更轻(它们是分类,不是导航)。 */
+.set-store__tabs {
+ display: flex;
+ gap: 6px;
+ margin-top: 12px;
+}
+
+.set-store__tab {
+ display: inline-flex;
+ align-items: center;
+ gap: 6px;
+ padding: 5px 12px;
+ border: 0.5px solid var(--dsw-alias-border-l2);
+ border-radius: 999px;
+ background: transparent;
+ color: var(--dsw-alias-label-secondary);
+ font: var(--dsw-font-xxs-12);
+ cursor: pointer;
+}
+
+.set-store__tab:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.set-store__tab.is-on {
+ border-color: var(--dsw-alias-state-business-primary);
+ color: var(--dsw-alias-state-business-primary);
+}
+
+.set-store__count {
+ color: var(--dsw-alias-label-tertiary);
+ font-size: 11px;
+}
+
+.set-store__auth {
+ display: inline-flex;
+ gap: 8px;
+}
+
+.set-store__hint {
+ margin: 4px 0 0;
+ color: var(--dsw-alias-label-tertiary);
+ font: var(--dsw-font-xxs-12);
+}
+
+/* 登录表单:三行 label + 一个提交键。密码框类型由 input[type=password] 决定,不另设样式。 */
+.set-store__login {
+ display: flex;
+ flex-wrap: wrap;
+ align-items: end;
+ gap: 10px;
+ margin-top: 8px;
+ padding: 12px;
+ border: 0.5px solid var(--dsw-alias-border-l2);
+ border-radius: var(--dsw-radius-md);
+ background: var(--dsw-alias-bg-l1);
+}
+
+.set-store__login label {
+ display: flex;
+ flex-direction: column;
+ gap: 4px;
+ color: var(--dsw-alias-label-tertiary);
+ font: var(--dsw-font-xxs-12);
+}
+
+.set-store__login input {
+ box-sizing: border-box;
+ padding: 6px 10px;
+ border: 0.5px solid var(--dsw-alias-border-l4);
+ border-radius: var(--dsw-radius-md);
+ background: var(--dsw-specific-input-major);
+ color: var(--dsw-alias-label-primary);
+ font: var(--dsw-font-xxs-12);
+}
+
+.set-store__login p {
+ flex-basis: 100%;
+}
+
+/* 技能节的工具条:「重新扫描」+ 一句它干嘛用的说明。
+   它与标题同一行太挤(标题是 Section 的),所以单独一行、左对齐。 */
+.set-skill__bar {
+ display: flex;
+ align-items: center;
+ gap: 10px;
+ margin: 12px 0 -4px;
+}
+
+.set-skill__hint {
+ color: var(--dsw-alias-label-tertiary);
+ font: var(--dsw-font-xxs-12);
+}

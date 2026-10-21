@@ -75,13 +75,22 @@ qi-web 的设置页里 MCP 节是**只读**的(它只有 `GET /api/mcp`)。qi-la
 
 ## 技能的增删改(第二处分化)
 
-qi-web 的 `/api/skills` 只有**读**;qi-lab 把写也补齐了(本轮只做接口,设置页还没接):
+qi-web 的 `/api/skills` 只有**读**;qi-lab 把写也补齐了(设置页目前只接了「重新扫描」,新建/删除/导入还是接口先行):
 
 | 方法 | 路径 | 干什么 |
 | --- | --- | --- |
 | `POST` | `/api/skills` | 新建 `<scope 层>/<name>/SKILL.md`(201) |
 | `DELETE` | `/api/skills` | 按**显示名**删掉一层技能(整目录,200) |
 | `POST` | `/api/skills/import` | 从本机路径导一个技能进来:目录 / 单份 `.md` / `.zip`(201) |
+
+| `POST` | `/api/skills/reload` | 重扫技能目录(只刷缓存,不改文件) |
+
+- **为什么有 `reload`**:`GET /api/skills` 与系统提示词读的都是 `runtime.top_skills`
+  (按 cwd 缓存的快照),而缓存只在**写端点**里重扫。所以"没经过本宿主"的变更(手工拷目录、
+  另一个进程/CLI 装的、改了 frontmatter)在页面上看不见,**刷新浏览器也没用**(那只是再发
+  一次同一个 GET)。TUI 有 `/reload`,这是它的 web 对应物;设置面「技能」节有一颗
+  「重新扫描」按钮(它不写文件,但仍带确认头 —— 保住"系列 POST 一律带确认头"这条规矩)。
+  商店装/卸 **skill** 时会自动调它,不需要手点。
 
 - **只可写两层**:`scope=global` → `~/.qi/agent/skills`、`scope=project` → `<cwd>/.qi/skills`;
   `.agents/skills` 与 settings 的 `skills[]` **不碰** —— 跨工具的家 + 用户指定的路径,
@@ -156,6 +165,26 @@ A2A 自己的三件:
 **生效条目**,下面是逐层的原始声明;每张卡带一个「探测」,结果就地展开(探测是
 只读的,弹层会挡着列表)。表单里 `headers` 是"留空 = 保持不变 / 填 `-` = 清空整张表"
 ——读端给不出值,所以只能这样表达。
+
+## 商店(设置页 → 扩展 → 商店)
+
+把 **hikqin** 当应用商店:`qi-store` 扩展负责取货 / 转换 / 落盘 / 记账,qi-lab 只做**代理与界面**
+(进程内懒 import `qi_store.service`,与 `/api/mcp` 消费 `qi_mcp.config` 同一套)。
+
+**按四类标签**摆,每个标签只放它那一类(能装的 + 已装的):**Agent / 技能 / MCP / A2A**。
+Agent 标签暂时只说明"为什么不提供"(hikqin 的模板蓝图与 qi 的角色目录格式没对齐,
+且蓝图里的 `model`/`api_key` 是剥离状态),不摆一个永远空着的列表。
+
+| 口径 | 做法 |
+| --- | --- |
+| 浏览器不直连 hikqin | `/api/store/*` 全在宿主进程里转发(不依赖上游 CORS) |
+| 令牌不进浏览器 | `POST /api/store/login` 收账号密码 → 交上游 → 只回 `StoreStatus`;磁盘上是用户级 `store.json`(0600) |
+| 登录 / 退出也是写操作 | 与其它写端点同一条 `X-Qi-Confirm: yes` 闸 |
+| 计划先行 | 点「安装」先 `POST /api/store/plan`,确认层里显示**写哪里 / 冲突 / 待补 env** |
+| 少装扩展不是 500 | `qi-store` 不在 → `available=false` + `error`;`/api/meta` 的 `store_write` 是真去 import 一次的结论 |
+| 卸载只删自己写的 | `mcp.json` / `a2a.json` 只删那一个键,文件空了才删文件 |
+
+契约在 [docs/api/store.md](docs/api/store.md);回归测试 `tests/test_lab_store_api.py`。
 
 ### 对话页面的「智能体」chip 也能选远端角色
 

@@ -715,3 +715,172 @@ export interface ModelCatalog {
    /** 合法级别(照后端给的那份画,不在前端写死)。 */
    thinking_levels: string[];
 }
+
+// ── 商店(`/api/store/*`)───────────────────────────────────────
+//
+// 形状照 `qi_lab/schemas.py` 的 `Store*`(那些模型又是照 `qi_store.service` 的 dict 写的)。
+// `available=false` 是**正常返回**:qi-store 没装 / 配置坏了 —— 与 `/api/agents` 的
+// `unavailable` 同一套口径,不要当错误处理。
+
+export interface StoreSource {
+   name: string;
+   baseUrl: string;
+   default: boolean;
+   loggedIn: boolean;
+   login: string;
+   role: string;
+   /** 令牌到期的 unix 秒;null = 没有令牌(未登录) */
+   expiresAt: number | null;
+   /** 还剩多少秒;null = 没有令牌 */
+   expiresIn: number | null;
+}
+
+export interface StoreStatus {
+   available: boolean;
+   sources: StoreSource[];
+   defaultScope: "global" | "project";
+   /** `store.json` 的 `wanted[]`(项目声明"应该有"的条目) */
+   wanted: string[];
+   warnings: string[];
+   storeFile: string;
+   error: string;
+}
+
+export type StoreKind = "skill" | "mcp" | "a2a";
+
+export interface StoreItemOut {
+   id: string;
+   kind: StoreKind;
+   name: string;
+   description: string;
+   /** 内容指纹(`sig:` 前缀)—— 上游没有 semver */
+   version: string;
+   updatedAt: string;
+   requiresConfig: boolean;
+   /** skill 的安全扫描:`scan_status` / `reviewed` */
+   safety: Record<string, unknown>;
+   badges: Record<string, unknown>;
+   installed: boolean;
+   installedVersion: string | null;
+   updateAvailable: boolean;
+}
+
+export interface StoreMissing {
+   kind: string;
+   /** 为什么这一类没查成(未登录 / 网络)。**必须显示**,否则会误以为商店是空的 */
+   reason: string;
+}
+
+export interface StoreList {
+   available: boolean;
+   store: string;
+   items: StoreItemOut[];
+   total: number;
+   missing: StoreMissing[];
+   cachedAt: number | null;
+   error: string;
+}
+
+export interface StoreInstalledItem {
+   id: string;
+   kind: string;
+   name: string;
+   version: string;
+   scope: string;
+   /** 落点:技能目录 或 `mcp.json` / `a2a.json` */
+   target: string;
+   /** 还需要用户自己 export 的环境变量名 */
+   needsConfig: string[];
+   installedAt: string;
+   upstreamUpdatedAt: string;
+   /** 磁盘上还在不在(账本只记"装过什么";别处删掉时这里是 false) */
+   present: boolean;
+   /** present=false 时的人话原因 */
+   missingReason: string;
+}
+
+export interface StoreInstalled {
+   available: boolean;
+   items: StoreInstalledItem[];
+   error: string;
+}
+
+export interface StorePlanItem {
+   id: string;
+   name: string;
+   note: string;
+   targets: string[];
+   needsConfig: string[];
+   conflict: string | null;
+   unsafe: boolean;
+}
+
+export interface StorePlan {
+   available: boolean;
+   scope: string;
+   items: StorePlanItem[];
+   skipped: { id: string; reason: string }[];
+   needsConfig: string[];
+   /** 有冲突且没 force → 界面必须先让用户选"覆盖"再重发 */
+   blocked: boolean;
+   error: string;
+}
+
+export interface StorePlanBody {
+   ids: string[];
+   scope?: "global" | "project" | null;
+   force?: boolean;
+}
+
+export interface StoreInstallBody extends StorePlanBody {
+   allowUnsafe?: boolean;
+}
+
+export interface StoreInstallResult {
+   available: boolean;
+   scope: string;
+   installed: StoreInstalledItem[];
+   skipped: { id: string; reason: string }[];
+   needsConfig: string[];
+   error: string;
+}
+
+export interface StoreUninstallResult {
+   available: boolean;
+   id: string;
+   removed: string[];
+   error: string;
+}
+
+export interface StoreCheckItem {
+   id: string;
+   name: string;
+   scope: string;
+   version: string;
+   upstreamVersion: string | null;
+   /** up-to-date | update | gone(上游没了) | missing(本地没了) */
+   status: string;
+   /** missing 时的具体原因 */
+   detail?: string;
+}
+
+export interface StoreCheck {
+   available: boolean;
+   items: StoreCheckItem[];
+   wantedMissing: { spec: string; reason: string }[];
+   error: string;
+}
+
+export interface StoreLoginBody {
+   login: string;
+   password: string;
+   /** 第一次登录必须给(还没有源);之后可省,沿用已配置地址 */
+   baseUrl?: string;
+   /** 多源时选一个;省略 = defaultStore */
+   store?: string;
+}
+
+export interface StoreLogoutBody {
+   store?: string;
+   all?: boolean;
+}

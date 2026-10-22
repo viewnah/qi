@@ -32,45 +32,38 @@ export function isGlobalSkill(skill: SkillInfo): boolean {
    return !(PROJECT_SKILL_SOURCES as readonly string[]).includes(skill.source);
 }
 
+/**
+ * 这个技能能不能在本页删,能删的话落在哪个 scope。
+ *
+ * 只有 `~/.qi/agent/skills`(`source="qi-global"`)归 qi 管 —— 跨工具层
+ * (`~/.agents/skills`)是别的工具的家,settings 的 `skills[]` 是用户手指定的路径
+ * (可能 glob 到仓库外),后端两个写 scope 都不收它们。所以这里也只给 `qi-global`
+ * 发删除键。
+ */
+export function skillDeleteScope(skill: SkillInfo): "global" | null {
+   return skill.source === "qi-global" ? "global" : null;
+}
+
 /** 角色:`source` 的词汇是 qi-agents 的(`user` / `project` / `a2a`)。 */
 export function isGlobalAgent(agent: AgentInfo): boolean {
    return agent.source !== "project";
 }
 
-/** `agent.md` 的父目录名(= 角色目录名,也是 MCP 角色层里的 `role`)。 */
-function roleDirOf(agentPath: string): string {
-   const parts = agentPath.split(/[\\/]+/).filter(Boolean);
-   return parts.length >= 2 ? parts[parts.length - 2] : "";
-}
-
 /**
- * 项目级角色占用的目录名集合。MCP 的 `role` 层只给角色目录名、不给 `source`,
- * 所以用它来认出"这一份私有声明属于项目级角色"。
+ * MCP:只留**全局**层。
+ *
+ * 角色私有(`scope="role"`)看似“属于哪个角色”,实际上仍是一份跟着角色目录走的
+ * 声明 —— 角色可能来自项目,而且同一份会出现在多个角色卡下。这个控制台只摆
+ * 一处就能管完的全局声明,所以角色层与项目层一起不显示。
  */
-export function projectRoleDirs(agents: readonly AgentInfo[]): Set<string> {
-   return new Set(
-      agents.filter((agent) => agent.source === "project").map((agent) => roleDirOf(agent.path)),
-   );
-}
-
-/** MCP:项目层整层不要;角色私有层只留全局角色的。 */
-export function isGlobalMcpSource(
-   source: McpSource,
-   projectRoles: ReadonlySet<string> = new Set(),
-): boolean {
-   if (source.scope === "project") return false;
-   if (source.scope === "role") return !projectRoles.has(source.role);
-   return true;
+export function isGlobalMcpSource(source: McpSource): boolean {
+   return source.scope === "global";
 }
 
 /** 过滤后的 MCP 清单(`null` 原样传回,调用方不用多一个判空分支)。 */
-export function globalMcpList(
-   mcp: McpList | null,
-   agents: readonly AgentInfo[],
-): McpList | null {
+export function globalMcpList(mcp: McpList | null): McpList | null {
    if (mcp === null) return null;
-   const roles = projectRoleDirs(agents);
-   return { ...mcp, sources: mcp.sources.filter((item) => isGlobalMcpSource(item, roles)) };
+   return { ...mcp, sources: mcp.sources.filter(isGlobalMcpSource) };
 }
 
 /**

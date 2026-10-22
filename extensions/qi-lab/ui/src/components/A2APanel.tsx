@@ -90,35 +90,11 @@ export function A2ASection({
    const renderCard = (entry: A2AEntryInfo, scope: A2AScope) => {
       const endpoint = endpointOf(entry);
       const probe = probes[entry.name];
-      const flags: React.ReactNode[] = [];
-      if (entry.tenant) {
-         flags.push(
-            <span className="set-card__tag" key="tenant">
-               tenant {entry.tenant}
-            </span>,
-         );
-      }
-      if (entry.disabled) {
-         flags.push(
-            <span className="set-card__tag set-card__tag--off" key="off">
-               已关闭
-            </span>,
-         );
-      }
-      if (entry.tool_name) {
-         flags.push(
-            <span className="set-card__tag set-card__tag--on" key="direct">
-               直连 {entry.tool_name}
-            </span>,
-         );
-      }
-      if (entry.unknown_fields.length > 0) {
-         flags.push(
-            <span className="set-card__tag set-card__tag--warn" key="unknown">
-               未识别 {entry.unknown_fields.join(", ")}
-            </span>,
-         );
-      }
+      const status = entry.disabled ? "已关闭" : "启用";
+      const unknown =
+         entry.unknown_fields.length > 0
+            ? `未识别 ${entry.unknown_fields.join(", ")}`
+            : "";
 
       return (
          <li
@@ -126,8 +102,10 @@ export function A2ASection({
             key={`${scope}:${entry.name}`}
          >
             <div className="set-card__head">
-               <span className="set-card__name">{entry.name}</span>
-               {flags}
+               <span className="set-card__name" title={entry.name}>
+                  {entry.name}
+               </span>
+               <span className="set-card__tag">{scopeLabel(scope)}</span>
                <span className="set-card__actions">
                   <button
                      type="button"
@@ -168,6 +146,24 @@ export function A2ASection({
                <span className="kv">
                   <span className="kv__label">行为</span>
                   <span className="kv__value">{behaviorOf(entry)}</span>
+               </span>
+               {entry.tenant ? (
+                  <span className="kv">
+                     <span className="kv__label">tenant</span>
+                     <span className="kv__value">{entry.tenant}</span>
+                  </span>
+               ) : null}
+               {entry.tool_name ? (
+                  <span className="kv">
+                     <span className="kv__label">直连</span>
+                     <span className="kv__value">{entry.tool_name}</span>
+                  </span>
+               ) : null}
+               <span className="kv">
+                  <span className="kv__label">状态</span>
+                  <span className="kv__value">
+                     {unknown ? `${status} · ${unknown}` : status}
+                  </span>
                </span>
                {entry.header_keys.length > 0 ? (
                   <span className="kv">

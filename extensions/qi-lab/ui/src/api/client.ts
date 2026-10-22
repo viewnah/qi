@@ -265,6 +265,19 @@ export const api = {
   skills: () => request<SkillList>("/api/skills"),
 
   /**
+   * 按**显示名**删掉一层技能(整目录,`SKILL.md` 与附属文件一起)。
+   *
+   * 只有 qi 自己的两层(`global` / `project`)可删;这个控制台只呼 `global`,
+   * 落点是 `~/.qi/agent/skills`。返回更新后的清单。
+   */
+  deleteSkill: (body: { scope: "global" | "project"; name: string }) =>
+    request<SkillList>("/api/skills", {
+      method: "DELETE",
+      headers: { "X-Qi-Confirm": "yes" },
+      body: JSON.stringify(body),
+    }),
+
+  /**
    * 重扫技能目录(不改任何文件,只让 runtime 的缓存跟上磁盘)。
    *
    * 需要它的场景:技能不是经本宿主写的 —— 手工拷目录、另一个进程装的、改了 frontmatter。

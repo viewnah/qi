@@ -2521,13 +2521,17 @@ pre,
 }
 
 /* ── 分节内容(内容列的语汇)────────────────────────────────
-   节标题 16/500 lh24、引言 14/22 `label-tertiary`、内容列 max-width 720 ——
-   三条取自 dsh `ModelsSection.module.css` 的 `.section` / `.title` / `.intro`。 */
+   节标题 16/500 lh24、引言 14/22 `label-tertiary`、内容列 max-width 1440 ——
+   三条取自 dsh `ModelsSection.module.css` 的 `.section` / `.title` / `.intro`。
+
+   为什么内容列放到 1440(以前 860):资产是**卡片网格**,列数应当跟着窗口宽度
+   变 —— 860 的上限把“自适应”卡在最多两列,屏幕再宽也不会多一张。表格与卡片
+   都能从更宽的列里受益;需要短行宽的纯文本(引言、字段行)各自限宽。 */
 .set-sec {
  display: flex;
  flex-direction: column;
  gap: 14px;
- max-width: 860px;
+ max-width: 1440px;
  color: var(--dsw-alias-label-primary);
 }
 
@@ -2542,6 +2546,7 @@ pre,
 
 .set-sec__intro {
  margin: 0;
+ max-width: 860px;
  color: var(--dsw-alias-label-tertiary);
  font: var(--dsw-font-s-14);
 }
@@ -2565,19 +2570,25 @@ pre,
  line-height: 20px;
 }
 
-/* 卡片行。
+/* 资产卡片网格。
 
-   上一版是「0.5px 描边 + r16 + 透明底」—— 圆角大到像个药丸,又没有底色,一整列
-   排下来像几块飘着的圆角矩形,层级读不出来。改成:
+   上一版是「0.5px 描边 + r16 + 透明底」的单列卡 —— 圆角大到像个药丸、又没有
+   底色,一整列排下来像几块飘着的圆角矩形,层级读不出来。再上一版又把它们排成
+   一行一张:内容列有 860px 宽,卡片却很窄,右边一大片空白,一屏能看到的条目
+   也少。现在是:
 
+   · **自适应网格**:`minmax(280px, 1fr)` + `auto-fill` —— 列数跟着内容宽度走
+     (1024 宽约两列、1366 约三列、1920 约五列),窄到放不下两列时自动回单列;
+     只有一张卡时也不拉成通栏(`auto-fill` 保留空轨,保持卡片尺寸);
    · r12 + 一层极浅的底(`layer-2`):卡片与页面底分开,但不像弹窗;
    · 描边只作边界,悬停时加深一档(可点的东西要有回应);
    · 名字与标签同一行,**值区用一条发丝线与标题分开** —— 一条卡里有两块信息
      (它是什么 / 它连哪儿),不给分隔线就会读成一团;
    · `--off` 整卡降透明度:关掉的条目要能一眼扫过去。 */
 .set-cards {
- display: flex;
- flex-direction: column;
+ display: grid;
+ grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+ align-items: stretch;
  gap: 10px;
  margin: 12px 0 0;
  padding: 0;
@@ -2588,6 +2599,7 @@ pre,
  display: flex;
  flex-direction: column;
  gap: 10px;
+ min-width: 0;
  padding: 14px 16px;
  border: 0.5px solid var(--dsw-alias-border-l2);
  border-radius: 12px;
@@ -2607,14 +2619,22 @@ pre,
 .set-card__head {
  display: flex;
  align-items: center;
- flex-wrap: wrap;
+ flex-wrap: nowrap;
  gap: 8px;
  min-height: 20px;
 }
 
+/* 名字过长时**只截名字**,不把动作换到下一行:按钮在右上角是整组卡片的一致结构。
+   `min-width: 0` 是 ellipsis 生效的前提(默认 min-width:auto 会顶开轨道);
+   `flex-shrink` 只缩不放,短名字不会被拉开把标签挤到右边。 */
 .set-card__name {
+ flex: 0 1 auto;
+ min-width: 0;
+ overflow: hidden;
  color: var(--dsw-alias-label-primary);
  font: var(--dsw-font-s-strong-14);
+ text-overflow: ellipsis;
+ white-space: nowrap;
 }
 
 /* 路由名(agent 的目录名)读作名字的注解,不读作第二个名字 —— 与 dsh `.rowTag`
@@ -2657,6 +2677,7 @@ pre,
 .set-card__actions {
  display: inline-flex;
  align-items: center;
+ flex: none;
  gap: 6px;
  margin-left: auto;
 }
@@ -2695,6 +2716,7 @@ pre,
 
 .set-fields {
  margin-top: 12px;
+ max-width: 860px;
 }
 
 /* 行内动作:密集胶囊(dsh `.rowActions .secondaryButton` 的 28/14 档)。 */
@@ -2908,11 +2930,9 @@ pre,
  word-break: break-all;
 }
 
-/* ── A2A 节(两层 a2a.json)───────────────────────────────
-   结构与 MCP 同形(层头 + 卡片行),但两处不同:
+/* ── A2A 节(只摆全局层)───────────────────────────────
+   结构与 MCP 同形(层头 + 卡片网格),一处不同:
 
-   · 多一块「生效条目」。深合并之后"现在到底连的是哪"才是主问题,所以它在最上面,
-     下面的层列表是注解;
    · 每张卡自带**探测结果**。探测是只读的,不弹层 —— 结果就地展开在卡下方,
      这样能边看图边改旁边的值。 */
 .a2a {
@@ -3120,15 +3140,6 @@ pre,
 .a2a-form__error {
  margin: 0;
  color: var(--dsw-alias-state-error-primary);
- font: var(--dsw-font-xxs-12);
-}
-
-/* 绑定关系写在卡片行右端(dsh 的行尾动作位)—— 它是这一行的**注解**,不是按钮,
-   所以不用胶囊外形,只用小一号的次要色。 */
-.mcp-bind {
- flex: none;
- margin-left: auto;
- color: var(--dsw-alias-label-tertiary);
  font: var(--dsw-font-xxs-12);
 }
 

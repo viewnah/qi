@@ -1,8 +1,8 @@
 /**
- * 设置面的 **MCP 一节**:全局与各角色私有两处声明表的列表,以及它们的增删改。
+ * 设置面的 **MCP 一节**:只摆**全局** `mcp.json` 的声明,以及它们的增删改。
  *
- * 这里**只摆全局资产**:项目级 `.qi/mcp.json` 与项目级角色的私有声明由
- * `state/scope.ts` 过滤掉(后端契约仍在,CLI 与其它宿主可以读写它们)。
+ * 项目级 `.qi/mcp.json` 与角色私有的声明都不在这里显示:它们跟着仓库 / 角色目录走,
+ * 这个控制台只管一处就能管完的全局层(后端契约仍在,CLI 与其它宿主可以读写它们)。
  *
  * 三条从宿主继承的口径,界面必须照着显示:
  *
@@ -37,14 +37,9 @@ export interface McpTarget {
    server: McpServerInfo | null;
 }
 
-/** 来源层的展示名。agent 私有那层带上是谁的 —— 它可以有很多个。 */
-function scopeLabel(scope: McpScope, role: string): string {
-   if (scope === "role") return `角色私有 · ${role}`;
+/** 来源层的展示名。设置页只摆全局层(角色私有与项目层都不显示)。 */
+function scopeLabel(): string {
    return "全局";
-}
-
-function sourceLabel(src: McpSource): string {
-   return scopeLabel(src.scope, src.role);
 }
 
 /**
@@ -54,13 +49,13 @@ function sourceLabel(src: McpSource): string {
  * 而角色的 MCP 面由 `agent.md` 的 `tools:` 里有没有 mcp 条目决定。所以这里显示的是
  * qi-mcp 真实有的那几个状态位。
  */
-function bindLabel(src: McpSource, server: McpServerInfo): string {
+function bindLabel(server: McpServerInfo): string {
    const bits: string[] = [];
    if (server.disabled) bits.push("已关闭");
    if (server.direct_tools) bits.push("直连注册");
    if (server.unknown_fields.length > 0)
       bits.push(`未识别字段 ${server.unknown_fields.length} 个`);
-   if (bits.length === 0) bits.push(src.scope === "role" ? "跟随角色" : "走代理");
+   if (bits.length === 0) bits.push("走代理");
    return bits.join(" · ");
 }
 
@@ -101,7 +96,7 @@ export function McpSection({
          {mcp.sources.map((src) => (
             <div className="mcp-src" key={`${src.scope}:${src.role}`}>
                <div className="mcp-src__head">
-                  <span className="set-card__tag">{sourceLabel(src)}</span>
+                  <span className="set-card__tag">{scopeLabel()}</span>
                   <span className="mcp-src__path">{src.path}</span>
                   {canWrite ? (
                      <span className="set-card__actions">
@@ -124,12 +119,11 @@ export function McpSection({
                      {src.servers.map((server) => (
                         <li className="set-card" key={server.name}>
                            <div className="set-card__head">
-                              <span className="set-card__name">{server.name}</span>
-                              {server.transport ? (
-                                 <span className="set-card__tag">{server.transport}</span>
-                              ) : null}
+                              <span className="set-card__name" title={server.name}>
+                                 {server.name}
+                              </span>
+                              <span className="set-card__tag">{scopeLabel()}</span>
                               <span className="set-card__actions">
-                                 <span className="mcp-bind">{bindLabel(src, server)}</span>
                                  {canWrite ? (
                                     <>
                                        <button
@@ -151,6 +145,16 @@ export function McpSection({
                               </span>
                            </div>
                            <div className="set-card__fields">
+                              <span className="kv">
+                                 <span className="kv__label">传输</span>
+                                 <span className="kv__value">
+                                    {server.transport || "(未知)"}
+                                 </span>
+                              </span>
+                              <span className="kv">
+                                 <span className="kv__label">状态</span>
+                                 <span className="kv__value">{bindLabel(server)}</span>
+                              </span>
                               <span className="kv">
                                  <span className="kv__label">目标</span>
                                  <span className="kv__value">
@@ -406,7 +410,7 @@ export function McpDialog({
       <ConfirmDialog
          title={
             creating
-              ? `在${scopeLabel(target.scope, target.role)}层新建 server?`
+              ? `在${scopeLabel()}层新建 server?`
               : `改写 ${target.server?.name ?? ""}?`
          }
          rows={[
@@ -416,7 +420,7 @@ export function McpDialog({
               : [
                    {
                       label: "server",
-                      value: `${target.server?.name}(${scopeLabel(target.scope, target.role)})`,
+                      value: `${target.server?.name}(${scopeLabel()})`,
                    },
                 ]),
          ]}
@@ -625,12 +629,12 @@ export function McpDeleteDialog({
 }) {
    return (
       <ConfirmDialog
-         title={`从${sourceLabel(target)}删掉 ${server.name}?`}
+         title={`从${scopeLabel()}删掉 ${server.name}?`}
          rows={[
             { label: "server", value: server.name },
             { label: "目标文件", value: target.path },
          ]}
-         warning="只删这一层的声明:同名的下层声明会露出来(覆盖关系不变)。写错了可从 git 恢复。"
+         warning="只删全局层的这一条:项目层如果还有同名声明,运行时仍会生效(那个层不在这里显示)。写错了可从 git 恢复。"
          danger
          confirmLabel="确认删除"
          confirmDisabled={busy}

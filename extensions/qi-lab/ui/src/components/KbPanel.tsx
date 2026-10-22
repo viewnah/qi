@@ -239,7 +239,9 @@ export function KbPanel({ canWrite, onChanged }: { canWrite: boolean; onChanged?
                {status.providers.map((p) => (
                   <li className="set-card" key={p.name}>
                      <div className="set-card__head">
-                        <span className="set-card__name">{p.name}</span>
+                        <span className="set-card__name" title={p.name}>
+                           {p.name}
+                        </span>
                         <span className="set-card__tag">
                            {p.loggedIn ? "已登录" : "未登录"}
                         </span>

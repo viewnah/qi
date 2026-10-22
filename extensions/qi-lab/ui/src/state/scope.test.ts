@@ -25,7 +25,7 @@ import {
    globalMcpList,
    isGlobalAgent,
    isGlobalSkill,
-   projectRoleDirs,
+   skillDeleteScope,
 } from "./scope";
 
 function agent(over: Partial<AgentInfo> & { name: string; source: string }): AgentInfo {
@@ -134,10 +134,17 @@ describe("技能", () => {
          expect(isGlobalSkill(skill({ name: "s", source })), source).toBe(false);
       }
    });
+
+   it("只有 qi 全局层可以删:跨工具层与 settings 追加层都不归这里管", () => {
+      expect(skillDeleteScope(skill({ name: "s", source: "qi-global" }))).toBe("global");
+      for (const source of ["agents-global", "settings-global"]) {
+         expect(skillDeleteScope(skill({ name: "s", source })), source).toBeNull();
+      }
+   });
 });
 
 describe("MCP", () => {
-   it("项目层整层去掉,全局层与角色私有层保留", () => {
+   it("只留全局层:项目层与角色私有层都去掉", () => {
       const list: McpList = {
          unavailable: false,
          sources: [
@@ -147,32 +154,13 @@ describe("MCP", () => {
          ],
       };
 
-      const filtered = globalMcpList(list, []);
+      const filtered = globalMcpList(list);
 
-      expect(filtered?.sources.map((source) => source.scope)).toEqual(["global", "role"]);
-   });
-
-   it("项目级角色的私有声明一起去掉(role 层不带 source,靠目录名认)", () => {
-      const agents = [
-         agent({ name: "writer", source: "user",
-                 path: "C:\\Users\\me\\.qi\\agent\\agents\\writer\\agent.md" }),
-         agent({ name: "repo", source: "project",
-                 path: "C:\\w\\repo\\.qi\\agents\\repo-helper\\agent.md" }),
-      ];
-      const list: McpList = {
-         unavailable: false,
-         sources: [
-            mcpSource({ scope: "role", role: "writer" }),
-            mcpSource({ scope: "role", role: "repo-helper" }),
-         ],
-      };
-
-      expect([...projectRoleDirs(agents)]).toEqual(["repo-helper"]);
-      expect(globalMcpList(list, agents)?.sources.map((s) => s.role)).toEqual(["writer"]);
+      expect(filtered?.sources.map((source) => source.scope)).toEqual(["global"]);
    });
 
    it("读不到清单时原样返回 null", () => {
-      expect(globalMcpList(null, [])).toBeNull();
+      expect(globalMcpList(null)).toBeNull();
    });
 });
 

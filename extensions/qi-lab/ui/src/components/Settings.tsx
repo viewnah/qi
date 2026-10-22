@@ -2,7 +2,7 @@
  * 设置面 —— **形状照 dsh 的设置面板**(`ui-settings-general/SettingsRoot.module.css`,
  * figma 501:29947):全屏遮罩 + 居中面板(800 宽、`min(800px, 100vh - 48px)` 高、
  * r32),左导轨 188(标题行 16/500 + 40px 导航格 + 16px 图标),右内容列
- * (54px 头 + 可滚动的 options,内容列 max-width 720)。
+ * (54px 头 + 可滚动的 options,内容列 max-width 1440 —— 资产卡片网格按宽度自适应列数)。
  *
  * 这里以前是**页内两栏**(`grid` + 卡片),三个实际缺陷促成了这次重做:
  *
@@ -33,6 +33,7 @@ import {
    globalMcpList,
    isGlobalAgent,
    isGlobalSkill,
+   skillDeleteScope,
 } from "../state/scope";
 import type { ReactNode, RefObject } from "react";
 import { api, ApiError } from "../api/client";
@@ -232,6 +233,10 @@ export function Settings({
    const [skills, setSkills] = useState<SkillInfo[]>([]);
    /** 「重新扫描」进行中 —— 只锁那一颗键,不锁整页 */
    const [skillsBusy, setSkillsBusy] = useState(false);
+   /** 技能删除:待删的那个、错误与在写标记(错误**报在弹层里**)。 */
+   const [skillRemoving, setSkillRemoving] = useState<SkillInfo | null>(null);
+   const [skillError, setSkillError] = useState<string | null>(null);
+   const [skillBusy, setSkillBusy] = useState(false);
    const [extensions, setExtensions] = useState<string[]>([]);
    const [mcp, setMcp] = useState<McpList | null>(null);
    /** 老宿主没有 `/api/mcp` → 这一节降级显示,不把整页打成错误屏。 */
@@ -319,6 +324,11 @@ export function Settings({
             setRemoving(null);
             return;
          }
+         if (skillRemoving !== null) {
+            setSkillRemoving(null);
+            setSkillError(null);
+            return;
+         }
          if (mcpTarget !== null) {
             setMcpTarget(null);
             setMcpError(null);
@@ -338,7 +348,7 @@ export function Settings({
       };
       document.addEventListener("keydown", onKeyDown, true);
       return () => document.removeEventListener("keydown", onKeyDown, true);
-   }, [onClose, editing, removing, mcpTarget, mcpRemoving, agentRemoving]);
+   }, [onClose, editing, removing, skillRemoving, mcpTarget, mcpRemoving, agentRemoving]);
 
    /**
     * 技能清单**每次进这一节都重读**。
@@ -583,6 +593,29 @@ export function Settings({
       })();
    };
 
+   /**
+    * 删一个技能(**整目录**,`SKILL.md` 与 references/ 等附属文件一起) ——
+    * **成功才关弹层**:留在弹层里报错才看得见。端点在删完后会重扫 runtime 缓存,
+    * 所以下一次对话就不会再看见它。
+    */
+   const removeSkill = (skill: SkillInfo) => {
+      const scope = skillDeleteScope(skill);
+      if (scope === null) return;              // 不可删的层压根不该有那个键
+      setSkillError(null);
+      setSkillBusy(true);
+      void (async () => {
+         try {
+            const list = await api.deleteSkill({ scope, name: skill.name });
+            setSkills(list.skills);
+            setSkillRemoving(null);
+         } catch (err) {
+            setSkillError(err instanceof ApiError ? err.detail : String(err));
+         } finally {
+            setSkillBusy(false);
+         }
+      })();
+   };
+
    const authPath = config?.auth_file ?? "(未知)";
    const providers = config?.providers ?? [];
    const checks = config?.checks ?? [];
@@ -593,7 +626,7 @@ export function Settings({
     */
    const visibleAgents = agents.filter(isGlobalAgent);
    const visibleSkills = skills.filter(isGlobalSkill);
-   const visibleMcp = globalMcpList(mcp, agents);
+   const visibleMcp = globalMcpList(mcp);
    const visibleA2a = globalA2AList(a2a);
    /** 全局层加起来声明了多少个 server(节标题里的那个数)。 */
    const mcpTotal = (visibleMcp?.sources ?? []).reduce(
@@ -664,7 +697,10 @@ export function Settings({
                               {providers.map((provider) => (
                                  <li className="set-card" key={provider.name}>
                                     <div className="set-card__head">
-                                       <span className="set-card__name">
+                                       <span
+                                          className="set-card__name"
+                                          title={provider.name}
+                                       >
                                           {provider.name}
                                        </span>
                                        <Dot
@@ -777,7 +813,10 @@ export function Settings({
                               {visibleAgents.map((agent) => (
                                  <li className="set-card" key={agent.name}>
                                     <div className="set-card__head">
-                                       <span className="set-card__name">
+                                       <span
+                                          className="set-card__name"
+                                          title={agent.name}
+                                       >
                                           {agent.name}
                                        </span>
                                        <span className="set-card__tag">
@@ -869,24 +908,56 @@ export function Settings({
                               或跨工具的 <code>~/.agents/skills/</code>。
                            </p>
                         ) : (
-                           <table className="set-table">
-                              <thead>
-                                 <tr>
-                                    <th>名称</th>
-                                    <th>来源</th>
-                                    <th>描述</th>
-                                 </tr>
-                              </thead>
-                              <tbody>
-                                 {visibleSkills.map((skill) => (
-                                    <tr key={skill.path || skill.name}>
-                                       <td className="set-mono">{skill.name}</td>
-                                       <td>{skill.source}</td>
-                                       <td>{skill.description}</td>
-                                    </tr>
-                                 ))}
-                              </tbody>
-                           </table>
+                           <ul className="set-cards">
+                              {visibleSkills.map((skill) => (
+                                 <li
+                                    className="set-card"
+                                    key={skill.path || skill.name}
+                                 >
+                                    <div className="set-card__head">
+                                       <span
+                                          className="set-card__name"
+                                          title={skill.name}
+                                       >
+                                          {skill.name}
+                                       </span>
+                                       <span className="set-card__tag">
+                                          {skill.source}
+                                       </span>
+                                       {skillWrite &&
+                                       skillDeleteScope(skill) !== null ? (
+                                          <span className="set-card__actions">
+                                             <button
+                                                type="button"
+                                                className="set-act set-act--danger"
+                                                onClick={() => {
+                                                   setSkillError(null);
+                                                   setSkillRemoving(skill);
+                                                }}
+                                             >
+                                                删除
+                                             </button>
+                                          </span>
+                                       ) : null}
+                                    </div>
+                                    {skill.description ? (
+                                       <p className="set-card__desc">
+                                          {skill.description}
+                                       </p>
+                                    ) : null}
+                                    {skill.path ? (
+                                       <div className="set-card__fields">
+                                          <span className="kv">
+                                             <span className="kv__label">位置</span>
+                                             <span className="kv__value">
+                                                {skill.path}
+                                             </span>
+                                          </span>
+                                       </div>
+                                    ) : null}
+                                 </li>
+                              ))}
+                           </ul>
                         )}
                      </Section>
                   ) : null}
@@ -896,9 +967,9 @@ export function Settings({
                         title={`MCP(${mcpTotal})`}
                         intro={
                            <>
-                              两处声明:<strong>全局</strong>与各<strong>角色私有</strong>目录。
-                              同名时<strong>角色私有 &gt; 全局</strong>。项目级{" "}
-                              <code>.qi/mcp.json</code> 跟着仓库走,不在这里管。
+                              只有<strong>全局</strong> <code>mcp.json</code>:角色私有的
+                              声明不在这个页面显示。项目级 <code>.qi/mcp.json</code>{" "}
+                              跟着仓库走,同样不在这里管。
                               这里只有“声明”、没有“已连接”(server 按需启动);
                               谁能调用由角色的 <code>tools:</code> 决定 ——
                               写 <code>mcp</code> 拿代理工具,写{" "}
@@ -1031,6 +1102,32 @@ export function Settings({
                            void removeMcp(mcpRemoving);
                         }}
                      />
+                  ) : null}
+
+                  {/* 技能删除确认层。与 MCP / 角色的删除同一规矩:目标写全、错误报在
+                      弹层里、成功才关。 */}
+                  {skillRemoving ? (
+                     <ConfirmDialog
+                        title={`删除技能 ${skillRemoving.name}?`}
+                        rows={[
+                           { label: "技能", value: skillRemoving.name },
+                           { label: "来源", value: skillRemoving.source },
+                           { label: "目标目录", value: skillRemoving.path },
+                        ]}
+                        warning="整目录删除:SKILL.md 与 references/ 等附属文件一起没。写错了可从 git 恢复。"
+                        danger
+                        confirmLabel="确认删除"
+                        confirmDisabled={skillBusy}
+                        onCancel={() => {
+                           setSkillRemoving(null);
+                           setSkillError(null);
+                        }}
+                        onConfirm={() => removeSkill(skillRemoving)}
+                     >
+                        {skillError ? (
+                           <div className="dialog__error">{skillError}</div>
+                        ) : null}
+                     </ConfirmDialog>
                   ) : null}
 
                   {/* 角色删除确认层(不带表单:只有"删哪个、删哪一层")——错误报在

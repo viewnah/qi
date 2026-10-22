@@ -1,5 +1,8 @@
 /**
- * 设置面的 **MCP 一节**:三处声明表(全局 / 项目 / 角色私有)的列表,以及它们的增删改。
+ * 设置面的 **MCP 一节**:全局与各角色私有两处声明表的列表,以及它们的增删改。
+ *
+ * 这里**只摆全局资产**:项目级 `.qi/mcp.json` 与项目级角色的私有声明由
+ * `state/scope.ts` 过滤掉(后端契约仍在,CLI 与其它宿主可以读写它们)。
  *
  * 三条从宿主继承的口径,界面必须照着显示:
  *
@@ -37,7 +40,7 @@ export interface McpTarget {
 /** 来源层的展示名。agent 私有那层带上是谁的 —— 它可以有很多个。 */
 function scopeLabel(scope: McpScope, role: string): string {
    if (scope === "role") return `角色私有 · ${role}`;
-   return scope === "global" ? "全局" : "项目";
+   return "全局";
 }
 
 function sourceLabel(src: McpSource): string {
@@ -86,20 +89,6 @@ export function McpSection({
    onEdit: (src: McpSource, server: McpServerInfo) => void;
    onDelete: (src: McpSource, server: McpServerInfo) => void;
 }) {
-   /**
-    * 项目层占用的名字。同名时项目覆盖全局,所以全局层那张卡上要标一下 ——
-    * 否则两行都写着同一个名字,读者会以为两个都生效。
-    */
-   const projectNames = useMemo(
-      () =>
-         new Set(
-            (mcp?.sources ?? [])
-               .filter((source) => source.scope === "project")
-               .flatMap((source) => source.servers.map((server) => server.name)),
-         ),
-      [mcp],
-   );
-
    if (missing) {
       return (
          <p className="set-sec__empty">没装 qi-mcp 扩展,读不到 MCP 声明。</p>
@@ -138,10 +127,6 @@ export function McpSection({
                               <span className="set-card__name">{server.name}</span>
                               {server.transport ? (
                                  <span className="set-card__tag">{server.transport}</span>
-                              ) : null}
-                              {src.scope === "global" &&
-                              projectNames.has(server.name) ? (
-                                 <span className="set-card__tag">被项目同名覆盖</span>
                               ) : null}
                               <span className="set-card__actions">
                                  <span className="mcp-bind">{bindLabel(src, server)}</span>

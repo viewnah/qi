@@ -20,10 +20,20 @@
  * `/api/extensions`、`/api/mcp`;没有的字段就不显示 —— 不编造 dsh 有而 qi 没有的节
  * (它的沙箱 / 审批 / 遥测开关 qi 都还没有)。
  *
+ * **只管全局资产**:Agent / 技能 / MCP / A2A / 知识库五节里的项目级那一层(跟着
+ * 当前 cwd 仓库走的 `.qi/…`、`.agents/skills/`)不展示、也不写 —— 过滤口径集中在
+ * `state/scope.ts`。后端契约不变(CLI 与其它宿主仍可读写项目层)。
+ *
  * 唯一可写动作是**凭证**:必须过二次确认层(显示目标文件绝对路径 + 掩码值),
  * 请求再带 `X-Qi-Confirm: yes`(后端也拦,双保险)。
  */
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import {
+   globalA2AList,
+   globalMcpList,
+   isGlobalAgent,
+   isGlobalSkill,
+} from "../state/scope";
 import type { ReactNode, RefObject } from "react";
 import { api, ApiError } from "../api/client";
 import type {
@@ -576,9 +586,23 @@ export function Settings({
    const authPath = config?.auth_file ?? "(未知)";
    const providers = config?.providers ?? [];
    const checks = config?.checks ?? [];
-   /** 三处加起来声明了多少个 server(节标题里的那个数)。 */
-   const mcpTotal = (mcp?.sources ?? []).reduce(
+   /*
+    * 这个控制台只管**全局(用户级)资产**:项目级那一层(跟着当前 cwd 仓库走的
+    * `.qi/…`、`.agents/skills/`)一律不摆 —— 口径集中在 `state/scope.ts`。后端契约
+    * 不变,只是“设置页不显示 / 不写”它们。
+    */
+   const visibleAgents = agents.filter(isGlobalAgent);
+   const visibleSkills = skills.filter(isGlobalSkill);
+   const visibleMcp = globalMcpList(mcp, agents);
+   const visibleA2a = globalA2AList(a2a);
+   /** 全局层加起来声明了多少个 server(节标题里的那个数)。 */
+   const mcpTotal = (visibleMcp?.sources ?? []).reduce(
       (total, source) => total + source.servers.length,
+      0,
+   );
+   /** 全局层 a2a.json 里有多少条目。 */
+   const a2aTotal = (visibleA2a?.sources ?? []).reduce(
+      (total, source) => total + source.entries.length,
       0,
    );
    return (
@@ -734,23 +758,23 @@ export function Settings({
 
                   {section === "agents" ? (
                      <Section
-                        title={`Agent(${agents.length})`}
+                        title={`Agent(${visibleAgents.length})`}
                         intro={
                            <>
-                              优先级:项目 <code>.qi/agents/</code> &gt; 用户{" "}
-                              <code>~/.qi/agent/agents/</code> &gt; 包内置。tools
-                              为 <code>*</code> 时展开成实际清单。
+                              只列全局角色:<code>~/.qi/agent/agents/</code> 与远端 A2A
+                              智能体。项目级角色跟着仓库走,不在这里管。tools 为{" "}
+                              <code>*</code> 时展开成实际清单。
                            </>
                         }
                      >
-                        {agents.length === 0 ? (
+                        {visibleAgents.length === 0 ? (
                            <p className="set-sec__empty">
-                              没有发现 agent。没有装专职角色时,框架只用内置的
+                              没有发现全局角色。没有装专职角色时,框架只用内置的
                               general 兜底。
                            </p>
                         ) : (
                            <ul className="set-cards">
-                              {agents.map((agent) => (
+                              {visibleAgents.map((agent) => (
                                  <li className="set-card" key={agent.name}>
                                     <div className="set-card__head">
                                        <span className="set-card__name">
@@ -808,9 +832,10 @@ export function Settings({
 
                   {section === "skills" ? (
                      <Section
-                        title={`技能(${skills.length})`}
+                        title={`技能(${visibleSkills.length})`}
                         intro={
                            <>
+                              只列全局技能(<code>~/.qi/agent/skills/</code> 等)。
                               渐进披露:只有描述进系统提示词,正文由 agent 需要时用{" "}
                               <code>read</code> 读全文。
                            </>
@@ -838,11 +863,10 @@ export function Settings({
                               </span>
                            </div>
                         ) : null}
-                        {skills.length === 0 ? (
+                        {visibleSkills.length === 0 ? (
                            <p className="set-sec__empty">
-                              没有发现技能。放在 <code>~/.qi/agent/skills/</code>
-                              、项目的 <code>.qi/skills/</code>,或跨工具的{" "}
-                              <code>.agents/skills/</code>。
+                              没有发现全局技能。放在 <code>~/.qi/agent/skills/</code>{" "}
+                              或跨工具的 <code>~/.agents/skills/</code>。
                            </p>
                         ) : (
                            <table className="set-table">
@@ -854,7 +878,7 @@ export function Settings({
                                  </tr>
                               </thead>
                               <tbody>
-                                 {skills.map((skill) => (
+                                 {visibleSkills.map((skill) => (
                                     <tr key={skill.path || skill.name}>
                                        <td className="set-mono">{skill.name}</td>
                                        <td>{skill.source}</td>
@@ -872,9 +896,10 @@ export function Settings({
                         title={`MCP(${mcpTotal})`}
                         intro={
                            <>
-                              三处声明:全局、项目、各 agent 私有目录。同名时{" "}
-                              <strong>角色私有 &gt; 项目 &gt; 全局</strong>。
-                              这里只有"声明"、没有"已连接"(server 按需启动);
+                              两处声明:<strong>全局</strong>与各<strong>角色私有</strong>目录。
+                              同名时<strong>角色私有 &gt; 全局</strong>。项目级{" "}
+                              <code>.qi/mcp.json</code> 跟着仓库走,不在这里管。
+                              这里只有“声明”、没有“已连接”(server 按需启动);
                               谁能调用由角色的 <code>tools:</code> 决定 ——
                               写 <code>mcp</code> 拿代理工具,写{" "}
                               <code>mcp__server__*</code> 直连。
@@ -883,7 +908,7 @@ export function Settings({
                         }
                      >
                         <McpSection
-                           mcp={mcp}
+                           mcp={visibleMcp}
                            missing={mcpMissing || (mcp?.unavailable ?? false)}
                            canWrite={mcpWrite}
                            onAdd={(src) => {
@@ -914,17 +939,17 @@ export function Settings({
 
                   {section === "a2a" ? (
                      <Section
-                        title={`A2A(${a2a?.resolved.length ?? 0})`}
+                        title={`A2A(${a2aTotal})`}
                         intro={
                            <>
-                              两层 <code>a2a.json</code>(全局 / 项目)深合并后的
-                              <strong>生效条目</strong>就是模型实际会调的东西。
-                              一个条目通常是一张 Agent Card;<code>headers</code> 只显示键名。
+                              全局 <code>a2a.json</code> 里的条目。一个条目通常是一张 Agent
+                              Card;<code>headers</code> 只显示键名。项目级{" "}
+                              <code>a2a.json</code> 跟着仓库走,不在这里管。
                            </>
                         }
                      >
                         <A2ASection
-                           a2a={a2a}
+                           a2a={visibleA2a}
                            missing={a2aMissing || (a2a?.unavailable ?? false)}
                            canWrite={a2aWrite}
                            onAdd={(src) => {
@@ -1079,8 +1104,10 @@ export function Settings({
                         intro={
                            <>
                               把 hikqin 的知识库接成 qi-kb 的 provider（账号）+
-                              knowledgeBases（KB）。账号与令牌写在 qi-kb 自己的配置里，
-                              不在 store.json。同一个 KB 只保留一份；重复安装会先问是否覆盖。
+                              knowledgeBases（KB）。只列与只写<strong>全局</strong>配置；
+                              项目级 KB 跟着仓库走，不在这里管。账号与令牌写在 qi-kb
+                              自己的配置里，不在 store.json。同一个 KB 只保留一份；
+                              重复安装会先问是否覆盖。
                            </>
                         }
                      >

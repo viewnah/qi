@@ -1,14 +1,16 @@
 /**
- * 设置面的「知识库」一节：qi-kb 的 provider（hikqin 账号）+ knowledgeBases。
+ * 设置面的「知识库」一节:qi-kb 的 provider（hikqin 账号）+ knowledgeBases。
  *
- * 三条口径：
- *   1. 账号在 qi-kb 自己的 `kb.json` / `kb-auth.json` 里，不在 `store.json`；
- *   2. 同一个 `(instance, kbId)` 只保留一份；重复安装先 `plan`，再确认是否覆盖；
- *   3. 写操作带 `X-Qi-Confirm: yes`，令牌不回显。
+ * 四条口径:
+ *   1. **只摆全局层**:项目级 provider / KB 跟着仓库走,由 `state/scope.ts` 过滤掉;
+ *   2. 账号在 qi-kb 自己的 `kb.json` / `kb-auth.json` 里,不在 `store.json`;
+ *   3. 同一个 `(instance, kbId)` 只保留一份;重复安装先 `plan`,再确认是否覆盖;
+ *   4. 写操作带 `X-Qi-Confirm: yes`,令牌不回显。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../api/client";
 import type { KbItem, KbStatus } from "../api/types";
+import { globalKbItems, globalKbProviders } from "../state/scope";
 
 export function KbPanel({ canWrite, onChanged }: { canWrite: boolean; onChanged?: () => void }) {
    const [status, setStatus] = useState<KbStatus | null>(null);
@@ -36,11 +38,12 @@ export function KbPanel({ canWrite, onChanged }: { canWrite: boolean; onChanged?
             api.kbStatus(),
             api.kbAvailable(undefined, undefined, false),
          ]);
-         setStatus(s);
-         setItems(list.items);
-         if (!provider && s.providers[0]) setProvider(s.providers[0].name);
-         if (!form.baseUrl && s.providers[0]) {
-            setForm((f) => ({ ...f, baseUrl: s.providers[0].baseUrl }));
+         const providers = globalKbProviders(s.providers);
+         setStatus({ ...s, providers });
+         setItems(globalKbItems(list.items));
+         if (!provider && providers[0]) setProvider(providers[0].name);
+         if (!form.baseUrl && providers[0]) {
+            setForm((f) => ({ ...f, baseUrl: providers[0].baseUrl }));
          }
       } catch (exc) {
          setError(exc instanceof ApiError ? exc.detail : String(exc));
@@ -79,6 +82,7 @@ export function KbPanel({ canWrite, onChanged }: { canWrite: boolean; onChanged?
             name: form.name.trim(),
             baseUrl: form.baseUrl.trim(),
             login: form.login.trim() || undefined,
+            scope: "global",
          }),
       );
    }, [form, run]);
@@ -91,6 +95,7 @@ export function KbPanel({ canWrite, onChanged }: { canWrite: boolean; onChanged?
             login: form.login.trim() || undefined,
             password: form.password,
             baseUrl: form.baseUrl.trim() || undefined,
+            scope: "global",
          }),
       );
       setForm((f) => ({ ...f, password: "" }));
@@ -104,7 +109,7 @@ export function KbPanel({ canWrite, onChanged }: { canWrite: boolean; onChanged?
          setBusy(true);
          setError(null);
          try {
-            const plan = await api.kbPlan({ kbId: item.id, provider: prov });
+            const plan = await api.kbPlan({ kbId: item.id, provider: prov, scope: "global" });
             let rebind = false;
             if (plan.blocked || (plan.action === "rebind" && plan.existingProvider !== prov)) {
                rebind = window.confirm(
@@ -114,7 +119,7 @@ export function KbPanel({ canWrite, onChanged }: { canWrite: boolean; onChanged?
                );
                if (!rebind) return;
             }
-            await api.kbInstall({ kbId: item.id, provider: prov, rebind });
+            await api.kbInstall({ kbId: item.id, provider: prov, rebind, scope: "global" });
             setDone(`已安装 ${item.name}`);
             await load();
             onChanged?.();

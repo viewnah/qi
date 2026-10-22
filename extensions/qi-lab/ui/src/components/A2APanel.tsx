@@ -3,9 +3,9 @@
  *
  * 与 MCP 的差别,决定这里为什么不是直接复用:
  *
- * 1. **两层 + 深合并**。读端回两份:`sources` 是每层原样,`resolved` 是合并后的
- *    生效条目。界面把 `resolved` 放在最上面 —— "现在到底连的是哪"才是用户要的答案,
- *    "谁写的"是注解。
+ * 1. **只摆全局层**。a2a.json 磁盘上仍是两层,但项目层跟着仓库走、不归这个控制台
+ *    管(由 `state/scope.ts` 过滤)。所以这里只有一块“全局层”,不再画深合并后的
+ *    “生效条目” —— 那是“项目层写了什么”的答案,不是这一节要回答的问题。
  * 2. **探测**。配置对不对只有真去拉一次名片才知道,所以每个条目带一个「探测」,
  *    结果就地展开(不弹层:探测是只读的,弹层会挡着列表)。
  */
@@ -74,17 +74,6 @@ export function A2ASection({
       }
    };
 
-   /** 项目层占用的名字:同名时项目覆盖全局,全局那张卡要标一下。 */
-   const overridden = useMemo(
-      () =>
-         new Set(
-            (a2a?.sources ?? [])
-               .filter((source) => source.scope === "project")
-               .flatMap((source) => source.entries.map((entry) => entry.name)),
-         ),
-      [a2a],
-   );
-
    if (missing) {
       return (
          <p className="set-sec__empty">
@@ -95,11 +84,10 @@ export function A2ASection({
    }
    if (a2a === null) return <p className="set-sec__empty">读取中…</p>;
 
-   const renderCard = (
-      entry: A2AEntryInfo,
-      scope: A2AScope,
-      { merged }: { merged: boolean },
-   ) => {
+   /** 设置页只管全局层(项目层已被 `state/scope.ts` 过滤)。 */
+   const source = a2a.sources.find((item) => item.scope === "global") ?? null;
+
+   const renderCard = (entry: A2AEntryInfo, scope: A2AScope) => {
       const endpoint = endpointOf(entry);
       const probe = probes[entry.name];
       const flags: React.ReactNode[] = [];
@@ -121,20 +109,6 @@ export function A2ASection({
          flags.push(
             <span className="set-card__tag set-card__tag--on" key="direct">
                直连 {entry.tool_name}
-            </span>,
-         );
-      }
-      if (!merged && scope === "global" && overridden.has(entry.name)) {
-         flags.push(
-            <span className="set-card__tag set-card__tag--warn" key="over">
-               被项目同名覆盖
-            </span>,
-         );
-      }
-      if (entry.layers.length > 1) {
-         flags.push(
-            <span className="set-card__tag" key="layers">
-               合并自 {entry.layers.map(scopeLabel).join(" + ")}
             </span>,
          );
       }
@@ -163,27 +137,19 @@ export function A2ASection({
                   >
                      {probing === entry.name ? "探测中…" : "探测"}
                   </button>
-                  {canWrite ? (
+                  {canWrite && source ? (
                      <>
                         <button
                            type="button"
                            className="set-act"
-                           onClick={() => {
-                              const source =
-                                 a2a.sources.find((item) => item.scope === scope) ?? null;
-                              if (source) onEdit(source, entry);
-                           }}
+                           onClick={() => onEdit(source, entry)}
                         >
                            编辑
                         </button>
                         <button
                            type="button"
                            className="set-act set-act--danger"
-                           onClick={() => {
-                              const source =
-                                 a2a.sources.find((item) => item.scope === scope) ?? null;
-                              if (source) onDelete(source, entry);
-                           }}
+                           onClick={() => onDelete(source, entry)}
                         >
                            删除
                         </button>
@@ -215,63 +181,43 @@ export function A2ASection({
       );
    };
 
+   if (source === null) {
+      return <p className="set-sec__empty">没有读到全局 a2a.json。</p>;
+   }
+
    return (
       <div className="a2a">
          <div className="a2a-block">
             <div className="a2a-block__head">
-               <span className="a2a-block__title">生效条目</span>
-               <span className="a2a-block__hint">
-                  两层深合并后的结果 —— 模型调用时看到的就是这些
+               <span className="a2a-block__title">全局层</span>
+               <span className="a2a-block__path" title={source.path}>
+                  {source.path}
                </span>
+               {!source.exists ? (
+                  <span className="set-card__tag">文件不存在</span>
+               ) : null}
+               {canWrite ? (
+                  <span className="set-card__actions">
+                     <button
+                        type="button"
+                        className="set-act"
+                        onClick={() => onAdd(source)}
+                     >
+                        添加
+                     </button>
+                  </span>
+               ) : null}
             </div>
-            {a2a.resolved.length === 0 ? (
+            {source.entries.length === 0 ? (
                <p className="set-sec__empty">
-                  还没有任何条目。在下面任一层点「添加」,或直接编辑那个文件。
+                  {source.exists ? "文件在,但没有条目。" : "这里没有 a2a.json。"}
                </p>
             ) : (
                <ul className="set-cards">
-                  {a2a.resolved.map((entry) =>
-                     renderCard(entry, entry.source as A2AScope, { merged: true }),
-                  )}
+                  {source.entries.map((entry) => renderCard(entry, source.scope))}
                </ul>
             )}
          </div>
-
-         {a2a.sources.map((src) => (
-            <div className="a2a-block" key={src.scope}>
-               <div className="a2a-block__head">
-                  <span className="a2a-block__title">{scopeLabel(src.scope)}层</span>
-                  <span className="a2a-block__path" title={src.path}>
-                     {src.path}
-                  </span>
-                  {!src.exists ? (
-                     <span className="set-card__tag">文件不存在</span>
-                  ) : null}
-                  {canWrite ? (
-                     <span className="set-card__actions">
-                        <button
-                           type="button"
-                           className="set-act"
-                           onClick={() => onAdd(src)}
-                        >
-                           添加
-                        </button>
-                     </span>
-                  ) : null}
-               </div>
-               {src.entries.length === 0 ? (
-                  <p className="set-sec__empty">
-                     {src.exists ? "文件在,但没有条目。" : "这里没有 a2a.json。"}
-                  </p>
-               ) : (
-                  <ul className="set-cards">
-                     {src.entries.map((entry) =>
-                        renderCard(entry, src.scope, { merged: false }),
-                     )}
-                  </ul>
-               )}
-            </div>
-         ))}
       </div>
    );
 }

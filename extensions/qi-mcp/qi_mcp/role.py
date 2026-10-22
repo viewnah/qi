@@ -12,15 +12,20 @@
 = qi 两层(`~/.qi/agent/mcp.json` → `<git 根>/.qi/mcp.json`)**加上**角色私有的那份,
 **角色私有同名覆盖 qi 级** —— 更具体的那份赢(v1 也是这个口径:agent 私有自动绑定)。
 
-## 角色 `tools:` 里怎么写才拿到 MCP(E24 → E25 的裁决)
+## 角色 `tools:` 里怎么写才拿到 MCP
 
 | 写到 | 拿到什么 |
 | --- | --- |
-| 什么都不写 | **没有任何 MCP 访问**(默认拒绝;连都不连) |
-| `mcp` | 那个全局代理工具(覆盖 qi 两层);**角色私有 server 的工具额外直连** —— 因为全局代理看不见它们 |
-| `mcp__github__*` / `mcp__github__create_issue` | 直连注册匹配的工具(**不给代理**) |
+| **什么都不写** | 角色**私有**的 server 全部直连接上（全部工具，或 `includeTools` 限定的那些）；qi 两层**不接** —— 那是父会话的事（父有 `mcp` 代理就继续继承） |
+| `mcp` | 那个全局代理工具（覆盖 qi 两层）；**角色私有 server 的工具额外直连** —— 因为全局代理看不见它们 |
+| `mcp__github__*` / `mcp__github__create_issue` | 直连注册匹配的工具（**不给代理**） |
+| 只写内置工具（`read, grep`） | 没有任何 MCP 访问（连都不连） |
 
-`mcp__<server>__<模式>` 里的模式按 `fnmatch` 匹配工具名(`*` / `?` 都行)。
+**为什么“什么都不写”也要接私有 server**：角色目录是个自包含包（`agent.md` + `mcp.json` +
+`skills/`）—— 包里带着 MCP 声明却永远连不上，是“东西在那儿却用不上”的那种坑。
+而接的**只有私有那份**：qi 两层是父会话的基建，父有代理就继续继承（不重复、也不提权）。
+
+`mcp__<server>__<模式>` 里的模式按 `fnmatch` 匹配工具名（`*` / `?` 都行）。
 """
 
 from __future__ import annotations
@@ -116,8 +121,11 @@ async def register_role_mcp(api: Any, *, role_dir: Path | None = None,
     返回的名字由调用方(qi-agents)放进子运行的 `RunSpec.tools` —— 这是"只给这一次子运行"
     的关键:注册只让工具**可被点名**,而真正的隔离在工具清单里。
     """
+    # `role_tools is None` = 角色**没写** `tools:` → 自动接它私有的 server(见模块说明)。
+    # 写成空列表是"明确不要 MCP",与省略不同。
+    auto_private = role_tools is None
     entries = mcp_entries(role_tools)
-    if not entries:
+    if not entries and not auto_private:
         return []
     note = on_note or (lambda text: None)
     try:
@@ -176,6 +184,10 @@ async def register_role_mcp(api: Any, *, role_dir: Path | None = None,
         elif pattern:
             server, tool_pattern = _split_pattern(pattern)
             await _register(server, [tool_pattern])
+    if auto_private:
+        # `tools:` 没写 → 接上**角色私有**的那份(全局两层不接:父会话有 mcp 代理就继续继承)
+        for server in sorted(private):
+            await _register(server, ["*"])
     return list(dict.fromkeys(names))          # 去重且保持顺序
 
 

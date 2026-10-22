@@ -210,19 +210,21 @@ async def _role_mcp_names(api: Any, role: Role, ctx: Any,
                           role_tools: list[str] | None) -> list[str]:
     """把该角色的 MCP 工具拿到手(名字),交给 qi-mcp 去注册。
 
-    - 角色 `tools:` 里没有 MCP 条目 → **一行 MCP 工作都不做**(qi-mcp 自己也这么判);
+    - 角色 `tools:` 里没有 MCP 条目、也不是"省略"→ **一行 MCP 工作都不做**;
+    - `tools:` **省略**时仍要问一次:角色私有的 `mcp.json` 会自动接上(见 qi-mcp 的 role.py);
     - qi-mcp 不在 → `[]`(降级);
     - 坏掉的 mcp.json / 连不上的 server → 记 note(走 ctx.ui,它无前端时本来就写 notes),
       不让整个子运行失败。
     """
-    if register_role_mcp is None or not role_tools:
+    if register_role_mcp is None:
         return []
     ui = getattr(ctx, "ui", None)
     return await register_role_mcp(
         api,
         role_dir=role.path.parent if role.path else None,
         cwd=_cwd_of(ctx),
-        role_tools=list(role_tools),
+        # **保留 None**：qi-mcp 据此区分“没写 tools:”（自动接私有 server）与“写了但不含 MCP”
+        role_tools=list(role_tools) if role_tools is not None else None,
         on_note=(ui.notify if ui is not None else None))
 
 
@@ -445,8 +447,9 @@ async def _run_one(api: Any, role: Role, task: str, ctx: Any,
         rest = [t for t in tools if t != "mcp" and not t.startswith("mcp__")]
         # 继承父那条路:父的 `mcp` 代理要留着(那是父本来就有的权限,不是提权);
         # 显式声明那条路:由 `mcp_names` 决定。
+        # **两条可能同时成立**(`tools:` 省略 + 角色私有 mcp.json):代理与私有工具都要留。
         keep_proxy = role.tools is None and "mcp" in tools
-        tools = [*rest, *(mcp_names or (["mcp"] if keep_proxy else []))]
+        tools = list(dict.fromkeys([*rest, *mcp_names, *(["mcp"] if keep_proxy else [])]))
     # **分层委派的清单闸**:`subagent` 的去留 = 角色 `delegate` × 深度上限。
     # 深度在这一层算出来(不靠“每层记得加一”);算错的方向由 denylist 与
     # 登记表 fail-closed 兜底。

@@ -270,21 +270,114 @@ async def test_subagent_swaps_mcp_entries_for_real_tool_names(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_subagent_without_mcp_entries_does_not_touch_qi_mcp(tmp_path, monkeypatch):
+async def test_omitted_tools_asks_qi_mcp_but_keeps_the_inherited_set(tmp_path, monkeypatch):
+    """`tools:` 省略时**仍要问一次** qi-mcp（角色自带 mcp.json 时它会给工具），
+    但继承来的清单不能因此被清空 —— 父的 `mcp` 代理还要留着。"""
     import qi_agents.subagent as sub
 
-    called: list[Any] = []
+    called: list[dict] = []
 
-    async def fake_register(*args, **kwargs):
-        called.append(args)
-        return []
+    async def fake_register(api, *, role_dir=None, cwd=None, role_tools=None, on_note=None):
+        called.append({"role_dir": role_dir, "role_tools": role_tools})
+        return []                                 # 这个角色没有私有 server
 
     monkeypatch.setattr(sub, "register_role_mcp", fake_register)
 
     class FakeApi:
+        def __init__(self) -> None:
+            self.specs: list[dict] = []
+
+        def getActiveTools(self):
+            return ["read", "grep", "mcp"]
+
         async def runAgent(self, spec, task, abort=None, on_event=None):
+            self.specs.append(spec)
             return "子结果"
 
     role = sub.Role(name="scout", description="d", prompt="p", tools=None, path=None)
-    await sub._run_one(FakeApi(), role, "x", SimpleNamespace(workdir=tmp_path, ui=None))
-    assert called == []                          # 继承父角色 → 一行 MCP 工作都不做
+    api = FakeApi()
+    await sub._run_one(api, role, "x", SimpleNamespace(workdir=tmp_path, ui=None))
+
+    # 传的是 None（不是 []：两者语义不同）
+    assert called and called[0]["role_tools"] is None
+    assert api.specs[0]["tools"] == ["read", "grep", "mcp"]   # 继承清单 + 父代理都在
+
+
+@pytest.mark.asyncio
+async def test_omitted_tools_adds_private_mcp_tools_to_the_inherited_set(tmp_path, monkeypatch):
+    """省略 `tools:` + 角色自带 mcp.json → 私有工具**加进**继承清单（不清空内置工具）。"""
+    import qi_agents.subagent as sub
+
+    async def fake_register(api, *, role_dir=None, cwd=None, role_tools=None, on_note=None):
+        assert role_tools is None
+        return ["mcp__ppt-tools__render"]
+
+    monkeypatch.setattr(sub, "register_role_mcp", fake_register)
+
+    class FakeApi:
+        def __init__(self) -> None:
+            self.specs: list[dict] = []
+
+        def getActiveTools(self):
+            return ["read", "grep"]
+
+        async def runAgent(self, spec, task, abort=None, on_event=None):
+            self.specs.append(spec)
+            return "子结果"
+
+    role = sub.Role(name="ppt-factory", description="d", prompt="p", tools=None, path=None)
+    api = FakeApi()
+    await sub._run_one(api, role, "x", SimpleNamespace(workdir=tmp_path, ui=None))
+    assert api.specs[0]["tools"] == ["read", "grep", "mcp__ppt-tools__render"]
+
+
+# ── tools 省略:自动接**角色私有**的 server ───────────────
+#
+# 角色的自包含包里带着 mcp.json(离线包就是这么导出的),却没写 `tools:` ——
+# 旧行为是"一行 MCP 工作都不做",于是包里那份声明永远连不上。
+# 新行为:省略 = 接**私有**那份;qi 两层仍归父会话(父有代理就继承)。
+
+@pytest.mark.asyncio
+async def test_omitted_tools_connects_role_private_servers(tmp_path, monkeypatch):
+    project = _env(tmp_path, monkeypatch)
+    role_dir = tmp_path / "agents" / "ppt-factory"
+    _write(role_dir / "mcp.json", {"ppt-tools": {"url": "https://mcp.example.com/mcp"}})
+    connected: list[str] = []
+    _install(monkeypatch, {"ppt-tools": ["render", "export"]}, connected=connected)
+
+    api = _api()
+    names = await register_role_mcp(api, role_dir=role_dir, cwd=project, role_tools=None)
+
+    assert names == ["mcp__ppt-tools__render", "mcp__ppt-tools__export"]
+    assert connected == ["ppt-tools"]                       # 真去连了
+    assert "mcp__ppt-tools__render" in api.catalog.names
+
+
+@pytest.mark.asyncio
+async def test_omitted_tools_does_not_connect_global_servers(tmp_path, monkeypatch):
+    """只接私有那份:qi 两层是父会话的基建(父有 mcp 代理就继续继承,不重复连)。"""
+    project = _env(tmp_path, monkeypatch)
+    _write(project / ".qi" / "mcp.json", {"global-gh": {"command": "x"}})
+    role_dir = tmp_path / "agents" / "scout"
+    role_dir.mkdir(parents=True)          # 有角色目录,但**没有** mcp.json
+    connected: list[str] = []
+    _install(monkeypatch, {"global-gh": ["create_issue"]}, connected=connected)
+
+    names = await register_role_mcp(_api(), role_dir=role_dir, cwd=project, role_tools=None)
+
+    assert names == []
+    assert connected == []                # 一行都没连
+
+
+@pytest.mark.asyncio
+async def test_explicit_builtin_tools_still_mean_no_mcp(tmp_path, monkeypatch):
+    """写了 `tools: read, grep`(不含 MCP 条目)→ 仍然"连都不连"(显式声明的语义不变)。"""
+    project = _env(tmp_path, monkeypatch)
+    role_dir = tmp_path / "agents" / "scout"
+    _write(role_dir / "mcp.json", {"gh": {"url": "u"}})
+    connected: list[str] = []
+    _install(monkeypatch, {"gh": ["create_issue"]}, connected=connected)
+
+    names = await register_role_mcp(_api(), role_dir=role_dir, cwd=project,
+                                    role_tools=["read", "grep"])
+    assert names == [] and connected == []

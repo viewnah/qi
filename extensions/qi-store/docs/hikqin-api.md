@@ -174,3 +174,19 @@ owner_name`。
 > 抓取时记下实例状态：**skills 4 个、agent 模板 1 个、mcp server 0 个**。
 > mcp 那条 fixture 是合成的，不是真实响应 —— 这一点必须写在文件注释里，
 > 否则下一个人会以为线上真有那个 server。
+
+
+## 8. RAG 知识库（qi-store 的 `kb` kind）
+
+| 端点 | 说明 |
+| --- | --- |
+| `GET /api/rag/kb/available` | 当前账号可见的知识库（自己的 + public；admin 全量）。`{code,message,data:{knowledge_bases,total}}` |
+| `GET /api/rag/kb/{kb_id}/documents` | 文档列表 |
+| `POST /api/rag/qa/retrieval/search` | 只检索；body 必须带 `kb_ids` |
+| `POST /api/rag/qa/ask` | 检索 + 上游 RAG LLM 作答；会写轻量 QA 历史 |
+
+`/available` 每项字段：`kb_id / name / description / embedding_model / visibility /
+owner_username / status / doc_count / chunk_count / updated_at / icon`。
+
+qi-store 只读 `/rag/kb/available`；检索/问答由 qi-kb 自己的客户端负责，
+所以商店客户端仍然没有 RAG POST 白名单。

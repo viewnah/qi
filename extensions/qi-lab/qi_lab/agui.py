@@ -112,6 +112,19 @@ class RunAgentInput:
         v = self.forwarded.get("agent")
         return str(v) if isinstance(v, str) and v else None
 
+    @property
+    def kb_ids(self) -> list[str]:
+        """会话级知识库选择（可选）。空列表 = 用全局/项目绑定。"""
+        v = self.forwarded.get("kbIds") or self.forwarded.get("kb_ids")
+        if not isinstance(v, list):
+            return []
+        return [str(item) for item in v if str(item).strip()]
+
+    @property
+    def kb_provider(self) -> str | None:
+        v = self.forwarded.get("kbProvider") or self.forwarded.get("kb_provider")
+        return str(v) if isinstance(v, str) and v else None
+
     def last_user_text(self) -> str:
         """取最后一条 user 消息作为本轮输入。
 

@@ -31,6 +31,7 @@ READ_PATHS = (
     "/agents",
     "/a2a",
     "/.well-known",
+    "/rag/kb",                      # /rag/kb/available、/{kb_id}/documents
 )
 
 TIMEOUT = 20.0

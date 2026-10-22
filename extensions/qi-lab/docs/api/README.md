@@ -118,7 +118,7 @@ curl -X PATCH http://127.0.0.1:3456/api/mcp -H 'X-Qi-Confirm: yes' -H 'Content-T
 
 ---
 
-## 端点总表(40)
+## 端点总表(64)
 
 | 方法 | 路径 | 说明 | 文档 |
 | --- | --- | --- | --- |
@@ -169,6 +169,20 @@ curl -X PATCH http://127.0.0.1:3456/api/mcp -H 'X-Qi-Confirm: yes' -H 'Content-T
 | POST | `POST /api/store/install` | 安装(需确认头;高危要 allowUnsafe) | `store.md` |
 | POST | `POST /api/store/uninstall` | 卸载(需确认头;只删自己写的) | `store.md` |
 | GET | `GET /api/store/check` | 账本 ↔ 上游对比 + 声明未装 | `store.md` |
+| GET | `GET /api/kb/status` | provider / 已绑定 KB / 默认参数 | `kb.md` |
+| GET | `GET /api/kb/providers` | provider 列表(不含令牌) | `kb.md` |
+| POST | `POST /api/kb/providers` | 新建/更新 provider(需确认头) | `kb.md` |
+| POST | `POST /api/kb/providers/login` | provider 登录(需确认头) | `kb.md` |
+| DELETE | `DELETE /api/kb/providers` | 删除 provider(需确认头;有 KB 时 409) | `kb.md` |
+| POST | `POST /api/kb/plan` | 只算不写:安装 / 已装 / rebind | `kb.md` |
+| GET | `GET /api/kb/available` | 可用 KB + 已绑定状态 | `kb.md` |
+| GET | `GET /api/kb/docs` | 知识库文档列表 | `kb.md` |
+| POST | `POST /api/kb/search` | 只检索 chunk | `kb.md` |
+| POST | `POST /api/kb/ask` | 上游 RAG 问答 | `kb.md` |
+| POST | `POST /api/kb/ask/stream` | 流式 RAG 问答（SSE） | `kb.md` |
+| POST | `POST /api/kb/install` | 安装 KB(需确认头;冲突 409) | `kb.md` |
+| POST | `POST /api/kb/uninstall` | 卸载 KB(需确认头) | `kb.md` |
+| PATCH | `PATCH /api/kb/defaults` | 写默认参数(需确认头) | `kb.md` |
 | GET | `GET /api/extensions` | 已装载的扩展名 | `config.md` |
 | POST | `POST /api/auth/{provider}` | 写入凭证(204,需确认头) | `config.md` |
 | DELETE | `DELETE /api/auth/{provider}` | 删除凭证(204,需确认头) | `config.md` |
@@ -191,3 +205,4 @@ curl -X PATCH http://127.0.0.1:3456/api/mcp -H 'X-Qi-Confirm: yes' -H 'Content-T
 | [`workspaces.md`](workspaces.md) | 工作区显示名、删除语义、目录选择器 |
 | [`files.md`](files.md) | 文件三端点:边界、排序、限额、预览白名单 |
 | [`store.md`](store.md) | 商店:hikqin 条目 → 本地落盘;四类标签、登录(密码只过一次)、确认头、高危闸、失败映射 |
+| [`kb.md`](kb.md) | 知识库:provider / KB / 检索 / 问答 / 默认参数;`(instance, kbId)` 去重与 rebind |

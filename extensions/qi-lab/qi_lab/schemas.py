@@ -850,3 +850,196 @@ class StoreLoginRequest(BaseModel):
 class StoreLogoutRequest(BaseModel):
     store: str = ""
     all: bool = False
+
+
+# ── 知识库（qi-kb）────────────────────────────────────────
+
+
+class KbProvider(BaseModel):
+    name: str
+    baseUrl: str = ""
+    apiPrefix: str = "/api"
+    instance: str = ""
+    login: str = ""
+    role: str = ""
+    loggedIn: bool = False
+    expiresAt: int | None = None
+    expiresIn: int | None = None
+    kbCount: int = 0
+    scope: str = "global"
+
+
+class KbStatus(BaseModel):
+    available: bool = False
+    providers: list[KbProvider] = Field(default_factory=list)
+    knowledgeBases: list[dict] = Field(default_factory=list)
+    defaults: dict = Field(default_factory=dict)
+    defaultProvider: str = ""
+    defaultKnowledgeBase: str = ""
+    files: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    error: str = ""
+
+
+class KbProviders(BaseModel):
+    providers: list[KbProvider] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    error: str = ""
+
+
+class KbProviderAddRequest(BaseModel):
+    name: str = Field(min_length=1)
+    baseUrl: str = Field(min_length=1)
+    apiPrefix: str = "/api"
+    login: str = ""
+    role: str = ""
+    instance: str = ""
+    scope: Literal["global", "project"] = "global"
+
+
+class KbProviderLoginRequest(BaseModel):
+    name: str = Field(min_length=1)
+    login: str = ""
+    password: str = Field(min_length=1)
+    baseUrl: str = ""
+    apiPrefix: str = "/api"
+    instance: str = ""
+    scope: Literal["global", "project"] = "global"
+
+
+class KbProviderRemoveRequest(BaseModel):
+    name: str = Field(min_length=1)
+    cascade: bool = False
+
+
+class KbItem(BaseModel):
+    id: str
+    provider: str = ""
+    name: str = ""
+    description: str = ""
+    embeddingModel: str = ""
+    visibility: str = "private"
+    docCount: int = 0
+    chunkCount: int = 0
+    updatedAt: str = ""
+    icon: str = ""
+    bound: bool = False
+    boundProvider: str | None = None
+    scope: str = ""
+
+
+class KbList(BaseModel):
+    available: bool = False
+    items: list[KbItem] = Field(default_factory=list)
+    total: int = 0
+    warnings: list[str] = Field(default_factory=list)
+    error: str = ""
+
+
+class KbDocs(BaseModel):
+    available: bool = False
+    provider: str = ""
+    kbId: str = ""
+    name: str = ""
+    documents: list[dict] = Field(default_factory=list)
+    total: int = 0
+    warnings: list[str] = Field(default_factory=list)
+    error: str = ""
+
+
+class KbSearchRequest(BaseModel):
+    query: str = Field(min_length=1)
+    kbIds: list[str] = Field(default_factory=list)
+    provider: str = ""
+    topK: int | None = None
+    strategy: Literal["dense", "sparse", "hybrid"] | None = None
+    useRerank: bool | None = None
+    rerankTopK: int | None = None
+
+
+class KbSearchResult(BaseModel):
+    available: bool = False
+    provider: str = ""
+    query: str = ""
+    results: list[dict] = Field(default_factory=list)
+    total: int = 0
+    strategy: str = ""
+    rerankMethod: str | None = None
+    kbIds: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    error: str = ""
+
+
+class KbAskRequest(BaseModel):
+    question: str = Field(min_length=1)
+    kbIds: list[str] = Field(default_factory=list)
+    provider: str = ""
+    topK: int | None = None
+    strategy: Literal["dense", "sparse", "hybrid"] | None = None
+    useRerank: bool | None = None
+    rerankTopK: int | None = None
+
+
+class KbAskResult(BaseModel):
+    available: bool = False
+    provider: str = ""
+    question: str = ""
+    answer: str = ""
+    sources: list[dict] = Field(default_factory=list)
+    kbIdsUsed: list[str] = Field(default_factory=list)
+    evidenceSufficient: bool = False
+    warnings: list[str] = Field(default_factory=list)
+    error: str = ""
+
+
+class KbPlanRequest(BaseModel):
+    kbId: str = Field(min_length=1)
+    provider: str = Field(min_length=1)
+    scope: Literal["global", "project"] = "global"
+    rebind: bool = False
+
+
+class KbPlan(BaseModel):
+    available: bool = False
+    action: str = ""
+    kbId: str = ""
+    provider: str = ""
+    existingProvider: str | None = None
+    targetProvider: str = ""
+    blocked: bool = False
+    warnings: list[str] = Field(default_factory=list)
+    error: str = ""
+
+
+class KbInstallRequest(KbPlanRequest):
+    pass
+
+
+class KbInstallResult(BaseModel):
+    available: bool = False
+    action: str = ""
+    kbId: str = ""
+    provider: str = ""
+    scope: str = "global"
+    name: str = ""
+    warnings: list[str] = Field(default_factory=list)
+    error: str = ""
+
+
+class KbUninstallRequest(BaseModel):
+    kbId: str = Field(min_length=1)
+    provider: str = ""
+
+
+class KbUninstallResult(BaseModel):
+    available: bool = False
+    kbId: str = ""
+    provider: str = ""
+    name: str = ""
+    removed: bool = False
+    error: str = ""
+
+
+class KbDefaultsRequest(BaseModel):
+    defaults: dict = Field(default_factory=dict)
+    scope: Literal["global", "project"] = "global"

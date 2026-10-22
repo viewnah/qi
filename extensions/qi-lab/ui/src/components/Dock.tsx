@@ -41,11 +41,12 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AgentMenu } from "./AgentMenu";
+import { KbMenu } from "./KbMenu";
 import { CommandMenu } from "./CommandMenu";
 import { ModelMenu } from "./ModelMenu";
 import { COMMANDS } from "../commands";
 import { contextShare, countsLabel, formatTokens } from "../state/stats";
-import type { AgentInfo, ModelCatalog, ModelOption, UsageSummary } from "../api/types";
+import type { AgentInfo, KbItem, ModelCatalog, ModelOption, UsageSummary } from "../api/types";
 import {
   IconDatabaseOutline16,
   IconGaugeOutline16,
@@ -78,6 +79,9 @@ export function Dock({
   agent,
   agents,
   onPickAgent,
+  kbItems,
+  kbIds,
+  onPickKbs,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -113,6 +117,10 @@ export function Dock({
   /** 可选的智能体清单(菜单里列出来;取不到就只剩 auto)。 */
   agents: AgentInfo[];
   onPickAgent: (name: string | null) => void;
+  /** 已绑定 KB（会话级选择用；空 = 用全局绑定）。 */
+  kbItems: KbItem[];
+  kbIds: string[];
+  onPickKbs: (ids: string[]) => void;
 }) {
   const ref = useRef<HTMLTextAreaElement | null>(null);
   /** 输入卡本身:指令菜单按它的 rect 定位(见 CommandMenu 的文件头)。 */
@@ -324,6 +332,8 @@ export function Dock({
               </button>
             </div>
             <div className="composer__trailing">
+              {/* 知识库 chip:只影响这一轮的 KB 范围；空 = 全局绑定。 */}
+              <KbMenu items={kbItems} value={kbIds} onChange={onPickKbs} />
               {/* 智能体 chip:模型名左边,和模型一样是"这一轮会怎么走"的设置(见 AgentMenu)。 */}
               <AgentMenu agents={agents} value={agent} onPick={onPickAgent} />
               {/* 模型 chip:与智能体 chip 同一形态(它以前是个只读 span,而"换模型在设置里"

@@ -75,7 +75,10 @@
 `missing[]` 说明**哪一类没查成**（未登录 / 网络）——界面必须显示，否则"商店是空的"
 是最坏的误解（`skill` / `mcp` / `agent` 需要登录，`a2a` 公开）。
 
-四类 kind：`skill` / `mcp` / `a2a` / `agent`。
+五类 kind：`skill` / `mcp` / `a2a` / `agent` / `kb`。
+
+`kb` 的 `installed` 状态以 qi-kb 的 `kb.json` 为准（不是商店账本）；安装时账号会复制到
+qi-kb 自己的 `kb.json` / `kb-auth.json`，`store.json` 不变。
 
 - `agent` 的目录是 **`GET /api/agents`**（你账号能看到的全部智能体，草稿与已发布都列）；
   安装时先取详情（`/api/agents/{id}`），再按需把它的 MCP（`/api/mcp/servers/{id}`）与

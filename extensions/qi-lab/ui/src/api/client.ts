@@ -35,6 +35,14 @@ import type {
   ExtensionList,
   FileContent,
   FileListing,
+  KbAskResult,
+  KbInstallResult,
+  KbList,
+  KbPlan,
+  KbProvider,
+  KbSearchResult,
+  KbStreamEvent,
+  KbStatus,
   McpDeleteBody,
   McpList,
   McpPatchBody,
@@ -330,6 +338,119 @@ export const api = {
       headers: { "X-Qi-Confirm": "yes" },
       body: JSON.stringify({ id, scope: scope ?? null }),
     }),
+  // ── 知识库（qi-kb）────────────────────────────────────
+  kbStatus: () => request<KbStatus>("/api/kb/status"),
+
+  kbProviders: () => request<{ providers: KbProvider[]; warnings: string[] }>("/api/kb/providers"),
+
+  kbProviderAdd: (body: { name: string; baseUrl: string; apiPrefix?: string;
+    login?: string; role?: string; instance?: string; scope?: "global" | "project" }) =>
+    request<KbStatus>("/api/kb/providers", {
+      method: "POST",
+      headers: { "X-Qi-Confirm": "yes" },
+      body: JSON.stringify(body),
+    }),
+
+  kbProviderLogin: (body: { name: string; login?: string; password: string;
+    baseUrl?: string; apiPrefix?: string; instance?: string;
+    scope?: "global" | "project" }) =>
+    request<KbStatus>("/api/kb/providers/login", {
+      method: "POST",
+      headers: { "X-Qi-Confirm": "yes" },
+      body: JSON.stringify(body),
+    }),
+
+  kbProviderRemove: (name: string, cascade = false) =>
+    request<KbStatus>("/api/kb/providers", {
+      method: "DELETE",
+      headers: { "X-Qi-Confirm": "yes" },
+      body: JSON.stringify({ name, cascade }),
+    }),
+
+  kbPlan: (body: { kbId: string; provider: string; scope?: "global" | "project"; rebind?: boolean }) =>
+    request<KbPlan>("/api/kb/plan", { method: "POST", body: JSON.stringify(body) }),
+
+  kbAvailable: (provider?: string, q?: string, boundOnly = false) => {
+    const params = new URLSearchParams();
+    if (provider) params.set("provider", provider);
+    if (q) params.set("q", q);
+    if (boundOnly) params.set("boundOnly", "true");
+    const tail = params.toString();
+    return request<KbList>(`/api/kb/available${tail ? `?${tail}` : ""}`);
+  },
+
+  kbInstall: (body: { kbId: string; provider: string; scope?: "global" | "project"; rebind?: boolean }) =>
+    request<KbInstallResult>("/api/kb/install", {
+      method: "POST",
+      headers: { "X-Qi-Confirm": "yes" },
+      body: JSON.stringify(body),
+    }),
+
+  kbUninstall: (kbId: string) =>
+    request<{ available: boolean; kbId: string; provider: string; name: string; removed: boolean }>(
+      "/api/kb/uninstall",
+      { method: "POST", headers: { "X-Qi-Confirm": "yes" }, body: JSON.stringify({ kbId }) },
+    ),
+
+  kbSearch: (body: { query: string; kbIds?: string[]; provider?: string; topK?: number }) =>
+    request<KbSearchResult>("/api/kb/search", { method: "POST", body: JSON.stringify(body) }),
+
+  kbAsk: (body: { question: string; kbIds?: string[]; provider?: string; topK?: number }) =>
+    request<KbAskResult>("/api/kb/ask", { method: "POST", body: JSON.stringify(body) }),
+
+  /** 流式问答：一行一个 `data: {...}`；返回 abort。 */
+  kbAskStream: (
+    body: { question: string; kbIds?: string[]; provider?: string; topK?: number },
+    onEvent: (event: KbStreamEvent) => void,
+    onError?: (err: Error) => void,
+    onClose?: () => void,
+  ) => {
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const res = await fetch("/api/kb/ask/stream", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+        if (!res.ok || !res.body) throw new ApiError(res.status, await detailOf(res));
+        const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+        let buffer = "";
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += value;
+          for (;;) {
+            const cut = buffer.indexOf("\n\n");
+            if (cut < 0) break;
+            const frame = buffer.slice(0, cut);
+            buffer = buffer.slice(cut + 2);
+            const line = frame.split("\n").find((l) => l.startsWith("data:"));
+            if (!line) continue;
+            try {
+              onEvent(JSON.parse(line.slice(5).trim()) as KbStreamEvent);
+            } catch {
+              // 坏帧跳过：流不该因为一行 JSON 断掉
+            }
+          }
+        }
+        onClose?.();
+      } catch (err) {
+        if (controller.signal.aborted) return;
+        onError?.(err instanceof Error ? err : new Error(String(err)));
+      }
+    })();
+    return () => controller.abort();
+  },
+
+  kbDefaults: (defaults: Record<string, unknown>, scope: "global" | "project" = "global") =>
+    request<KbStatus>("/api/kb/defaults", {
+      method: "PATCH",
+      headers: { "X-Qi-Confirm": "yes" },
+      body: JSON.stringify({ defaults, scope }),
+    }),
+
   extensions: () => request<ExtensionList>("/api/extensions"),
 
   /** MCP 声明(全局 / 项目 / agent 私有)。老宿主回 404 → 调用方降级,不当作致命错误。 */
@@ -504,14 +625,18 @@ export function run(
   threadId: string,
   text: string,
   handlers: RunHandlers,
-  opts: { agent?: string | null } = {},
+  opts: { agent?: string | null; kbIds?: string[]; kbProvider?: string | null } = {},
 ): () => void {
   const controller = new AbortController();
   const body: RunAgentInput = {
     threadId,
     runId: crypto.randomUUID().replace(/-/g, "").slice(0, 12),
     messages: [{ role: "user", content: text }],
-    forwardedProps: { agent: opts.agent ?? null },
+    forwardedProps: {
+      agent: opts.agent ?? null,
+      kbIds: opts.kbIds ?? [],
+      kbProvider: opts.kbProvider ?? null,
+    },
   };
 
   void (async () => {

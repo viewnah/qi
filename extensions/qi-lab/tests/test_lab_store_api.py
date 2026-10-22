@@ -283,7 +283,7 @@ def test_search_reports_missing_kind_instead_of_silence(project, fake_upstream, 
         body = client.get("/api/store/search").json()
     assert body["items"] == []
     # 三个要登录的类都没查成,a2a 仍然列着(空)
-    assert {m["kind"] for m in body["missing"]} == {"agent", "skill", "mcp"}
+    assert {m["kind"] for m in body["missing"]} == {"agent", "skill", "mcp", "kb"}
 
 
 # ── plan / install / uninstall ─────────────────────────

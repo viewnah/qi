@@ -37,6 +37,7 @@ const TABS: { kind: StoreKind | "agent"; label: string; hint: string }[] = [
    { kind: "skill", label: "技能", hint: "一个目录 + SKILL.md;装到 ~/.qi/agent/skills/。" },
    { kind: "mcp", label: "MCP", hint: "只写 mcp.json 里的一个键;令牌以环境变量名落盘。" },
    { kind: "a2a", label: "A2A", hint: "一张 Agent Card → a2a.json 的一个条目(公开,不需要登录)。" },
+   { kind: "kb", label: "知识库", hint: "只写 qi-kb 的 kb.json：账号 + KB 引用；文档/向量留在 hikqin。" },
 ];
 
 type Tab = (typeof TABS)[number];

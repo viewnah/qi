@@ -3,9 +3,10 @@
 把 **hikqin** 当成应用商店：`qi store install` 一条命令，把 MCP server 配置 / Skill 包 /
 A2A 名片装进 qi 自己的配置目录。
 
-> **状态：P0–P3 已落地（2026-10-21）** —— 命令行九条 + qi-lab 面板（`/api/store/*` 七条 +
-> 设置面「商店」一节：**四类标签 + 页面登录**）。测试：qi-store 91 条 + qi-lab 商店 API 17 条。
-> 四类 kind 全部可用：skill / mcp / a2a / **agent**（智能体详情 → 角色目录）。
+> **状态：P0–P3 已落地（2026-10-21）；`kb` kind 已接入（2026-10-22）** —— 命令行九条 +
+> qi-lab 面板（`/api/store/*` + 设置面「商店」一节）。
+> 五类 kind 全部可用：skill / mcp / a2a / **agent** / **kb**（知识库 = provider + KB 引用，
+> 账号复制到 qi-kb 自己的配置）。
 > 未做：`extension` kind（上游已有 PEP 503 索引，让 `qi install` 直连即可）。
 > 本文就是实现规格 —— 命令面、契约、落位表、退出码都钉在这里；不一致时以本文为准
 > （改实现要同时改这里）。
@@ -22,9 +23,14 @@ A2A 名片装进 qi 自己的配置目录。
 | 写账本，可 `uninstall` / 之后 `check` 上游更新 | 不搬运密钥（上游也不下发），不执行安装脚本 |
 | `download` 只取件（不落配置、不记账） | 不替用户决定资产是否可信（只透出上游的 `scan_status`） |
 
-支持的 kind：**`skill` / `mcp` / `a2a` / `agent`**。
+支持的 kind：**`skill` / `mcp` / `a2a` / `agent` / `kb`**。
 `agent` 是**格式对齐工作量最大**的一个（hikqin 的智能体详情 → qi-agents 的角色目录），
 转换规则单独写在 §4.5。
+
+`kb` 不是“下载文档”：目录来自 `GET /api/rag/kb/available`，`install` 把 store 源的
+账号（baseUrl / login / access / refresh）复制到 **qi-kb 自己的** `kb.json` / `kb-auth.json`，
+再写一条 `providers.<源名>.knowledgeBases.<kbId>`。`store.json` 的 schema 不变。
+运行时由 qi-kb 的 `kb` 工具负责，qi-store 不再参与。
 
 ## 1. 装
 
@@ -498,7 +504,7 @@ extensions/qi-store/
 2. **令牌不进浏览器**：`/api/store/login` 收账号密码 → 交给上游 → 只回 `StoreStatus`。
    磁盘上是令牌（用户级 `store.json`，0600），浏览器里什么都没有；
 3. 登录/退出是写操作 → 与其它写端点同一条 `X-Qi-Confirm` 闸；
-4. 面板按**四类标签**摆：Agent / 技能 / MCP / A2A —— 每个标签只放它那一类（能装 + 已装）。
+4. 面板按**五类标签**摆：Agent / 技能 / MCP / A2A / 知识库 —— 每个标签只放它那一类（能装 + 已装）。
    Agent 标签明说"暂不提供"及原因（见 §12），不摆一个永远空着的列表。
 
 ## 9.1 账本 ≠ 事实:每次读都复核磁盘

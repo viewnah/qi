@@ -43,6 +43,7 @@ import type {
 } from "../api/types";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { StorePanel } from "./StorePanel";
+import { KbPanel } from "./KbPanel";
 import {
    A2ADeleteDialog,
    A2ADialog,
@@ -63,6 +64,7 @@ import {
    IconAgentPresetOutline16,
    IconCloseOutline16,
    IconDataOutline16,
+   IconDatabaseOutline16,
    IconFolderOpen16,
    IconGaugeOutline16,
    IconLinkOutline16,
@@ -76,6 +78,7 @@ export type SettingsSectionKey =
    | "agents"
    | "skills"
    | "store"
+   | "kb"
    | "mcp"
    | "a2a"
    | "extensions"
@@ -98,6 +101,7 @@ const SECTIONS: {
    { key: "skills", label: "技能", icon: <IconSkillOutline16 size={16} /> },
    { key: "mcp", label: "MCP", icon: <IconLinkOutline16 size={16} /> },
    { key: "a2a", label: "A2A", icon: <IconShareOutline16 size={16} /> },
+   { key: "kb", label: "知识库", icon: <IconDatabaseOutline16 size={16} /> },
    {
       key: "extensions",
       label: "扩展",
@@ -165,6 +169,8 @@ export function Settings({
    a2aWrite = false,
    agentWrite = false,
    storeWrite = false,
+   kbWrite = false,
+   onKbChanged,
    skillWrite = false,
    onAgentsChanged,
 }: {
@@ -200,6 +206,8 @@ export function Settings({
     * 只读展示(读端点一直在),不摆"点了才 404"的安装键。
     */
    storeWrite?: boolean;
+   kbWrite?: boolean;
+   onKbChanged?: () => void;
    /** 宿主支持写技能端点(`/api/meta` 的 `skill_write`)。没有它 → 「重新扫描」不摆。 */
    skillWrite?: boolean;
    /**
@@ -1062,6 +1070,21 @@ export function Settings({
                         }
                      >
                         <StorePanel canWrite={storeWrite} />
+                     </Section>
+                  ) : null}
+
+                  {section === "kb" ? (
+                     <Section
+                        title="知识库"
+                        intro={
+                           <>
+                              把 hikqin 的知识库接成 qi-kb 的 provider（账号）+
+                              knowledgeBases（KB）。账号与令牌写在 qi-kb 自己的配置里，
+                              不在 store.json。同一个 KB 只保留一份；重复安装会先问是否覆盖。
+                           </>
+                        }
+                     >
+                        <KbPanel canWrite={kbWrite} onChanged={onKbChanged} />
                      </Section>
                   ) : null}
 

@@ -1,0 +1,34 @@
+{
+  "code": 200,
+  "message": "success",
+  "data": {
+    "knowledge_bases": [
+      {
+        "kb_id": "54aa228821324031876bc06d94b538e9",
+        "name": "智能体平台相关案例材料",
+        "description": "阐述平台相关材料，包括多模态知识图谱、数据集自主分析、架构设计文档等",
+        "embedding_model": "text-embedding-v4",
+        "visibility": "private",
+        "owner_username": "admin",
+        "status": "ready",
+        "doc_count": 2,
+        "chunk_count": 6,
+        "updated_at": "2026-10-22T10:09:17.576787",
+        "icon": "📖"
+      },
+      {
+        "kb_id": "9d80f0cecb8a43d699c36a40acf298a0",
+        "name": "02_JP2系列_情报",
+        "description": "统计相关情报类别的论文",
+        "embedding_model": "text-embedding-v4",
+        "visibility": "private",
+        "owner_username": "admin",
+        "status": "ready",
+        "doc_count": 9,
+        "chunk_count": 1605,
+        "updated_at": "2026-10-22T01:07:52"
+      }
+    ],
+    "total": 2
+  }
+}

@@ -35,6 +35,7 @@ import { api, ApiError, ContractError, run } from "./api/client";
 import type {
   AgentInfo,
   ConfigView,
+  KbItem,
   Meta,
   ModelCatalog,
   ModelOption,
@@ -234,6 +235,9 @@ export function App() {
   const [agent, setAgent] = useState<string | null>(null);
   /** 可选智能体清单(菜单用)。取不到就只剩 auto —— 不影响发消息。 */
   const [agents, setAgents] = useState<AgentInfo[]>([]);
+  const [kbItems, setKbItems] = useState<KbItem[]>([]);
+  /** 会话级 KB 选择：空 = 用 qi-kb 的全局/项目绑定。 */
+  const [kbIds, setKbIds] = useState<string[]>([]);
   /**
    * 模型清单 + 当前值(`GET /api/models`)。`null` = 取不到(老宿主 / 还没加载)→
    * 输入卡那个 chip 变成只读回声,不画 chevron、点不开(与"附件置灰"同一条规矩:
@@ -323,6 +327,13 @@ export function App() {
           setAgents(await api.agentList());
         } catch {
           setAgents([]);
+        }
+        // 已绑定 KB 只喂输入卡那颗 chip；没装 qi-kb / 没登录都退回空。
+        try {
+          const bound = await api.kbAvailable(undefined, undefined, true);
+          setKbItems(bound.items.filter((item) => item.bound));
+        } catch {
+          setKbItems([]);
         }
       } catch (err) {
         setFatal(describe(err));
@@ -514,9 +525,10 @@ export function App() {
         },
       },
       // 第 4 个参数是**选项**:手动钉住时每轮都带过去(后端据此直派,source 记成 "manual")。
-      { agent });
+      // kbIds 只影响本轮的知识库范围；空数组 = 用 qi-kb 的全局/项目绑定。
+      { agent, kbIds });
     },
-    [agent, refreshSessions],
+    [agent, kbIds, refreshSessions],
   );
 
   /** 首屏会话列表到了之后,按 URL 打开它(**这就是"刷新回到当前会话"**)。 */
@@ -952,6 +964,9 @@ export function App() {
       agent={agent}
       agents={agents}
       onPickAgent={setAgent}
+      kbItems={kbItems}
+      kbIds={kbIds}
+      onPickKbs={setKbIds}
     />
   );
 
@@ -1122,6 +1137,13 @@ export function App() {
           /* 装了 qi-store 才摆安装/卸载键(`/api/meta` 的 store_write):
              后端是真去 import 一次的结论,不是写死的 True。 */
           storeWrite={meta?.capabilities.store_write === true}
+          kbWrite={meta?.capabilities.kb_write === true}
+          onKbChanged={() => {
+            void api
+              .kbAvailable(undefined, undefined, true)
+              .then((bound) => setKbItems(bound.items.filter((item) => item.bound)))
+              .catch(() => setKbItems([]));
+          }}
           /* 技能写端点(`/api/meta` 的 `skill_write`):没有它就不摆「重新扫描」。 */
           skillWrite={meta?.capabilities.skill_write === true}
           /* 角色删完回灌左下角那个角色菜单:它读的是 App 这份 state,不读设置面自己

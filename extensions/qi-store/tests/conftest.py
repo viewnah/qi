@@ -20,7 +20,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[3]      # tests/ → qi-store/ → extensions/ → 仓库根
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
-for _rel in ("extensions/qi-store", "src"):
+for _rel in ("extensions/qi-store", "extensions/qi-kb", "src"):
     _path = REPO / _rel
     if _path.is_dir() and str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
@@ -65,3 +65,9 @@ def project(tmp_path) -> Path:
 
 def fixture_json(name: str):
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+
+
+@pytest.fixture
+def kb_home(store_home):
+    """qi-kb 的测试也会用这个名字；在 store 测试里复用它。"""
+    return store_home

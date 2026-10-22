@@ -746,7 +746,7 @@ export interface StoreStatus {
    error: string;
 }
 
-export type StoreKind = "skill" | "mcp" | "a2a";
+export type StoreKind = "skill" | "mcp" | "a2a" | "kb";
 
 export interface StoreItemOut {
    id: string;
@@ -883,4 +883,114 @@ export interface StoreLoginBody {
 export interface StoreLogoutBody {
    store?: string;
    all?: boolean;
+}
+
+// ── 知识库（qi-kb）────────────────────────────────────────
+// 形状照 `qi_lab/schemas.py` 的 `Kb*`。
+
+export interface KbProvider {
+   name: string;
+   baseUrl: string;
+   apiPrefix: string;
+   instance: string;
+   login: string;
+   role: string;
+   loggedIn: boolean;
+   expiresAt: number | null;
+   expiresIn: number | null;
+   kbCount: number;
+   scope: string;
+}
+
+export interface KbStatus {
+   available: boolean;
+   providers: KbProvider[];
+   knowledgeBases: Record<string, unknown>[];
+   defaults: Record<string, unknown>;
+   defaultProvider: string;
+   defaultKnowledgeBase: string;
+   files: string[];
+   warnings: string[];
+   error: string;
+}
+
+export interface KbItem {
+   id: string;
+   provider: string;
+   name: string;
+   description: string;
+   embeddingModel: string;
+   visibility: string;
+   docCount: number;
+   chunkCount: number;
+   updatedAt: string;
+   icon: string;
+   bound: boolean;
+   boundProvider: string | null;
+   scope?: string;
+}
+
+export interface KbList {
+   available: boolean;
+   items: KbItem[];
+   total: number;
+   warnings: string[];
+   error: string;
+}
+
+export interface KbSearchResult {
+   available: boolean;
+   provider: string;
+   query: string;
+   results: Record<string, unknown>[];
+   total: number;
+   strategy: string;
+   rerankMethod: string | null;
+   kbIds: string[];
+   warnings: string[];
+   error: string;
+}
+
+export interface KbAskResult {
+   available: boolean;
+   provider: string;
+   question: string;
+   answer: string;
+   sources: Record<string, unknown>[];
+   kbIdsUsed: string[];
+   evidenceSufficient: boolean;
+   warnings: string[];
+   error: string;
+}
+
+export interface KbPlan {
+   available: boolean;
+   action: string;
+   kbId: string;
+   provider: string;
+   existingProvider: string | null;
+   targetProvider: string;
+   blocked: boolean;
+   warnings: string[];
+   error: string;
+}
+
+export interface KbInstallResult {
+   available: boolean;
+   action: string;
+   kbId: string;
+   provider: string;
+   scope: string;
+   name: string;
+   warnings: string[];
+   error: string;
+}
+
+export interface KbStreamEvent {
+   type: string;
+   content?: unknown;
+   message?: string;
+   provider?: string;
+   kbIds?: string[];
+   [key: string]: unknown;
 }

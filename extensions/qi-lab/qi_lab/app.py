@@ -11,6 +11,7 @@ import json
 import os
 import secrets
 import stat
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -87,6 +88,15 @@ def _store_available() -> bool:
     return True
 
 
+def _kb_available() -> bool:
+    """`qi-kb` 装了吗?(只 import,不发请求)。"""
+    try:
+        import qi_kb.service  # noqa: F401
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
 def create_app(cwd: Path | str | None = None, password: str | None = None,
                allowed_hosts: list[str] | None = None, bind_host: str = "127.0.0.1",
                state: WebState | None = None,
@@ -148,6 +158,8 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
                           # 商店面:**真的去 import 一次** qi-store,而不是写死 True ——
                           # 没装这个扩展时那一节必须自己说清楚,而不是摆一排点了就 404 的键。
                           "store_write": _store_available(),
+                          # 知识库面：qi-kb 的 provider / KB / 检索问答。
+                          "kb_write": _kb_available(),
                           # 扩展面:插件据这两个开关决定要不要发结构化 UI。
                           # `ag_ui` = 事件形状是 AG-UI;`ui_v1` = 认 details["ui"] 的词汇表
                           # (见 design/web.md §16.2)。缺哪个都退回"折叠显示原始 JSON"。
@@ -878,6 +890,15 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
                 # 只是没生效)。角色现在是 qi-agents 的 `before_agent_start`,
                 # 所以这里把钉住值交给它(详见 `serve.pin_role`)。
                 #
+                # 会话级知识库选择：qi-lab 只把 forwardedProps.kbIds 记进 qi-kb 的进程内
+                # scope；before_agent_start 与本轮的工具调用都按它过滤。空 = 用全局绑定。
+                try:
+                    kb_service, _kb_reason = _kb()
+                    if kb_service is not None and (inp.kb_ids or inp.kb_provider):
+                        kb_service.set_session_scope(session.id, inp.kb_ids, inp.kb_provider)
+                except Exception:  # noqa: BLE001 没装 qi-kb / 配置坏了不影响正常对话
+                    pass
+
                 # **远端角色是另一条路**:它没有本地提示词,拼提示词等于没拼 ——
                 # 所以整轮转发给远端(`serve.remote_role_for` 判,与 `/api/agents` 同一份数据)。
                 remote = remote_role_for(session.cwd or web.default_cwd, inp.agent)
@@ -934,6 +955,12 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
                 if pump is not None:
                     pump.cancel()        # 不 cancel 会把流留在后台跑到进程结束
                 web.close_activity(feed)  # 泄漏的队列会让广播越推越多
+                try:
+                    kb_service, _kb_reason = _kb()
+                    if kb_service is not None:
+                        kb_service.clear_session_scope(session.id)
+                except Exception:  # noqa: BLE001
+                    pass
                 web.end(session.id)       # 必须在 finally:否则一次异常就永久卡住
 
         return StreamingResponse(gen(), media_type="text/event-stream", headers={
@@ -1273,6 +1300,265 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
         if data.get("kind") == "skill":
             web.refresh_skills()      # 卸掉的技能也要从缓存里消失,否则模型还能用
         return schemas.StoreUninstallResult(**data)
+
+    # ── 知识库（qi-kb）──────────────────────────────────
+    #
+    # 与商店同一套消费方式：进程内懒 import `qi_kb.service`，网络调用走
+    # `asyncio.to_thread`，写操作过确认头，没装就 available=false。
+
+    def _kb():
+        try:
+            from qi_kb import service  # noqa: F401
+            return service, ""
+        except Exception as exc:  # noqa: BLE001
+            return None, f"{type(exc).__name__}: {exc}"
+
+    def _kb_error(exc: Exception) -> HTTPException:
+        from qi_kb.errors import (EXIT_AUTH, EXIT_CONFLICT, EXIT_NOT_FOUND,
+                                  EXIT_USAGE, KbError)
+
+        if not isinstance(exc, KbError):
+            return HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
+        status = {EXIT_USAGE: 400, EXIT_AUTH: 401, EXIT_NOT_FOUND: 404,
+                  EXIT_CONFLICT: 409}.get(exc.exit_code, 502)
+        detail = str(exc) + (f"（{exc.hint}）" if exc.hint else "")
+        return HTTPException(status_code=status, detail=detail)
+
+    async def _in_kb(fn, /, **kwargs):
+        try:
+            return await asyncio.to_thread(fn, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            raise _kb_error(exc) from exc
+
+    @app.get("/api/kb/status", response_model=schemas.KbStatus,
+             dependencies=[Depends(guard)])
+    async def kb_status() -> schemas.KbStatus:
+        service, reason = _kb()
+        if service is None:
+            return schemas.KbStatus(available=False, error=reason)
+        try:
+            data = await asyncio.to_thread(service.status, web.default_cwd)
+        except Exception as exc:  # noqa: BLE001
+            return schemas.KbStatus(available=False, error=str(exc))
+        return schemas.KbStatus(**data)
+
+    @app.get("/api/kb/providers", response_model=schemas.KbProviders,
+             dependencies=[Depends(guard)])
+    async def kb_providers() -> schemas.KbProviders:
+        service, reason = _kb()
+        if service is None:
+            return schemas.KbProviders(error=reason)
+        data = await _in_kb(service.providers_list, cwd=web.default_cwd)
+        return schemas.KbProviders(**data)
+
+    @app.post("/api/kb/providers", response_model=schemas.KbStatus,
+              dependencies=[Depends(guard)])
+    async def kb_provider_add(body: schemas.KbProviderAddRequest,
+                              confirm: str | None = Header(None, alias="X-Qi-Confirm")
+                              ) -> schemas.KbStatus:
+        confirm_gate(confirm)
+        service, reason = _kb()
+        if service is None:
+            return schemas.KbStatus(available=False, error=reason)
+        await _in_kb(service.provider_add, cwd=web.default_cwd,
+                     name=body.name, base_url=body.baseUrl,
+                     api_prefix=body.apiPrefix, login=body.login or None,
+                     role=body.role or None, instance=body.instance or None,
+                     scope=body.scope)
+        return await kb_status()
+
+    @app.post("/api/kb/providers/login", response_model=schemas.KbStatus,
+              dependencies=[Depends(guard)])
+    async def kb_provider_login(body: schemas.KbProviderLoginRequest,
+                                confirm: str | None = Header(None, alias="X-Qi-Confirm")
+                                ) -> schemas.KbStatus:
+        confirm_gate(confirm)
+        service, reason = _kb()
+        if service is None:
+            return schemas.KbStatus(available=False, error=reason)
+        await _in_kb(service.provider_login, cwd=web.default_cwd,
+                     name=body.name, login=body.login or body.name,
+                     password=body.password, base_url=body.baseUrl or None,
+                     api_prefix=body.apiPrefix, scope=body.scope,
+                     instance=body.instance or None)
+        return await kb_status()
+
+    @app.delete("/api/kb/providers", response_model=schemas.KbStatus,
+                dependencies=[Depends(guard)])
+    async def kb_provider_remove(body: schemas.KbProviderRemoveRequest,
+                                 confirm: str | None = Header(None, alias="X-Qi-Confirm")
+                                 ) -> schemas.KbStatus:
+        confirm_gate(confirm)
+        service, reason = _kb()
+        if service is None:
+            return schemas.KbStatus(available=False, error=reason)
+        await _in_kb(service.provider_remove, cwd=web.default_cwd,
+                     name=body.name, cascade=body.cascade)
+        return await kb_status()
+
+    @app.post("/api/kb/plan", response_model=schemas.KbPlan,
+              dependencies=[Depends(guard)])
+    async def kb_plan(body: schemas.KbPlanRequest) -> schemas.KbPlan:
+        service, reason = _kb()
+        if service is None:
+            return schemas.KbPlan(available=False, error=reason)
+        data = await _in_kb(service.plan_install, cwd=web.default_cwd,
+                            kb=body.kbId, provider=body.provider,
+                            scope=body.scope, rebind=body.rebind)
+        return schemas.KbPlan(
+            available=True, action=str(data.get("action") or ""),
+            kbId=str(data.get("kbId") or body.kbId),
+            provider=str(data.get("provider") or body.provider),
+            existingProvider=data.get("existingProvider"),
+            targetProvider=str(data.get("provider") or body.provider),
+            blocked=bool(data.get("blocked")), warnings=[],
+        )
+
+    @app.get("/api/kb/available", response_model=schemas.KbList,
+             dependencies=[Depends(guard)])
+    async def kb_available(provider: str | None = Query(None),
+                           q: str | None = Query(None),
+                           boundOnly: bool = Query(False)) -> schemas.KbList:
+        service, reason = _kb()
+        if service is None:
+            return schemas.KbList(available=False, error=reason)
+        data = await _in_kb(service.available, cwd=web.default_cwd,
+                            provider=provider or None, q=q or None,
+                            bound_only=boundOnly)
+        return schemas.KbList(**data)
+
+    @app.get("/api/kb/docs", response_model=schemas.KbDocs,
+             dependencies=[Depends(guard)])
+    async def kb_docs(kbId: str = Query(...), provider: str | None = Query(None)
+                      ) -> schemas.KbDocs:
+        service, reason = _kb()
+        if service is None:
+            return schemas.KbDocs(available=False, error=reason)
+        data = await _in_kb(service.documents, cwd=web.default_cwd,
+                            kb=kbId, provider=provider or None)
+        return schemas.KbDocs(**data)
+
+    @app.post("/api/kb/search", response_model=schemas.KbSearchResult,
+              dependencies=[Depends(guard)])
+    async def kb_search(body: schemas.KbSearchRequest) -> schemas.KbSearchResult:
+        service, reason = _kb()
+        if service is None:
+            return schemas.KbSearchResult(available=False, error=reason)
+        data = await _in_kb(service.search, cwd=web.default_cwd, query=body.query,
+                            kb_ids=body.kbIds or None, provider=body.provider or None,
+                            top_k=body.topK, strategy=body.strategy,
+                            use_rerank=body.useRerank, rerank_top_k=body.rerankTopK)
+        return schemas.KbSearchResult(available=True, **data)
+
+    @app.post("/api/kb/ask", response_model=schemas.KbAskResult,
+              dependencies=[Depends(guard)])
+    async def kb_ask(body: schemas.KbAskRequest) -> schemas.KbAskResult:
+        service, reason = _kb()
+        if service is None:
+            return schemas.KbAskResult(available=False, error=reason)
+        data = await _in_kb(service.ask, cwd=web.default_cwd, question=body.question,
+                            kb_ids=body.kbIds or None, provider=body.provider or None,
+                            top_k=body.topK, strategy=body.strategy,
+                            use_rerank=body.useRerank, rerank_top_k=body.rerankTopK)
+        return schemas.KbAskResult(available=True, **data)
+
+    @app.post("/api/kb/ask/stream", dependencies=[Depends(guard)])
+    async def kb_ask_stream(body: schemas.KbAskRequest) -> StreamingResponse:
+        """流式问答（SSE）：逐 token 推，最后 sources / done。"""
+        service, reason = _kb()
+        if service is None:
+            async def empty():
+                yield ("data: " + json.dumps(
+                    {"type": "error", "message": reason}, ensure_ascii=False) + "\n\n")
+            return StreamingResponse(empty(), media_type="text/event-stream")
+
+        loop = asyncio.get_running_loop()
+        queue: asyncio.Queue = asyncio.Queue()
+        stop = threading.Event()
+
+        def worker() -> None:
+            try:
+                for event in service.ask_stream(
+                    web.default_cwd, body.question,
+                    kb_ids=body.kbIds or None, provider=body.provider or None,
+                    top_k=body.topK, strategy=body.strategy,
+                    use_rerank=body.useRerank, rerank_top_k=body.rerankTopK,
+                ):
+                    if stop.is_set():
+                        break
+                    loop.call_soon_threadsafe(queue.put_nowait, event)
+            except Exception as exc:  # noqa: BLE001 错误也走 SSE，不弄断连接
+                message = str(exc)
+                if hasattr(exc, "hint") and getattr(exc, "hint"):
+                    message += f"（{exc.hint}）"
+                loop.call_soon_threadsafe(queue.put_nowait,
+                                          {"type": "error", "message": message})
+            finally:
+                loop.call_soon_threadsafe(queue.put_nowait, None)
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+
+        async def gen():
+            try:
+                while True:
+                    item = await queue.get()
+                    if item is None:
+                        break
+                    yield ("data: " + json.dumps(item, ensure_ascii=False) + "\n\n")
+            finally:
+                stop.set()
+
+        return StreamingResponse(gen(), media_type="text/event-stream", headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        })
+
+    @app.post("/api/kb/install", response_model=schemas.KbInstallResult,
+              dependencies=[Depends(guard)])
+    async def kb_install(body: schemas.KbInstallRequest,
+                         confirm: str | None = Header(None, alias="X-Qi-Confirm")
+                         ) -> schemas.KbInstallResult:
+        confirm_gate(confirm)
+        service, reason = _kb()
+        if service is None:
+            return schemas.KbInstallResult(available=False, error=reason)
+        data = await _in_kb(service.install, cwd=web.default_cwd, kb=body.kbId,
+                            provider=body.provider, scope=body.scope,
+                            rebind=body.rebind)
+        entry = data.get("kb") or {}
+        return schemas.KbInstallResult(
+            available=True, action=str(data.get("action") or ""),
+            kbId=str(data.get("kbId") or body.kbId),
+            provider=str(data.get("provider") or body.provider),
+            scope=str(data.get("scope") or body.scope),
+            name=str(entry.get("name") or ""),
+        )
+
+    @app.post("/api/kb/uninstall", response_model=schemas.KbUninstallResult,
+              dependencies=[Depends(guard)])
+    async def kb_uninstall(body: schemas.KbUninstallRequest,
+                           confirm: str | None = Header(None, alias="X-Qi-Confirm")
+                           ) -> schemas.KbUninstallResult:
+        confirm_gate(confirm)
+        service, reason = _kb()
+        if service is None:
+            return schemas.KbUninstallResult(available=False, error=reason)
+        data = await _in_kb(service.uninstall, cwd=web.default_cwd, kb=body.kbId)
+        return schemas.KbUninstallResult(available=True, **data)
+
+    @app.patch("/api/kb/defaults", response_model=schemas.KbStatus,
+               dependencies=[Depends(guard)])
+    async def kb_defaults(body: schemas.KbDefaultsRequest,
+                          confirm: str | None = Header(None, alias="X-Qi-Confirm")
+                          ) -> schemas.KbStatus:
+        confirm_gate(confirm)
+        service, reason = _kb()
+        if service is None:
+            return schemas.KbStatus(available=False, error=reason)
+        await _in_kb(service.set_defaults, cwd=web.default_cwd,
+                     values=body.defaults, scope=body.scope)
+        return await kb_status()
 
     @app.post("/api/auth/{provider}", status_code=204, dependencies=[Depends(guard)])
     async def set_auth(provider: str, body: schemas.AuthWrite,

@@ -186,6 +186,39 @@ Agent 标签暂时只说明"为什么不提供"(hikqin 的模板蓝图与 qi 的
 
 契约在 [docs/api/store.md](docs/api/store.md);回归测试 `tests/test_lab_store_api.py`。
 
+## 知识库（设置页 → 知识库）
+
+把 **hikqin 知识库**接成 qi-kb 的 provider/model：账号 = provider，库 = knowledgeBase。
+qi-lab 只做**代理与界面**（进程内懒 import `qi_kb.service`，与商店同一套）。
+
+| 方法 | 路径 | 干什么 |
+| --- | --- | --- |
+| GET | `/api/kb/status` | provider / 已绑定 / 默认参数 |
+| GET/POST/DELETE | `/api/kb/providers` | 账号列表 / 新增 / 删除（写要确认头） |
+| POST | `/api/kb/providers/login` | 登录（密码只过一次） |
+| POST | `/api/kb/plan` | 只算不写：install / update / rebind |
+| GET | `/api/kb/available` | 可用 KB + 已绑定 |
+| POST | `/api/kb/install` / `uninstall` | 装 / 卸（写要确认头；冲突 409） |
+| POST | `/api/kb/search` / `ask` | 检索 / 上游 RAG 问答 |
+| POST | `/api/kb/ask/stream` | 流式 RAG 问答（SSE） |
+| PATCH | `/api/kb/defaults` | 默认参数（写要确认头） |
+
+三条口径：
+
+- **账号不在 `store.json`**：安装 KB 时从 qi-store 的 source 复制到 qi-kb 自己的
+  `kb.json` / `kb-auth.json`；之后 `qi store logout` 不影响已装知识库；
+- **同一个 `(instance, kbId)` 只保留一份**：重复安装先 `plan`，`blocked=true` 时
+  前端弹「保留 / 覆盖为当前 provider」；覆盖 = rebind，不复制文档；
+- **令牌不回显**：响应只有登录态；写操作过 `X-Qi-Confirm`。
+
+**测试控制台的「流式问答」**：边生成边显示 token，最后追加 sources；可随时停止。
+
+**对话页的知识库 chip**：输入卡右下角可以只勾选本轮要查的已绑定 KB。它通过
+`forwardedProps.kbIds` 传给宿主，宿主把选择记进当前会话的进程内 scope；清空 = 回到
+`kb.json` 的全局/项目绑定。刷新页面或换会话不会落盘。
+
+契约在 [docs/api/kb.md](docs/api/kb.md)；回归测试 `tests/test_lab_kb_api.py`。
+
 ### 对话页面的「智能体」chip 也能选远端角色
 
 `/api/agents` 与 `subagent` 用的是**同一份角色表**,所以 A2A 条目会自动出现在那个
@@ -222,7 +255,7 @@ Agent 标签暂时只说明"为什么不提供"(hikqin 的模板蓝图与 qi 的
 
 ## 接口文档
 
-**`docs/api/`** —— 40 条 `/api` 路由的完整契约(请求体、响应字段表、状态码、curl 例子、
+**`docs/api/`** —— 63 条 `/api` 路由的完整契约(请求体、响应字段表、状态码、curl 例子、
 写端的规矩与坑):
 
 | 文件 | 内容 |
@@ -236,6 +269,8 @@ Agent 标签暂时只说明"为什么不提供"(hikqin 的模板蓝图与 qi 的
 | [`docs/api/agents.md`](docs/api/agents.md) | 角色:读(只回元数据)与删除(两层、按显示名、整目录) |
 | [`docs/api/config.md`](docs/api/config.md) | 配置/模型/扩展只读视图、凭证写入 |
 | [`docs/api/skills.md`](docs/api/skills.md) | 技能:读(六层来源)与添加 / 删除 / 导入 |
+| [`docs/api/store.md`](docs/api/store.md) | 商店:hikqin 目录 / 登录 / 安装 / 卸载 |
+| [`docs/api/kb.md`](docs/api/kb.md) | 知识库:provider / KB / 检索 / 问答 / 默认参数 |
 | [`docs/api/workspaces.md`](docs/api/workspaces.md) | 工作区显示名与目录选择器 |
 | [`docs/api/files.md`](docs/api/files.md) | 文件三端点:边界、排序、限额、预览白名单 |
 

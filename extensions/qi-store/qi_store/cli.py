@@ -25,7 +25,7 @@ import httpx
 from rich.console import Console
 from rich.table import Table
 
-from . import config, installer, ops, paths, planner
+from . import config, installer, ops, paths, planner, service
 from .catalog import Catalog, StoreItem, load as load_catalog
 from .client import StoreClient, token_claims, token_exp
 from .config import Source, StoreConfig
@@ -270,6 +270,23 @@ def _plan_ctx(args: argparse.Namespace, source: Source, http_factory: Any,
     )
 
 
+def _split_store_suffix(ids: list[str]) -> tuple[list[str], str | None]:
+    """`kb:<id>@alice` → (`kb:<id>`, `alice`)。同一批只允许一个源。"""
+    out: list[str] = []
+    stores: set[str] = set()
+    for key in ids:
+        text = str(key)
+        if "@" in text:
+            left, _, right = text.rpartition("@")
+            if right:
+                stores.add(right)
+                text = left
+        out.append(text)
+    if len(stores) > 1:
+        raise UsageError("同一批条目不能来自多个源", hint="分开装，或用 `--store` 逐个执行")
+    return out, next(iter(stores), None)
+
+
 def _kind_positional(ids: list[str], kind: str | None) -> tuple[list[str], str | None]:
     """`qi store install skill` —— **单位置参且是 kind 名**时它指的是 kind,不是 id。
 
@@ -390,7 +407,7 @@ def _print_items(items: list[StoreItem], *, ledger: Ledger | None = None,
 
 
 def cmd_search(args: argparse.Namespace, *, cfg: StoreConfig, http_factory: Any) -> int:
-    source = cfg.source(None)
+    source = cfg.source(getattr(args, "store", None))
     catalog = _load_catalog(args, source, http_factory)
     items = catalog.filter(kind=args.kind, keyword=args.keyword)
     if args.limit:
@@ -411,7 +428,7 @@ def cmd_search(args: argparse.Namespace, *, cfg: StoreConfig, http_factory: Any)
 
 
 def cmd_info(args: argparse.Namespace, *, cfg: StoreConfig, http_factory: Any) -> int:
-    source = cfg.source(None)
+    source = cfg.source(getattr(args, "store", None))
     catalog = _load_catalog(args, source, http_factory)
     item = catalog.find(args.id)
     ledger = Ledger.load()
@@ -457,7 +474,12 @@ def _show_skill_files(source: Source, http_factory: Any, item: StoreItem) -> Non
 
 
 def cmd_install(args: argparse.Namespace, *, cfg: StoreConfig, http_factory: Any) -> int:
-    source = cfg.source(None)
+    args.ids, id_store = _split_store_suffix(args.ids)
+    if id_store:
+        if getattr(args, "store", None) and args.store != id_store:
+            raise UsageError(f"`@{id_store}` 与 `--store {args.store}` 不一致")
+        args.store = id_store
+    source = cfg.source(getattr(args, "store", None))
     scope = _scope_of(args, cfg)
     args.ids, args.kind = _kind_positional(args.ids, args.kind)
     if args.offline:
@@ -468,6 +490,9 @@ def cmd_install(args: argparse.Namespace, *, cfg: StoreConfig, http_factory: Any
     catalog = _load_catalog(args, source, http_factory)
     ledger = Ledger.load()
     items = _resolve_ids(catalog, args.ids, kind=args.kind, ledger=ledger)
+
+    if items and all(item.kind == "kb" for item in items):
+        return _install_kb(args, scope, getattr(args, "store", None))
 
     if scope == "project":
         # 项目级安装会让**仓库控制的目录**多出东西,所以每次都要人点头
@@ -525,6 +550,47 @@ def cmd_install(args: argparse.Namespace, *, cfg: StoreConfig, http_factory: Any
         console.print("[yellow]还要补环境变量[/yellow](qi-mcp 在连接时读,缺了会明确报错):")
         for name in needs:
             console.print(f"  export {name}=…")
+    return EXIT_OK
+
+
+def _install_kb(args: argparse.Namespace, scope: str, store: str | None = None) -> int:
+    """KB 的安装走 qi-kb 的配置写入器，不复用 store 的 PatchJson/账本。"""
+    plan = service.plan(getattr(args, "cwd", None), ids=args.ids, scope=scope,
+                        force=args.force, store=store)
+    if args.json and args.dry_run:
+        console.print_json(json.dumps({"dryRun": True, "plan": plan}, ensure_ascii=False))
+        return EXIT_OK
+    if not args.json:
+        for item in plan["items"]:
+            mark = " [yellow](已存在[/yellow]" if item.get("conflict") else ""
+            console.print(f"[cyan]{item['id']}[/cyan] {item['name']} → "
+                          f"{', '.join(item.get('targets') or [])}{mark}")
+            if item.get("conflict"):
+                err_console.print(f"[yellow]! {item['conflict']}[/yellow]"
+                                  f"，确认覆盖请加 --force")
+    if plan.get("blocked") and not args.force:
+        if args.yes or not sys.stdin.isatty():
+            raise Conflict("KB 已由其它 provider 安装", hint="覆盖请加 --force")
+        if not _confirm("覆盖为当前 provider？"):
+            console.print("[dim]保留原样[/dim]")
+            return EXIT_OK
+        args.force = True
+    if args.dry_run:
+        if args.json:
+            console.print_json(json.dumps({"dryRun": True, "plan": plan}, ensure_ascii=False))
+        else:
+            console.print("[dim]--dry-run:没有写任何东西[/dim]")
+        return EXIT_OK
+    _confirm("继续?", assume_yes=args.yes)
+    data = service.install(getattr(args, "cwd", None), ids=args.ids, scope=scope,
+                           force=args.force, store=store)
+    if args.json:
+        console.print_json(json.dumps(data, ensure_ascii=False))
+        return EXIT_OK
+    for item in data.get("installed") or []:
+        console.print(f"[green]已安装[/green] {item['id']}（{item.get('action') or 'install'}）")
+    for item in data.get("skipped") or []:
+        console.print(f"[dim]{item['id']} 跳过：{item['reason']}[/dim]")
     return EXIT_OK
 
 
@@ -618,14 +684,21 @@ def cmd_download(args: argparse.Namespace, *, cfg: StoreConfig, http_factory: An
 def cmd_list(args: argparse.Namespace, *, cfg: StoreConfig, http_factory: Any) -> int:
     ledger = Ledger.load()
     records = [record for record in ledger.items if not args.kind or record.kind == args.kind]
+    kb_rows: list[dict[str, Any]] = []
+    if not args.kind or args.kind == "kb":
+        try:
+            kb_rows = [row for row in service.installed(getattr(args, "cwd", None))["items"]
+                       if row.get("kind") == "kb"]
+        except Exception:  # noqa: BLE001 读 KB 配置失败不该让商店列表 500
+            kb_rows = []
     if args.json:
-        console.print_json(json.dumps([record.as_dict() for record in records],
-                                      ensure_ascii=False))
+        console.print_json(json.dumps(
+            [record.as_dict() for record in records] + kb_rows, ensure_ascii=False))
         return EXIT_OK
-    if not records:
+    if not records and not kb_rows:
         console.print("[dim]还没有装任何东西。`qi store search` 看看有什么[/dim]")
         return EXIT_OK
-    table = Table(title=f"已安装 {len(records)} 条", title_justify="left")
+    table = Table(title=f"已安装 {len(records) + len(kb_rows)} 条", title_justify="left")
     table.add_column("id", style="cyan", no_wrap=True)
     table.add_column("名称", no_wrap=True)
     table.add_column("作用域")
@@ -635,11 +708,23 @@ def cmd_list(args: argparse.Namespace, *, cfg: StoreConfig, http_factory: Any) -
     for record in records:
         table.add_row(record.itemId, record.name, record.scope, record.version,
                       ", ".join(record.needs_config) or "-", record.target or "(配置键)")
+    for row in kb_rows:
+        table.add_row(row["id"], row["name"], row.get("scope", ""), "-", "-",
+                      row.get("target", ""))
     console.print(table)
     return EXIT_OK
 
 
 def cmd_uninstall(args: argparse.Namespace, *, cfg: StoreConfig, http_factory: Any) -> int:
+    if args.ids and any(str(key).startswith("kb:") for key in args.ids):
+        if not all(str(key).startswith("kb:") for key in args.ids):
+            raise UsageError("KB 与其它 kind 请分开卸载")
+        args.ids, _ = _split_store_suffix(args.ids)
+        _confirm(f"卸载 {len(args.ids)} 个知识库？(只删本地绑定)", assume_yes=args.yes)
+        for key in args.ids:
+            data = service.uninstall(getattr(args, "cwd", None), id=key)
+            console.print(f"[green]已卸载[/green] {data['id']}（{len(data['removed'])} 处改动）")
+        return EXIT_OK
     ledger = Ledger.load()
     scope = getattr(args, "scope", None)
     if args.ids:
@@ -904,11 +989,13 @@ def _parser() -> argparse.ArgumentParser:
     search.add_argument("--json", action="store_true", help="输出 JSON")
     search.add_argument("--offline", action="store_true", help="读本地缓存")
     search.add_argument("-k", "--kind", choices=ALL_KINDS, help="只看某一种")
+    search.add_argument("--store", help="源名(默认 defaultStore)")
 
     info = add("info", cmd_info, "看一个条目的详情(含文件树与已装状态)")
     info.add_argument("id")
     info.add_argument("--offline", action="store_true", help="读本地缓存")
     info.add_argument("-k", "--kind", choices=ALL_KINDS, help=argparse.SUPPRESS)
+    info.add_argument("--store", help="源名(默认 defaultStore)")
 
     install = add("install", cmd_install, "安装(省略 id 则进序号选择器)")
     install.add_argument("ids", nargs="*", help="条目 id 或名称,如 ppt-generator / skill:4")
@@ -921,6 +1008,7 @@ def _parser() -> argparse.ArgumentParser:
     install.add_argument("--dry-run", action="store_true", help="只打计划,不动手")
     install.add_argument("-y", "--yes", action="store_true", help="不再确认")
     install.add_argument("--json", action="store_true", help="计划以 JSON 输出")
+    install.add_argument("--store", help="源名(默认 defaultStore)")
 
     download = add("download", cmd_download, "只取件(不落配置、不记账)")
     download.add_argument("ids", nargs="*", help="条目 id 或名称")

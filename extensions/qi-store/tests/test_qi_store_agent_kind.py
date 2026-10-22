@@ -109,9 +109,11 @@ def test_install_writes_a_self_contained_role(store_home):
 
     role = agents_root() / "PPT 工厂"
     fields = frontmatter(role)
+    # 只写 name + description（与 hikqin 导出的包同一口径）：
+    # 不写 model（跟随会话/父角色）、不写 tools（继承父 + 私有 MCP 自动接上）
+    assert set(fields) == {"name", "description"}
     assert fields["name"] == "PPT 工厂"
     assert fields["description"] == "拆大纲再排版"
-    assert fields["model"] == "stub/m1"          # 本地 models.json 里有 → 写上
     assert body(role) == "你是 PPT 工厂的调度员。先把需求拆成大纲,再交给子智能体排版。"
 
 
@@ -129,8 +131,8 @@ def test_mcp_details_are_fetched_per_server(store_home):
     # 合成详情里 tool_names=None = 全部工具 → **不写** includeTools
     assert "includeTools" not in entry
 
-    tools = frontmatter(role)["tools"]
-    assert "mcp__ppt-tools__*" in tools and "read" in tools and "subagent" in tools
+    # 不写 tools：qi-agents 会在 tools 省略时自动接上角色私有 server
+    assert "tools" not in frontmatter(role)
     record = Ledger.load().find(f"agent:{AGENT_FACTORY_ID}")
     assert record is not None and record.needs_config == ["PPT_TOOLS_TOKEN"]
 
@@ -173,13 +175,9 @@ def test_dropped_sections_are_stated_in_the_plan(store_home, capsys):
     assert "已丢弃" in out and "数据源" in out and "开场白" in out
 
 
-def test_model_is_skipped_when_local_models_lack_it(store_home, capsys):
-    seed(models=False)
-    capsys.readouterr()
-    assert cli.run(["install", f"agent:{AGENT_FACTORY_ID}", "--json", "--dry-run"],
-                   http_factory=factory(upstream())) == EXIT_OK
-    payload = json.loads(capsys.readouterr().out)
-    assert "models.json" in payload["plan"][0]["note"]
+def test_model_is_never_written(store_home, capsys):
+    """**不写 model**：角色跟随会话/父角色的模型（上游的 api_key 是密文，qi 也用不了）。"""
+    seed()
     assert install() == EXIT_OK
     assert "model" not in frontmatter(agents_root() / "PPT 工厂")
 

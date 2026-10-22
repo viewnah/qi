@@ -52,13 +52,6 @@ MAX_PAGES = 20
 #: 递归取子智能体详情的深度上限(上游自己也只允许两层,这里防环 + 防跑飞)
 MAX_DEPTH = 5
 
-#: 生成的角色在**有 MCP 时**写进 `tools:` 的内置工具集。
-#:
-#: 写 `tools:` 就等于"点名的才有"(qi 的语义),所以一旦为了 MCP 不得不写它,就得把编码 agent
-#: 的常用内置工具一起列上 —— 否则装出来的角色"有 MCP 但没有 read"。`powershell` 在非 Windows
-#: 上只是不可用,不会报错(内置工具无条件注册)。
-DEFAULT_TOOLS = ("read", "ls", "find", "grep", "write", "edit", "bash", "powershell")
-
 #: 详情里 qi 没有对应物的段落 —— 装之前就说清,别让人装完才发现少了东西
 DROPPED_SECTIONS = {
     "opening_enabled": "开场白",
@@ -132,47 +125,6 @@ def fetch_detail(agent_id: str, ctx: PlanContext) -> dict:
 
 
 # ── 本地模型表(决定要不要写 `model:`)──────────────────────
-
-
-def local_models(root: Path | None = None) -> set[str]:
-    """本地 `models.json` 里**能被解析**的 `provider/model`。
-
-    读不到 / 格式不对 → 空集(等于"一个都不写"),不是报错:装一个角色不该因为模型文件坏了
-    而失败;调用方会在计划里说明"模型没写"。
-    """
-    from .. import paths
-
-    file = (root or paths.global_agent_dir()) / "models.json"
-    if not file.is_file():
-        return set()
-    try:
-        raw = json.loads(file.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError, OSError):
-        return set()
-    providers = raw.get("providers") if isinstance(raw, dict) else None
-    if not isinstance(providers, dict):
-        return set()
-    found: set[str] = set()
-    for provider, cfg in providers.items():
-        models = (cfg or {}).get("models") if isinstance(cfg, dict) else None
-        for model in models or []:
-            if isinstance(model, dict) and model.get("id"):
-                found.add(f"{provider}/{model['id']}")
-    return found
-
-
-def _pick_model(detail: dict) -> tuple[str | None, str]:
-    model = detail.get("model")
-    if not isinstance(model, dict):
-        return None, ""
-    provider = str(model.get("provider") or "").strip()
-    name = str(model.get("model_name") or model.get("name") or "").strip()
-    if not provider or not name:
-        return None, ""
-    spec = f"{provider}/{name}"
-    if spec in local_models():
-        return spec, ""
-    return None, f"本地 models.json 里没有 {spec}(上游不下发密钥,你自己配一个同名即可)"
 
 
 # ── 转换 ────────────────────────────────────────────────
@@ -337,24 +289,14 @@ def _role_actions(detail: dict, role_dir: Path, name: str, *, ctx: PlanContext,
     if fixed:
         notes.append(f"{name}:上游的 system_prompt 里是字面反斜杠-n,已还原成换行")
 
+    # **只写 name + description**（与 hikqin 导出的包同一口径）:
+    # - 不写 model:角色跟随会话/父角色的模型
+    # - 不写 tools:省略 = 继承父;角色私有 MCP 由 qi-agents 自动接上
     fields: dict[str, str] = {"name": name, "description": description}
-    model, model_note = _pick_model(detail)
-    if model:
-        fields["model"] = model
-    elif model_note:
-        notes.append(f"{name}:没写 model —— {model_note}")
-
     if servers:
-        tools = [*DEFAULT_TOOLS, *(f"mcp__{server}__*" for server in servers)]
-        if children:
-            tools.append("subagent")
-        fields["tools"] = ", ".join(tools)
-        notes.append(f"{name}:已写 tools(MCP 需要显式点名;内置工具按默认编码集列出)")
         actions.append(WriteText(role_dir / "mcp.json",
                                  json.dumps({"mcpServers": servers}, ensure_ascii=False,
                                             indent=2) + "\n"))
-    elif children:
-        notes.append(f"{name}:有子智能体但没有 MCP —— 没写 tools(继承父,含 subagent)")
 
     actions.append(WriteText(role_dir / "agent.md", _frontmatter(fields) + "\n" + prompt + "\n"))
     return actions

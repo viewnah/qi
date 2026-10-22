@@ -334,28 +334,25 @@ Plugins 那份规范（技能按目录 + 规范 `mcp.json`），模板蓝图（`
 
 ```
 ~/.qi/agent/agents/<名>/
-  agent.md              frontmatter(name / description / tools / model) + 正文 = system_prompt
+  agent.md              frontmatter 只有 name / description + 正文 = system_prompt
   mcp.json              角色私有 MCP 声明（qi-agents 读，qi-mcp 连）
   skills/<名>/SKILL.md  角色私有技能
 ```
 
-### 三个必须显式处理的判断
+### 两个必须显式处理的判断
 
-1. **`tools:` 不写就没有 MCP**。qi-agents 的语义是"不写 = 没有任何 MCP 访问，而且连都不连"；
-   而角色私有 server 只能用 `mcp__<名>__*` 直连（`mcp` 代理看不见私有 server）。所以：
-   - 详情里**没有** MCP → **不写** `tools:`（= 继承父，零改动）；
-   - 有 MCP → 必须写，而写了等于"点名的才有"，于是把内置编码工具一起列上：
-
-     ```yaml
-     tools: read, ls, find, grep, write, edit, bash, powershell, mcp__ppt-tools__*, subagent
-     ```
-
-     `subagent` 只在有子智能体时加。方向是收窄不是提权，但确实是替用户做了个决定 ——
-     计划里会写一行说明，要改就改 `agent.md`。
-2. **`tool_names` 的两种含义**：`None` = 全部工具（→ **不写** `includeTools`）；非空列表 =
+1. **`tool_names` 的两种含义**：`None` = 全部工具（→ **不写** `includeTools`）；非空列表 =
    白名单（→ 写 qi-mcp 的 `includeTools`）。这两者搞反，症状是"工具莫名其妙少了/多了"。
-3. **模型只在本地 `models.json` 里真有 `provider/model_name` 时才写**。上游的密钥不在这里，
-   我们也不该碰。
+2. **不写 `model:` / `tools:`**（与 hikqin 导出的 zip 包同一口径）：
+   - 不写 `model:` — 角色跟随会话/父角色的模型（上游 `api_key` 是密文，qi 也用不了）；
+   - 不写 `tools:` — 省略 = 继承父的工具集；角色私有 `mcp.json` 照样生效：qi-agents 在
+     `tools:` 省略时**自动接上角色私有 server**（只接私有那份；qi 两层仍归父会话的 `mcp` 代理）。
+
+### 子智能体：安装时摊平
+
+qi 的角色表是**平铺**的。安装器把子智能体摊成**同级角色**（装完就能被 `subagent` 指派），
+与 hikqin 导出的 **zip 包**不同 —— 那边是"随包携带、不摊平"（包是搬运物，不该动你的角色表）。
+同名跳过、按 id 防环、深度上限 5。
 
 ### 降级而不是失败
 

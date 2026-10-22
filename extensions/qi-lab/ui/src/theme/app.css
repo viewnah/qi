@@ -2719,6 +2719,68 @@ pre,
  max-width: 860px;
 }
 
+/* ── 模型节:provider → model 两级 ────────────────────────
+   外层沿用卡片语汇(`set-card`),里面再列模型行 —— 一层是“哪个 provider”,
+   二层是“它有哪些模型”。不用网格:模型数量差异很大,一条 provider 占满一行
+   比把长短不一的卡片摆成网格好读。 */
+.model-groups {
+ display: flex;
+ flex-direction: column;
+ gap: 10px;
+ margin-top: 12px;
+}
+
+.model-group__label {
+ flex: 0 1 auto;
+ min-width: 0;
+ overflow: hidden;
+ color: var(--dsw-alias-label-tertiary);
+ font: var(--dsw-font-xxs-12);
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+
+.model-group__models {
+ display: flex;
+ flex-direction: column;
+ margin: 0;
+ padding: 0;
+ border-top: 0.5px solid var(--dsw-alias-border-l1);
+ list-style: none;
+}
+
+.model-row {
+ display: flex;
+ align-items: center;
+ gap: 8px;
+ min-height: 30px;
+ padding: 4px 0;
+}
+
+.model-row + .model-row {
+ border-top: 0.5px solid var(--dsw-alias-border-l1);
+}
+
+.model-row__id {
+ min-width: 0;
+ overflow: hidden;
+ color: var(--dsw-alias-label-primary);
+ font-family: var(--ds-font-family-code);
+ font-size: 12px;
+ line-height: 18px;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+
+.model-row .set-card__tag {
+ margin-left: auto;
+}
+
+.model-row--empty {
+ color: var(--dsw-alias-label-caption);
+ font: var(--dsw-font-xxs-12);
+}
+
 /* 行内动作:密集胶囊(dsh `.rowActions .secondaryButton` 的 28/14 档)。 */
 .set-act {
  display: inline-flex;
@@ -3242,6 +3304,40 @@ pre,
 .dialog__input:focus {
  --dsw-elevation-stroke-color: var(--dsw-alias-state-business-primary);
  border-color: var(--dsw-alias-state-business-primary);
+}
+
+/* 弹层里的多字段表单(添加 Provider 这类):标签在上、控件在下。 */
+.dialog__fields {
+ display: flex;
+ flex-direction: column;
+ gap: 8px;
+ margin-top: 8px;
+}
+
+.dialog__field {
+ display: flex;
+ flex-direction: column;
+ gap: 4px;
+}
+
+.dialog__field > span {
+ color: var(--dsw-alias-label-tertiary);
+ font: var(--dsw-font-xxs-12);
+}
+
+.dialog__hint {
+ margin: 0;
+ color: var(--dsw-alias-label-tertiary);
+ font: var(--dsw-font-xxs-12);
+ line-height: 18px;
+}
+
+.dialog__input--area {
+ min-height: 64px;
+ resize: vertical;
+ font-family: var(--ds-font-family-code);
+ font-size: 12px;
+ line-height: 18px;
 }
 
 /* ── MCP 声明表的增 / 删 / 改表单(§8.3:确认弹层里先看见要写什么)─────

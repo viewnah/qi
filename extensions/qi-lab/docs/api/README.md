@@ -44,7 +44,7 @@ Python 侧是 editable 安装,改完即生效;前端改动要 `cd ui && npm run 
 
 ### 2. 写操作的第二道闸:确认头
 
-**9 条写端点**要求显式带:
+**10 条写端点**要求显式带:
 
 ```
 X-Qi-Confirm: yes
@@ -59,6 +59,7 @@ X-Qi-Confirm: yes
 | `DELETE /api/mcp` | 删 MCP server |
 | `POST /api/auth/{provider}` | 写入凭证 |
 | `DELETE /api/auth/{provider}` | 删除凭证 |
+| `POST /api/providers` | 新建用户级 provider(声明 + 凭证) |
 | `POST /api/skills` | 新建技能 |
 | `DELETE /api/skills` | 删技能(整目录) |
 | `POST /api/skills/import` | 导入技能 |
@@ -102,6 +103,7 @@ curl -X PATCH http://127.0.0.1:3456/api/mcp -H 'X-Qi-Confirm: yes' -H 'Content-T
 | `auth_write` | `/api/auth/*` 可写 |
 | `config_read` / `trajectory` | `/api/config` 只读视图、轨迹回放 |
 | `model_switch` | `/api/models` + `/api/model`(清单与切换) |
+| `provider_write` | `/api/providers` 可新建用户级 provider(**没有它 → 「添加 Provider」只保留“登录已有”**) |
 | `mcp_write` | `/api/mcp` 的 POST/PATCH/DELETE(**没有它 → 界面把 MCP 节当只读**) |
 | `skill_write` | `/api/skills` 的 POST/DELETE + `/api/skills/import`(**没有它 → 技能节只读**) |
 | `agent_write` | `/api/agents` 的 DELETE(**没有它 → Agent 节只读**;读端点一直在) |
@@ -153,6 +155,7 @@ curl -X PATCH http://127.0.0.1:3456/api/mcp -H 'X-Qi-Confirm: yes' -H 'Content-T
 | DELETE | `DELETE /api/a2a` | 删条目(只删一层) | `a2a.md` |
 | POST | `POST /api/a2a/probe` | 去真实端点拉一次名片(只读) | `a2a.md` |
 | GET | `GET /api/config` | provider/凭证/默认模型只读视图 | `config.md` |
+| POST | `POST /api/providers` | 新建用户级 provider(写 models.json + auth.json,需确认头) | `config.md` |
 | GET | `GET /api/models` | 可选模型清单 + 当前值 | `config.md` |
 | POST | `POST /api/model` | 换模型 / 换思考级别 | `config.md` |
 | GET | `GET /api/skills` | 顶层技能清单 | `skills.md` |

@@ -165,3 +165,34 @@ describe("MCP 声明表:增删改的两侧对齐", () => {
     expect(ui).toEqual(host);
   });
 });
+
+describe("新建 provider:两侧对齐", () => {
+  const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+  const appPy = readFileSync(resolve(ROOT, "qi_lab/app.py"), "utf8");
+  const schemasPy = readFileSync(resolve(ROOT, "qi_lab/schemas.py"), "utf8");
+  const here = dirname(fileURLToPath(import.meta.url));
+  const clientTs = readFileSync(resolve(here, "client.ts"), "utf8");
+  const typesTs = readFileSync(resolve(here, "types.ts"), "utf8");
+
+  it("宿主注册了 POST /api/providers 并在 meta 里声明能力位", () => {
+    expect(appPy).toContain('@app.post("/api/providers"');
+    expect(appPy).toContain('"provider_write": True');
+  });
+
+  it("客户端打的是同一个路径,且带确认头", () => {
+    const at = clientTs.indexOf("addProvider:");
+    expect(at).toBeGreaterThan(-1);
+    const block = clientTs.slice(at, at + 320);
+    expect(block).toContain('request<ConfigView>("/api/providers"');
+    expect(block).toContain('method: "POST"');
+    expect(block).toContain('"X-Qi-Confirm": "yes"');
+  });
+
+  it("请求体字段名两侧一致(改一个而没改另一个 = 400 / 收不到)", () => {
+    expect(schemasPy).toContain("class ProviderAdd");
+    for (const field of ["name", "base_url", "api", "api_key", "models"]) {
+      expect(schemasPy, `宿主不认识 ${field}`).toContain(`${field}:`);
+      expect(typesTs, `前端请求体缺 ${field}`).toContain(`${field}:`);
+    }
+  });
+});

@@ -1,6 +1,6 @@
 # 配置、模型、技能、扩展与凭证
 
-前五个是**只读视图**(设置页的数据源),后两个是凭证写入(带确认头)。
+前五个是**只读视图**(设置页的数据源),后面是写操作(新建 provider / 凭证;带确认头)。
 通用约定见 [`README.md`](README.md)。
 
 ## `GET /api/config`
@@ -20,6 +20,7 @@ provider / 凭证状态 / 默认模型的只读视图。**凭证只回掩码与�
 | `settings_files` / `config_files` | `string[]` | 实际读了哪些文件(诊断) |
 | `session_dir` | `string` | 会话目录 |
 | `auth_file` | `string` | **凭证文件绝对路径** —— 二次确认弹层要显示"改的是哪个文件" |
+| `models_write_file` | `string` | 新建 provider 写哪个用户级 `models.json`(弹层里显示目标文件) |
 | `checks` | `object[]` | `{name, ok, detail}` 三条:`models.json` / `默认模型` / `凭证` |
 
 `ProviderInfo`:
@@ -27,8 +28,10 @@ provider / 凭证状态 / 默认模型的只读视图。**凭证只回掩码与�
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `name` | `string` | provider 名 |
+| `label` | `string` | 预置 provider 的人读名字(自定义 provider 为空) |
 | `base_url` / `api` | `string \| null` | |
 | `models` | `int` | 该 provider 下配了几个模型 |
+| `model_ids` | `string[]` | 模型 id 清单 —— 设置页按 provider → model 两级展示 |
 | `credential_ok` | `bool` | 凭证解析得出(**解析** = settings/环境变量/auth 文件三层都能供) |
 | `credential_source` | `string` | 凭证来自哪一层 |
 | `credential_masked` | `string` | **只有尾 4 位**:`…abcd`;空 = 没有 |
@@ -124,6 +127,45 @@ curl -s -X POST http://127.0.0.1:3456/api/model \
 
 > qi-mcp 是项目声明、仓库未信任时它可能不在这个列表里,但 `GET /api/mcp` 照样能用
 > (那是直接 import `qi_mcp.config`,不经过扩展装载)。两件事别混。
+
+---
+
+## `POST /api/providers`
+
+新建一个**用户级** provider:写 `~/.qi/agent/models.json`(声明)与 `auth.json`(凭证)。
+**需要 `X-Qi-Confirm: yes`**(缺 → 428),成功回刷新后的 `ConfigView`。
+
+已存在 provider 的“配凭证”走 [`POST /api/auth/{provider}`](#post-apiauthprovider) ——
+两条路分开,免得“加一个”把已有声明默默改写。
+
+### 请求体 `ProviderAdd`
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `name` | `string` | provider 名;字母/数字/`.`/`_`/`-`,首字符必须是字母或数字 |
+| `base_url` | `string` | 必须 `http://` 或 `https://` |
+| `api` | `string` | `openai-completions` / `openai-responses` / `anthropic-messages` / `google-generative-ai`;空 = `openai-completions` |
+| `api_key` | `string` | 必填。写进 `auth.json`,**不回显** |
+| `models` | `string[]` | 至少一个模型 id(去重保序) |
+
+模型条目的 `contextWindow` / `maxTokens` 用 core 的默认值;要精确就之后改 `models.json`
+(与 `qi init --refresh` 的口径一致:先能用,再校准)。
+
+### 响应 `ConfigView` (200)
+
+| 码 | 什么时候 |
+| --- | --- |
+| 400 | 名字不合法 / baseUrl 不是 http(s) / api 不在闭集 / 没有模型 id / 没给 key / key 看着不像密钥 |
+| 409 | 同名 provider 已在某个 `models.json` 里定义(项目级 / `$QI_AGENT_CONFIG` 也算) |
+| 428 | 缺确认头 |
+
+```bash
+curl -s -X POST http://127.0.0.1:3456/api/providers \
+  -H 'Content-Type: application/json' -H 'X-Qi-Confirm: yes' \
+  -d '{"name":"my-provider","base_url":"https://api.example.com/v1",
+       "api":"openai-completions","api_key":"sk-…","models":["model-a"]}' \
+  | jq '[.providers[] | select(.credential_ok)]'
+```
 
 ---
 

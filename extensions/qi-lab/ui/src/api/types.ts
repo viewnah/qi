@@ -184,12 +184,25 @@ export interface AgentInfo {
 
 export interface ProviderInfo {
    name: string;
+   /** 人看的名字(预置表给的 label;自定义 provider 为空)。旧宿主可能不给。 */
+   label?: string;
    base_url: string | null;
    api: string | null;
    models: number;
+   /** 模型 id 清单(设置页按 provider → model 两级展示)。旧宿主可能不给。 */
+   model_ids?: string[];
    credential_ok: boolean;
    credential_source: string;
    credential_masked: string;
+}
+
+/** `POST /api/providers`:新建一个用户级 provider(写 models.json)。 */
+export interface ProviderAddBody {
+   name: string;
+   base_url: string;
+   api: string;
+   api_key: string;
+   models: string[];
 }
 
 export interface ConfigView {
@@ -206,6 +219,8 @@ export interface ConfigView {
    config_files: string[];
    session_dir: string;
    auth_file: string;
+   /** 新建 provider 写哪个 models.json(用户级)。旧宿主可能不给。 */
+   models_write_file?: string;
    checks: { name: string; ok: boolean; detail: string }[];
 }
 

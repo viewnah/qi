@@ -126,6 +126,40 @@ class WebState:
     def session_cwd(self, session: Session) -> Path:
         return Path(session.cwd) if session.cwd else self.default_cwd
 
+    # ── 模型配置/凭证 ──
+    def refresh_config(self) -> None:
+        """重读各 runtime 的 `models.json`(新建 provider 之后调)。
+
+        runtime 在 `__init__` 里读一次配置就不再动 —— 不重读的话 `/api/config` 与
+        `/api/models` 会说“没这个 provider”,而文件里已经有了。逐 runtime 按自己的
+        cwd 重读(项目级 models.json 也可能不同)。
+
+        重读失败**保留旧配置**:文件已经写成了,把它报成 500 只会让调用方重试。
+        """
+        from qi_agent.config import load_config
+
+        for runtime in list(self._runtimes.values()):
+            try:
+                runtime.cfg, runtime.config_files = load_config(
+                    getattr(runtime, "cwd", self.default_cwd))
+            except Exception:            # noqa: BLE001 坏配置不该把写操作报成失败
+                continue
+
+    def refresh_credentials(self) -> None:
+        """凭证变了(登录 / 退出 / 新建 provider)后重建各 runtime 的客户端。
+
+        `LiteLLMClient` 在构造时就把 key 解析好了 —— 不重建的话,用户以为登上了,
+        请求还是拿旧 key / 空客户端去跑。与 TUI 登录后调 `reload_credentials()` 同一条。
+        """
+        for runtime in list(self._runtimes.values()):
+            reload = getattr(runtime, "reload_credentials", None)
+            if not callable(reload):
+                continue
+            try:
+                reload()
+            except Exception:            # noqa: BLE001 重建失败保持旧客户端
+                continue
+
     def refresh_skills(self) -> None:
         """技能增删导入之后重扫(runtime 缓存的那份不重扫,新技能要**重启进程**才生效)。
 

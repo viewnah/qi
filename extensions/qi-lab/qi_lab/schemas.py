@@ -220,12 +220,32 @@ class ProviderInfo(BaseModel):
     """凭证状态**只回掩码与来源**,永不回明文(design/web.md §4)。"""
 
     name: str
+    #: 人看的名字(预置表给的 label;自定义 provider 为空)。
+    label: str = ""
     base_url: str | None = None
     api: str | None = None
     models: int = 0
+    #: 模型 id 清单(设置页按 provider → model 两级展示)。
+    model_ids: list[str] = Field(default_factory=list)
     credential_ok: bool = False
     credential_source: str = ""
     credential_masked: str = ""
+
+
+class ProviderAdd(BaseModel):
+    """`POST /api/providers`:新建一个**用户级** provider(写 models.json)。
+
+    已存在的 provider 不从这里加 —— 那是“配凭证”(`POST /api/auth/{provider}`),
+    两条路分开,免得“加一个”把已有声明默默改写。
+    """
+
+    name: str = ""
+    base_url: str = ""
+    api: str = ""
+    api_key: str = ""
+    #: 模型 id。上下文窗口与输出上限用 core 的默认值,
+    #: 要精确就之后改 models.json(与 `qi init` 的“只加不删”同一条降级)。
+    models: list[str] = Field(default_factory=list)
 
 
 class ConfigView(BaseModel):
@@ -245,6 +265,8 @@ class ConfigView(BaseModel):
     session_dir: str = ""
     #: 凭证文件的绝对路径。二次确认弹层要显示"改的是哪个文件",所以必须回给前端。
     auth_file: str = ""
+    #: 新建 provider 写哪个 models.json(用户级)。弹层里要显示目标文件。
+    models_write_file: str = ""
     checks: list[dict] = Field(default_factory=list)
 
 

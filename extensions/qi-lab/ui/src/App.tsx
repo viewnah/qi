@@ -1134,6 +1134,9 @@ export function App() {
           /* 宿主支不支持**删角色**(`/api/meta` 的 `agent_write`):没有它 → Agent 那一节
              只读 —— 读端点一直在,所以只是少一个键(与 mcp_write 同一条降级规矩)。 */
           agentWrite={meta?.capabilities.agent_write === true}
+          /* 宿主支不支持**新建 provider**(`/api/meta` 的 `provider_write`)。
+             没有它 → 「添加 Provider」只保留“登录已有”。 */
+          providerWrite={meta?.capabilities.provider_write === true}
           /* 装了 qi-store 才摆安装/卸载键(`/api/meta` 的 store_write):
              后端是真去 import 一次的结论,不是写死的 True。 */
           storeWrite={meta?.capabilities.store_write === true}

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import secrets
 import stat
 import threading
@@ -22,7 +23,7 @@ from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Reques
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from qi_agent import __version__
+from qi_agent import __version__, paths
 from qi_agent.auth import AuthStore, resolve_key
 from qi_agent.config import (
     ConfigError,
@@ -97,6 +98,19 @@ def _kb_available() -> bool:
     return True
 
 
+def _provider_label(name: str) -> str:
+    """预置 provider 的人读名字(自定义 provider 没有)。
+
+    core 旧版本没有预置表时回空串 —— 名字本来就是 provider 的键,少一个标签不影响用。
+    """
+    try:
+        from qi_agent.presets import get_preset
+    except ImportError:
+        return ""
+    preset = get_preset(name)
+    return preset.label if preset else ""
+
+
 def create_app(cwd: Path | str | None = None, password: str | None = None,
                allowed_hosts: list[str] | None = None, bind_host: str = "127.0.0.1",
                state: WebState | None = None,
@@ -143,6 +157,9 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
                           # 却换不了。这一版补上清单与切换(`/api/models` + `/api/model`),
                           # 老前端不认识这两个开关时照旧只显示,不影响它自己运行。
                           "model_switch": True,
+                          # 模型面:新建用户级 provider(`POST /api/providers`)。
+                          # 老宿主没有它 → 「添加 Provider」只保留“配凭证”那条路。
+                          "provider_write": True,
                           # MCP 面:写端点(增删改 `/api/mcp`)。老宿主没有它 →
                           # 界面把那一节当只读(写请求会 404/405),不影响读。
                           "mcp_write": True,
@@ -978,8 +995,9 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
         for name, prov in cfg.providers.items():
             resolved = resolve_key(name, prov.apiKey, store)
             providers.append(schemas.ProviderInfo(
-                name=name, base_url=prov.baseUrl, api=prov.api,
-                models=len(prov.models), credential_ok=resolved.ok,
+                name=name, label=_provider_label(name), base_url=prov.baseUrl, api=prov.api,
+                models=len(prov.models), model_ids=[m.id for m in prov.models],
+                credential_ok=resolved.ok,
                 credential_source=resolved.source, credential_masked=mask_key(resolved.key),
             ))
         default = resolve_default_model(cfg, web.default_cwd)
@@ -1013,6 +1031,7 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
             session_dir=str(runtime.sessions.root),
             # 二次确认弹层要显示"改的是哪个文件",所以把凭证文件路径一并回给前端
             auth_file=str(AuthStore().path),
+            models_write_file=str(Path(paths.global_home()) / paths.MODELS_FILE_NAME),
             checks=checks,
         )
 
@@ -1560,11 +1579,101 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
                      values=body.defaults, scope=body.scope)
         return await kb_status()
 
+    @app.post("/api/providers", response_model=schemas.ConfigView,
+              dependencies=[Depends(guard)])
+    async def add_provider(body: schemas.ProviderAdd,
+                           confirm: str | None = Header(None, alias="X-Qi-Confirm")
+                           ) -> schemas.ConfigView:
+        """新建一个**用户级** provider(baseUrl / api / 模型 + 凭证)。
+
+        已存在同名 provider 的“配凭证”走 `POST /api/auth/{provider}` —— 两条路分开:
+        一个是新建声明,一个是改凭证,混在一起会把已有 models.json 段落默默改写。
+
+        写哪:用户级 `~/.qi/agent/models.json`(与这个控制台“只管全局”的口径一致)。
+        已有定义在别的文件(项目级 / `$QI_AGENT_CONFIG`)时 409,让用户去那个文件改 ——
+        写用户级也盖不住高优先级文件,“加了不生效”比拒绝更贵。
+        """
+        confirm_gate(confirm)
+        from qi_agent.config import (DEFAULT_API, DEFAULT_CONTEXT_WINDOW,
+                                     DEFAULT_MAX_TOKENS, SUPPORTED_APIS,
+                                     load_models_file, models_file_for_provider,
+                                     save_models_file)
+
+        name = body.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="provider 名不能为空")
+        if name != body.name:
+            raise HTTPException(status_code=400, detail="provider 名不能带首尾空白")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", name):
+            raise HTTPException(status_code=400,
+                                detail="provider 名只能用字母 / 数字 / . _ -")
+        base_url = body.base_url.strip()
+        if not base_url.startswith(("http://", "https://")):
+            raise HTTPException(status_code=400, detail="baseUrl 必须是 http(s) 地址")
+        api = (body.api or DEFAULT_API).strip()
+        if api not in SUPPORTED_APIS:
+            raise HTTPException(status_code=400,
+                                detail=f"不认识的 api: {api}(可选 {' / '.join(SUPPORTED_APIS)})")
+        model_ids: list[str] = []
+        for raw in body.models:
+            mid = (raw or "").strip()
+            if mid and mid not in model_ids:
+                model_ids.append(mid)
+        if not model_ids:
+            raise HTTPException(status_code=400, detail="至少给一个模型 id")
+        api_key = body.api_key.strip()
+        if not api_key:
+            raise HTTPException(status_code=400,
+                                detail="新建 provider 必须同时给 API key(空着等于加完就隐藏)")
+
+        target = Path(paths.global_home()) / paths.MODELS_FILE_NAME
+        defined = models_file_for_provider(name, web.default_cwd)
+        if defined is not None:
+            raise HTTPException(status_code=409,
+                                detail=f"provider {name} 已在 {defined} 里定义,不能在这里重复添加")
+        # 预置兜底也有同名 provider:能用(有凭证)就不能被一个“新建”默默顶掉;
+        # 只差凭证则允许写用户级声明(例如把预置的 baseUrl 换成自建代理)。
+        runtime = web.runtime_for(web.default_cwd)
+        current = runtime.cfg.providers.get(name)
+        if current is not None and resolve_key(name, current.apiKey, AuthStore()).ok:
+            raise HTTPException(status_code=409,
+                                detail=f"provider {name} 已存在且有可用凭证,不能重复添加")
+        data = load_models_file(target)
+        providers = data.setdefault("providers", {})
+        if not isinstance(providers, dict):
+            raise HTTPException(status_code=400,
+                                detail=f"{target}: providers 不是对象,先修好这个文件")
+        if name in providers:
+            raise HTTPException(status_code=409,
+                                detail=f"{target} 里已有同名 provider: {name}")
+
+        store = AuthStore()
+        try:
+            store.set_key(name, api_key)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        providers[name] = {
+            "api": api,
+            "baseUrl": base_url,
+            "models": [{"id": mid, "contextWindow": DEFAULT_CONTEXT_WINDOW,
+                        "maxTokens": DEFAULT_MAX_TOKENS} for mid in model_ids],
+        }
+        try:
+            save_models_file(target, data)
+        except OSError as exc:
+            store.remove(name)             # 回滚:不留一把没有 provider 的钥匙
+            raise HTTPException(status_code=400,
+                                detail=f"{target}: 写不了({exc})") from exc
+        web.refresh_config()
+        web.refresh_credentials()
+        return await get_config()
+
     @app.post("/api/auth/{provider}", status_code=204, dependencies=[Depends(guard)])
     async def set_auth(provider: str, body: schemas.AuthWrite,
                        confirm: str | None = Header(None, alias="X-Qi-Confirm")) -> None:
         confirm_gate(confirm)
         AuthStore().set_key(provider, body.key)
+        web.refresh_credentials()          # 让当前会话立刻用新 key,而不是下一回合才生效
 
     @app.delete("/api/auth/{provider}", status_code=204, dependencies=[Depends(guard)])
     async def delete_auth(provider: str,
@@ -1572,6 +1681,7 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
         confirm_gate(confirm)
         if not AuthStore().remove(provider):
             raise HTTPException(status_code=404, detail=f"凭证不存在: {provider}")
+        web.refresh_credentials()
 
     # ── 手写的页面(不经过 Vite 构建)────────────────────
     # `static/` 是构建产物,一次 `npm run build` 就会把它清掉(emptyOutDir);所以

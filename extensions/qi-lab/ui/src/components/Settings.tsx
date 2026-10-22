@@ -102,6 +102,14 @@ export type SettingsSectionKey =
  * 未知 id 回落 Settings)。qi 的节名不同,所以"技能/诊断"两节是**从 dsh 的字形库里
  * 挑表意对的**(Skill / Gauge),不是照抄它的分节表 —— 它的分节表里没有这两节。
  */
+/** 新建 provider 可选的 api 形态(与宿主 `config.SUPPORTED_APIS` 逐字同一份)。 */
+const PROVIDER_APIS = [
+   "openai-completions",
+   "openai-responses",
+   "anthropic-messages",
+   "google-generative-ai",
+] as const;
+
 const SECTIONS: {
    key: SettingsSectionKey;
    label: string;
@@ -179,6 +187,7 @@ export function Settings({
    mcpWrite = false,
    a2aWrite = false,
    agentWrite = false,
+   providerWrite = false,
    storeWrite = false,
    kbWrite = false,
    onKbChanged,
@@ -212,6 +221,11 @@ export function Settings({
     * 只读展示(读端点一直在)。
     */
    agentWrite?: boolean;
+   /**
+    * 宿主支不支持**新建 provider**(`/api/meta` 的 `provider_write`)。没有它 →
+    * 「添加 Provider」只保留“登录已有 provider”那条路(写凭证的端点一直在)。
+    */
+   providerWrite?: boolean;
    /**
     * 宿主真的装上了 qi-store(`/api/meta` 的 `store_write`)。没有它 → 商店那一节
     * 只读展示(读端点一直在),不摆"点了才 404"的安装键。
@@ -277,6 +291,19 @@ export function Settings({
       key: string;
    } | null>(null);
    const [removing, setRemoving] = useState<string | null>(null);
+   /** 添加 Provider:弹层开着没有、走“登录已有”还是“新建自定义”。 */
+   const [providerAdding, setProviderAdding] = useState(false);
+   const [providerMode, setProviderMode] = useState<"existing" | "custom">("existing");
+   const [providerPick, setProviderPick] = useState("");
+   const [providerDraft, setProviderDraft] = useState({
+      name: "",
+      baseUrl: "",
+      api: "openai-completions",
+      key: "",
+      models: "",
+   });
+   const [providerError, setProviderError] = useState<string | null>(null);
+   const [providerBusy, setProviderBusy] = useState(false);
 
    const titleId = useId();
    const closeRef = useRef<HTMLButtonElement | null>(null);
@@ -320,6 +347,11 @@ export function Settings({
             setEditing(null);
             return;
          }
+         if (providerAdding) {
+            setProviderAdding(false);
+            setProviderError(null);
+            return;
+         }
          if (removing !== null) {
             setRemoving(null);
             return;
@@ -348,7 +380,8 @@ export function Settings({
       };
       document.addEventListener("keydown", onKeyDown, true);
       return () => document.removeEventListener("keydown", onKeyDown, true);
-   }, [onClose, editing, removing, skillRemoving, mcpTarget, mcpRemoving, agentRemoving]);
+   }, [onClose, editing, providerAdding, removing, skillRemoving, mcpTarget, mcpRemoving,
+       agentRemoving]);
 
    /**
     * 技能清单**每次进这一节都重读**。
@@ -616,8 +649,88 @@ export function Settings({
       })();
    };
 
+   /**
+    * 打开「添加 Provider」:默认落在第一个**未登录**的已知 provider 上;
+    * 一个都没有时直接进自定义表单。
+    */
+   const openProviderAdd = () => {
+      const first = (config?.providers ?? []).find((p) => !p.credential_ok)?.name ?? "";
+      setProviderMode(first || !providerWrite ? "existing" : "custom");
+      setProviderPick(first);
+      setProviderDraft({ name: "", baseUrl: "", api: "openai-completions", key: "", models: "" });
+      setProviderError(null);
+      setProviderAdding(true);
+   };
+
+   /** 两条路:给已有 provider 配凭证(写 auth.json)/ 新建一个用户级 provider(写 models.json)。 */
+   const submitProvider = () => {
+      setProviderError(null);
+      const key = providerDraft.key.trim();
+      if (providerMode === "existing") {
+         if (!providerPick || !key) return;
+         setProviderBusy(true);
+         void (async () => {
+            try {
+               await api.setAuth(providerPick, key);
+               setProviderAdding(false);
+               setProviderDraft((draft) => ({ ...draft, key: "" }));
+               onChanged();
+            } catch (err) {
+               setProviderError(err instanceof ApiError ? err.detail : String(err));
+            } finally {
+               setProviderBusy(false);
+            }
+         })();
+         return;
+      }
+
+      const name = providerDraft.name.trim();
+      const baseUrl = providerDraft.baseUrl.trim();
+      const models = providerDraft.models
+         .split(/[\n,]/)
+         .map((item) => item.trim())
+         .filter(Boolean);
+      if (!name || !baseUrl || !key || models.length === 0) return;
+      setProviderBusy(true);
+      void (async () => {
+         try {
+            await api.addProvider({
+               name,
+               base_url: baseUrl,
+               api: providerDraft.api,
+               api_key: key,
+               models,
+            });
+            setProviderAdding(false);
+            setProviderDraft({ name: "", baseUrl: "", api: "openai-completions", key: "", models: "" });
+            onChanged();
+         } catch (err) {
+            setProviderError(err instanceof ApiError ? err.detail : String(err));
+         } finally {
+            setProviderBusy(false);
+         }
+      })();
+   };
+
    const authPath = config?.auth_file ?? "(未知)";
    const providers = config?.providers ?? [];
+   /** 没登录的 provider 不在主列表里摆 —— 它们只能从「添加 Provider」进。 */
+   const visibleProviders = providers.filter((provider) => provider.credential_ok);
+   const hiddenProviders = providers.filter((provider) => !provider.credential_ok);
+   /** 「添加 Provider」弹层里的模型 id(回车 / 逗号分隔)。 */
+   const providerModels = providerDraft.models
+      .split(/[\n,]/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+   const providerCanSubmit =
+      providerMode === "existing"
+         ? Boolean(providerPick && providerDraft.key.trim())
+         : Boolean(
+              providerDraft.name.trim() &&
+              /^https?:\/\//.test(providerDraft.baseUrl.trim()) &&
+              providerDraft.key.trim() &&
+              providerModels.length > 0,
+           );
    const checks = config?.checks ?? [];
    /*
     * 这个控制台只管**全局(用户级)资产**:项目级那一层(跟着当前 cwd 仓库走的
@@ -680,87 +793,125 @@ export function Settings({
                <div className="set__options">
                   {section === "models" ? (
                      <Section
-                        title="模型与凭证"
+                        title={`模型与凭证(${visibleProviders.length})`}
                         intro={
                            <>
-                              来自 <code>models.json</code> + <code>auth.json</code>
-                              ;凭证只显示尾 4 位。
+                              只列<strong>已登录</strong>的 provider;每个 provider 下面
+                              是它的模型。凭证只显示尾 4 位,没登录的从「添加 Provider」进。
                            </>
                         }
                      >
-                        {providers.length === 0 ? (
+                        <div className="set-skill__bar">
+                           <button
+                              type="button"
+                              className="btn"
+                              onClick={openProviderAdd}
+                           >
+                              添加 Provider
+                           </button>
+                           <span className="set-skill__hint">
+                              登录已有 provider(写 auth.json),或新建一个(写 models.json)
+                           </span>
+                        </div>
+
+                        {visibleProviders.length === 0 ? (
                            <p className="set-sec__empty">
-                              没有读到任何 provider。先跑 <code>qi init</code>。
+                              没有已登录的 provider。点「添加 Provider」登录一个,
+                              或新建一个。
                            </p>
                         ) : (
-                           <ul className="set-cards">
-                              {providers.map((provider) => (
-                                 <li className="set-card" key={provider.name}>
-                                    <div className="set-card__head">
-                                       <span
-                                          className="set-card__name"
-                                          title={provider.name}
-                                       >
-                                          {provider.name}
-                                       </span>
-                                       <Dot
-                                          ok={provider.credential_ok}
-                                          on={`${provider.name} 已配置凭证`}
-                                          off={`${provider.name} 缺少凭证`}
-                                       />
-                                       <span className="set-card__actions">
-                                          <button
-                                             type="button"
-                                             className="set-act"
-                                             onClick={() =>
-                                                setEditing({
-                                                   provider: provider.name,
-                                                   key: "",
-                                                })
-                                             }
+                           <div className="model-groups">
+                              {visibleProviders.map((provider) => {
+                                 const ids = provider.model_ids ?? [];
+                                 return (
+                                    <div
+                                       className="set-card model-group"
+                                       key={provider.name}
+                                    >
+                                       <div className="set-card__head">
+                                          <span
+                                             className="set-card__name"
+                                             title={provider.name}
                                           >
-                                             设置凭证
-                                          </button>
-                                          {provider.credential_source ===
-                                          "auth" ? (
+                                             {provider.name}
+                                          </span>
+                                          {provider.label ? (
+                                             <span className="model-group__label">
+                                                {provider.label}
+                                             </span>
+                                          ) : null}
+                                          <span className="set-card__actions">
                                              <button
                                                 type="button"
-                                                className="set-act set-act--danger"
+                                                className="set-act"
                                                 onClick={() =>
-                                                   setRemoving(provider.name)
+                                                   setEditing({
+                                                      provider: provider.name,
+                                                      key: "",
+                                                   })
                                                 }
                                              >
-                                                清除
+                                                设置凭证
                                              </button>
-                                          ) : null}
-                                       </span>
+                                             {provider.credential_source ===
+                                             "auth" ? (
+                                                <button
+                                                   type="button"
+                                                   className="set-act set-act--danger"
+                                                   onClick={() =>
+                                                      setRemoving(provider.name)
+                                                   }
+                                                >
+                                                   清除
+                                                </button>
+                                             ) : null}
+                                          </span>
+                                       </div>
+                                       <div className="set-card__fields">
+                                          <Field
+                                             label="baseUrl"
+                                             value={provider.base_url ?? "(内置)"}
+                                          />
+                                          <Field
+                                             label="api"
+                                             value={provider.api ?? "—"}
+                                          />
+                                          <Field
+                                             label="凭证"
+                                             value={
+                                                provider.credential_masked ||
+                                                provider.credential_source
+                                             }
+                                          />
+                                       </div>
+                                       <ul className="model-group__models">
+                                          {ids.length === 0 ? (
+                                             <li className="model-row model-row--empty">
+                                                这个 provider 没有声明模型
+                                             </li>
+                                          ) : (
+                                             ids.map((id) => (
+                                                <li className="model-row" key={id}>
+                                                   <span
+                                                      className="model-row__id"
+                                                      title={id}
+                                                   >
+                                                      {id}
+                                                   </span>
+                                                   {config?.default_model ===
+                                                   `${provider.name}/${id}` ? (
+                                                      <span className="set-card__tag">
+                                                         默认
+                                                      </span>
+                                                   ) : null}
+                                                </li>
+                                             ))
+                                          )}
+                                       </ul>
                                     </div>
-                                    <div className="set-card__fields">
-                                       <Field
-                                          label="baseUrl"
-                                          value={provider.base_url ?? "(内置)"}
-                                       />
-                                       <Field
-                                          label="api"
-                                          value={provider.api ?? "—"}
-                                       />
-                                       <Field
-                                          label="模型"
-                                          value={String(provider.models)}
-                                       />
-                                       <Field
-                                          label="凭证"
-                                          value={
-                                             provider.credential_ok
-                                                ? provider.credential_masked ||
-                                                  provider.credential_source
-                                                : provider.credential_source
-                                          }
-                                       />
-                                    </div>
-                                 </li>
-                              ))}
-                           </ul>
+                                 );
+                              })}
+                           </div>
                         )}
 
                         <div className="set-fields">
@@ -1262,6 +1413,220 @@ export function Settings({
                </div>
             </div>
          </div>
+
+         {providerAdding ? (
+            <ConfirmDialog
+               title={
+                  providerMode === "existing"
+                     ? "登录已有 Provider?"
+                     : "新建 Provider?"
+               }
+               rows={
+                  providerMode === "existing"
+                     ? [
+                          { label: "provider", value: providerPick || "(未选)" },
+                          { label: "目标文件", value: authPath },
+                       ]
+                     : [
+                          {
+                             label: "provider",
+                             value: providerDraft.name.trim() || "(未填)",
+                          },
+                          {
+                             label: "目标文件",
+                             value:
+                                config?.models_write_file ??
+                                "~/.qi/agent/models.json",
+                          },
+                       ]
+               }
+               warning={
+                  providerMode === "existing"
+                     ? "只写凭证文件 auth.json;provider 的 baseUrl / 模型清单来自 models.json 或 qi 预置。"
+                     : "会写用户级 models.json:baseUrl / api / 模型 id(上下文窗口用 core 默认值,之后可手改)。"
+               }
+               confirmLabel={
+                  providerMode === "existing" ? "保存凭证" : "创建 Provider"
+               }
+               confirmDisabled={providerBusy || !providerCanSubmit}
+               onCancel={() => {
+                  setProviderAdding(false);
+                  setProviderError(null);
+               }}
+               onConfirm={submitProvider}
+            >
+               <div className="dialog__fields">
+                  <label className="dialog__field">
+                     <span>添加方式</span>
+                     <select
+                        className="dialog__input"
+                        value={providerMode}
+                        onChange={(event) => {
+                           setProviderMode(
+                              event.target.value as "existing" | "custom",
+                           );
+                           setProviderError(null);
+                        }}
+                     >
+                        <option value="existing">登录已有 provider</option>
+                        {providerWrite ? (
+                           <option value="custom">新建自定义 provider</option>
+                        ) : null}
+                     </select>
+                  </label>
+
+                  {providerMode === "existing" ? (
+                     <>
+                        {hiddenProviders.length === 0 ? (
+                           <p className="dialog__hint">
+                              所有已知 provider 都已登录。
+                              {providerWrite
+                                 ? "可以切到“新建自定义 provider”。"
+                                 : "要加新的 provider 请跑 qi init。"}
+                           </p>
+                        ) : null}
+                        <label className="dialog__field">
+                           <span>provider</span>
+                           <select
+                              className="dialog__input"
+                              value={providerPick}
+                              onChange={(event) =>
+                                 setProviderPick(event.target.value)
+                              }
+                              disabled={hiddenProviders.length === 0}
+                           >
+                              {hiddenProviders.length === 0 ? (
+                                 <option value="">
+                                    (没有待登录的 provider)
+                                 </option>
+                              ) : (
+                                 hiddenProviders.map((provider) => (
+                                    <option
+                                       key={provider.name}
+                                       value={provider.name}
+                                    >
+                                       {provider.name}
+                                       {provider.label
+                                          ? ` · ${provider.label}`
+                                          : ""}
+                                       {provider.base_url
+                                          ? ` — ${provider.base_url}`
+                                          : ""}
+                                    </option>
+                                 ))
+                              )}
+                           </select>
+                        </label>
+                        <label className="dialog__field">
+                           <span>API key</span>
+                           <input
+                              className="dialog__input"
+                              type="password"
+                              value={providerDraft.key}
+                              autoFocus
+                              placeholder="粘贴 API key"
+                              onChange={(event) =>
+                                 setProviderDraft((draft) => ({
+                                    ...draft,
+                                    key: event.target.value,
+                                 }))
+                              }
+                           />
+                        </label>
+                     </>
+                  ) : (
+                     <>
+                        <label className="dialog__field">
+                           <span>provider 名</span>
+                           <input
+                              className="dialog__input"
+                              value={providerDraft.name}
+                              autoFocus
+                              placeholder="my-provider"
+                              onChange={(event) =>
+                                 setProviderDraft((draft) => ({
+                                    ...draft,
+                                    name: event.target.value,
+                                 }))
+                              }
+                           />
+                        </label>
+                        <label className="dialog__field">
+                           <span>baseUrl</span>
+                           <input
+                              className="dialog__input"
+                              value={providerDraft.baseUrl}
+                              placeholder="https://api.example.com/v1"
+                              onChange={(event) =>
+                                 setProviderDraft((draft) => ({
+                                    ...draft,
+                                    baseUrl: event.target.value,
+                                 }))
+                              }
+                           />
+                        </label>
+                        <label className="dialog__field">
+                           <span>api</span>
+                           <select
+                              className="dialog__input"
+                              value={providerDraft.api}
+                              onChange={(event) =>
+                                 setProviderDraft((draft) => ({
+                                    ...draft,
+                                    api: event.target.value,
+                                 }))
+                              }
+                           >
+                              {PROVIDER_APIS.map((api) => (
+                                 <option key={api} value={api}>
+                                    {api}
+                                 </option>
+                              ))}
+                           </select>
+                        </label>
+                        <label className="dialog__field">
+                           <span>模型 id(一行一个)</span>
+                           <textarea
+                              className="dialog__input dialog__input--area"
+                              value={providerDraft.models}
+                              rows={3}
+                              placeholder={"model-a\nmodel-b"}
+                              onChange={(event) =>
+                                 setProviderDraft((draft) => ({
+                                    ...draft,
+                                    models: event.target.value,
+                                 }))
+                              }
+                           />
+                        </label>
+                        <label className="dialog__field">
+                           <span>API key</span>
+                           <input
+                              className="dialog__input"
+                              type="password"
+                              value={providerDraft.key}
+                              placeholder="粘贴 API key"
+                              onChange={(event) =>
+                                 setProviderDraft((draft) => ({
+                                    ...draft,
+                                    key: event.target.value,
+                                 }))
+                              }
+                           />
+                        </label>
+                        <p className="dialog__hint">
+                           已有同名 provider(项目 models.json / 环境变量文件里定义的)
+                           会拒绝,去那个文件改。
+                        </p>
+                     </>
+                  )}
+
+                  {providerError ? (
+                     <div className="dialog__error">{providerError}</div>
+                  ) : null}
+               </div>
+            </ConfirmDialog>
+         ) : null}
 
          {editing ? (
             <ConfirmDialog

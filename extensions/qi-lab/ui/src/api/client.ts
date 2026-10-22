@@ -49,6 +49,7 @@ import type {
   McpWriteBody,
   Meta,
   ModelCatalog,
+  ProviderAddBody,
   RunAgentInput,
   SessionDetail,
   SessionList,
@@ -236,6 +237,17 @@ export const api = {
   agentList: async (): Promise<AgentInfo[]> => (await api.agents()).agents,
 
   config: () => request<ConfigView>("/api/config"),
+
+  /**
+   * 新建一个**用户级** provider:写 `~/.qi/agent/models.json` + 凭证。
+   * 返回刷新后的 `ConfigView`,界面一次往返就拿到新清单。
+   */
+  addProvider: (body: ProviderAddBody) =>
+    request<ConfigView>("/api/providers", {
+      method: "POST",
+      headers: { "X-Qi-Confirm": "yes" },
+      body: JSON.stringify(body),
+    }),
 
   /**
    * 可选模型清单 + 当前值(`GET /api/models`)。

@@ -488,6 +488,17 @@ async def test_host_header_must_be_allowed(tmp_path, monkeypatch):
         assert blocked.status_code == 400 and "Host" in blocked.json()["detail"]
 
 
+@pytest.mark.asyncio
+async def test_wildcard_bind_allows_any_host(tmp_path, monkeypatch):
+    """绑 `0.0.0.0` 时浏览器会用真实 IP / 域名做 Host，不能再要求白名单。"""
+    app = _app(tmp_path, monkeypatch, bind_host="0.0.0.0")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+        for host in ("192.168.1.100:3456", "lab.example.com", "evil.example.com"):
+            response = await client.get("/api/sessions", headers={"Host": host})
+            assert response.status_code == 200, host
+
+
 def test_host_alias_is_accepted():
     """`--host` 是 `-H` / `--hostname` 的显式别名。"""
     from qi_lab.serve import _parser

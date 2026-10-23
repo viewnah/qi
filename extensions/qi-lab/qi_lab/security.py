@@ -12,10 +12,16 @@ import base64
 import secrets
 
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost", "127.0.0.2"}
+#: “监听所有网卡”的绑定值。它不是一个可访问地址，也不该拿来比对 Host 头。
+WILDCARD_HOSTS = {"0.0.0.0", "::", "[::]", ""}
 
 
 def is_loopback(host: str) -> bool:
     return host.strip().lower() in LOOPBACK_HOSTS
+
+
+def is_wildcard(host: str) -> bool:
+    return host.strip().lower() in WILDCARD_HOSTS
 
 
 def check_credentials(header: str | None, password: str | None) -> bool:
@@ -42,11 +48,16 @@ def check_credentials(header: str | None, password: str | None) -> bool:
 
 
 def check_host(allowed: list[str], host_header: str | None, bind_host: str) -> bool:
-    """反代场景:外部域名必须显式列进允许表(防止 Host 头被伪造)。
+    """Host 白名单。
 
-    允许表为空时只放行回环与绑定地址本身。
+    · 回环地址与绑定地址本身永远放行；
+    · **绑定 `0.0.0.0` / `::` 时放行任意 Host** —— 那是“监听所有网卡”的显式选择，
+      浏览器会用局域网 IP / 域名做 Host，不能拿 `0.0.0.0` 去比对；
+    · 其余情况（如反代）把外部域名列进 `QI_LAB_ALLOWED_HOSTS`。
     """
     if not host_header:
+        return True
+    if is_wildcard(bind_host):
         return True
     hostname = host_header.split(":")[0].strip().lower()
     if is_loopback(hostname) or hostname == bind_host.strip().lower():

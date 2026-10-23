@@ -33,7 +33,8 @@ qi lab -H 0.0.0.0 --password 口令
 参数由本扩展自己解析(argparse):core 只把**命令名之后的原始 argv** 交给 `serve()` ——
 选项表是静态的,动态改 typer 的选项表会踩坑(E19 的实测结论)。
 
-安全默认(见 `security.py`):默认只绑回环;绑 `0.0.0.0` 不再强制口令。
+安全默认(见 `security.py`):默认只绑回环;绑 `0.0.0.0` 不再强制口令,
+也不再用 `QI_LAB_ALLOWED_HOSTS` 卡局域网 IP(绑定通配符 = 放行任意 Host)。
 要对外提供服务时,建议自行加 `--password` / `QI_LAB_PASSWORD`(口令不加密传输,
 对外请走 HTTPS 反代或 VPN)。
 

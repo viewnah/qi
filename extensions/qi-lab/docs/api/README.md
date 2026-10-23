@@ -18,7 +18,7 @@ qi lab -H 0.0.0.0                    # 不设口令:全部放行
 | --- | --- |
 | 基址 | `http://127.0.0.1:3456` |
 | 口令 | `--password` 或环境变量 `QI_LAB_PASSWORD`(不设 = 不校验) |
-| 允许的 Host | `QI_LAB_ALLOWED_HOSTS`(逗号分隔;回环与绑定地址永远放行) |
+| 允许的 Host | `QI_LAB_ALLOWED_HOSTS`(逗号分隔;回环与绑定地址永远放行;**绑定 `0.0.0.0` / `::` 时放行任意 Host**) |
 | 默认工作目录 | 启动时的 cwd(可用 `--cwd` 指定) |
 | OpenAPI / Swagger | **没有**(`docs_url=None, redoc_url=None`)—— 本文就是文档 |
 
@@ -33,7 +33,8 @@ Python 侧是 editable 安装,改完即生效;前端改动要 `cd ui && npm run 
 **除 `GET /api/health` 外,每一条 `/api` 路由都先过 `guard`**,顺序是先 Host 后口令:
 
 1. **Host 头**不认识 → `400`(细节见 `QI_LAB_ALLOWED_HOSTS`)。反代场景要把外部域名显式加进去,
-   否则伪造的 `Host` 头能过。
+   否则伪造的 `Host` 头能过。**例外**:绑定 `0.0.0.0` / `::` 时跳过这条 —— 那是“监听所有网卡”的
+   显式选择,浏览器会用局域网 IP / 域名做 Host,不能拿 `0.0.0.0` 去比对。
 2. **口令**:设了口令却没有(或错的)凭证 → `401`,并带 `WWW-Authenticate: Basic realm="qi-lab"`。
    两种写法都认:
    ```bash

@@ -48,11 +48,12 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="qi lab", description="启动本地 Web UI")
     parser.add_argument("--port", "-p", type=int, default=3456,
                         help="端口(默认 3456,4 位;与 pi-web 的 30141 / qi-web 的 30142 错开)")
-    parser.add_argument("--hostname", "-H", default="127.0.0.1",
-                        help="绑定地址(默认只回环)")
+    parser.add_argument("--hostname", "--host", "-H", dest="hostname",
+                        default="127.0.0.1",
+                        help="绑定地址(默认只回环;绑 0.0.0.0 时建议同时给口令)")
     parser.add_argument("--no-open", action="store_true", help="不自动打开浏览器")
     parser.add_argument("--cwd", default=None, help="默认工作目录(默认当前目录)")
-    parser.add_argument("--password", default=None, help="访问口令(也可用 QI_LAB_PASSWORD)")
+    parser.add_argument("--password", default=None, help="访问口令(可选,也可用 QI_LAB_PASSWORD)")
     return parser
 
 
@@ -169,7 +170,7 @@ def serve(argv: list[str]) -> int:
     """起 HTTP 宿主。返回退出码(0 正常,2 用法/环境问题)。"""
     args = _parser().parse_args(argv)        # 坏参数 → argparse 自己退 2(与 qi 的约定一致)
 
-    from .security import is_loopback, require_safe_config
+    from .security import is_loopback
 
     try:
         import uvicorn
@@ -181,8 +182,6 @@ def serve(argv: list[str]) -> int:
         return 2
 
     password = args.password or os.environ.get("QI_LAB_PASSWORD") or None
-    # 不安全的组合直接拒启(跨回环 + 无口令),见 security.py
-    require_safe_config(args.hostname, password)
 
     workdir = Path(args.cwd).expanduser() if args.cwd else Path.cwd()
     if not workdir.is_dir():

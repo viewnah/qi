@@ -24,7 +24,7 @@ from qi_agent.runtime import QiRuntime, RuntimeConfig
 from qi_agent.session import SessionStore
 from qi_lab.app import create_app
 from qi_lab.schemas import CONTRACT_VERSION
-from qi_lab.security import is_loopback, mask_key, require_safe_config
+from qi_lab.security import mask_key
 from qi_lab.state import WebState
 from qi_agent.workspaces import WorkspaceStore
 
@@ -488,15 +488,11 @@ async def test_host_header_must_be_allowed(tmp_path, monkeypatch):
         assert blocked.status_code == 400 and "Host" in blocked.json()["detail"]
 
 
-def test_non_loopback_without_password_refuses_to_start():
-    """跨回环 + 无口令 → 拒启,并给出可执行的修复步骤。"""
-    with pytest.raises(SystemExit) as exc:
-        require_safe_config("0.0.0.0", None)
-    assert "拒绝启动" in str(exc.value)
-    assert "QI_LAB_PASSWORD" in str(exc.value)
-    require_safe_config("0.0.0.0", "pw")        # 有口令则放行
-    require_safe_config("127.0.0.1", None)      # 回环不需要口令
-    assert is_loopback("localhost") and not is_loopback("0.0.0.0")
+def test_host_alias_is_accepted():
+    """`--host` 是 `-H` / `--hostname` 的显式别名。"""
+    from qi_lab.serve import _parser
+
+    assert _parser().parse_args(["--host", "0.0.0.0"]).hostname == "0.0.0.0"
 
 
 def test_mask_key_never_leaks_full_value():

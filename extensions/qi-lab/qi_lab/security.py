@@ -1,9 +1,9 @@
-"""暴露面控制:默认只回环 + 可选密码。
+"""暴露面控制:可选口令。
 
-对齐 design/web.md §3:默认 `127.0.0.1`;跨回环必须**显式**指定 hostname **且**设密码,
-否则拒绝启动——暴露出去的是一个能执行高权限操作的 agent,不是一个静态站点。
+默认仍绑 `127.0.0.1`,但跨回环**不再强制口令** —— 绑 `0.0.0.0` 时是否设口令由调用方决定;
+设了 `--password` / `QI_LAB_PASSWORD` 就校验,不设就全部放行。
 
-密码**不加密传输**:远端访问应经 HTTPS 反代或 VPN(与 pi-web 的告警语义一致)。
+口令**不加密传输**:远端访问应经 HTTPS 反代或 VPN。
 """
 
 from __future__ import annotations
@@ -16,18 +16,6 @@ LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost", "127.0.0.2"}
 
 def is_loopback(host: str) -> bool:
     return host.strip().lower() in LOOPBACK_HOSTS
-
-
-def require_safe_config(hostname: str, password: str | None) -> None:
-    """不安全的组合直接拒启,并给出可执行的修复步骤(而不是只报错)。"""
-    if is_loopback(hostname) or password:
-        return
-    raise SystemExit(
-        f"拒绝启动:--hostname {hostname} 会把一个能执行高权限操作的 agent 暴露到回环之外。\n"
-        f"  修复 1(推荐):只在本机用 → qi lab          # 默认 127.0.0.1\n"
-        f"  修复 2(局域网):设长随机口令 → QI_LAB_PASSWORD='...' qi lab -H {hostname}\n"
-        "  注意:口令不加密传输;经反代请用 HTTPS,并把外部域名加进 QI_LAB_ALLOWED_HOSTS。"
-    )
 
 
 def check_credentials(header: str | None, password: str | None) -> bool:

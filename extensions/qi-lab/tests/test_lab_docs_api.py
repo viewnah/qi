@@ -78,3 +78,30 @@ def test_readme_indexes_every_doc_file():
     stale = sorted(p.name for p in DOCS.glob("*.md")
                    if p.name != "README.md" and f"({p.name})" not in readme)
     assert not stale, "README.md 没链接到: " + ", ".join(stale)
+
+
+def test_every_capability_bit_is_documented(tmp_path):
+    """**代码有、文档没有** → `/api/meta` 的每个能力位都要在文档里点过名。
+
+    路由对齐只管“端点存不存在”,管不住能力位:少写一个 `a2a_write` /
+    `store_write` / `kb_write`,前端就不知道该怎么降级 —— 而那不会报错。
+    """
+    import asyncio
+    import httpx
+
+    from qi_lab.app import create_app
+
+    app = create_app(cwd=tmp_path)
+    transport = httpx.ASGITransport(app=app)
+
+    async def _caps() -> dict:
+        async with httpx.AsyncClient(transport=transport,
+                                     base_url="http://127.0.0.1") as client:
+            response = await client.get("/api/meta")
+        assert response.status_code == 200
+        return response.json()["capabilities"]
+
+    capabilities = asyncio.run(_caps())
+    corpus = _corpus()
+    missing = sorted(name for name in capabilities if f"`{name}`" not in corpus)
+    assert not missing, "这些能力位没写进 docs/api/:\n  " + "\n  ".join(missing)

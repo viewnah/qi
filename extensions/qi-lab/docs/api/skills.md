@@ -1,4 +1,4 @@
-# 技能:`/api/skills`(读 + 添加 / 删除 / 导入)
+# 技能:`/api/skills`(读 + 添加 / 删除 / 导入 / 重扫)
 
 技能是 **一个目录 + 里面的 `SKILL.md`**:模型平时只看得到名字/描述/路径(渐进披露),
 用到时才读正文。所以:
@@ -6,7 +6,7 @@
 > **没有 `description` 的技能等于不存在** —— 顶层扫描读不到 description 就直接跳过它:
 > 不进提示词、`GET /api/skills` 也看不见它。
 
-这条规矩贯穿下面三个写端点:宁可 400,也不写一个看不见的东西出来。
+这条规矩贯穿下面的写端点:宁可 400,也不写一个看不见的东西出来。
 
 写盘逻辑全部在 `qi_lab/skills.py`,**只有两个可写层**(`scope` 的取值就这两个):
 
@@ -57,19 +57,21 @@
 
 ---
 
-## 三个写端点(**都要确认头**)
+## 写端点(**都要确认头**)
 
 | 端点 | 干什么 | 成功 | 见下 |
 | --- | --- | --- | --- |
 | `POST /api/skills` | 新建 `<scope 层>/<name>/SKILL.md` | `201 SkillList` | [添加](#post-apiskills-新建) |
 | `DELETE /api/skills` | 按显示名删掉该层的一个技能(整目录) | `200 SkillList` | [删除](#delete-apiskills-删除) |
 | `POST /api/skills/import` | 从本机路径导一个技能进来 | `201 SkillList` | [导入](#post-apiskillsimport-导入) |
+| `POST /api/skills/reload` | 重扫技能缓存(不改文件) | `200 SkillList` | [重扫](#重扫post-apiskillsreload) |
 
-三个都要求 `X-Qi-Confirm: yes`(缺 → `428`,与写凭证、写 MCP 同一道闸)。理由:
+四个都要求 `X-Qi-Confirm: yes`(缺 → `428`,与写凭证、写 MCP 同一道闸)。理由:
 技能是**会进提示词的代码**,而项目层就在 `.qi/skills/` 里 —— 一次误写会被 `git add .`
-带走,再在下一轮对话里被模型读进去。
+带走,再在下一轮对话里被模型读进去;`reload` 虽不改文件,也守着这条一眼可记的规矩
+(见文末「重扫」)。
 
-三个都**回更新后的完整 `SkillList`**,并且**重扫 runtime**(见文末「写完为什么立刻生效」)。
+四个都**回更新后的完整 `SkillList`**,并且**重扫 runtime**(见文末「写完为什么立刻生效」)。
 
 ### 共同的 400(名字与结构)
 
@@ -231,7 +233,7 @@ curl -X POST http://127.0.0.1:3456/api/skills/import \
 * `GET /api/skills` 说它在(那是直接读磁盘),
 * 模型却用不上(提示词取自 `runtime.top_skills`)。
 
-所以三个写端点在落盘之后都调 `WebState.refresh_skills()` —— 只重扫技能,**不走**
+所以写端点(含重扫)在落盘之后都调 `WebState.refresh_skills()` —— 只重扫技能,**不走**
 `QiRuntime.reload()`:那条路还会派发 `resources_discover` / `session_start` 并重启
 活动会话,一个几十行的 `SKILL.md` 不该惊动扩展。重扫失败时保留旧清单(那次写已经
 落盘了,报 500 只会让调用方重试,然后撞上自己的 `409`)。

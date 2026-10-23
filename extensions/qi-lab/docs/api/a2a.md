@@ -68,6 +68,12 @@
 curl -s http://127.0.0.1:3456/api/a2a | jq '.resolved[] | {name, source, layers}'
 ```
 
+| 码 | 什么时候 |
+| --- | --- |
+| `200` | 正常。qi-a2a 没装也是 200，只是 `unavailable=true` |
+| `400` | `a2a.json` 解析失败 / 顶层不是对象（`detail` 带文件路径） |
+| `401` / `400` | 口令 / Host（见通用约定） |
+
 ## `POST /api/a2a`
 
 在某一层新增一个条目(文件不存在就建)。**要 `X-Qi-Confirm: yes`**。
@@ -200,7 +206,9 @@ curl -s -X POST http://127.0.0.1:3456/api/a2a \
 | `description` | `string` | |
 | `tenant` | `string` | |
 | `rpc_url` | `string` | JSON-RPC 端点 |
-| `skills` | `A2ASkill[]` | 技能(只回展示要的四个字段) |
+| `skills` | `A2ASkill[]` | 技能（只回展示要的四个字段） |
+
+`A2ASkill`：`id` / `name` / `description` / `tags[]`。
 
 ```bash
 curl -s -X POST http://127.0.0.1:3456/api/a2a/probe \

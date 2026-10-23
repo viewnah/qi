@@ -28,7 +28,7 @@ Content-Type: application/json
 | `threadId` | `string` | **是** | = qi 的**会话 id**。空 → 422;不存在 → 404。qi 的 fork 会新建会话文件,所以每个分支天然是一条独立 thread |
 | `runId` | `string` | 否 | 不给则宿主生成 12 位 hex;原样回显在 `RUN_STARTED` 里 |
 | `messages` | `object[]` | **是** | 取**最后一条 `role:"user"`** 作为本轮输入。空/没有 user 内容 → 422 |
-| `forwardedProps` | `object` | 否 | qi 的逃生舱:`agent`(钉住角色)、`kbIds`(本轮只查这些 KB)、`session_id`(只做 cross-check,不覆盖 `threadId`) |
+| `forwardedProps` | `object` | 否 | qi 的逃生舱:`agent`(钉住角色)、`kbIds` / `kb_ids`(本轮只查这些 KB)、`kbProvider` / `kb_provider`(这些 KB 属于哪个 provider)、`session_id`(只做 cross-check,不覆盖 `threadId`) |
 | `state` / `tools` | any | 否 | 收下不报错(AG-UI 自带字段) |
 | `context` / `parentRunId` / `resume` | any | 否 | 认识但**不用**(字段表还在长,严格校验会让新客户端直接 422) |
 | 其余键 | any | 否 | 收进 `extra`,不报错 |
@@ -74,8 +74,9 @@ data: {"type":"RUN_STARTED","timestamp":1730000000000,...}\n\n
 
 在第 4 步之后、开跑之前,宿主还会做两件事(所以它们**在流开始后**才生效):
 `bind_session()`(绑定会话:换模型/级别的落盘 + 续会话还原)与 `pin_role(agent)`。
-如果 `forwardedProps.kbIds` 非空,还会调 `qi_kb.service.set_session_scope(session.id, kbIds)`;
+如果 `forwardedProps.kbIds` 非空,还会调 `qi_kb.service.set_session_scope(session.id, kbIds, kbProvider)`;
 本轮结束在 `finally` 里清掉。它只影响本轮的 `kb` 工具与提示词，不改 `kb.json`。
+`kbIds` / `kb_ids` 两个拼写都认(`kbProvider` / `kb_provider` 同理)—— 老前端发过 snake_case。
 
 ### 事件表
 

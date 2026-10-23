@@ -2,7 +2,8 @@
 
 `qi_lab/app.py` 是这些接口的**唯一真相**;本文与代码同仓,改端点的人顺手改这里。
 `extensions/qi-lab/tests/test_lab_docs_api.py` 会把 `create_app()` 实际注册的每一条 `/api` 路由逐条对着
-本文目录查一遍 —— 少写一个就红,防止"文档说有、代码已删"与"代码有、文档没有"两种漂移。
+本文目录查一遍 —— 少写一个就红,防止“文档说有、代码已删”与“代码有、文档没有”两种漂移;
+同一份测试还会把 `/api/meta` 的每个能力位在文档里查一遍(能力位漏写不会报错,只会让前端降级错)。
 
 ## 起服务
 
@@ -44,7 +45,7 @@ Python 侧是 editable 安装,改完即生效;前端改动要 `cd ui && npm run 
 
 ### 2. 写操作的第二道闸:确认头
 
-**10 条写端点**要求显式带:
+**24 条写端点**要求显式带:
 
 ```
 X-Qi-Confirm: yes
@@ -57,19 +58,33 @@ X-Qi-Confirm: yes
 | `POST /api/mcp` | 新建 MCP server |
 | `PATCH /api/mcp` | 改 MCP server |
 | `DELETE /api/mcp` | 删 MCP server |
+| `POST /api/a2a` | 新建 A2A 条目 |
+| `PATCH /api/a2a` | 改 A2A 条目 |
+| `DELETE /api/a2a` | 删 A2A 条目 |
 | `POST /api/auth/{provider}` | 写入凭证 |
 | `DELETE /api/auth/{provider}` | 删除凭证 |
 | `POST /api/providers` | 新建用户级 provider(声明 + 凭证) |
 | `POST /api/skills` | 新建技能 |
 | `DELETE /api/skills` | 删技能(整目录) |
 | `POST /api/skills/import` | 导入技能 |
+| `POST /api/skills/reload` | 重扫技能缓存(不写文件,但保住“`POST /api/skills` 系列一律带确认头”的规矩) |
 | `DELETE /api/agents` | 删角色(整目录) |
+| `POST /api/store/login` | 商店登录(写本地凭证) |
+| `POST /api/store/logout` | 商店退出(删本地凭证) |
+| `POST /api/store/install` | 安装商店条目 |
+| `POST /api/store/uninstall` | 卸载商店条目 |
+| `POST /api/kb/providers` | 新建/更新 KB provider |
+| `POST /api/kb/providers/login` | KB provider 登录(写凭证) |
+| `DELETE /api/kb/providers` | 删除 KB provider |
+| `POST /api/kb/install` | 安装 KB |
+| `POST /api/kb/uninstall` | 卸载 KB |
+| `PATCH /api/kb/defaults` | 写 KB 默认参数 |
 
 为什么:`.qi/mcp.json` 跟着仓库走、凭证文件在 `~/.qi/`,一次误写会被提交出去或悄悄改掉
 **下一次请求用的密钥**;技能则是**会进提示词的代码**,项目层就在 `.qi/skills/` 里 ——
 误写会被 `git add .` 带走、再在下一轮对话里被模型读进去;角色目录里还带着自己的
-`mcp.json`,一次误删连那层私有声明一起没。与写凭证同一道闸,
-前端弹层确认后才带上这个头。
+`mcp.json`,一次误删连那层私有声明一起没;商店 / 知识库的写端点会落凭证、配置或磁盘文件。
+与写凭证同一道闸,前端弹层确认后才带上这个头。
 
 ```bash
 curl -X PATCH http://127.0.0.1:3456/api/mcp -H 'X-Qi-Confirm: yes' -H 'Content-Type: application/json' -d '…'
@@ -82,14 +97,15 @@ curl -X PATCH http://127.0.0.1:3456/api/mcp -H 'X-Qi-Confirm: yes' -H 'Content-T
 
 | 码 | 什么时候 |
 | --- | --- |
-| 400 | 参数/文件问题:Host 不允许、路径越界、目录不是目录、`mcp.json` 解析失败、传输不认识、声明不完整、server 名有空白、技能名不合规 / 没有 description / 导入源结构不对、角色删除目标越界(符号链接)/删不动、`provider` 与 `model` 只给了一个 |
-| 401 | 缺口令或口令错 |
+| 400 | 参数/文件问题:Host 不允许、路径越界、目录不是目录、`mcp.json` / `a2a.json` 解析失败、传输不认识、声明不完整、server / 条目名有空白、技能名不合规 / 没有 description / 导入源结构不对、角色删除目标越界(符号链接)/删不动、provider 声明不合法、商店 / 知识库参数或 `ids` 为空 |
+| 401 | 缺口令或口令错;或商店 / 知识库的上游认为凭证已过期 |
 | 403 | 读目录/文件没有权限 |
-| 404 | 会话 / server / 角色 / 文件 / 目录 / 凭证 / 技能 不存在(导入的 `source` 也不在) |
-| 409 | **占用冲突**:同层已有同名 server / 同名技能(或路径被占)、导入不覆盖;会话正在运行(删/压/分叉);同一会话已有活跃 run;工作区/未分组里有会话在跑 |
+| 404 | 会话 / server / 角色 / 文件 / 目录 / 凭证 / 技能 / 条目 不存在(导入的 `source`、知识库的 `kbId` 也不在) |
+| 409 | **占用冲突**:同层已有同名 server / 条目 / 技能(或路径被占)、导入不覆盖;会话正在运行(删/压/分叉);同一会话已有活跃 run;工作区/未分组里有会话在跑;商店条目冲突;KB provider 下还有 KB(未 `cascade`)/ KB 已被别的 provider 绑定 |
 | 415 | `/api/files/raw` 的类型不在原样预览白名单 |
-| 422 | body 不符合 schema(pydantic)、AG-UI 输入不合法、模型配对不完整 |
+| 422 | body 不符合 schema(pydantic)、AG-UI 输入不合法、`provider`/`model` 只给了一个、思考级别不认识 |
 | 428 | 写操作缺 `X-Qi-Confirm: yes` |
+| 502 | 商店 / 知识库的上游或磁盘问题(`StoreError` / `KbError` 的非 400/401/404/409 分支) |
 | 503 | 配置/装载错误(`ConfigError` / `LoadError`)—— 比 500 可读;没装 qi-agents 时**删角色** |
 
 ### 4. 契约与能力位
@@ -107,6 +123,9 @@ curl -X PATCH http://127.0.0.1:3456/api/mcp -H 'X-Qi-Confirm: yes' -H 'Content-T
 | `mcp_write` | `/api/mcp` 的 POST/PATCH/DELETE(**没有它 → 界面把 MCP 节当只读**) |
 | `skill_write` | `/api/skills` 的 POST/DELETE + `/api/skills/import`(**没有它 → 技能节只读**) |
 | `agent_write` | `/api/agents` 的 DELETE(**没有它 → Agent 节只读**;读端点一直在) |
+| `a2a_write` | `/api/a2a` 的 POST/PATCH/DELETE + `/api/a2a/probe`(**没有它 → A2A 节只读**;读端点一直在) |
+| `store_write` | `/api/store/*` 的安装 / 卸载 / 登录 / 退出(**没有它 → 商店节只读**;它由“真的 import 一次 qi-store”得出) |
+| `kb_write` | `/api/kb/*` 的 provider / KB / 默认参数写端点(**没有它 → 知识库节只读**;它由“真的 import 一次 qi-kb”得出) |
 | `activity` | 委派直播帧 `ACTIVITY_SNAPSHOT`(**没有它 → 运行中的子运行看不到在干什么**,退回一期) |
 | `ag_ui` / `ui_v1` | 事件形状是 AG-UI;`details["ui"]` 的词汇表(缺则退回折叠显示原始 JSON) |
 
@@ -120,7 +139,7 @@ curl -X PATCH http://127.0.0.1:3456/api/mcp -H 'X-Qi-Confirm: yes' -H 'Content-T
 
 ---
 
-## 端点总表(64)
+## 端点总表(65)
 
 | 方法 | 路径 | 说明 | 文档 |
 | --- | --- | --- | --- |
@@ -201,11 +220,11 @@ curl -X PATCH http://127.0.0.1:3456/api/mcp -H 'X-Qi-Confirm: yes' -H 'Content-T
 | [`sessions.md`](sessions.md) | 会话的增删改查、导出、压缩、分叉、批量删 |
 | [`ag-ui.md`](ag-ui.md) | `POST /api/ag-ui`:请求体、SSE 帧格式、事件表、取消语义 |
 | [`mcp.md`](mcp.md) | MCP 声明的读与增删改(三层、确认头、只改送来的键) |
-| [`a2a.md`](a2a.md) | A2A 条目:两层深合兼、确认头、`null` = 不改、名片探测 |
+| [`a2a.md`](a2a.md) | A2A 条目:两层深合并、确认头、`null` = 不改、名片探测、手写页面 `GET /a2a` |
 | [`agents.md`](agents.md) | 角色:读(元数据,不回正文)与删除(两层、按显示名、整目录、只删该层) |
 | [`config.md`](config.md) | 配置/模型/扩展的只读视图,凭证写入 |
 | [`skills.md`](skills.md) | 技能:读(六层来源)与添加 / 删除 / 导入 / 重扫缓存(确认头、可写边界、zip 防御) |
 | [`workspaces.md`](workspaces.md) | 工作区显示名、删除语义、目录选择器 |
 | [`files.md`](files.md) | 文件三端点:边界、排序、限额、预览白名单 |
-| [`store.md`](store.md) | 商店:hikqin 条目 → 本地落盘;四类标签、登录(密码只过一次)、确认头、高危闸、失败映射 |
+| [`store.md`](store.md) | 商店:hikqin 条目 → 本地落盘;五类条目、登录(密码只过一次)、确认头、高危闸、失败映射 |
 | [`kb.md`](kb.md) | 知识库:provider / KB / 检索 / 问答 / 默认参数;`(instance, kbId)` 去重与 rebind |

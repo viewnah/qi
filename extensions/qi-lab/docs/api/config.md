@@ -33,7 +33,7 @@ provider / 凭证状态 / 默认模型的只读视图。**凭证只回掩码与�
 | `models` | `int` | 该 provider 下配了几个模型 |
 | `model_ids` | `string[]` | 模型 id 清单 —— 设置页按 provider → model 两级展示 |
 | `credential_ok` | `bool` | 凭证解析得出(**解析** = settings/环境变量/auth 文件三层都能供) |
-| `credential_source` | `string` | 凭证来自哪一层 |
+| `credential_source` | `string` | 凭证来自哪一层:`auth` / `env:<变量名>`(未设置时带 `(未设置)`)/ `config:<apiKey 引用>`(未解析时带 `(未解析)`)/ `none`(provider 免 key)/ `无密钥来源`(解析不出) |
 | `credential_masked` | `string` | **只有尾 4 位**:`…abcd`;空 = 没有 |
 
 ```bash
@@ -134,6 +134,8 @@ curl -s -X POST http://127.0.0.1:3456/api/model \
 
 新建一个**用户级** provider:写 `~/.qi/agent/models.json`(声明)与 `auth.json`(凭证)。
 **需要 `X-Qi-Confirm: yes`**(缺 → 428),成功回刷新后的 `ConfigView`。
+能力位是 `GET /api/meta` 的 `capabilities.provider_write`;没有它 → 界面只保留“配凭证 / 登录已有”,
+不摆一个点了才 404 的「添加 Provider」。
 
 已存在 provider 的“配凭证”走 [`POST /api/auth/{provider}`](#post-apiauthprovider) ——
 两条路分开,免得“加一个”把已有声明默默改写。
@@ -155,8 +157,8 @@ curl -s -X POST http://127.0.0.1:3456/api/model \
 
 | 码 | 什么时候 |
 | --- | --- |
-| 400 | 名字不合法 / baseUrl 不是 http(s) / api 不在闭集 / 没有模型 id / 没给 key / key 看着不像密钥 |
-| 409 | 同名 provider 已在某个 `models.json` 里定义(项目级 / `$QI_AGENT_CONFIG` 也算) |
+| 400 | 名字不合法 / baseUrl 不是 http(s) / api 不在闭集 / 没有模型 id / 没给 key / key 看着不像密钥 / `models.json` 写不进去(会回滚已写的 key) |
+| 409 | 同名 provider 已在某个 `models.json` 里定义(项目级 / `$QI_AGENT_CONFIG` 也算);预置 provider 已存在**且有可用凭证**;目标用户级 `models.json` 里已有同名 provider |
 | 428 | 缺确认头 |
 
 ```bash

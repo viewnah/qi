@@ -71,6 +71,16 @@ const PLACEHOLDER = "描述你想做的事。Enter 发送,Shift+Enter 换行";
 /** 行尾相对时间的刷新周期。分钟级标签不需要秒级精度。 */
 const CLOCK_MS = 30_000;
 
+/** 自动命名的迟到轮询:每 1s 一次,共 15s;拿到名字就停。 */
+const TITLE_POLL_MS = 1_000;
+const TITLE_POLL_TRIES = 15;
+
+/** 与 core 的 `has_title` 同口径:空串与历史默认名 `tui` 都不算名字。 */
+function hasSessionName(title: string | null | undefined): boolean {
+  const cleaned = (title ?? "").trim();
+  return cleaned.length > 0 && cleaned !== "tui";
+}
+
 /**
  * 左栏四个动作各自的弹层。
  *
@@ -216,6 +226,11 @@ export function App() {
   const bootDone = useRef(false);
 
   const abortRef = useRef<(() => void) | null>(null);
+  /**
+   * 自动命名轮询的世代号。新的一轮开始时递增,旧的轮询看到世代不等就退出 ——
+   * 避免多轮重叠时把旧请求的结果写回列表。
+   */
+  const titlePollRef = useRef(0);
   /** 左栏底部「设置」行:浮层关掉时焦点还给它(见 Settings 的 `returnFocusTo`)。 */
   const settingsTriggerRef = useRef<HTMLButtonElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -234,9 +249,34 @@ export function App() {
 
   const refreshSessions = useCallback(async () => {
     try {
-      setSessions((await api.sessions()).sessions);
+      const next = (await api.sessions()).sessions;
+      setSessions(next);
+      return next;
     } catch (err) {
       setFatal(describe(err));
+      return null;
+    }
+  }, []);
+
+  /**
+   * 自动命名是**并行**跑的(core 最多等 2s,等不到就挂到回调上)。
+   * 回调写盘时这一轮早已结束,`onClose` 里的那次刷新看不到新标题 ——
+   * 所以对“还没有名字”的会话再轮询一小段时间:标题一落盘就停止。
+   */
+  const refreshUntilTitled = useCallback(async (id: string) => {
+    const token = ++titlePollRef.current;
+    for (let attempt = 0; attempt < TITLE_POLL_TRIES; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, TITLE_POLL_MS));
+      if (titlePollRef.current !== token) return;
+      try {
+        const next = (await api.sessions()).sessions;
+        if (titlePollRef.current !== token) return;
+        setSessions(next);
+        const row = next.find((session) => session.id === id);
+        if (row === undefined || hasSessionName(row.title)) return;
+      } catch {
+        return;
+      }
     }
   }, []);
 
@@ -406,7 +446,13 @@ export function App() {
             ...prev,
             phase: prev.phase === "running" ? "ok" : prev.phase,
           }));
-          void refreshSessions();
+          void refreshSessions().then((list) => {
+            const row = list?.find((session) => session.id === id);
+            // 只有“这一轮结束时还没有名字”才值得轮询;已有标题/会话被删就不追。
+            if (row !== undefined && !hasSessionName(row.title)) {
+              void refreshUntilTitled(id);
+            }
+          });
           // 这一轮已经落盘(带 usage),重拉一次明细拿新的会话级汇总 ——
           // 卡片下方那行统计因此在每轮结束后跟一步。
           void api
@@ -426,7 +472,7 @@ export function App() {
       // kbIds 只影响本轮的知识库范围；空数组 = 用 qi-kb 的全局/项目绑定。
       { agent, kbIds });
     },
-    [agent, kbIds, refreshSessions],
+    [agent, kbIds, refreshSessions, refreshUntilTitled],
   );
 
   /** 首屏会话列表到了之后,按 URL 打开它(**这就是"刷新回到当前会话"**)。 */

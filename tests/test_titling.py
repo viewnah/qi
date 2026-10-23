@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -19,7 +20,8 @@ import pytest  # noqa: E402
 from qi_agent.llm import ChatResponse, LLMDelta  # noqa: E402
 from qi_agent.runtime import QiRuntime, RuntimeConfig  # noqa: E402
 from qi_agent.session import SessionStore  # noqa: E402
-from qi_agent.titling import TITLE_MAX_CHARS, clean_title, suggest_title  # noqa: E402
+from qi_agent.titling import (TITLE_MAX_CHARS, clean_title, fallback_title,
+                              suggest_title)  # noqa: E402
 
 
 # ── 1. 清洗(纯函数)──────────────────────────────────────
@@ -48,6 +50,14 @@ def test_clean_title_caps_length():
     long = "很长" * 40
     got = clean_title(long)
     assert got is not None and len(got) == TITLE_MAX_CHARS
+
+
+def test_fallback_title_takes_the_first_clause():
+    """模型标题拿不到时,用用户第一小句兜底 —— 左栏不要一整段话。"""
+    assert fallback_title("帮我看看这个仓库的结构,顺便说下每个目录干什么") == "帮我看看这个仓库的结构"
+    assert fallback_title("Fix the login bug. Also add tests.") == "Fix the login bug"
+    assert fallback_title("\n\n  你好  ") == "你好"
+    assert fallback_title("   ") is None
 
 
 # ── 2. 命名调用 ─────────────────────────────────────────
@@ -134,8 +144,33 @@ async def test_first_turn_names_the_session_once(tmp_path, minimal_config):
 
 
 @pytest.mark.asyncio
+async def test_late_model_title_overrides_the_fallback(tmp_path, minimal_config, monkeypatch):
+    """模型标题慢于本轮结束时,先用本地兜底名;晚到的模型标题再覆盖它。"""
+    from qi_agent import runtime as runtime_mod
+
+    monkeypatch.setattr(runtime_mod, "TITLE_WAIT_S", 0.01)
+
+    class _Slow(_TurnStub):
+        async def chat(self, messages, tools=None, temperature=None):
+            await asyncio.sleep(0.05)
+            return ChatResponse(text="模型标题")
+
+    store = SessionStore(root=tmp_path / "sessions")
+    runtime = QiRuntime(cwd=tmp_path, runtime_cfg=RuntimeConfig(workdir=tmp_path),
+                        session_store=store, llm=_Slow())
+    session = store.create("", cwd=tmp_path)
+
+    async for _ in runtime.stream("帮我看看这个仓库的结构,顺便说下目录", session):
+        pass
+
+    assert session.title == "帮我看看这个仓库的结构"      # 先有兜底名
+    await asyncio.sleep(0.15)
+    assert session.title == "模型标题"                    # 晚到的模型标题覆盖兜底名
+
+
+@pytest.mark.asyncio
 async def test_naming_failure_leaves_the_turn_intact(tmp_path, minimal_config):
-    """命名炸了:回答照常落盘,标题保持「未命名」——不编、不报错。"""
+    """命名炸了:回答照常落盘;标题先用本地兜底名,而不是一直「未命名」。"""
     class _Boom(_TurnStub):
         async def chat(self, messages, tools=None, temperature=None):
             raise RuntimeError("provider 挂了")
@@ -147,7 +182,7 @@ async def test_naming_failure_leaves_the_turn_intact(tmp_path, minimal_config):
     async for _ in runtime.stream("你好", session):
         pass
 
-    assert session.title == ""
+    assert session.title == "你好"
     roles = [e.get("role") for e in session.branch() if e.get("type") == "message"]
     assert roles == ["user", "assistant"]           # 这一轮的往来都在
 

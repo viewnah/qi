@@ -5,11 +5,11 @@
 
 三条设计取舍:
 
-1. **只命名一次**:`title` 非空就不再调(用户手改过的标题绝不被覆盖)。
+1. **只命名一次**:`title` 非空且不是本地兜底名就不再调(用户手改过的标题绝不被覆盖)。
 2. **纯函数收尾**:模型永远可能带上引号、井号、`标题:` 前缀、多行解释 —— `clean_title` 负责
    把它压成一行干净的标题,并且**只在这些清洗之后**才落盘(见那几条单测)。
-3. **失败无声**:命名失败(超时/报错/返回垃圾)一律回落 `None`,**绝不**影响本轮回答 ——
-   少一个标题远好过多一个错误。
+3. **失败不空白**:命名失败(超时/报错/返回垃圾)不影响本轮回答;runtime 会先用
+   `fallback_title()` 取用户第一小句当兜底名,模型标题晚到时再覆盖它。
 """
 
 from __future__ import annotations
@@ -70,6 +70,35 @@ def clean_title(raw: str | None) -> str | None:
     if not line or line.strip().lower() in _USELESS:
         return None
     return line[:TITLE_MAX_CHARS]
+
+
+#: 句读分隔符:本地兜底标题只取第一小句,不要把整段话塞进左栏。
+_CLAUSE_SEPS = ("。", "!", "！", "?", "？", ";", "；", "\n", ",", "，", ". ")
+
+
+def fallback_title(first_user_text: str) -> str | None:
+    """模型标题没及时拿到时的**本地兜底**:取用户第一小句。
+
+    为什么需要它:模型标题是并行调用,遇到 provider 并发限制/超时会回 `None`;
+    而“会话一直没有名字”比“名字不够漂亮”明显得多。这里只做确定性清洗:
+    首行 → 第一小句 → 去装饰 → 截断,不猜、不改写。
+
+    模型标题之后仍可覆盖它:runtime 会把“这是兜底名”记在内存里,`_write_title`
+    对兜底名放行一次。用户手动改名则永远优先。
+    """
+    text = (first_user_text or "").strip()
+    if not text:
+        return None
+    line = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+    if not line:
+        return None
+    cut = len(line)
+    for sep in _CLAUSE_SEPS:
+        pos = line.find(sep)
+        if pos > 0:
+            cut = min(cut, pos)
+    line = line[:cut].strip()
+    return clean_title(line)
 
 
 async def suggest_title(llm: LLMClient, first_user_text: str) -> str | None:

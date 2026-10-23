@@ -58,7 +58,7 @@ from .registry import CapabilityRegistry, ToolCatalog, discover_extensions
 from .runner import AgentRunner, RunnerSettings, RunSpec
 from .session import (MODEL_CHANGE, THINKING_LEVEL_CHANGE, Session, SessionStore,
                       context_settings, has_title)
-from .titling import suggest_title
+from .titling import fallback_title, suggest_title
 from .retry import agent_retry_policy
 from .settings import (default_tools, extension_dirs, load_settings, load_settings_by_scope,
                        branch_summary_skip_prompt, model_thinking_level,
@@ -293,6 +293,9 @@ class QiRuntime:
         #: "一个 runtime 服务多个会话"的场景里,在 A 上设一次之后切到 B 也还带着它
         #: (A 的显式选择泄漏给了 B)。判断见 `_level_pinned()`。
         self._level_pins: set[str] = set()
+        #: 当前标题是**本地兜底名**(模型标题没及时拿到)的会话 id。
+        #: 模型标题晚到时允许覆盖一次;用户手动改名时从集合移除。只活在当前进程。
+        self._fallback_titles: set[str] = set()
         #: 思考级别被**命令行**钉住(`--thinking`,或 `--model p/m:级别`)—— 对所有会话生效。
         #: 与 `_level_pins` 分开:那是会话级的,这个是**整场运行**的。
         #: 命令行给的值是当次显式覆盖,不该被会话里记的旧值顶掉(与 `_model_pinned` 对称)。
@@ -1120,6 +1123,9 @@ class QiRuntime:
         cleaned = (title or "").strip()
         if not cleaned:
             return
+        if source != "auto":
+            # 用户/扩展显式改名优先于任何自动兜底名。
+            self._fallback_titles.discard(session.id)
         try:
             self.sessions.set_title(session, cleaned)
         except OSError:
@@ -1783,12 +1789,13 @@ class QiRuntime:
         # 触发条件是"这个会话还没有标题" —— 新建的与本功能上线前建的老会话都算
         # (`has_title`:历史默认名 `tui` 也算没有,否则那两千多条老会话永远不被命名)。
         title_task: asyncio.Task[str | None] | None = None
+        title_input = self.first_user_text(session) or text
         if not has_title(session.title):
             # 输入取会话原本的第一句话,不是这一轮说的话:老会话续聊时,
             # "接着再补个测试"会把一个讲仓库结构的会话命名成"补充测试"。
             # (本轮的用户消息此刻还没落盘 —— 它在下面 append,所以新会话会回落到 text。)
             title_task = asyncio.create_task(
-                suggest_title(self.llm_exec, self.first_user_text(session) or text))
+                suggest_title(self.llm_exec, title_input))
         async for event in self._maybe_auto_compact(session):
             yield event
         # 单 agent:core 不认识“角色”,所以这里没有分派 —— 就一个固定的运行单元。
@@ -1877,7 +1884,7 @@ class QiRuntime:
         # 助手侧在回合结束后落盘(与旧版一致;tool 往返已在上方单独落盘)
         self._persist_final(session, CORE_AGENT_NAME, final_text, usage=end_usage)
         if title_task is not None:
-            await self._apply_title(session, title_task)
+            await self._apply_title(session, title_task, title_input)
         # `agent_settled`(pi):回合**真的**结束了 —— 没有重试、没有压缩残留、没有排队消息。
         # qi 的 provider 级重试在客户端内部(那时本方法还没跑完),所以到这里就是终点;唯一要
         # 排掉的是“还有排队消息会让它再跑一轮”的情形。
@@ -1913,31 +1920,53 @@ class QiRuntime:
                 return str(entry.get("content") or "")
         return ""
 
-    async def _apply_title(self, session: Session, task: asyncio.Task[str | None]) -> None:
+    async def _apply_title(self, session: Session, task: asyncio.Task[str | None],
+                           text: str) -> None:
         """把并行起的命名结果套到会话上。
 
         **最多等 `TITLE_WAIT_S`**:命名是体验改进,但不该拖住"这一轮结束"(前端在
-        RUN_FINISHED 之后才刷新列表 —— 等太久就是可见的卡顿)。等不到就把落盘挂到
-        回调上,它完成时自己写盘:下一次刷新(下一轮 / 重开会话)就能看到标题。
+        RUN_FINISHED 之后才刷新列表 —— 等太久就是可见的卡顿)。
+
+        等不到 / 模型失败时先落一个**本地兜底名**(用户第一小句),保证左栏不是
+        「未命名」;模型标题晚到或下一轮成功时可以覆盖这个兜底名。
         """
         done, _pending = await asyncio.wait({task}, timeout=TITLE_WAIT_S)
         if task in done:
-            self._write_title(session, task.result())
+            title = task.result()
+            if title:
+                self._write_title(session, title)
+            else:
+                self._use_fallback_title(session, text)
             return
+        # 模型还没回来:先给一个确定性的本地名字,别让这一轮结束时仍叫「未命名」。
+        self._use_fallback_title(session, text)
         task.add_done_callback(
             lambda t: self._write_title(session, None if t.cancelled() else t.result()))
+
+    def _use_fallback_title(self, session: Session, text: str) -> None:
+        """模型标题暂时拿不到时,用用户第一小句先兜底;不覆盖用户手动改过的名。"""
+        if has_title(session.title):
+            return
+        title = fallback_title(text)
+        if not title:
+            return
+        # 先记来源再落盘:晚到的模型标题要能认出“现在这个是兜底名”。
+        self._fallback_titles.add(session.id)
+        self.set_session_title(session, title, source="auto")
 
     def _write_title(self, session: Session, title: str | None) -> None:
         """落盘**模型给的**标题。空标题、或用户已经手动改过 → 不动。
 
-        两条都必须有:模型回垃圾时保持「未命名」好过写个垃圾进文件;而用户在流式期间
+        两条都必须有:模型回垃圾时保持当前名字好过写个垃圾进文件;而用户在流式期间
         手动改了名,自动命名不能把它覆盖回去。
 
-        实际落盘走 `set_session_title` —— 那里同时发 `session_info_changed`,
-        所以自动命名与用户改名两条路都不会漏事件(也不会重发)。
+        唯一的例外是**本地兜底名**:它本来就是临时占位,模型标题晚到时允许覆盖一次。
         """
-        if not title or has_title(session.title):
+        if not title:
             return
+        if has_title(session.title) and session.id not in self._fallback_titles:
+            return
+        self._fallback_titles.discard(session.id)
         self.set_session_title(session, title, source="auto")
 
     def _persist_thinking(self, session: Session, agent: str, text: str) -> None:

@@ -26,11 +26,25 @@ from typing import TYPE_CHECKING, Any
 from rich.console import Console
 from rich.markup import escape
 
+from .security import is_loopback
+
 if TYPE_CHECKING:                       # 只给类型注解用:import 期不拖 qi_agent
     from qi_agent.runtime import QiRuntime
 
 console = Console()
 err_console = Console(stderr=True)
+
+
+def _browser_host(host: str) -> str:
+    """浏览器该访问哪个 host。
+
+    `0.0.0.0` / `::` 只是“监听所有网卡”，不是可访问地址；浏览器在**本机**跑，
+    所以统一收回到 `127.0.0.1`。其它非回环地址保留原样（浏览器可能就在那台机器上）。
+    """
+    host = host.strip()
+    if not host or host in {"0.0.0.0", "::", "[::]"} or is_loopback(host):
+        return "127.0.0.1"
+    return host
 
 
 def _port_free(host: str, port: int) -> bool:
@@ -170,8 +184,6 @@ def serve(argv: list[str]) -> int:
     """起 HTTP 宿主。返回退出码(0 正常,2 用法/环境问题)。"""
     args = _parser().parse_args(argv)        # 坏参数 → argparse 自己退 2(与 qi 的约定一致)
 
-    from .security import is_loopback
-
     try:
         import uvicorn
 
@@ -197,7 +209,7 @@ def serve(argv: list[str]) -> int:
     app_obj = create_app(cwd=workdir.resolve(), password=password, allowed_hosts=allowed,
                          bind_host=args.hostname)
 
-    shown = "127.0.0.1" if is_loopback(args.hostname) else args.hostname
+    shown = _browser_host(args.hostname)
     url = f"http://{shown}:{args.port}"
     console.print(f"[green]qi lab[/green] → [bold]{url}[/bold]")
     console.print(f"[dim]默认工作目录: {escape(str(workdir))}[/dim]")

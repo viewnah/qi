@@ -495,6 +495,16 @@ def test_host_alias_is_accepted():
     assert _parser().parse_args(["--host", "0.0.0.0"]).hostname == "0.0.0.0"
 
 
+def test_browser_host_falls_back_to_loopback_for_wildcard():
+    """`0.0.0.0` / `::` 不能直接给浏览器 —— 本机浏览器应打开 `127.0.0.1`。"""
+    from qi_lab.serve import _browser_host
+
+    assert _browser_host("0.0.0.0") == "127.0.0.1"
+    assert _browser_host("::") == "127.0.0.1"
+    assert _browser_host("localhost") == "127.0.0.1"
+    assert _browser_host("192.168.1.5") == "192.168.1.5"
+
+
 def test_mask_key_never_leaks_full_value():
     assert mask_key("sk-abcdefgh1234") == "…1234"
     assert mask_key("ab") == "…"

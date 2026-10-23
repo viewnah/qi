@@ -31,8 +31,9 @@ class Meta(BaseModel):
 
 
 class SessionCreate(BaseModel):
+    """新建会话。工作目录由宿主固定,请求体里不再接受 `cwd`。"""
+
     title: str = ""
-    cwd: str | None = None
 
 
 class SessionRename(BaseModel):

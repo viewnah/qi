@@ -582,7 +582,9 @@ async def test_fork_rejects_busy_and_unknown_anchor(client, tmp_path):
 # ── 工作区:显示名 + 「删除连会话一起删」─────────────────────
 
 async def _session_in(client, cwd, title="a"):
-    return (await client.post("/api/sessions", json={"title": title, "cwd": str(cwd)})).json()
+    """测试里需要**指定 cwd** 的会话(工作区 API 仍在,但 POST 不再收 cwd)。"""
+    session = _web(client).sessions.create(title, cwd=cwd)
+    return {"id": session.id, "cwd": session.cwd}
 
 
 async def test_workspace_rename_only_touches_the_display_name(client, tmp_path):
@@ -618,11 +620,31 @@ async def test_workspace_delete_takes_its_sessions_with_it(client, tmp_path):
     # 会话文件真的没了(不是"换个地方显示")
     assert (await client.get(f"/api/sessions/{one['id']}")).status_code == 404
     assert (await client.get(f"/api/sessions/{two['id']}")).status_code == 404
-    # 别的目录一条不少
-    rest = (await client.get("/api/sessions")).json()["sessions"]
-    assert [x["id"] for x in rest] == [survivor["id"]]
+    # 别的目录一条不少:它不在固定 cwd 的列表里,但文件仍可直接打开
+    assert (await client.get(f"/api/sessions/{survivor['id']}")).status_code == 200
     # 目录本身不删 —— qi 不动用户的文件夹
     assert tmp_path.is_dir()
+
+
+async def test_list_sessions_only_returns_fixed_cwd(client, tmp_path):
+    """`GET /api/sessions` 只回固定工作目录:其它 cwd 的旧会话留在磁盘,但不出现在列表。"""
+    other = tmp_path / "other"
+    other.mkdir()
+    fixed = await _session_in(client, tmp_path, "固定")
+    stale = await _session_in(client, other, "别的目录")
+
+    listed = (await client.get("/api/sessions")).json()["sessions"]
+    assert [s["id"] for s in listed] == [fixed["id"]]
+    assert (await client.get(f"/api/sessions/{stale['id']}")).status_code == 200
+
+
+async def test_create_session_always_uses_default_cwd(client, tmp_path):
+    """POST 不再接受 cwd:即使请求体多带一个 cwd,也落到宿主固定目录。"""
+    other = tmp_path / "other"
+    other.mkdir()
+    created = (await client.post(
+        "/api/sessions", json={"title": "固定", "cwd": str(other)})).json()
+    assert created["cwd"] == str(tmp_path.resolve())
 
 
 async def test_workspace_delete_is_scoped_by_normalized_cwd(client, tmp_path, monkeypatch):
@@ -630,7 +652,10 @@ async def test_workspace_delete_is_scoped_by_normalized_cwd(client, tmp_path, mo
     real = tmp_path / "real"
     real.mkdir()
     link = tmp_path / "link"
-    link.symlink_to(real)
+    try:
+        link.symlink_to(real)
+    except OSError as exc:                      # Windows 默认无创建符号链接权限
+        pytest.skip(f"当前平台不能创建目录软链:{exc}")
     created = await _session_in(client, real)          # 会话写在真实路径下
     # 用软链路径删:要删掉的是同一批会话
     body = (await client.delete("/api/workspaces", params={"cwd": str(link)})).json()
@@ -681,8 +706,7 @@ async def test_clear_ungrouped_only_touches_cwd_less_sessions(client, tmp_path):
     grouped = await _session_in(client, tmp_path, "有目录的")
 
     listed = (await client.get("/api/sessions")).json()["sessions"]
-    assert {s["id"] for s in listed} == {legacy_one.id, legacy_two.id, grouped["id"]}
-    assert [s["cwd"] for s in listed if s["id"] in (legacy_one.id, legacy_two.id)] == [None, None]
+    assert [s["id"] for s in listed] == [grouped["id"]]      # 旧会话不再出现在固定列表
 
     body = (await client.delete("/api/sessions", params={"scope": "ungrouped"})).json()
     assert sorted(body["ids"]) == sorted([legacy_one.id, legacy_two.id])
@@ -736,7 +760,10 @@ async def test_browse_dirs_lists_directories_and_parent(client, tmp_path):
     # `home` 是**真实主目录**,不是 QI_AGENT_HOME(测试里那个被指向 tmp)——
     # 选择器的"主目录"快捷键要落到用户真正想去的地方。
     assert body["home"] == os.path.realpath(str(Path.home()))
-    assert body["roots"] == []                                    # 非 Windows 没有盘符
+    if os.name == "nt":
+        assert body["roots"]                                   # Windows 给盘符
+    else:
+        assert body["roots"] == []                              # 非 Windows 没有盘符
 
 
 async def test_browse_dirs_defaults_to_home(client):

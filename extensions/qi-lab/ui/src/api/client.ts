@@ -12,7 +12,7 @@
  * 不再有"POST 拿 run_id → 再 GET /events"的两跳,也就没有"晚连上来的客户端"这件事。
  */
 import { CONTRACT_VERSION } from "./types";
-// 会话/工作区的写操作也在这里:分叉、改名、以及工作区的两个「人工决定」。
+// 会话写操作也在这里;工作区/目录浏览端点仅为兼容旧客户端保留,qi-lab UI 不再调用。
 import type {
   A2ADeleteBody,
   A2AList,
@@ -124,10 +124,10 @@ export const api = {
 
   sessions: () => request<SessionList>("/api/sessions"),
 
-  createSession: (title: string, cwd?: string) =>
+  createSession: (title: string) =>
     request<SessionSummary>("/api/sessions", {
       method: "POST",
-      body: JSON.stringify({ title, cwd: cwd ?? null }),
+      body: JSON.stringify({ title }),
     }),
 
   session: (id: string) =>
@@ -196,7 +196,7 @@ export const api = {
   /**
    * 列服务器上的子目录(`path` 省略 = 主目录)。
    *
-   * **只读、只列目录**:权限面比已有的 bash 工具小得多,所以沿用同一道鉴权。
+   * **兼容保留**:固定工作目录后 qi-lab 前端不再使用。
    * 形状照 pi-web 的 `/api/cwd/browse`(见 `api/types.ts` 的 `DirectoryListing`)。
    */
   dirs: (path = "") =>
@@ -204,7 +204,7 @@ export const api = {
       `/api/fs/dirs?path=${encodeURIComponent(path)}`,
     ),
 
-  /** 工作区改过的显示名(目录 → 名字)。`name` 空串 = 取消改名(恢复成目录名)。 */
+  /** 工作区改过的显示名。**兼容保留**,qi-lab UI 不再调用。`name` 空串 = 取消改名。 */
   workspaces: () => request<WorkspaceNames>("/api/workspaces"),
 
   renameWorkspace: (cwd: string, name: string) =>

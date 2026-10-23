@@ -2779,3 +2779,21 @@ pi 不是这个口径:它的清单是 `modelRuntime.getAvailableSnapshot()`,而�
 (logout 后清单为空 + `[unavailable]` 行 + 保存不静默丢 + 取消勾选才清掉);
 `scripts/e2e_ui_model.py` 第 ③ 组断言跟着改成“缺凭证的 provider 一条都不列”
 (真跑 Chrome/CDP 的那一步本环境跑不了 —— 需要一个真浏览器)。
+
+### 18.30 固定工作目录:移除选择/切换工作区(2026-10)
+
+使用反馈:qi-lab 不需要“选择工作目录”的操作,宿主给一个固定目录即可。落地口径:
+
+- **固定目录来源**:`qi lab --cwd <dir>`(不传 = 进程当前目录)。`/api/meta` 仍回
+  `default_cwd`,但界面不提供切换/添加入口。
+- **`POST /api/sessions` 不再接受 `cwd`**:一律用 `web.default_cwd`。请求体多带的
+  `cwd` 被忽略,Pydantic 模型里已删除该字段。
+- **`GET /api/sessions` 只回固定 cwd**:其它目录的旧会话留在磁盘,但不出现在列表 ——
+  否则界面会出现一条属于别的工作区、打开后又切走 runtime 的会话。
+- **UI 移除**:项目 chip(`ProjectMenu`)、`DirPicker`、「添加工作区」、工作区重命名/
+  删除、按 cwd 分组的左栏。左栏改成**扁平会话列表**;保留新建会话、搜索、重命名、
+  分叉、删除、文件面板。
+- **`/api/workspaces` 与 `/api/fs/dirs` 保留**:已有客户端/维护旧会话还能用,但 qi-lab
+  前端不再调用;文档标注为兼容保留。
+- `state/projects.ts` 的分组辅助函数暂留(搜索/相对时间仍在用),但生产界面不再按
+  项目分组。

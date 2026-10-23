@@ -9,7 +9,9 @@
 
 ## `GET /api/sessions`
 
-列表。**顺序 = 会话文件的 mtime**(最近活跃在最前)。
+列表。**只返回宿主固定工作目录(`default_cwd`)下的会话**。
+顺序 = 会话文件的 mtime(最近活跃在最前)。其它 cwd 的旧会话仍留在磁盘,
+但不出现在这里 —— qi-lab 已不再提供选择工作目录的 UI。
 
 ### 响应 `SessionList` (200)
 
@@ -26,27 +28,26 @@
 | `title` | `string` | 标题(可以由第一句话自动起) |
 | `created_at` | `string` | 创建时刻 `YYYY-MM-DDTHH:MM:SS`(本地时间) |
 | `updated_at` | `string` | **文件 mtime** —— 左栏「15分钟」显示的是这个,**不是**创建时间 |
-| `cwd` | `string \| null` | 项目目录。`null` = 老会话(header 里没记 cwd)→ 归「未分组」 |
+| `cwd` | `string \| null` | 会话目录。固定工作目录下正常非空；`null` = 老会话(header 里没记 cwd) |
 | `message_count` | `int` | 消息条数 |
 | `running` | `bool` | 这条是否在跑 |
 | `path` | `string` | 会话文件绝对路径(弹层里显示"改的是哪个文件") |
 
 ## `POST /api/sessions`
 
-新建会话。**在某个目录下新建会话 = 新建工作区**(工作区是派生的,没有"新建工作区"端点)。
+新建会话。**工作目录由宿主固定**(`qi lab --cwd <dir>`,不传则用进程当前目录),
+请求体不再接受 `cwd`。
 
 ### 请求体 `SessionCreate`
 
 | 字段 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `title` | `string` | `""` | 空 = 由第一句话自动起 |
-| `cwd` | `string \| null` | `null` | 不给 = `default_cwd` |
 
 ### 响应 `SessionSummary` (201)
 
 | 码 | 什么时候 |
 | --- | --- |
-| 400 | `cwd` 给了但不是已存在的目录 |
 | 422 | body 不是对象 / 字段类型不对 |
 
 ## `GET /api/sessions/{sid}`
@@ -107,10 +108,10 @@
 
 ## `DELETE /api/sessions`
 
-批量删:目前只有一种作用域 —— 左栏「未分组」桶。
+批量删:目前只有一种作用域 —— 旧版的「未分组」桶。
 
 「未分组」= **没有 cwd 的旧会话**(qi 早先版本的 header 里没记 cwd,无从判断它属于哪个项目)。
-它们既不能被"删除工作区"带走,也只能一条一条删,所以给这一桶一个批量出口。
+固定工作目录后 UI 不再显示这个桶,端点保留给维护旧数据/旧客户端。
 
 ### 查询参数(必填)
 
@@ -187,9 +188,9 @@
 # 列表
 curl -s http://127.0.0.1:3456/api/sessions | jq '.sessions[0] | {id,title,cwd,running}'
 
-# 新建(在指定项目里)
+# 新建(落在宿主固定工作目录;请求体没有 cwd)
 curl -s -X POST http://127.0.0.1:3456/api/sessions \
-  -H 'Content-Type: application/json' -d '{"cwd":"/Users/you/proj"}' | jq .id
+  -H 'Content-Type: application/json' -d '{"title":""}' | jq .id
 
 # 明细:最后 50 条
 curl -s 'http://127.0.0.1:3456/api/sessions/<sid>?limit=50' | jq '{total_entries, skipped}'

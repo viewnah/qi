@@ -1,5 +1,5 @@
 /**
- * 外壳:**左栏(工作区 → 会话)· 中栏(工作台)· 右侧遥测抽屉**。
+ * 外壳:**左栏(会话列表)· 中栏(工作台)· 右侧遥测抽屉**。
  *
  * 版式基线是 dsh 的网页面(`data/dsh.png` 与它的源码):
  *
@@ -8,13 +8,15 @@
  * │ 侧栏 280   │ 工作台                        │
  * │ 品牌行 60   │   眉条 52(只有会话名,贴左)      │
  * │ 新会话 38   │   ┌─ 空态 = hero ─┐            │
- * │ 工作区 36   │   │  mark + 标题   │           │
- * │  项目 34    │   │  项目 chip      │           │
- * │   会话 32   │   │  输入卡 + 统计行  │           │
+ * │ 会话 36    │   │  mark + 标题   │           │
+ * │   会话行 32 │   │  输入卡 + 统计行  │           │
  * │   ...      │   └───────────────┘           │
  * │ 遥测 / 设置 │                               │
  * └────────────┴──────────────────────────────┘
  * ```
+ *
+ * 工作目录由宿主固定(`qi lab --cwd <dir>`),所以左栏没有项目层级,
+ * 也没有项目 chip / 添加工作区入口。
  *
  * 三条不变量(其余都是它们的推论):
  *
@@ -26,9 +28,8 @@
  * 3. **流结束时以落盘为准**。run 结束后重拉会话明细,保证刷新前后一致。
  *
  * 空态与对话态**共用同一个输入卡**(`Dock`),但位置不同:dsh 的空态把卡片
- * 放进了垂直居中的 hero stack(卡片上方 12px 是项目 chip),对话态把卡片停靠
- * 在底部。所以这里按 `rows.length === 0` 走两条分支 —— 草稿在 App 的 state 里,
- * 切换分支不会丢字。
+ * 放进了垂直居中的 hero stack,对话态把卡片停靠在底部。所以这里按
+ * `rows.length === 0` 走两条分支 —— 草稿在 App 的 state 里,切换分支不会丢字。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError, ContractError, run } from "./api/client";
@@ -41,11 +42,9 @@ import type {
   ModelOption,
   SessionSummary,
   UsageSummary,
-  WorkspaceNames,
 } from "./api/types";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { IconPanelLeftOutline16 } from "./components/icons";
-import { DirPicker } from "./components/DirPicker";
 import { Dock } from "./components/Dock";
 import { bareModelName } from "./components/ModelMenu";
 import { Rail } from "./components/Rail";
@@ -53,8 +52,6 @@ import { BlockView } from "./components/Rows";
 import { Settings } from "./components/Settings";
 import type { SettingsSectionKey } from "./components/Settings";
 import { FilePanel } from "./components/FilePanel";
-import { ProjectMenu } from "./components/ProjectMenu";
-import type { ProjectOption } from "./components/ProjectMenu";
 import {
   emptyTurn,
   fromEntries,
@@ -65,10 +62,8 @@ import {
   withUserMessage,
 } from "./state/turn";
 import type { TurnState } from "./state/turn";
-import { EMPTY_NAMES, groupByProject, projectLabel } from "./state/projects";
 import { parseSessionHash, sessionHash } from "./state/route";
 import { commandHelpText } from "./commands";
-import type { ProjectGroup } from "./state/projects";
 import { applyTheme, readTheme } from "./theme/theme";
 
 const PLACEHOLDER = "描述你想做的事。Enter 发送,Shift+Enter 换行";
@@ -84,13 +79,7 @@ const CLOCK_MS = 30_000;
  */
 type Dialog =
   | { kind: "rename-session"; session: SessionSummary }
-  | { kind: "delete-session"; session: SessionSummary }
-  | { kind: "rename-workspace"; group: ProjectGroup }
-  | { kind: "delete-workspace"; group: ProjectGroup }
-  /** 「未分组」桶的批量清除(那些会话没有 cwd,不属于任何工作区)。 */
-  | { kind: "clear-ungrouped"; group: ProjectGroup }
-  /** 添加工作区:qi 的工作区就是目录,所以这个动作 = 在某个目录下新建一条会话。 */
-  | { kind: "add-workspace" };
+  | { kind: "delete-session"; session: SessionSummary };
 
 /** 从转录尾行推出"此刻在干什么" —— 活动条要显示的那句话。 */
 function currentAction(turn: TurnState): string {
@@ -111,28 +100,16 @@ function currentAction(turn: TurnState): string {
 const DIALOG_TITLE: Record<Dialog["kind"], string> = {
   "rename-session": "重命名会话",
   "delete-session": "删除会话",
-  "rename-workspace": "重命名工作区",
-  "delete-workspace": "删除工作区",
-  "clear-ungrouped": "清除未分组的会话",
-  "add-workspace": "添加工作区",
 };
 
-/** 确认按钮的词:删除说"删除",清除说"清除",改名说"保存"。 */
+/** 确认按钮的词:删除说"删除",改名说"保存"。 */
 const CONFIRM_LABEL: Record<Dialog["kind"], string> = {
   "rename-session": "保存",
   "delete-session": "删除",
-  "rename-workspace": "保存",
-  "delete-workspace": "删除",
-  "clear-ungrouped": "清除",
-  "add-workspace": "添加",
 };
 
 /** 会删数据的那几个:按钮走危险色。 */
-const DANGEROUS: Dialog["kind"][] = [
-  "delete-session",
-  "delete-workspace",
-  "clear-ungrouped",
-];
+const DANGEROUS: Dialog["kind"][] = ["delete-session"];
 
 /** 弹层要显示的事实:让"我要改什么/删什么"一目了然(与凭证弹层同规矩)。 */
 function dialogRows(dialog: Dialog): { label: string; value: string }[] {
@@ -147,27 +124,6 @@ function dialogRows(dialog: Dialog): { label: string; value: string }[] {
         { label: "标题", value: dialog.session.title || "未命名" },
         { label: "文件", value: dialog.session.path },
       ];
-    case "rename-workspace":
-    case "delete-workspace":
-      return [
-        { label: "目录", value: dialog.group.cwd ?? "(未分组)" },
-        { label: "会话", value: `${dialog.group.sessions.length} 条` },
-      ];
-    case "add-workspace":
-      // 没有 dt/dd 可列:这个动作还没有对象,它的"参数"在输入框里(见下面的 children)。
-      return [];
-    case "clear-ungrouped":
-      // 把它们的前几条列出来:清空前至少让人认得出清的是哪些(标题可能是空/重复的)。
-      return [
-        { label: "会话", value: `${dialog.group.sessions.length} 条` },
-        {
-          label: "标题",
-          value: dialog.group.sessions
-            .slice(0, 5)
-            .map((one) => one.title || "未命名")
-            .join("、"),
-        },
-      ];
   }
 }
 
@@ -178,22 +134,6 @@ function dialogWarning(dialog: Dialog): string {
       return "";
     case "delete-session":
       return "会话文件会被删除,不可恢复。";
-    case "rename-workspace":
-      return "只改显示名,目录本身不动。留空即恢复成目录名。";
-    case "delete-workspace":
-      // 弹层是纯文本(不渲染 markdown)—— 强调靠措辞与位置,不要写 `**` 星号。
-      return (
-        "该工作区下的会话会一起被删除,不可恢复。" +
-        "目录本身不会被删(qi 不动你的文件夹)。"
-      );
-    case "add-workspace":
-      return "";
-    case "clear-ungrouped":
-      return (
-        "这些会话会被一起删除,不可恢复。" +
-        "它们没有工作目录(早先版本的会话 header 里没有 cwd)," +
-        "不属于任何工作区 —— 所以只能在这里清掉。"
-      );
   }
 }
 
@@ -262,10 +202,6 @@ export function App() {
   /** 右侧文件面板开着没有(会话目录的树 + 预览,见 FilePanel)。 */
   const [filesOpen, setFilesOpen] = useState(false);
   const [now, setNow] = useState(() => Date.now());
-  /** 下一个新会话落在哪个目录(项目 chip 选的)。空串 = 还不知道,等 /api/meta。 */
-  const [draftCwd, setDraftCwd] = useState("");
-  /** 工作区改过的显示名(目录 → 名字),由 /api/workspaces 给。 */
-  const [overrides, setOverrides] = useState<WorkspaceNames>(EMPTY_NAMES);
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [nameDraft, setNameDraft] = useState("");
 
@@ -310,17 +246,7 @@ export function App() {
       try {
         const m = await api.meta();
         setMeta(m);
-        setDraftCwd((prev) => prev || m.default_cwd);
         await refreshSessions();
-        // 工作区偏好是**可选能力**,不能因为它把整页打成错误态:
-        // 老宿主(或降级部署)没有 `/api/workspaces` 时会回 404,而此时页面
-        // 该做的是"分组退回目录名",不是白屏 —— 这是显示名与分组,不是数据源。
-        // (实测过:一个比端点更早启动的 `qi lab` 进程 + 新前端,整页就死在这里。)
-        try {
-          setOverrides(await api.workspaces());
-        } catch {
-          setOverrides(EMPTY_NAMES);
-        }
         setConfig(await api.config());
         // 智能体清单只喂那个下拉菜单:取不到不该把整页打成错误态。
         try {
@@ -350,7 +276,7 @@ export function App() {
    * 所以 `sessionId` 一变就重取 —— 与 `openSession` 拉明细同一个节奏。
    *
    * 取不到(老宿主 404 / 网络错)不当作致命:`modelCatalog=null` → chip 退回只读回声。
-   * 这与 `/api/workspaces`、`/api/agents` 是同一条降级规矩 —— 少一个可选端点
+   * 这与 `/api/agents` 是同一条降级规矩 —— 少一个可选端点
    * 不该让整页白屏。
    */
   useEffect(() => {
@@ -441,34 +367,7 @@ export function App() {
     if (nearBottom) el.scrollTop = el.scrollHeight;
   }, [turn.rows]);
 
-  /**
-   * 左栏的二级目录:项目 → 会话。派生,不是新数据 —— 只是被两个「人工决定」
-   * (改过的显示名、被删掉的工作区)覆盖一层。见 state/projects.ts。
-   */
-  const groups = useMemo(
-    () => groupByProject(sessions, sessionId, overrides),
-    [sessions, sessionId, overrides],
-  );
-
-  /**
-   * 可以新建会话的项目 = 出现过的目录 + 默认目录。
-   *
-   * 默认目录必须补进来:一个会话都还没有时,`groups` 是空的,但用户得能新建 ——
-   * 那时 chip 要显示 `/api/meta` 给的默认目录,而不是「选择项目」。
-   */
-  const projects = useMemo<ProjectOption[]>(() => {
-    const list: ProjectOption[] = [];
-    for (const group of groups) {
-      if (group.cwd !== null) list.push({ cwd: group.cwd, label: group.label });
-    }
-    if (draftCwd && !list.some((p) => p.cwd === draftCwd)) {
-      list.unshift({
-        cwd: draftCwd,
-        label: projectLabel(draftCwd) || draftCwd,
-      });
-    }
-    return list;
-  }, [groups, draftCwd]);
+  // 固定工作目录:列表与会话都只属于 `meta.default_cwd`,左栏不再按项目分组。
 
   const openSession = useCallback(async (id: string) => {
     setView("work");
@@ -476,11 +375,10 @@ export function App() {
       const detail = await api.session(id);
       setSessionId(detail.id);
       setTitle(detail.title);
-      setDraftCwd(detail.cwd ?? "");
       // 会话级用量:**后端算的落盘口径**(前端只有窗口,自己求和会少算),
       // 所以它只在"打开会话"与"一轮结束"两个时点刷新。
       // `?? null` 是给**老宿主**的:它的明细里没有 `usage` 字段,直接透传下去
-      // 会让 Dock 读到 undefined 而抛错(整页白) —— 与 `/api/workspaces` 同一条降级规矩。
+      // 会让 Dock 读到 undefined 而抛错(整页白) —— 与可选端点同一条降级规矩。
       setSessionUsage(detail.usage ?? null);
       setTurn({
         ...emptyTurn,
@@ -582,39 +480,28 @@ export function App() {
   /**
    * 回到**新会话页**(草稿态):只切视图,**不建会话文件**。
    *
-   * 为什么是懒创建(使用反馈两次都指向这里):
-   *   · 「在新会话页面再次点新会话,不该再多一条新会话」—— 以前每点一次就 `POST /api/sessions`
-   *     建一个空文件,左栏于是堆起一排「未命名」;
-   *   · 「新会话页的工作区图标要还能点开,好切工作区或新建工作区」—— 会话一旦建好,
-   *     cwd 就是**会话自身的属性**(后端也只支持改名),chip 只能变成静态回声。
-   * 把文件推迟到**第一句话发出去**时才建,两个问题一起消失:草稿页上 chip 就是草稿的设置
-   * (`draftCwd`),点「新会话」也只是回到这个草稿,不存在"多一条空会话"。
+   * 文件推迟到**第一句话发出去**时才建:连点两次「新会话」不会堆出一排空的
+   * 「未命名」。工作目录由宿主固定,草稿页没有目录要选。
    */
-  const openDraft = useCallback((cwdForNew?: string) => {
+  const openDraft = useCallback(() => {
     setView("work");
     setSessionId(null);
     setTitle("");
     setTurn(emptyTurn);
     setSessionUsage(null);
-    // 不带目录就沿用当前的落点(打开会话时它已被同步成那条会话的 cwd,所以"在项目里点新会话"
-    // 默认还是同一个项目)。
-    if (cwdForNew) setDraftCwd(cwdForNew);
   }, []);
 
   /**
    * 建会话。**只有带着第一句话时才落文件** —— 不带就是 `openDraft()`(见它的注释)。
    */
   const createSession = useCallback(
-    async (first?: string, cwdForNew?: string) => {
+    async (first?: string) => {
       if (first === undefined) {
-        openDraft(cwdForNew);
+        openDraft();
         return;
       }
       try {
-        const created = await api.createSession(
-          "",
-          cwdForNew || draftCwd || meta?.default_cwd || undefined,
-        );
+        const created = await api.createSession("");
         await refreshSessions();
         setSessionId(created.id);
         setTitle(created.title);
@@ -628,7 +515,7 @@ export function App() {
     // `sendTo` **必须**列上:它带着「当前智能体」这个设置,而 `sendTo` 在智能体变化时
     // 会重建。漏掉它 → 在 hero 态选好智能体再发第一句时,这里调用的是**旧闭包**
     // (`agent` 还是 null),手动选择静默失效(实测踩过:分派行写的是 fallback)。
-    [draftCwd, meta, openDraft, refreshSessions, sendTo],
+    [openDraft, refreshSessions, sendTo],
   );
 
   const send = useCallback(() => {
@@ -657,7 +544,7 @@ export function App() {
   }, []);
 
   /**
-   * 左栏四个动作。
+   * 会话动作。
    *
    * 全部**先问后端、再以后端回的东西为准**(不做乐观更新):这些都是低频动作,
    * 少一次往返换不来什么,而本地先改再回滚会让"列表和磁盘不一致"这种最难查。
@@ -707,43 +594,11 @@ export function App() {
     setDialog({ kind: "delete-session", session });
   }, []);
 
-  const askRenameWorkspace = useCallback((group: ProjectGroup) => {
-    setNameDraft(group.label);
-    setDialog({ kind: "rename-workspace", group });
-  }, []);
-
-  const askDeleteWorkspace = useCallback((group: ProjectGroup) => {
-    setDialog({ kind: "delete-workspace", group });
-  }, []);
-
-  const askClearUngrouped = useCallback((group: ProjectGroup) => {
-    setDialog({ kind: "clear-ungrouped", group });
-  }, []);
-
-  /** 添加工作区:预填默认工作目录(常见情况是"就在这儿"),错误先清掉。 */
-  const askAddWorkspace = useCallback(() => {
-    setDialog({ kind: "add-workspace" });
-  }, []);
-
   /**
-   * 目录选择器里点「选择此文件夹」之后:把这个目录设成**下一条会话**的落点(草稿态)。
+   * 删除之后的收尾:刷新列表,并在**当前正开着的会话也被删掉**时回到空态。
    *
-   * 与 `openDraft` 同一条懒创建规矩(见它的注释):这里也**不落文件**。所以它不再需要
-   * 请求后端,也就不会失败 —— 回 `null`(选择器据此关闭自己)是唯一结果。
-   */
-  const pickWorkspace = useCallback(
-    async (path: string): Promise<string | null> => {
-      openDraft(path);
-      return null;
-    },
-    [openDraft],
-  );
-
-  /**
-   * 批量删除之后的收尾:刷新列表,并在**当前正开着的会话也被删掉**时回到空态。
-   *
-   * 三处删除(单条 / 删除工作区 / 清除未分组)共用它 —— 收尾漏一处就会留下一个
-   * 指向已删文件的 sessionId,下一次发言会拿它去 append,报一个谁也看不懂的错。
+   * 收尾漏了会留下一个指向已删文件的 sessionId,下一次发言会拿它去 append,
+   * 报一个谁也看不懂的错。
    */
   const forgetSessions = useCallback(
     async (ids: string[]) => {
@@ -774,27 +629,11 @@ export function App() {
       } else if (target.kind === "delete-session") {
         await api.deleteSession(target.session.id);
         await forgetSessions([target.session.id]);
-      } else if (target.kind === "rename-workspace") {
-        setOverrides(
-          await api.renameWorkspace(target.group.cwd ?? "", nameDraft),
-        );
-      } else if (target.kind === "delete-workspace") {
-        // 删除工作区 = **连同它的会话一起删**(不可恢复;目录本身不动)。
-        const result = await api.deleteWorkspace(target.group.cwd ?? "");
-        setOverrides({ names: result.names });
-        await forgetSessions(result.ids);
-      } else {
-        // 清除「未分组」:那一桶会话一起删。
-        const result = await api.clearUngrouped();
-        await forgetSessions(result.ids);
       }
     } catch (err) {
       setFatal(describe(err));
     }
-    // 依赖必须列全:`cwdDraft` 漏掉过一次,于是弹层里怎么改路径都没用 ——
-    // 闭包捕获的是"弹层刚打开时"的值(实测:填了不存在的目录,会话却建到了预填目录里)。
-    // `openSession` / `forgetSessions` 同理,它们也在分支里被调用。
-  }, [dialog, forgetSessions, nameDraft, openSession, refreshSessions, sessionId]);
+  }, [dialog, forgetSessions, nameDraft, refreshSessions, sessionId]);
 
   const running = turn.phase === "running";
   /**
@@ -815,14 +654,6 @@ export function App() {
   // 上下文窗口见下面 `contextWindow`(优先取**当前模型**的窗口,见那里的注释)。
   // 0 = 取不到,那时不画占用百分比 —— 而不是画一条永远 0% 的。
   const empty = turn.rows.length === 0;
-  /**
-   * 「新会话页」= 还没说过话(草稿态,或早期"点了新会话就落文件"留下的空会话)。
-   *
-   * 两件事共用这一个判断(它们本来就是同一件事的两面):
-   *   · 工作区 chip 在这一态**必须可点**(切/新建工作区);
-   *   · 「新会话」在这一态是**空操作** —— 已经在新会话页了,再建一条只是多一个空文件。
-   */
-  const blank = empty && !running;
   // 输入卡右下只显示**裸模型名**(`provider/model` 在窄窗口里放不下);完整标签
   // (`provider/model`)留给 tooltip 与遥测抽屉 —— 同 id 不同 provider 时靠它分辨。
   // `default_model_name` 是本次新加的字段,老宿主不给就回落完整标签(不会变空)。
@@ -990,19 +821,15 @@ export function App() {
     >
       <aside className="rail">
         <Rail
-          groups={groups}
+          sessions={sessions}
           current={sessionId}
           busy={running}
           now={now}
           onSelect={(id) => void openSession(id)}
-          onCreate={(cwdForNew) => void createSession(undefined, cwdForNew)}
+          onCreate={() => void createSession()}
           onRenameSession={askRenameSession}
           onForkSession={(id) => void forkSession(id)}
           onDeleteSession={askDeleteSession}
-          onRenameWorkspace={askRenameWorkspace}
-          onDeleteWorkspace={askDeleteWorkspace}
-          onClearUngrouped={askClearUngrouped}
-          onAddWorkspace={askAddWorkspace}
           settingsOpen={view === "settings"}
           settingsTriggerRef={settingsTriggerRef}
           onOpenSettings={() => setView("settings")}
@@ -1062,32 +889,11 @@ export function App() {
               </div>
             </div>
           ) : empty ? (
-            // 空态 = dsh 的 hero:垂直居中,标题 → 项目 chip → 输入卡,间隔 12。
-            // 标题就是字标「Qi Web」本身 —— 不放 mark、不放角标。
+            // 空态 = dsh 的 hero:标题 → 输入卡。固定工作目录后不再有项目 chip。
             <div className="hero">
               <div className="hero__stack">
                 <div className="hero__headline">Qi Web</div>
-                <div className="hero__body">
-                  <div className="hero__projectrow">
-                    <ProjectMenu
-                      options={projects}
-                      value={sessionId ? cwd : draftCwd}
-                      // **新会话页(草稿)上必须可点** —— 反馈要的就是"在这儿切工作区或新建工作区"。
-                      // 会话一旦建好、并且已经说过话,cwd 才是它的属性(改成静态回声) ——
-                      // 那时换目录等于改历史,后端也只支持改名(design/web.md §18.3)。
-                      disabled={projects.length === 0 || !blank}
-                      onPick={(picked) => {
-                        // 草稿页上换来换去只是改"下一条会话落在哪";若当前开着的是一条**空**会话
-                        // (早期"点了新会话就落文件"留下的),就把它从视图上放下、回到草稿 ——
-                        // 不删文件(删除是不可恢复动作,不该藏在换目录里)。
-                        setDraftCwd(picked);
-                        if (sessionId !== null) openDraft(picked);
-                      }}
-                      onAddWorkspace={askAddWorkspace}
-                    />
-                  </div>
-                  {dock}
-                </div>
+                <div className="hero__body">{dock}</div>
               </div>
             </div>
           ) : (
@@ -1170,17 +976,9 @@ export function App() {
         />
       ) : null}
 
-      {/* 四个动作的弹层。写操作一律过二次确认(与凭证写入同一规矩);
+      {/* 会话动作的弹层。写操作一律过二次确认(与凭证写入同一规矩);
           "分叉"是唯一不需要确认的 —— 它只新增文件,不动任何已有数据。 */}
-      {dialog !== null && dialog.kind === "add-workspace" ? (
-        <DirPicker
-          initialPath={draftCwd || meta?.default_cwd || ""}
-          onPick={pickWorkspace}
-          onClose={() => setDialog(null)}
-        />
-      ) : null}
-
-      {dialog === null || dialog.kind === "add-workspace" ? null : (
+      {dialog === null ? null : (
         <ConfirmDialog
           title={DIALOG_TITLE[dialog.kind]}
           rows={dialogRows(dialog)}
@@ -1190,16 +988,12 @@ export function App() {
           onConfirm={() => void confirmDialog()}
           onCancel={() => setDialog(null)}
         >
-          {dialog.kind === "rename-session" ||
-          dialog.kind === "rename-workspace" ? (
+          {dialog.kind === "rename-session" ? (
             <input
               className="dialog__input"
               value={nameDraft}
               autoFocus
               aria-label="新名称"
-              placeholder={
-                dialog.kind === "rename-workspace" ? "留空 = 用目录名" : ""
-              }
               onChange={(event) => setNameDraft(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter") void confirmDialog();

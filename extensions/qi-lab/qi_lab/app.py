@@ -551,15 +551,23 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
 
     @app.get("/api/sessions", response_model=schemas.SessionList, dependencies=[Depends(guard)])
     async def list_sessions() -> schemas.SessionList:
-        return schemas.SessionList(sessions=[summary(s) for s in web.sessions.list()])
+        """列出**固定工作目录**下的会话。
+
+        qi-lab 不再提供“选择工作目录”的 UI:会话都落在 `web.default_cwd`,
+        列表也只回这一层。其它 cwd 的旧会话仍在磁盘上,但不出现在这里 ——
+        否则界面会出现一条不该被打开的“别的工作区”会话。
+        """
+        fixed = normalize(web.default_cwd)
+        return schemas.SessionList(sessions=[
+            summary(s) for s in web.sessions.list()
+            if s.cwd is not None and normalize(s.cwd) == fixed
+        ])
 
     @app.post("/api/sessions", response_model=schemas.SessionSummary, status_code=201,
               dependencies=[Depends(guard)])
     async def create_session(body: schemas.SessionCreate) -> schemas.SessionSummary:
-        cwd = Path(body.cwd).expanduser() if body.cwd else web.default_cwd
-        if not cwd.is_dir():
-            raise HTTPException(status_code=400, detail=f"工作目录不存在: {cwd}")
-        return summary(web.sessions.create(body.title, cwd=cwd))
+        """新建会话。工作目录固定为 `web.default_cwd`(请求体不再接受 cwd)。"""
+        return summary(web.sessions.create(body.title, cwd=web.default_cwd))
 
     @app.get("/api/sessions/{sid}", response_model=schemas.SessionDetail,
              dependencies=[Depends(guard)])

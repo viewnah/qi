@@ -15,7 +15,7 @@
 | `app` | `string` | 恒为 `"qi-lab"`(应用身份,与 qi-web 的 `"qi-web"` 区分) |
 | `contract` | `string` | 契约版本,当前 `"2"`。形状不兼容时前端**显式报错**,而不是白屏 |
 | `version` | `string` | `qi_agent.__version__` |
-| `default_cwd` | `string` | 默认工作目录绝对路径(会话新建、文件面板的根) |
+| `default_cwd` | `string` | **固定工作目录**绝对路径(会话新建/列表、文件面板的根) |
 | `auth_required` | `bool` | 这次启动有没有设口令 —— 界面据此显示"要不要登录" |
 | `static_ready` | `bool` | `qi_lab/static/` 在不在。`false` = 前端没构建(`GET /` 会给占位页) |
 | `capabilities` | `object<string, bool>` | 能力位表(见下) |

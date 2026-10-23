@@ -447,21 +447,13 @@ pre,
  line-height: 18px;
 }
 
-/* 一级与二级行之间 2px(dsh `.groupSection > * + *`)。 */
-.rail__group > * + * {
+/* 扁平会话行之间 2px(dsh `.groupSection > * + *` 的节奏)。 */
+.rail__list > .rail__session + .rail__session {
  margin-top: 2px;
 }
 
-/* 一个工作区段落之间的呼吸( dsh `.groupSection + .groupSection`)。 */
-.rail__group + .rail__group {
- margin-top: 4px;
-}
-
 /*
- * 一级行:高 34,内衬 8,文件夹槽 16 + gap 6 → 标题离行左 30。
- * 二级行:高 32,内衬 8,状态槽 16 + 标题 margin-left 4 → 标题离行左 28。
- * 两者标题起点几乎重合是 **dsh 的做法**(层级靠文件夹/箭头与分组读,不靠缩进),
- * dsh.png 实测:一级标题 x=43 CSS、二级 x=41 CSS,与 12+30 / 12+28 吻合。
+ * 会话行:高 32,内衬 8,状态槽 16 + 标题 margin-left 4 → 标题离行左 28。
  */
 .rail__project,
 .rail__session {

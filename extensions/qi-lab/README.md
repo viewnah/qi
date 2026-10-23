@@ -273,7 +273,7 @@ qi-lab 只做**代理与界面**（进程内懒 import `qi_kb.service`，与商�
 | [`docs/api/skills.md`](docs/api/skills.md) | 技能:读(六层来源)与添加 / 删除 / 导入 |
 | [`docs/api/store.md`](docs/api/store.md) | 商店:hikqin 目录 / 登录 / 安装 / 卸载 |
 | [`docs/api/kb.md`](docs/api/kb.md) | 知识库:provider / KB / 检索 / 问答 / 默认参数 |
-| [`docs/api/workspaces.md`](docs/api/workspaces.md) | 工作区显示名与目录选择器 |
+| [`docs/api/workspaces.md`](docs/api/workspaces.md) | 工作区显示名与目录选择器(**兼容保留;UI 固定 cwd 后不再调用**) |
 | [`docs/api/files.md`](docs/api/files.md) | 文件三端点:边界、排序、限额、预览白名单 |
 
 没有 `/docs`(Swagger 关着)—— 这份就是文档。**改端点的人顺手改文档**:

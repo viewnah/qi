@@ -44,8 +44,8 @@ export interface SessionList {
 /**
  * 工作区改过的**显示名**(目录 → 名字)。
  *
- * 只有这一样:项目列表本身是会话 `cwd` 的派生,后端不维护名单 —— 否则会出现
- * "名单说有三个工作区、会话文件只有一个"的两份真相。见 `src/qi_agent/workspaces.py`。
+ * **兼容保留**:qi-lab 现在使用固定工作目录,前端不再读取/写入它;
+ * 端点仍在,供旧客户端与维护旧会话使用。
  */
 export interface WorkspaceNames {
    names: Record<string, string>;
@@ -71,8 +71,8 @@ export interface WorkspaceDeleted {
 }
 
 /**
- * 目录选择器的一条(`GET /api/fs/dirs`)。**只有目录** —— 文件名在选择器里只是噪音,
- * 而且少回一类信息就少一类泄露面(见 `src/qi_agent/web/browse.py`)。
+ * 目录选择器的一条(`GET /api/fs/dirs`)。**只有目录** —— 文件名在选择器里只是噪音。
+ * 端点与类型**兼容保留**;固定工作目录后 qi-lab 前端不再使用。
  */
 export interface DirEntry {
    name: string;

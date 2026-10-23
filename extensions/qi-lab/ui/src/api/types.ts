@@ -162,6 +162,12 @@ export interface SessionDetail {
    usage: UsageSummary;
 }
 
+/** `agent.md` 的 `opening`:开场白 + 选择期快捷提问。 */
+export interface AgentOpening {
+   message: string;
+   suggestions: string[];
+}
+
 /** 一个角色 —— 数据来自 **qi-agents**(`GET /api/agents`)。
  *
  * P-E4c 之后 core 不再认识"角色",所以这里没有 v1 的 `display_name` / `keywords` /
@@ -180,6 +186,8 @@ export interface AgentInfo {
    path: string;
    /** 角色私有 mcp.json 里声明了几个 server */
    mcp: number;
+   /** 开场白 + 快捷提问;老宿主 / 没写 `opening` → null */
+   opening?: AgentOpening | null;
 }
 
 export interface ProviderInfo {

@@ -9,7 +9,8 @@
 > | 本文的说法 | 现状 |
 > | --- | --- |
 > | §4.1 `tools` 省略或 `["*"]` = 全部可用 | **省略 = 继承父**(不是"全部";解释成全部会构成提权)· `Role.tools=None` 的注释写明了这一点 |
-> | `display_name` / `keywords` / `include` / `opening` 字段 | `qi_agents/discovery.py` **不解析**这四个;`display_name` 只在读旧会话的 dispatch entry 时回落 |
+> | `display_name` / `keywords` / `include` 字段 | `qi_agents/discovery.py` **不解析**这三个;`display_name` 只在读旧会话的 dispatch entry 时回落 |
+| `opening` 字段 | **已解析**为 `Role.opening`(`message` / `suggestions`),随 `GET /api/agents` 返回;运行期 `qi.opening` 事件仍不再发射 |
 > | §3 包内置 `builtin/agents/general` 兜底 | P-E4c 已去掉;裸 core 不带角色 |
 > | §9 数据源(`data_sources.json`) | **已无实现**(`runtime.py`:「v3 里没有 `data_sources` 了」) |
 > | §8 MCP(v1:只解析与门控) | 已被 **E25 取代**:qi-mcp 有真客户端、代理工具与 `directTools`;现行语义见 qi-mcp README |

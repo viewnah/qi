@@ -1658,6 +1658,47 @@ pre,
  margin: 0 auto;
 }
 
+/* 智能体的开场白 + 内置提问:选择 agent 时就能看见,不依赖一轮 run。
+   消息一行、建议胶囊一行;超出换行。 */
+.suggestions {
+ display: flex;
+ flex-direction: column;
+ gap: 8px;
+ padding: 0 8px 8px;
+}
+
+.suggestions__message {
+ margin: 0;
+ color: var(--dsw-alias-label-secondary);
+ font-size: 13px;
+ line-height: 20px;
+}
+
+.suggestions__list {
+ display: flex;
+ flex-wrap: wrap;
+ gap: 8px;
+}
+
+.suggestions__item {
+ max-width: 100%;
+ overflow: hidden;
+ padding: 4px 12px;
+ border: 1px solid var(--dsw-alias-border-l1);
+ border-radius: 999px;
+ background: transparent;
+ color: var(--dsw-alias-label-secondary);
+ font-size: 13px;
+ line-height: 20px;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+
+.suggestions__item:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+ color: var(--dsw-alias-label-primary);
+}
+
 /* 活动条:贴着输入框,回答"此刻在干什么"。dsh 的同一位置是 stats pills。 */
 .activity {
  display: flex;

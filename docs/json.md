@@ -56,7 +56,7 @@ qi --mode json "总结这个仓库" | jq -r 'select(.kind=="text") | .text'
 | `kind` | 状态 |
 | --- | --- |
 | `dispatch` | v3 取消 auto 分派后不再产生。`cli.py` / `tui.py` / qi-web 仍**读取**它以便旧会话回放 |
-| `opening` | 不再发射(旧会话里仍有,前端读取以正确回放) |
+| `opening` | 不再发射(旧会话里仍有,前端读取以正确回放);**选择 agent 时的快捷提问**改走 `GET /api/agents` 的 `opening.suggestions` |
 
 > **扩展之间的事件(`api.events`)不在这条流里。** 那是扩展对扩展的频道,与这里的宿主事件是
 > 两套 API(见 [extensions.md](extensions.md) §5)。

@@ -65,12 +65,13 @@ def _project_root(project: Path) -> Path:
     return project / ".qi" / "agents"
 
 
-def _role(root: Path, dirname: str, name: str, description: str = "一个测试角色") -> Path:
+def _role(root: Path, dirname: str, name: str, description: str = "一个测试角色",
+          opening: str = "") -> Path:
     """造一个角色目录:`<root>/<dirname>/agent.md`(frontmatter 缺 description 就不成立)。"""
     d = root / dirname
     d.mkdir(parents=True, exist_ok=True)
     (d / "agent.md").write_text(
-        f"---\nname: {name}\ndescription: {description}\n---\n\n你是 {name}。\n",
+        f"---\nname: {name}\ndescription: {description}\n{opening}---\n\n你是 {name}。\n",
         encoding="utf-8")
     return d
 
@@ -95,6 +96,18 @@ def test_delete_needs_the_confirm_header(client, project):
     r = client.request("DELETE", "/api/agents", json={"scope": "user", "name": "keeper"})
     assert r.status_code == 428
     assert (role / "agent.md").is_file()
+
+
+def test_agents_expose_opening_and_suggestions(client):
+    """选择期快捷提问跟着 `/api/agents` 回来，不需要先跑一轮 AG-UI。"""
+    _role(_user_root(), "scout", "scout",
+          opening='opening:\n  message: "我是侦察员"\n  suggestions:\n    - "查结构"\n    - "找报错"\n')
+    _role(_user_root(), "plain", "plain")
+
+    rows = _listed(client)
+    assert rows["scout"]["opening"] == {
+        "message": "我是侦察员", "suggestions": ["查结构", "找报错"]}
+    assert rows["plain"]["opening"] is None
 
 
 def test_meta_advertises_agent_write(client):

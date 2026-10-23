@@ -33,6 +33,21 @@ DEFAULT_SCOPE: AgentScope = "user"
 
 
 @dataclass(frozen=True)
+class Opening:
+    """角色的开场白与 UI 快捷提问(`agent.md` 的 `opening`)。
+
+    `message` 是开场白正文；`suggestions` 是**选择角色时**就能展示的快捷提问，
+    点选后才作为一条 user 消息发出去（不进开场白本身）。
+    """
+
+    message: str = ""
+    suggestions: tuple[str, ...] = ()
+
+    def as_dict(self) -> dict:
+        return {"message": self.message, "suggestions": list(self.suggestions)}
+
+
+@dataclass(frozen=True)
 class Role:
     """一个角色:名字 + 用途(供模型选)+ 提示词 + 可选的工具/模型限制。"""
 
@@ -48,6 +63,8 @@ class Role:
     delegate: bool = True
     source: str = "user"                # user | project | a2a
     path: Path | None = None
+    #: `agent.md` 的 `opening`（可选）：开场白 + 选择期快捷提问。
+    opening: Opening | None = None
     #: **远端角色**的句柄(`qi_a2a.remote.RemoteAgent`);本地角色是 None。
     #:
     #: 它是 opaque 的:`discovery` 只管"有这么个角色",怎么建连接、怎么发消息全在
@@ -59,6 +76,7 @@ class Role:
         return {"name": self.name, "description": self.description, "source": self.source,
                 "tools": self.tools, "disallowed_tools": self.disallowed_tools,
                 "model": self.model, "delegate": self.delegate,
+                "opening": self.opening.as_dict() if self.opening else None,
                 "remote": self.remote is not None,
                 "path": str(self.path or "")}
 
@@ -92,6 +110,29 @@ def _parse_bool(value: object, default: bool) -> bool:
     return default
 
 
+def _parse_opening(value: object) -> Opening | None:
+    """解析 `opening`：`{message, suggestions}`（也容忍直接给一条字符串）。
+
+    发现期不抛：写坏一个字段只让这一块为空，不影响角色本身被列出来。
+    """
+    if isinstance(value, str):
+        message = value.strip()
+        return Opening(message=message) if message else None
+    if not isinstance(value, dict):
+        return None
+    message = str(value.get("message") or "").strip()
+    raw = value.get("suggestions")
+    if isinstance(raw, str):
+        raw = [raw]
+    suggestions = tuple(
+        str(item).strip() for item in raw
+        if item is not None and str(item).strip()
+    ) if isinstance(raw, list) else ()
+    if not message and not suggestions:
+        return None
+    return Opening(message=message, suggestions=suggestions)
+
+
 def _read_role(md: Path, source: str) -> Role | None:
     """解析一份 agent.md;不合格(缺 name/description)返回 None。"""
     from qi_agent.loader import split_frontmatter   # 公开面:通用 frontmatter 解析留 core
@@ -113,6 +154,7 @@ def _read_role(md: Path, source: str) -> Role | None:
                 disallowed_tools=_parse_tools(meta.get("disallowed_tools")),
                 model=str(model).strip() if isinstance(model, str) and model.strip() else None,
                 delegate=_parse_bool(meta.get("delegate"), True),
+                opening=_parse_opening(meta.get("opening")),
                 source=source, path=md)
 
 

@@ -243,12 +243,20 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
         except ImportError:
             return schemas.AgentList(unavailable=True)
         roles = discover(web.default_cwd, "both")
-        return schemas.AgentList(agents=[
-            schemas.AgentInfo(name=r.name, description=r.description, source=r.source,
-                              tools=list(r.tools or []), model=r.model or "",
-                              path=str(r.path or ""),
-                              mcp=_role_mcp_count(r.path))
-            for r in sorted(roles.values(), key=lambda r: r.name)])
+        agents: list[schemas.AgentInfo] = []
+        for role in sorted(roles.values(), key=lambda r: r.name):
+            opening = getattr(role, "opening", None)
+            agents.append(schemas.AgentInfo(
+                name=role.name, description=role.description, source=role.source,
+                tools=list(role.tools or []), model=role.model or "",
+                path=str(role.path or ""),
+                mcp=_role_mcp_count(role.path),
+                opening=(schemas.AgentOpening(
+                    message=str(getattr(opening, "message", "") or ""),
+                    suggestions=[str(s) for s in getattr(opening, "suggestions", ()) or ()],
+                ) if opening is not None else None),
+            ))
+        return schemas.AgentList(agents=agents)
 
     @app.get("/api/mcp", response_model=schemas.McpList, dependencies=[Depends(guard)])
     async def list_mcp() -> schemas.McpList:

@@ -133,7 +133,7 @@ qi-web 只把角色**列**出来;qi-lab 多给一个删除端点,设置页的 Ag
 - **要确认** `X-Qi-Confirm: yes`(缺 → **428**);能力位 `agent_write` 没有 → 界面把
   Agent 节当只读(读端点一直在);没装 qi-agents → 读 `unavailable=true`、删 **503**。
 
-回归测试:`tests/test_lab_agent_write_api.py`(15 条);契约在 `docs/api/agents.md`。
+回归测试:`tests/test_lab_agent_write_api.py`(16 条);契约在 `docs/api/agents.md`。
 
 ## A2A 条目(第四处分化)
 
@@ -324,7 +324,7 @@ cd extensions/qi-lab && pytest tests   # 从扩展内也行(根 ini 会向上被
 
 | 文件 | 测什么 |
 | --- | --- |
-| `tests/test_lab_agent_write_api.py` | 角色删除:确认闸、两个层、整目录、按显示名、符号链接 400、`agent_write` 能力位、没装 qi-agents → 503 |
+| `tests/test_lab_agent_write_api.py` | 角色:读(含 `opening.suggestions`)与删除(确认闸、两个层、整目录、按显示名、符号链接 400、`agent_write` 能力位、没装 qi-agents → 503) |
 | `tests/test_lab_api.py` | API 契约:会话 CRUD、AG-UI 线格式 + 落盘回放、口令与 Host 允许表、凭证二次确认闸 |
 | `tests/test_lab_browse.py` | 目录浏览的纯逻辑(`~` 展开、软链、排序、只列目录) |
 | `tests/test_lab_docs_api.py` | 文档 ↔ 路由**双向**对齐(`docs/api/` 少写一条、多写一条都红) |

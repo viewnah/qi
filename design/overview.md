@@ -42,7 +42,7 @@ core 移除:core 只认 `RunSpec`,而且 `AgentRunner` **不再自己拼 prompt*
 | --- | --- | --- |
 | agent | **内容**:自包含目录 `agents/<name>/`(`agent.md` + `skills/` + `mcp.json`);frontmatter + 正文即 system prompt。**v3 归 qi-agents** | [qi-agents README](../extensions/qi-agents/README.md) |
 | agent 位置 | **2 处**:`~/.qi/agent/agents/` → `<cwd>/.qi/agents/`(v1 还有"包内置 `general`"那层,P-E4c 删除);项目覆盖全局;同层重复报错 | [agent-config-design.md §3](agent-config-design.md) |
-| agent.md 字段 | **v3 只有 `name` / `description` / `tools` / `model`**;`tools: None` = **继承父**(不是"全部":那会提权)。v1 还有 `display_name` / `keywords` / `include` / `opening` | [agent-config-design.md §4](agent-config-design.md) |
+| agent.md 字段 | **v3 有 `name` / `description` / `tools` / `model` / `opening`**;`tools: None` = **继承父**(不是"全部":那会提权)。`opening` = 开场白 + 选择期快捷提问。v1 还有 `display_name` / `keywords` / `include` | [agent-config-design.md §4](agent-config-design.md) |
 | 技能 | 私有自动绑定、渐进披露、无内置共享库;同一 agent 内同名报错 | [skills.md](../docs/skills.md) |
 | MCP | 全局 `~/.qi/agent/mcp.json` + 项目 `.qi/mcp.json`(项目覆盖全局)+ 角色私有 `mcp.json`;角色能不能用由它的 `tools:` 里写什么决定(**默认拒绝**) | [qi-mcp README](../extensions/qi-mcp/README.md) |
 | 数据源 | 设计上住在 agent `data_sources.json`(私有,凭证 env);**v3 无实现**(没有消费它的扩展) | [agent-config-design.md §9](agent-config-design.md) |

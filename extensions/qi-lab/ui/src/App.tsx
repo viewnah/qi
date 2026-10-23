@@ -639,6 +639,17 @@ export function App() {
     else void createSession(text);
   }, [createSession, draft, sendTo, sessionId]);
 
+  /** 智能体自带的快捷提问：点选即作为一条 user 消息提交（设计语义）。 */
+  const sendSuggestion = useCallback(
+    (text: string) => {
+      const body = text.trim();
+      if (!body) return;
+      if (sessionId) sendTo(sessionId, body);
+      else void createSession(body);
+    },
+    [createSession, sendTo, sessionId],
+  );
+
   const stop = useCallback(() => {
     abortRef.current?.();
     abortRef.current = null;
@@ -964,6 +975,7 @@ export function App() {
       agent={agent}
       agents={agents}
       onPickAgent={setAgent}
+      onSuggest={sendSuggestion}
       kbItems={kbItems}
       kbIds={kbIds}
       onPickKbs={setKbIds}

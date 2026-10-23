@@ -374,6 +374,17 @@ class FileContent(BaseModel):
 
 # ── P-E5 ③ 切片 3c:角色与 MCP 走**扩展的真实数据**(用户选 A)─────
 
+class AgentOpening(BaseModel):
+    """角色的开场白 + 选择期快捷提问(`agent.md` 的 `opening`)。
+
+    `suggestions` 必须在**选择 agent 时**就能拿到 —— 它不走 AG-UI：
+    那时还没有 run，调用 `POST /api/ag-ui` 会真的开一轮。
+    """
+
+    message: str = ""
+    suggestions: list[str] = Field(default_factory=list)
+
+
 class AgentInfo(BaseModel):
     """一个角色 —— 数据来自 **qi-agents**(`discover()`)。
 
@@ -391,6 +402,8 @@ class AgentInfo(BaseModel):
     path: str = ""
     #: 角色目录里 `mcp.json` 声明了几个 server(角色私有那层)
     mcp: int = 0
+    #: 开场白 + 选择期快捷提问;没有 `opening` 时为 `null`
+    opening: AgentOpening | None = None
 
 
 class AgentList(BaseModel):

@@ -52,10 +52,11 @@ model: anthropic/claude-sonnet-4
 | `disallowed_tools` | | 从上面的结果里**减掉**的名单(denylist,支持 `fnmatch` 通配如 `mcp__github__*`)。`tools` 省略时先把父的当前集合取出来再减;两边都列到就移除 |
 | `model` | | `provider/model`;省略 = 继承主会话当前模型 |
 | `delegate` | | 能不能用 `subagent` **继续往下派**。缺省 `true`;`false` = 到此为止。见下文“分层委派”;`disallowed_tools: [subagent]` 仍一票否决,显式 `tools:` 名单里没写 `subagent` 也派不出去 |
+| `opening` | | 开场白 + UI 快捷提问:`{message: "…", suggestions: ["…"]}`。选择角色时随 `GET /api/agents` 返回,点选建议才作为 user 消息提交 |
 
 正文(Markdown)就是那个角色的系统提示词,会拼在**基座之后**。
 
-**不支持的字段(写了不会生效,不会报错)**:`display_name` `keywords` `include` `opening`
+**不支持的字段(写了不会生效,不会报错)**:`display_name` `keywords` `include`
 `data_sources` —— 这几个是 v2/v3 设计里出现过的概念,现在都不在解析范围内。
 尤其是 `include`(拼入 assets)与 `data_sources`,**已经不存在实现**;要拼参考内容就直接写进正文,
 要外部数据就用自己的工具或 MCP。

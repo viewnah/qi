@@ -79,6 +79,7 @@ export function Dock({
   agent,
   agents,
   onPickAgent,
+  onSuggest,
   kbItems,
   kbIds,
   onPickKbs,
@@ -117,6 +118,8 @@ export function Dock({
   /** 可选的智能体清单(菜单里列出来;取不到就只剩 auto)。 */
   agents: AgentInfo[];
   onPickAgent: (name: string | null) => void;
+  /** 点选智能体自带的一条快捷提问:App 直接把它当成一条 user 消息提交。 */
+  onSuggest: (text: string) => void;
   /** 已绑定 KB（会话级选择用；空 = 用全局绑定）。 */
   kbItems: KbItem[];
   kbIds: string[];
@@ -126,6 +129,11 @@ export function Dock({
   /** 输入卡本身:指令菜单按它的 rect 定位(见 CommandMenu 的文件头)。 */
   const cardRef = useRef<HTMLDivElement | null>(null);
   const canSend = !disabled && value.trim().length > 0;
+  /** 当前智能体的 `opening`（选择 agent 时就能拿到，不依赖 run）。 */
+  const opening = agent === null
+    ? null
+    : agents.find((item) => item.name === agent)?.opening ?? null;
+  const suggestions = opening?.suggestions?.filter((text) => text.trim().length > 0) ?? [];
   /** 卡片下方那行统计的文案(没东西可报时是 null → 整行不渲染)。 */
   const counts = usage === null ? null : countsLabel(usage);
   const share =
@@ -200,6 +208,30 @@ export function Dock({
   return (
     <div className="dock">
       <div className="dock__inner">
+        {/* 智能体的开场白 + 内置提问:**选择 agent 时就有**，不走 AG-UI。运行中收起，
+            避免把“这一轮还没结束”与“再来一条”混在一起。 */}
+        {(opening?.message || suggestions.length > 0) && !running ? (
+          <div className="suggestions" aria-label="智能体开场">
+            {opening?.message ? (
+              <p className="suggestions__message">{opening.message}</p>
+            ) : null}
+            {suggestions.length > 0 ? (
+              <div className="suggestions__list">
+                {suggestions.map((text, index) => (
+                  <button
+                    key={`${index}-${text}`}
+                    type="button"
+                    className="suggestions__item"
+                    onClick={() => onSuggest(text)}
+                    title={text}
+                  >
+                    {text}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         {/* 活动条**只在运行时存在**。dsh 的同一位置是 stats pills,也是"有数据才画"。
             空闲时写一个"就绪"只会把 hero 里的项目 chip 与输入卡拆开(它俩本该
             隔 12px),还会在没话可说时占走 28px 高。 */}

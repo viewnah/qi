@@ -33,7 +33,8 @@ _SETTINGS = '{"defaultProvider": "ollama", "defaultModel": "x"}'
 
 def _write_role(root: Path, name: str, *, description="做这个的", body="你是{name}。",
                 tools: str | None = '["read"]', model: str | None = None,
-                disallowed_tools: str | None = None, delegate: str | None = None) -> Path:
+                disallowed_tools: str | None = None, delegate: str | None = None,
+                opening: str | None = None) -> Path:
     d = root / name
     d.mkdir(parents=True, exist_ok=True)
     extra = f"model: {model}\n" if model else ""
@@ -45,6 +46,8 @@ def _write_role(root: Path, name: str, *, description="做这个的", body="你�
     # `delegate=None` = 不写 = 缺省 true(false = 到此为止,不再往下派)
     if delegate is not None:
         extra += f"delegate: {delegate}\n"
+    if opening is not None:
+        extra += f"opening: {opening}\n"
     (d / "agent.md").write_text(
         f"---\nname: {name}\ndescription: {description}\n{extra}---\n"
         + body.format(name=name), encoding="utf-8")
@@ -149,6 +152,22 @@ def test_discovery_parses_tools_and_model(tmp_path, monkeypatch):
     assert role.model == "beta/m3"
     assert role.delegate is True                  # 缺省 = 可以往下派
     assert discover(None, "user")["leaf"].delegate is False
+
+
+def test_discovery_parses_opening_suggestions(tmp_path, monkeypatch):
+    """`opening` 随角色元数据出来 —— 选择 agent 时就要能显示，不必先跑一轮。"""
+    from qi_agents.discovery import discover
+
+    home = _env(tmp_path, monkeypatch)
+    _write_role(home / "agents", "scout",
+                opening='{message: "我是侦察员", suggestions: ["查结构", "找报错"]}')
+    _write_role(home / "agents", "plain")
+
+    opening = discover(None, "user")["scout"].opening
+    assert opening is not None
+    assert opening.message == "我是侦察员"
+    assert opening.suggestions == ("查结构", "找报错")
+    assert discover(None, "user")["plain"].opening is None
 
 
 # ── 角色选择:`--ext agent=<名>` ─────────────────────────

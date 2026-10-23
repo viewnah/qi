@@ -44,13 +44,27 @@ prompt。这个宿主对角色只做两件事:**显示**(读 qi-agents 的发现
 | `model` | `"provider/model"`,空 = 继承父 |
 | `path` | `agent.md` 的绝对路径 |
 | `mcp` | 该角色目录里 `mcp.json` 声明了几个 server |
+| `opening` | 开场白 + 选择期快捷提问，见下；没写 `opening` 时为 `null` |
+
+`AgentOpening`:
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `message` | `string` | 开场白正文（可选） |
+| `suggestions` | `string[]` | **选择 agent 时就能显示**的快捷提问；点选后作为一条 user 消息提交 |
+
+`opening` 必须随**元数据**回，而不是等 `POST /api/ag-ui`：切换 agent 时还没有 run，
+不能为拿建议先开一轮。这也是它与 [`ag-ui.md`](ag-ui.md) 里旧的 `qi.opening` 事件的分工：
+后者是运行期事件，前者是选择期数据。
 
 **响应里没有提示词正文** —— 角色的 `prompt` 从来没有出过这个宿主,这里只回元数据。
 
 ```json
 {"agents": [{"name": "coordinator", "description": "总协调…", "source": "user",
-             "tools": ["read", "subagent"], "model": "", "path": "/Users/me/.qi/agent/agents/coordinator/agent.md",
-             "mcp": 0}],
+             "tools": ["read", "subagent"], "model": "",
+             "path": "/Users/me/.qi/agent/agents/coordinator/agent.md",
+             "mcp": 0,
+             "opening": {"message": "我是协调员", "suggestions": ["拆一下这个任务", "先看仓库结构"]}}],
  "unavailable": false}
 ```
 

@@ -16,7 +16,10 @@ export default defineConfig({
   server: {
     port: 5273,
     proxy: {
-      "/api": { target: "http://127.0.0.1:3456", changeOrigin: false },
+      // `changeOrigin: true` 必须开:开发时从局域网 IP 打开 Vite(如
+      // http://192.168.x.x:5273)时,浏览器会把 Host 写成那个 IP;而 qi-lab 的
+      // guard 只认回环/绑定地址/白名单。代理改写成目标 Host 后,/api 才不会被 400。
+      "/api": { target: "http://127.0.0.1:3456", changeOrigin: true },
     },
   },
 });

@@ -2809,3 +2809,25 @@ pi 不是这个口径:它的清单是 `modelRuntime.getAvailableSnapshot()`,而�
 修法:在 `onClose` 的刷新结果里发现当前会话仍没有名字时,前端每 1s 轮询一次
 `GET /api/sessions`(最多 15s),标题一出现就停。轮询有世代号,重叠时只让最新
 一轮写回列表。core 的命名逻辑与“不覆盖用户标题”规则不变。
+
+### 18.32 非回环 HTTP 访问:修 `crypto.randomUUID` 与 Vite 代理 Host(2026-10,使用反馈)
+
+现象:用 `http://<局域网 IP>:<端口>` 打开 qi-lab,页面能开,但点发送什么也没发生,
+控制台报：
+
+```text
+TypeError: crypto.randomUUID is not a function
+```
+
+根因有两个，都在“非 localhost/HTTPS”这条路上：
+
+1. `crypto.randomUUID()` 只在 **secure context**(HTTPS 或 localhost)可用。
+   `http://192.168.x.x` 不是 secure context，`runId` 在 `fetch` 之前就抛错 ——
+   所以不是“请求没发”，是代码在发请求前就结束了。修法：`randomRunId()` 优先用
+   `crypto.getRandomValues`，再退化到 `Math.random`；runId 只要求不重复，不是密码学用途。
+2. 用 Vite dev server 从局域网 IP 打开时，`/api` 代理把原始 Host
+   (`192.168.x.x:5273`)转给 qi-lab，而 guard 只认回环/绑定地址/白名单 → 400。
+   开发代理改成 `changeOrigin: true`，让 Host 变成目标 `127.0.0.1:3456`。
+
+生产构建（`qi lab` 直接托管 static）也受益于第 1 条：局域网 HTTP 下同样没有
+`crypto.randomUUID`。第 2 条只影响 `npm run dev`。

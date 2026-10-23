@@ -93,6 +93,23 @@ export class ContractError extends Error {
   }
 }
 
+/**
+ * 生成一个短随机 id(runId)。
+ *
+ * **不能直接用 `crypto.randomUUID()`**:它只在 secure context 里存在
+ * (HTTPS 或 localhost)。用 `http://192.168.x.x:3456` 打开页面时它是 undefined,
+ * 于是 `run()` 在发请求之前就抛 TypeError —— 看起来就是“前端没发请求”。
+ * `crypto.getRandomValues` 在非 secure context 里通常仍可用;再不行才用到
+ * Math.random 的兜底(只要求不重复,不是密码学用途)。
+ */
+function randomRunId(bytes = 6): string {
+  const data = new Uint8Array(bytes);
+  const subtle = globalThis.crypto;
+  if (subtle?.getRandomValues !== undefined) subtle.getRandomValues(data);
+  else for (let i = 0; i < data.length; i += 1) data[i] = Math.floor(Math.random() * 256);
+  return Array.from(data, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 async function detailOf(res: Response): Promise<string> {
   try {
     const body = (await res.json()) as { detail?: unknown };
@@ -655,7 +672,7 @@ export function run(
   const controller = new AbortController();
   const body: RunAgentInput = {
     threadId,
-    runId: crypto.randomUUID().replace(/-/g, "").slice(0, 12),
+    runId: randomRunId(),
     messages: [{ role: "user", content: text }],
     forwardedProps: {
       agent: opts.agent ?? null,

@@ -1674,6 +1674,55 @@ pre,
  line-height: 20px;
 }
 
+/* 两级建议：一级标题始终显示（点击才展开二级）；二级是当前标题下的问题胶囊。 */
+.suggestions__nav {
+ display: flex;
+ flex-direction: column;
+ gap: 6px;
+}
+
+.suggestions__groups {
+ display: flex;
+ flex-wrap: wrap;
+ gap: 8px;
+}
+
+.suggestions__group {
+ padding: 4px 12px;
+ border: 1px solid var(--dsw-alias-border-l1);
+ border-radius: 999px;
+ background: transparent;
+ color: var(--dsw-alias-label-secondary);
+ font-size: 13px;
+ line-height: 20px;
+ cursor: pointer;
+}
+
+.suggestions__group:hover {
+ background: var(--dsw-alias-interactive-bg-hover);
+ color: var(--dsw-alias-label-primary);
+}
+
+.suggestions__group[aria-pressed="true"] {
+ border-color: var(--dsw-alias-border-l2);
+ background: var(--dsw-alias-interactive-bg-active);
+ color: var(--dsw-alias-label-primary);
+}
+
+.suggestions__caption {
+ margin: 0;
+ color: var(--dsw-alias-label-tertiary);
+ font-size: 12px;
+ line-height: 18px;
+}
+
+.suggestions__hint {
+ margin: 0;
+ color: var(--dsw-alias-label-tertiary);
+ font-size: 12px;
+ line-height: 18px;
+}
+
 .suggestions__list {
  display: flex;
  flex-wrap: wrap;

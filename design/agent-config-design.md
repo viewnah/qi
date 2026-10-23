@@ -10,7 +10,7 @@
 > | --- | --- |
 > | §4.1 `tools` 省略或 `["*"]` = 全部可用 | **省略 = 继承父**(不是"全部";解释成全部会构成提权)· `Role.tools=None` 的注释写明了这一点 |
 > | `display_name` / `keywords` / `include` 字段 | `qi_agents/discovery.py` **不解析**这三个;`display_name` 只在读旧会话的 dispatch entry 时回落 |
-| `opening` 字段 | **已解析**为 `Role.opening`(`message` / `suggestions`),随 `GET /api/agents` 返回;运行期 `qi.opening` 事件仍不再发射 |
+| `opening` 字段 | **已解析**为 `Role.opening`(`message` / `suggestions` / `groups`),随 `GET /api/agents` 返回;运行期 `qi.opening` 事件仍不再发射 |
 > | §3 包内置 `builtin/agents/general` 兜底 | P-E4c 已去掉;裸 core 不带角色 |
 > | §9 数据源(`data_sources.json`) | **已无实现**(`runtime.py`:「v3 里没有 `data_sources` 了」) |
 > | §8 MCP(v1:只解析与门控) | 已被 **E25 取代**:qi-mcp 有真客户端、代理工具与 `directTools`;现行语义见 qi-mcp README |
@@ -72,7 +72,7 @@ YAML frontmatter(`---` 包裹)+ Markdown 正文。正文即 system prompt。
 | `keywords` | | L1 规则层路由命中词 |
 | `tools` | | 工具引用:省略或 `["*"]` = 全部可用;显式名单 = 仅这些(allowlist,硬约束);含未知名 → 启动报错 |
 | `include` | | `assets/` 下相对路径 md 文件列表,按序拼入 system prompt |
-| `opening` | | 新会话开场(可选):`message` = agent 开场白(新会话首条,进历史);`suggestions` = UI 层快捷提问(不进历史,点选后作为 user 消息提交) |
+| `opening` | | 新会话开场(可选):`message` = agent 开场白(新会话首条,进历史);`suggestions` = UI 层快捷提问(不进历史,点选后作为 user 消息提交)。支持平铺 `["…"]` 或两级 `[{title, description?, items}]`(一级分类 → 二级问题) |
 
 - `description` 写作规范(路由准确率的上限由它决定):
 
@@ -99,8 +99,13 @@ include: [assets/review-rules.md]
 opening:
   message: "我是代码分析师,可以帮你定位 bug、评估改动。把代码或问题发给我。"
   suggestions:
-    - "分析一下这个仓库的结构"
-    - "帮我找这段报错的原因"
+    # 平铺写法(旧)与两级写法(新)都可用
+    - title: 代码结构
+      items:
+        - "分析一下这个仓库的结构"
+    - title: 问题排查
+      items:
+        - "帮我找这段报错的原因"
 ---
 你是「代码分析师」,职责:
 1. 先读文件再下结论,引用具体行号……
@@ -288,7 +293,7 @@ qi agents import skill:path/to/skill   # 包装成私有技能进目标 agent
 | 内置内容 | 内置 1 个 `general` 兜底 agent(零配置可执行的前提);**不内置技能**;示例放 `examples/agents/`,不自动加载 |
 | 基座提示词 | **代码内默认**(`system_prompt.py`,按解析后的工具集生成「可用工具 / 指南」)+ 可选 `SYSTEM.md` **整体替换**(项目 > 全局);agent.md 正文作为**角色层**、`AGENTS.md`/`CLAUDE.md` 作为**项目上下文**、技能/数据源/工作目录均**动态追加**(见 [configuration.md](../docs/configuration.md)) |
 | 无内置技能 | 撤销"内置技能覆盖"问题(H4 moot) |
-| opening 字段 | v1 补充:message(agent 开场白,进会话历史)+ suggestions(UI 层快捷提问,不进历史) |
+| opening 字段 | v1 补充:message(agent 开场白,进会话历史)+ suggestions(UI 层快捷提问,不进历史);现代实现还支持 suggestions 的两级分组(`{title, items}`) |
 | 执行参数 | model / temperature 不进 agent.md;模型归 `models.json` + `settings.json`。轮次不是字段而是**谓词**:`RunnerSettings.stop_after`(pi 的 `shouldStopAfterTurn` 同形,默认 `None` = 不限),**qi 自己不传**(同 pi 定义了却不实现)。请求级超时/重试也不在 agent 层:归 provider SDK(`settings.json` 的 `retry.provider`,见 [settings.md](../docs/settings.md)) |
 | MCP | **v1**:私有 mcp.json 仅本 agent 自动绑定;全局(`~/.qi/agent/mcp.json`)+ 项目(`<cwd>/.qi/mcp.json`)两张声明表按 `mcp_servers` 声明绑定,**默认无、显式声明**(凭证敏感);同名项目覆盖全局;凭证仅 env 引用 |
 | 数据源 | 实例在 agent 目录 data_sources.json(私有自动绑定,凭证 env);工具/type 能力由 db 插件提供,装载门控见 [plugins.md](plugins.md) |

@@ -324,7 +324,7 @@ cd extensions/qi-lab && pytest tests   # 从扩展内也行(根 ini 会向上被
 
 | 文件 | 测什么 |
 | --- | --- |
-| `tests/test_lab_agent_write_api.py` | 角色:读(含 `opening.suggestions`)与删除(确认闸、两个层、整目录、按显示名、符号链接 400、`agent_write` 能力位、没装 qi-agents → 503) |
+| `tests/test_lab_agent_write_api.py` | 角色:读(含 `opening.groups` / `opening.suggestions`)与删除(确认闸、两个层、整目录、按显示名、符号链接 400、`agent_write` 能力位、没装 qi-agents → 503) |
 | `tests/test_lab_api.py` | API 契约:会话 CRUD、AG-UI 线格式 + 落盘回放、口令与 Host 允许表、凭证二次确认闸 |
 | `tests/test_lab_browse.py` | 目录浏览的纯逻辑(`~` 展开、软链、排序、只列目录) |
 | `tests/test_lab_docs_api.py` | 文档 ↔ 路由**双向**对齐(`docs/api/` 少写一条、多写一条都红) |

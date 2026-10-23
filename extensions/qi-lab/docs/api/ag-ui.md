@@ -103,7 +103,7 @@ data: {"type":"RUN_STARTED","timestamp":1730000000000,...}\n\n
 | --- | --- |
 | `qi.history` | 完整 entry 列表(历史回放的权威来源) |
 | `qi.dispatch` | 分派决策(`text` / `agent`) |
-| `qi.opening` | agent 开场白(不进 LLM 上下文)+ `suggestions`。**选择 agent 时的快捷提问不走这里** —— 那时还没 run，读 `GET /api/agents` 的 `opening.suggestions` |
+| `qi.opening` | agent 开场白(不进 LLM 上下文)+ `suggestions`。**选择 agent 时的快捷提问不走这里** —— 那时还没 run，读 `GET /api/agents` 的 `opening.groups`（两级）或 `opening.suggestions`（扁平兼容） |
 | `qi.narration` | 这段文本是"过程叙述"还是"最终回答"(`tool_calls` / `is_final` / `thinking`) |
 | `qi.compaction` | 压缩的 `start` / `end` 阶段 |
 | `qi.branch` | 分支变化 |

@@ -374,15 +374,31 @@ class FileContent(BaseModel):
 
 # ── P-E5 ③ 切片 3c:角色与 MCP 走**扩展的真实数据**(用户选 A)─────
 
+class AgentSuggestionGroup(BaseModel):
+    """一级推荐问题分组：一级是标题，二级是组内问题。
+
+    `title` 为空的分组表示“全域基线建议”（旧平铺写法或新旧混写），不占一级分类，
+    会追加到任意已选标题下；有标题的组才是可点击展开的一级。
+    `description` 是可选的分类说明（如“可跳过，直接提问即全域问答”）。
+    """
+
+    title: str = ""
+    description: str = ""
+    items: list[str] = Field(default_factory=list)
+
+
 class AgentOpening(BaseModel):
     """角色的开场白 + 选择期快捷提问(`agent.md` 的 `opening`)。
 
     `suggestions` 必须在**选择 agent 时**就能拿到 —— 它不走 AG-UI：
     那时还没有 run，调用 `POST /api/ag-ui` 会真的开一轮。
+
+    `suggestions` 是扁平清单（兼容旧前端）；两级展示读 `groups`。
     """
 
     message: str = ""
     suggestions: list[str] = Field(default_factory=list)
+    groups: list[AgentSuggestionGroup] = Field(default_factory=list)
 
 
 class AgentInfo(BaseModel):

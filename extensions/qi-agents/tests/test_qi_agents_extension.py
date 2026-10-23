@@ -167,7 +167,45 @@ def test_discovery_parses_opening_suggestions(tmp_path, monkeypatch):
     assert opening is not None
     assert opening.message == "我是侦察员"
     assert opening.suggestions == ("查结构", "找报错")
+    assert opening.groups == ()          # 旧平铺写法不造一级
     assert discover(None, "user")["plain"].opening is None
+
+
+def test_discovery_parses_grouped_opening_suggestions(tmp_path, monkeypatch):
+    """两级建议：无标题项 = 全域基线；有标题项 = 一级样式。"""
+    from qi_agents.discovery import discover
+
+    home = _env(tmp_path, monkeypatch)
+    _write_role(home / "agents", "training",
+                opening=('{message: "我是数据知识助手", suggestions: ['
+                         '"通用问题", '
+                         '{title: "联合岛屿作战", description: "可跳过", items: ["查数据产品", "查编成"]}, '
+                         '{title: "联合海上机动作战", items: ["查参演单位"]}'
+                         ']}'))
+
+    opening = discover(None, "user")["training"].opening
+    assert opening is not None
+    assert opening.suggestions == ("通用问题", "查数据产品", "查编成", "查参演单位")
+    assert [(g.title, g.description, g.items) for g in opening.groups] == [
+        ("联合岛屿作战", "可跳过", ("查数据产品", "查编成")),
+        ("联合海上机动作战", "", ("查参演单位",)),
+        ("", "", ("通用问题",)),
+    ]
+
+
+def test_discovery_keeps_loose_suggestions_when_mixed_with_groups(tmp_path, monkeypatch):
+    """新旧混写时不丢顶层散落的字符串：它们进一个无标题的全域基线分组。"""
+    from qi_agents.discovery import discover
+
+    home = _env(tmp_path, monkeypatch)
+    _write_role(home / "agents", "mixed",
+                opening='{suggestions: ["散落问题", {title: "联合岛屿作战", items: ["分组问题"]}]}')
+
+    opening = discover(None, "user")["mixed"].opening
+    assert opening is not None
+    assert opening.suggestions == ("散落问题", "分组问题")
+    assert [(g.title, g.items) for g in opening.groups] == [
+        ("联合岛屿作战", ("分组问题",)), ("", ("散落问题",))]
 
 
 # ── 角色选择:`--ext agent=<名>` ─────────────────────────

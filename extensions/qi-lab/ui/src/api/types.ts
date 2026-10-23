@@ -163,9 +163,21 @@ export interface SessionDetail {
 }
 
 /** `agent.md` 的 `opening`:开场白 + 选择期快捷提问。 */
+export interface AgentSuggestionGroup {
+   /** 一级标题（如“联合岛屿作战”）；空串 = 全域基线，不占一级分类 */
+   title: string;
+   /** 一级说明（可选，如“可跳过，直接提问即全域问答”） */
+   description?: string;
+   /** 二级问题：点选后作为一条 user 消息提交 */
+   items: string[];
+}
+
 export interface AgentOpening {
    message: string;
+   /** 扁平清单：兼容旧前端；新前端优先读 groups */
    suggestions: string[];
+   /** 两级推荐：一级分组 + 二级问题 */
+   groups?: AgentSuggestionGroup[] | null;
 }
 
 /** 一个角色 —— 数据来自 **qi-agents**(`GET /api/agents`)。

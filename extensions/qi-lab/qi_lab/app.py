@@ -254,6 +254,11 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
                 opening=(schemas.AgentOpening(
                     message=str(getattr(opening, "message", "") or ""),
                     suggestions=[str(s) for s in getattr(opening, "suggestions", ()) or ()],
+                    groups=[schemas.AgentSuggestionGroup(
+                        title=str(getattr(group, "title", "") or ""),
+                        description=str(getattr(group, "description", "") or ""),
+                        items=[str(s) for s in getattr(group, "items", ()) or ()],
+                    ) for group in getattr(opening, "groups", ()) or ()],
                 ) if opening is not None else None),
             ))
         return schemas.AgentList(agents=agents)

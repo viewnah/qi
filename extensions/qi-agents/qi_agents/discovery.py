@@ -33,18 +33,41 @@ DEFAULT_SCOPE: AgentScope = "user"
 
 
 @dataclass(frozen=True)
+class SuggestionGroup:
+    """一级「推荐问题」分组（`opening.suggestions` 的一项）。
+
+    分组只负责**组织展示**，不改变点选语义：二级里的每一条仍然是一条完整的
+    user 消息。`title` 为空表示一组**全域基线**建议（不占一级分类位，会追加到
+    任意已选标题下）；有标题的组才是可点击展开的一级。
+    """
+
+    title: str = ""
+    items: tuple[str, ...] = ()
+    description: str = ""
+
+    def as_dict(self) -> dict:
+        return {"title": self.title, "description": self.description,
+                "items": list(self.items)}
+
+
+@dataclass(frozen=True)
 class Opening:
     """角色的开场白与 UI 快捷提问(`agent.md` 的 `opening`)。
 
     `message` 是开场白正文；`suggestions` 是**选择角色时**就能展示的快捷提问，
     点选后才作为一条 user 消息发出去（不进开场白本身）。
+
+    `suggestions` 永远保留一份**扁平清单**（兼容老宿主/老前端）；两级展示看
+    `groups`：一级是分组标题，二级是组内问题。两种写法可以并存。
     """
 
     message: str = ""
     suggestions: tuple[str, ...] = ()
+    groups: tuple[SuggestionGroup, ...] = ()
 
     def as_dict(self) -> dict:
-        return {"message": self.message, "suggestions": list(self.suggestions)}
+        return {"message": self.message, "suggestions": list(self.suggestions),
+                "groups": [group.as_dict() for group in self.groups]}
 
 
 @dataclass(frozen=True)
@@ -110,9 +133,66 @@ def _parse_bool(value: object, default: bool) -> bool:
     return default
 
 
+def _parse_suggestions(raw: object) -> tuple[tuple[str, ...], tuple[SuggestionGroup, ...]]:
+    """把 `suggestions` 解析成 `(扁平清单, 二级分组)`。
+
+    兼容两种写法：
+
+        suggestions: ["问题一", "问题二"]                    # 旧:平铺；也等于纯全域
+        suggestions:
+          - "全域通用问题"                                   # 新:无标题 = 全域基线
+          - title: 联合岛屿作战                              # 新:一级样式
+            description: 可跳过，直接提问即全域问答
+            items: ["问题一", "问题二"]
+          - title: 联合海上机动作战
+            items: ["问题三"]
+
+    **不要**把“全域”写成 `title`：全域是“全部一级标题都选中”的合集语义。
+    顶层散落的字符串不会被丢掉：有显式分组时，它们收进一个**无标题**的基线
+    分组，追加到任意已选标题下。
+    """
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        return (), ()
+
+    flat: list[str] = []
+    groups: list[SuggestionGroup] = []
+    loose: list[str] = []
+    for item in raw:
+        if isinstance(item, str):
+            text = item.strip()
+            if text:
+                flat.append(text)
+                loose.append(text)
+            continue
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or item.get("name") or item.get("label") or "").strip()
+        description = str(item.get("description") or item.get("hint") or "").strip()
+        values = item.get("items", item.get("suggestions"))
+        if isinstance(values, str):
+            values = [values]
+        if not isinstance(values, list):
+            values = []
+        items = tuple(str(value).strip() for value in values
+                      if value is not None and str(value).strip())
+        if not title and not items:
+            continue
+        groups.append(SuggestionGroup(title=title, items=items, description=description))
+        flat.extend(items)
+
+    # 旧写法是平铺时 `groups` 为空，让前端继续用单行胶囊；只有“真的分组了”
+    # 或新旧混写时才生成一级。混写里的散落项收进无标题分组，绝不静默丢弃。
+    if groups and loose:
+        groups.append(SuggestionGroup(items=tuple(loose)))
+    return tuple(flat), tuple(groups)
+
+
 def _parse_opening(value: object) -> Opening | None:
     """解析 `opening`：`{message, suggestions}`（也容忍直接给一条字符串）。
 
+    `suggestions` 既可以是字符串数组，也可以是 `[{title, items}]` 的两级结构。
     发现期不抛：写坏一个字段只让这一块为空，不影响角色本身被列出来。
     """
     if isinstance(value, str):
@@ -121,16 +201,10 @@ def _parse_opening(value: object) -> Opening | None:
     if not isinstance(value, dict):
         return None
     message = str(value.get("message") or "").strip()
-    raw = value.get("suggestions")
-    if isinstance(raw, str):
-        raw = [raw]
-    suggestions = tuple(
-        str(item).strip() for item in raw
-        if item is not None and str(item).strip()
-    ) if isinstance(raw, list) else ()
+    suggestions, groups = _parse_suggestions(value.get("suggestions"))
     if not message and not suggestions:
         return None
-    return Opening(message=message, suggestions=suggestions)
+    return Opening(message=message, suggestions=suggestions, groups=groups)
 
 
 def _read_role(md: Path, source: str) -> Role | None:

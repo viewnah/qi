@@ -38,12 +38,20 @@ code-analyst/
 | general | 全能兜底(auto fallback) | 全部 |
 | code-reviewer | 代码审查与重构建议 | read, ls, grep, find, bash |
 | data-analyst | 数据查询与分析 | read, ls, find, grep, write, edit, bash, clarify |
+| 训练数据 | 联合训练数据知识助手（两级快捷提问示例） | 继承宿主全部可用工具 |
 | doc-writer | 编写与维护文档 | read, ls, find, grep, bash, write, edit, clarify |
 | test-runner | 跑测试并汇报 | read, ls, find, grep, bash |
 
 > 后四个原本是 qi 仓库自己的 `.qi/agents/`(本地 dogfood 角色)。P-E4c 把 core 里的
 > “角色”概念整体移出之后,它们先搬到这里当样例(见 design/extensions-design.md 的 E15);
 > qi-agents 扩展落地后可以再搬回 `.qi/agents/` 作为该扩展的实测样例。
+
+`训练数据` 演示 **`opening.suggestions` 的两级结构**:一级是标题
+（联合训练任务 / 联合岛屿作战 / 联合海上机动作战 / 联合边境自卫作战 /
+联合跨域控要作战 / 联合防空反导作战 / 太空作战），二级是每个标题下的推荐问题。
+页面初始只显示一级标题，点击标题后才展开二级问题；支持多选，全部选中即“全域”。
+**全域不是一级分类**，不要把“全域”写成 title。
+把它拷到 `~/.qi/agent/agents/` 或 `<项目>/.qi/agents/` 后，在 qi-lab 选择该智能体即可看到。
 
 路由回归集:`tests/router_cases.yaml`(输入 → 期望 agent)。
 **注**:它测的是 core 里的 Dispatcher(auto 分派);那个模块已随 P-E4c 移出 core,

@@ -102,11 +102,23 @@ def test_agents_expose_opening_and_suggestions(client):
     """选择期快捷提问跟着 `/api/agents` 回来，不需要先跑一轮 AG-UI。"""
     _role(_user_root(), "scout", "scout",
           opening='opening:\n  message: "我是侦察员"\n  suggestions:\n    - "查结构"\n    - "找报错"\n')
+    _role(_user_root(), "training", "training",
+          opening=('opening:\n  message: "我是数据助手"\n  suggestions:\n'
+                   '    - "通用问题"\n'
+                   '    - title: 联合岛屿作战\n      description: 可跳过\n      items:\n'
+                   '        - 查数据产品\n    - title: 联合海上机动作战\n      items:\n'
+                   '        - 查参演单位\n'))
     _role(_user_root(), "plain", "plain")
 
     rows = _listed(client)
     assert rows["scout"]["opening"] == {
-        "message": "我是侦察员", "suggestions": ["查结构", "找报错"]}
+        "message": "我是侦察员", "suggestions": ["查结构", "找报错"], "groups": []}
+    assert rows["training"]["opening"]["suggestions"] == ["通用问题", "查数据产品", "查参演单位"]
+    assert rows["training"]["opening"]["groups"] == [
+        {"title": "联合岛屿作战", "description": "可跳过", "items": ["查数据产品"]},
+        {"title": "联合海上机动作战", "description": "", "items": ["查参演单位"]},
+        {"title": "", "description": "", "items": ["通用问题"]},
+    ]
     assert rows["plain"]["opening"] is None
 
 

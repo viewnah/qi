@@ -133,7 +133,48 @@ export function Dock({
   const opening = agent === null
     ? null
     : agents.find((item) => item.name === agent)?.opening ?? null;
-  const suggestions = opening?.suggestions?.filter((text) => text.trim().length > 0) ?? [];
+  /** 一级分组：无标题组 = 全域基线；有标题组 = 可筛选的作战样式。 */
+  const allGroups = (opening?.groups ?? [])
+    .map((group) => ({
+      ...group,
+      title: group.title?.trim() ?? "",
+      items: group.items?.filter((text) => text.trim().length > 0) ?? [],
+    }))
+    .filter((group) => group.items.length > 0);
+  const baseline = allGroups
+    .filter((group) => group.title.length === 0)
+    .flatMap((group) => group.items);
+  const groups = allGroups.filter((group) => group.title.length > 0);
+  const grouped = groups.length > 0;
+  /**
+   * 已选一级标题。**初始为空 = 只显示标题，不显示任何二级问题**。
+   * 支持多选，再点一次取消；切换智能体时回到未选状态。
+   */
+  const [selectedGroups, setSelectedGroups] = useState<number[]>([]);
+  useEffect(() => {
+    setSelectedGroups([]);
+  }, [agent]);
+  const chosenGroups = groups.filter((_, index) => selectedGroups.includes(index));
+  const scoped = chosenGroups.flatMap((group) => group.items);
+  /** 全部一级标题都选中时就是“全域”——全域是合集语义，不是一级标题。 */
+  const allSelected = groups.length > 0 && chosenGroups.length === groups.length;
+  const scopeLabel = chosenGroups.length === 0
+    ? ""
+    : allSelected
+      ? "全域"
+      : chosenGroups.map((group) => group.title).join("、");
+  /** 二级问题：未选标题 = 空；选中标题 = 该标题下的问题（+ 无标题的全域基线）。 */
+  const suggestions = grouped
+    ? (selectedGroups.length === 0
+      ? []
+      : Array.from(new Set([...baseline, ...scoped])))
+    : (opening?.suggestions?.filter((text) => text.trim().length > 0) ?? []);
+  const scopeHint = chosenGroups.length === 1 ? chosenGroups[0].description : "";
+  const toggleGroup = (index: number) => {
+    setSelectedGroups((prev) => prev.includes(index)
+      ? prev.filter((item) => item !== index)
+      : [...prev, index]);
+  };
   /** 卡片下方那行统计的文案(没东西可报时是 null → 整行不渲染)。 */
   const counts = usage === null ? null : countsLabel(usage);
   const share =
@@ -210,10 +251,38 @@ export function Dock({
       <div className="dock__inner">
         {/* 智能体的开场白 + 内置提问:**选择 agent 时就有**，不走 AG-UI。运行中收起，
             避免把“这一轮还没结束”与“再来一条”混在一起。 */}
-        {(opening?.message || suggestions.length > 0) && !running ? (
+        {(opening?.message || suggestions.length > 0 || grouped) && !running ? (
           <div className="suggestions" aria-label="智能体开场">
             {opening?.message ? (
               <p className="suggestions__message">{opening.message}</p>
+            ) : null}
+            {grouped ? (
+              <div className="suggestions__nav">
+                <div className="suggestions__groups" aria-label="一级标题（可多选）">
+                  {groups.map((group, index) => (
+                    <button
+                      key={`${index}-${group.title}`}
+                      type="button"
+                      aria-pressed={selectedGroups.includes(index)}
+                      className="suggestions__group"
+                      onClick={() => toggleGroup(index)}
+                      title={group.description || group.title}
+                    >
+                      {group.title}
+                    </button>
+                  ))}
+                </div>
+                {chosenGroups.length === 0 ? (
+                  <p className="suggestions__hint">选择一级标题后，显示该标题下的推荐问题。</p>
+                ) : (
+                  <>
+                    <p className="suggestions__caption">推荐问题（{scopeLabel}）</p>
+                    {scopeHint ? (
+                      <p className="suggestions__hint">{scopeHint}</p>
+                    ) : null}
+                  </>
+                )}
+              </div>
             ) : null}
             {suggestions.length > 0 ? (
               <div className="suggestions__list">

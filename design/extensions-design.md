@@ -156,7 +156,7 @@ qi 的关键字)。qi 自己的数据结构用 snake_case(`prompt_snippet` / `so
 | `initialPrompt` | ❌ | `opening.message` | CC = 自动提交的首个 **user** 轮;qi = 助手侧**开场白**(进历史) |
 | —— | ❌ | `keywords` | qi 独有(Dispatcher L1 规则层;v3 后暂不消费,保留不废弃 —— E17) |
 | —— | ❌ | `include` | qi 独有:`assets/` 下 md 按序拼进 system prompt |
-| —— | ❌ | `opening.suggestions` | qi 独有:UI 快捷提问,不进历史 |
+| —— | ❌ | `opening.suggestions` | qi 独有:UI 快捷提问,不进历史;支持一级标题 / 二级问题的分组(`groups`) |
 | —— | ❌ | 私有 `mcp.json` / `data_sources.json` / `assets/` | qi 独有:**目录级自包含**(见 docs/extensions.md §9 的 scope 接口) |
 
 **两家的重心不同**:CC 的可选字段大半是**执行策略**(能碰什么、跑多久、花多少、在哪隔离);qi 的大半是**内容与打包**(角色说明 + 私有资源)。

@@ -966,16 +966,15 @@ export function Settings({
                         title={`Agent(${visibleAgents.length})`}
                         intro={
                            <>
-                              只列全局角色:<code>~/.qi/agent/agents/</code> 与远端 A2A
-                              智能体。项目级角色跟着仓库走,不在这里管。tools 为{" "}
+                              只列全局角色:随包内置的角色、<code>~/.qi/agent/agents/</code>
+                              与远端 A2A 智能体。项目级角色跟着仓库走,不在这里管。tools 为{" "}
                               <code>*</code> 时展开成实际清单。
                            </>
                         }
                      >
                         {visibleAgents.length === 0 ? (
                            <p className="set-sec__empty">
-                              没有发现全局角色。没有装专职角色时,框架只用内置的
-                              general 兜底。
+                              没有发现全局角色。没有装专职角色时,框架只用基座提示词。
                            </p>
                         ) : (
                            <ul className="set-cards">

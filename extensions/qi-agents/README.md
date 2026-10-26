@@ -35,8 +35,21 @@ model: anthropic/claude-sonnet-4
 
 | 位置 | 作用域 | 说明 |
 | --- | --- | --- |
+| `qi_agents/builtin/agents/<名>/agent.md` | `builtin` | 随 wheel 发布的内置角色(当前:`训练数据` / `训练评估` / `训练态势`),只读、可被同名覆盖 |
 | `~/.qi/agent/agents/<名>/agent.md` | `user` | 跨项目,你自己的常用角色 |
-| `<项目>/.qi/agents/<名>/agent.md` | `project` | 跟仓库走;**同名覆盖**用户级 |
+| `<项目>/.qi/agents/<名>/agent.md` | `project` | 跟仓库走;**同名覆盖**用户级/内置 |
+
+同名覆盖顺序:**项目 > 用户 > 内置**。内置角色不是项目角色,不受项目信任闸门影响;
+qi-lab 的删除端点只认 `user` / `project` 两层,内置角色删不掉,但可以放同名角色覆盖它。
+
+**为什么内置角色放在 qi-agents 而不是 qi-lab**:角色发现、项目信任、`--ext agent=` 与
+`subagent` 委派都归 qi-agents;qi-lab 只是 `/api/agents` 的消费者。放 qi-lab 会让 TUI 与
+命令行看不到,还会让 `pin_role` 和 `subagent` 各自维护一份角色表。qi-lab 现在打开就能
+在智能体 chip 里看到这 3 个内置角色。
+
+> 内置 `训练评估` 的工具指向 **qi-assistants** 的 `assistant_search` /
+> `assistant_recommend`;没装 qi-assistants 时这个角色的工具名解析不到,请先装扩展,
+> 或用同名用户/项目角色覆盖它。`训练数据` / `训练态势` 不依赖额外扩展。
 
 `tools` 支持 `read, grep`(逗号)或 `[read, grep]`(列表);省略 = **继承父**(不是"全部工具"——
 工具省略若解释成"全部",一个角色就能悄悄拿到比父更多的权限,那是一条提权路径)。

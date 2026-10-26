@@ -17,8 +17,10 @@ prompt。这个宿主对角色只做两件事:**显示**(读 qi-agents 的发现
 | `project` | `<cwd>/.qi/agents/` | 项目级,**同名覆盖** `user` |
 
 **词汇跟 qi-agents,不跟技能**:读模型的 `AgentInfo.source`、界面上的角标写的都是
-`user` / `project` —— 删除请求就用界面上显示的那个词。`scope="global"`(技能那套)在这里
-`422`,不设翻译表。
+`builtin` / `user` / `project` / `a2a`。删除请求只收 `user` / `project` 两个可写层
+(界面上显示的就是这两个词);`scope="global"`(技能那套)在这里 `422`,不设翻译表。
+**`builtin` 是随 qi-agents 包发布的内置角色**(`训练数据` / `训练评估` / `训练态势`),
+只读:同名用户/项目角色可以覆盖它,但删除端点不认它。
 
 ---
 
@@ -39,7 +41,7 @@ prompt。这个宿主对角色只做两件事:**显示**(读 qi-agents 的发现
 | --- | --- |
 | `name` | 显示名 = frontmatter 的 `name`(与目录名可以不是一个东西) |
 | `description` | frontmatter 的 `description`(空的角色根本不会被发现) |
-| `source` | `user` \| `project` —— **覆盖后剩下的那个**(同名时项目盖住用户) |
+| `source` | `builtin` \| `user` \| `project` \| `a2a` —— **覆盖后剩下的那个**(项目 > 用户 > 内置;`a2a` 是远端) |
 | `tools` | 角色的 `tools:` 白名单;**空 = 继承父**,不是"全部" |
 | `model` | `"provider/model"`,空 = 继承父 |
 | `path` | `agent.md` 的绝对路径 |

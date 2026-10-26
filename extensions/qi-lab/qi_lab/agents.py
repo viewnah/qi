@@ -78,8 +78,11 @@ def find(cwd: Path | str, scope: str, name: str) -> Path:
         from qi_agents.discovery import discover
     except ImportError as exc:
         raise AgentError("角色由 qi-agents 提供,没装就没有可删的对象", 503) from exc
-    role = discover(Path(cwd), scope).get(str(name))     # 键 = frontmatter 的 name
-    if role is None or role.path is None:
+    # 内置层与远端不是这个宿主管的:同名内置角色既不能被用户目录“删掉”,也不该
+    # 因为界面显示了它就被这个端点当成可删目标。发现之后按 source 再筛一次,
+    # 不依赖 qi-agents 是否支持额外的 include_* 开关(宿主与扩展可以独立升级)。
+    role = discover(Path(cwd), scope).get(str(name))      # 键 = frontmatter 的 name
+    if role is None or role.path is None or role.source != scope:
         raise AgentError(f"该层没有这个角色: {name}", 404)
     return Path(role.path)
 

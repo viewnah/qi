@@ -4,14 +4,15 @@ core 现在只认识运行单元 `{name, prompt, tools}`;「角色」= 一个目
 
     agents/<名字>/agent.md      frontmatter(name / description / tools / model)+ 正文即 system prompt
 
-两层来源(与 v1 的规则一致,只是现在住在扩展里):
+三层本地来源(优先级从低到高):
 
-    ~/.qi/agent/agents/   用户级(跨项目)
-    <项目>/.qi/agents/    项目级(跟仓库走)→ 同名静默覆盖用户级
+    qi_agents/builtin/agents/  包内置(随 wheel 发布,零配置就能选)
+    ~/.qi/agent/agents/        用户级(跨项目)
+    <项目>/.qi/agents/         项目级(跟仓库走)→ 同名静默覆盖用户级/内置
 
 `answer_scope` 决定看哪一层:默认只 `user` ——**项目级角色是仓库控制的提示词**,
 默认不参与(对齐 pi subagent 的安全模型:要用项目角色得显式 `agentScope: "project"`,
-而且宿主会先问一句信任)。
+而且宿主会先问一句信任)。内置层不属于项目,不受信任闸门影响;用户可以写同名角色覆盖它。
 
 **第三类角色:远端 A2A 智能体。** 装了 qi-a2a 且它的配置里有**固定 tenant** 的条目时,
 那些条目也会出现在角色表里(`source="a2a"`,`remote` 上挂着 qi-a2a 给的句柄)。
@@ -84,7 +85,7 @@ class Role:
     #: agent 是这个工具的常态用法;`delegate: false` 才是"到此为止"的显式声明。
     #: 它只是闸之一:深度上限与 spawn 预算(见 subagent.py)对所有角色一视同仁。
     delegate: bool = True
-    source: str = "user"                # user | project | a2a
+    source: str = "user"                # builtin | user | project | a2a
     path: Path | None = None
     #: `agent.md` 的 `opening`（可选）：开场白 + 选择期快捷提问。
     opening: Opening | None = None
@@ -245,6 +246,15 @@ def _load_dir(root: Path, source: str) -> dict[str, Role]:
     return out
 
 
+def _builtin_agents_dir() -> Path:
+    """随 qi-agents 包发布的内置角色目录（`qi_agents/builtin/agents/`）。
+
+    用普通 `Path` 而不是 `importlib.resources`：wheel 安装后包是解压到磁盘的，
+    `discover()` 又要把路径交给 `_load_dir` / `AgentInfo.path`，这里保持文件系统语义。
+    """
+    return Path(__file__).resolve().parent / "builtin" / "agents"
+
+
 def _global_agents_dir() -> Path:
     from qi_agent import paths
 
@@ -260,22 +270,27 @@ def _project_agents_dir(cwd: Path | None) -> Path | None:
 
 
 def discover(cwd: Path | None = None, scope: AgentScope = DEFAULT_SCOPE, *,
-             trusted: bool = True, include_remote: bool = True) -> dict[str, Role]:
-    """按作用域汇总角色:`{名字: Role}`。**本地同名覆盖远端**,项目覆盖用户。
+             trusted: bool = True, include_remote: bool = True,
+             include_builtin: bool = True) -> dict[str, Role]:
+    """按作用域汇总角色:`{名字: Role}`。**本地同名覆盖远端**,项目覆盖用户/内置。
 
     `include_remote` 把 qi-a2a 里**固定 tenant** 的条目也当成角色(见 `qi_a2a.remote`)。
     没装 qi-a2a / 一份条目都没有 → 空表,不影响本地角色。
+    `include_builtin=False` 只用于“只想看用户/项目这两层”的诊断/测试：
+    内置角色是随包发布的只读内容,不归任何一层用户目录管。
 
-    合并次序(**后者赢**):远端 → 用户级 → 项目级。本地角色优先是有意的:
-    远端是别人家的,同名时不该把你自己写的 `scout` 顶掉。
+    合并次序(**后者赢**):远端 → 内置 → 用户级 → 项目级。本地优先是有意的:
+    远端是别人家的,同名时不该把你自己写的 `scout` 顶掉;内置同理,用户/项目同名
+    角色可以覆盖它,而不是相反。
     """
     if scope not in ("user", "project", "both"):
         scope = DEFAULT_SCOPE
     remote = discover_remote(cwd, scope, trusted=trusted) if include_remote else {}
+    builtin = _load_dir(_builtin_agents_dir(), "builtin") if include_builtin else {}
     user = _load_dir(_global_agents_dir(), "user") if scope in ("user", "both") else {}
     project_dir = _project_agents_dir(cwd) if scope in ("project", "both") else None
     project = _load_dir(project_dir, "project") if project_dir else {}
-    return {**remote, **user, **project}          # 项目 > 用户 > 远端
+    return {**remote, **builtin, **user, **project}   # 项目 > 用户 > 内置 > 远端
 
 
 def discover_remote(cwd: Path | None = None, scope: AgentScope = DEFAULT_SCOPE, *,
@@ -301,9 +316,14 @@ def discover_remote(cwd: Path | None = None, scope: AgentScope = DEFAULT_SCOPE, 
 
 
 def project_roles(cwd: Path | None, names: list[str]) -> list[Role]:
-    """这些名字里,哪些来自**项目**目录(需要先过信任确认)。"""
-    found = discover(cwd, "project")
-    return [found[n] for n in names if n in found]
+    """这些名字里,哪些来自**项目**目录(需要先过信任确认)。
+
+    `discover(cwd, "project")` 现在也会带出内置层(它是所有作用域的兜底),所以这里
+    必须再按 `source` 过滤一次 —— 内置角色不是仓库控制的提示词。
+    """
+    found = discover(cwd, "project", include_remote=False)
+    return [found[n] for n in names
+            if n in found and found[n].source == "project"]
 
 
 def format_roles(roles: dict[str, Role], max_items: int = 12) -> str:

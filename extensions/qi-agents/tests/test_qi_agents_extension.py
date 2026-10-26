@@ -132,11 +132,37 @@ def test_discovery_reads_both_layers_and_project_wins(tmp_path, monkeypatch):
     (tmp_path / "proj" / ".qi" / "agents" / "broken" / "agent.md").write_text(
         "---\nname: broken\n---\n没描述\n", encoding="utf-8")
 
-    assert set(discover(tmp_path / "proj", "user")) == {"reviewer", "scout"}
+    assert set(discover(tmp_path / "proj", "user", include_builtin=False)) == {
+        "reviewer", "scout"}
     both = discover(tmp_path / "proj", "both")
-    assert set(both) == {"reviewer", "scout"}                 # broken 被跳过
+    assert set(both) == {"reviewer", "scout", "训练数据", "训练评估", "训练态势"}
+    assert {r.source for r in both.values() if r.name.startswith("训练")} == {"builtin"}
     assert both["reviewer"].source == "project"               # 项目覆盖用户
     assert both["reviewer"].description == "项目版"
+
+
+def test_builtin_roles_are_discovered_and_can_be_overridden(tmp_path, monkeypatch):
+    """随包发布的三个训练角色:零配置可见,但用户/项目同名角色可以覆盖。"""
+    from qi_agents.discovery import discover
+
+    home = _env(tmp_path, monkeypatch)
+    roles = discover(None, "user", include_remote=False)
+    for name in ("训练数据", "训练评估", "训练态势"):
+        assert roles[name].source == "builtin"
+        assert roles[name].prompt
+        assert roles[name].path is not None
+        assert "builtin" in roles[name].path.parts
+
+    assert discover(None, "user", include_remote=False,
+                    include_builtin=False) == {}
+
+    _write_role(home / "agents", "训练数据", description="用户覆盖")
+    assert discover(None, "user", include_remote=False)["训练数据"].source == "user"
+
+    _write_role(tmp_path / "proj" / ".qi" / "agents", "训练评估", description="项目覆盖")
+    both = discover(tmp_path / "proj", "both", include_remote=False)
+    assert both["训练评估"].source == "project"
+    assert both["训练评估"].description == "项目覆盖"
 
 
 def test_discovery_parses_tools_and_model(tmp_path, monkeypatch):

@@ -2,8 +2,8 @@
 
 三轮设计都压在这一份 `register()` 里,三件事:
 
-1. **角色发现**:`~/.qi/agent/agents/<名>/agent.md`(用户)+ `<项目>/.qi/agents/<名>/agent.md`(项目)
-   —— 见 `discovery.py`;
+1. **角色发现**:`qi_agents/builtin/agents/<名>/agent.md`(内置)+ `~/.qi/agent/agents/<名>/agent.md`(用户)
+   + `<项目>/.qi/agents/<名>/agent.md`(项目)—— 见 `discovery.py`;
 2. **角色选择**:`qi --ext agent=reviewer`(或 `--ext agent=reviewer`)把那个角色的说明注入本轮提示词。
    走 `registerFlag` + `before_agent_start`(**不新增 core 概念**,这是 E14 选的路);
 3. **委派**:`subagent` 工具把任务交给另一个角色 —— 进程内受管子运行(`api.runAgent`,E12)。

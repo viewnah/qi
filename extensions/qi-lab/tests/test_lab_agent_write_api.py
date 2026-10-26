@@ -228,6 +228,13 @@ def test_symlinked_role_dir_is_refused(client, project, tmp_path):
     assert (outside / "agent.md").is_file()
 
 
+def test_builtin_role_is_not_deletable_through_a_writable_layer(client):
+    """内置角色随包发布,不属于 user/project 任何一个可写层 —— 按两层删都 404。"""
+    assert _delete(client, "user", "训练数据").status_code == 404
+    assert _delete(client, "project", "训练数据").status_code == 404
+    assert "训练数据" in _listed(client)
+
+
 def test_unknown_scope_is_422(client, project):
     """技能那套词汇在这里不认:`scope` 是 qi-agents 的 user / project。"""
     assert _delete(client, "global", "x").status_code == 422
@@ -259,7 +266,8 @@ def test_response_is_the_updated_agent_list(client, project):
     payload = r.json()
     assert set(payload) == {"agents", "unavailable"}     # 形状 = 读端点的形状
     assert payload["unavailable"] is False
-    assert {row["name"] for row in payload["agents"]} == {"b"}
+    assert {row["name"] for row in payload["agents"]
+            if row["source"] != "builtin"} == {"b"}
 
 
 # ── qi-agents 没装 ──────────────────────────────────────────

@@ -422,7 +422,7 @@ class AgentInfo(BaseModel):
 
     name: str
     description: str = ""
-    #: `user` | `project`(项目级同名覆盖用户级)
+    #: `builtin` | `user` | `project` | `a2a`(项目级同名覆盖用户级/内置)
     source: str = ""
     #: 角色的 `tools:` 白名单;**空 = 继承父**(不是"全部")
     tools: list[str] = Field(default_factory=list)

@@ -44,7 +44,7 @@ export function skillDeleteScope(skill: SkillInfo): "global" | null {
    return skill.source === "qi-global" ? "global" : null;
 }
 
-/** 角色:`source` 的词汇是 qi-agents 的(`user` / `project` / `a2a`)。 */
+/** 角色:`source` 的词汇是 qi-agents 的(`builtin` / `user` / `project` / `a2a`)。 */
 export function isGlobalAgent(agent: AgentInfo): boolean {
    return agent.source !== "project";
 }

@@ -163,7 +163,11 @@ export function AgentMenu({
                     {agent.name || agent.name}
                   </span>
                   <span className="agentmenu__note">
-                    {agent.source === "project" ? "项目 · " : ""}
+                    {agent.source === "project"
+                      ? "项目 · "
+                      : agent.source === "builtin"
+                        ? "内置 · "
+                        : ""}
                     {agent.source}
                   </span>
                 </button>

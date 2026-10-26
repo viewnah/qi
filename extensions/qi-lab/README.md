@@ -140,8 +140,9 @@ qi-web 只把角色**列**出来;qi-lab 多给一个删除端点,设置页的 Ag
 | --- | --- | --- |
 | `DELETE` | `/api/agents` | 按**显示名**删掉某层的一个角色(**整目录**,200) |
 
-- **词汇跟 qi-agents,不跟技能**:`scope` 取 `user` / `project`(就是读模型的 `source`
-  与界面角标上的词),传 `global` → **422**;
+- **词汇跟 qi-agents,不跟技能**:`scope` 只取可写的 `user` / `project`(就是读模型的
+  `source` 与界面角标上的词),传 `global` → **422**;`builtin` 是随 qi-agents 包发布的
+  内置角色,读端点会列出来,但不归这个端点删(按两层删都是 404);
 - **为什么只有删、没有建**:角色的正文是提示词、`tools` / `model` 是有语义的限制,
   写入格式与校验归 qi-agents;而"删掉一个放错的角色"是边界清楚的文件操作;
 - **不自己拼路径**:`name` 是**查找键**,目标由 `discover()` 给出,与读端点同一条代码
@@ -155,7 +156,7 @@ qi-web 只把角色**列**出来;qi-lab 多给一个删除端点,设置页的 Ag
 - **要确认** `X-Qi-Confirm: yes`(缺 → **428**);能力位 `agent_write` 没有 → 界面把
   Agent 节当只读(读端点一直在);没装 qi-agents → 读 `unavailable=true`、删 **503**。
 
-回归测试:`tests/test_lab_agent_write_api.py`(16 条);契约在 `docs/api/agents.md`。
+回归测试:`tests/test_lab_agent_write_api.py`(17 条);契约在 `docs/api/agents.md`。
 
 ## A2A 条目(第四处分化)
 

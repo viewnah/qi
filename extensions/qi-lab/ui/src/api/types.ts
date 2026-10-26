@@ -196,7 +196,7 @@ export interface AgentOpening {
 export interface AgentInfo {
    name: string;
    description: string;
-   /** `user` | `project`(项目级同名覆盖用户级) */
+   /** `builtin` | `user` | `project` | `a2a`(项目级同名覆盖用户级/内置) */
    source: string;
    /** `tools:` 白名单;**空 = 继承父**(不是"全部") */
    tools: string[];

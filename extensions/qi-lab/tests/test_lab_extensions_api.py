@@ -71,7 +71,9 @@ def test_agents_endpoint_reads_qi_agents(tmp_path, monkeypatch):
         body = client.get("/api/agents").json()
 
     assert body["unavailable"] is False
-    agents = {a["name"]: a for a in body["agents"]}
+    builtin = {a["name"] for a in body["agents"] if a["source"] == "builtin"}
+    assert builtin == {"训练数据", "训练评估", "训练态势"}   # 随 qi-agents 包发布
+    agents = {a["name"]: a for a in body["agents"] if a["source"] != "builtin"}
     assert set(agents) == {"reviewer", "scout"}
     assert agents["reviewer"]["description"] == "只读审查"
     assert agents["reviewer"]["source"] == "project"

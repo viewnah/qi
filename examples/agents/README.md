@@ -38,15 +38,17 @@ code-analyst/
 | general | 全能兜底(auto fallback) | 全部 |
 | code-reviewer | 代码审查与重构建议 | read, ls, grep, find, bash |
 | data-analyst | 数据查询与分析 | read, ls, find, grep, write, edit, bash, clarify |
-| 训练数据 | 联合训练数据知识助手（两级快捷提问示例） | 继承宿主全部可用工具 |
+| training-data（训练数据） | 联合训练数据知识助手（两级快捷提问示例） | 继承宿主全部可用工具 |
 | training-evaluator（训练评估） | 联合训练评估助手：按任务推荐应用助手（一次、不追问） | assistant_search, assistant_recommend |
 | training-situation（训练态势） | 联合训练态势研判：态势总览、推演预判、风险预警与处置建议 | 继承宿主全部可用工具 |
 | doc-writer | 编写与维护文档 | read, ls, find, grep, bash, write, edit, clarify |
 | test-runner | 跑测试并汇报 | read, ls, find, grep, bash |
 
 > 后五个原本是 qi 仓库自己的 `.qi/agents/`(本地 dogfood 角色)。P-E4c 把 core 里的
-> “角色”概念整体移出之后,它们先搬到这里当样例(见 design/extensions-design.md 的 E15);
-> qi-agents 扩展落地后可以再搬回 `.qi/agents/` 作为该扩展的实测样例。
+> “角色”概念整体移出之后,它们先搬到这里当样例(见 design/extensions-design.md 的 E15)。
+> 其中 `training-data` / `training-evaluator` / `training-situation` 现在**随 qi-agents
+> 包内置发布**（`source=builtin`），零配置就能在 qi-lab / TUI 里选到；这里保留一份样例，
+> 方便对照与修改。用户/项目里的同名角色会覆盖内置版本。
 
 `training-evaluator` 依赖 **qi-assistants** 扩展：工具从项目级
 `<项目>/.qi/assistants.json` 读目录，推荐卡片的链接由目录回填（模型拿不到 `url`）。

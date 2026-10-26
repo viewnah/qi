@@ -525,6 +525,20 @@ export const IconShareOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
+/** 文档/文件字形：知识库来源 chip 用，避免用成数据库图标。 */
+export const IconFileOutline16 = ({ size = 16, className }: IconProps) => (
+  <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none">
+    <path
+      d="M4.25 1.75H9.3L12.75 5.2V14.25H4.25V1.75Z"
+      stroke="currentColor"
+      strokeWidth="1.25"
+      strokeLinejoin="round"
+    />
+    <path d="M9.25 1.75V5.25H12.75" stroke="currentColor" strokeWidth="1.25" />
+    <path d="M6 8H11M6 10.5H11" stroke="currentColor" strokeWidth="1.15" strokeLinecap="round" />
+  </svg>
+)
+
 /**
  * ic_ds_check_outline_16 —— 「已复制」那一下的确认勾(dsh `MessageIconActions` /
  * `CodeBlock` 在写成功之后把复制图标换成它)。

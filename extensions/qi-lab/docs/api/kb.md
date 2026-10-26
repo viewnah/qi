@@ -246,6 +246,38 @@ qi-kb 没装时不 404：流里先发一帧 `{"type":"error","message":"…"}` �
 一次只允许一个 provider；多个 provider 命中时返回 `error` 事件（400 级语义），
 用 `provider` 或 `名称@provider` 收窄。
 
+## GET /api/kb/files/{provider}/{kb_id}/{file_id}
+
+**稳定的源文件下载/预览链接**。检索与问答的 `sources[].url` 就是它。
+浏览器点击即可访问，不需要 `Authorization`；链接不带签名、不过期，因此可以直接落进历史消息。
+
+```text
+/api/kb/files/alice/54aa…/e4e2…
+```
+
+- Host 头不被允许 → **400**
+- provider / qi-kb 不可用 → **503**
+
+> 这是明确的取舍：链接不签名、不过期，能访问 qi-lab 该路径的人就能下载。
+> 建议 qi-lab 只绑回环/内网；需要更强边界时用容器/反代鉴权。
+- 返回源文件的 `Content-Type`，`Content-Disposition: inline`（PDF 等浏览器直接预览）
+
+检索 / 问答的 source 会带：
+
+```json
+{
+  "index": 1,
+  "doc_name": "a.pdf",
+  "filename": "a.pdf",
+  "provider": "alice",
+  "kb_id": "54aa…",
+  "doc_id": "…",
+  "file_id": "e4e2…",
+  "file_ref": "kb://alice/54aa…/e4e2…",
+  "url": "/api/kb/files/alice/54aa…/e4e2…"
+}
+```
+
 ## POST /api/kb/install
 
 需要 `X-Qi-Confirm: yes`。同一个 `(instance, kbId)` 已由别的 provider 安装且

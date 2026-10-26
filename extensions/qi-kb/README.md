@@ -117,6 +117,10 @@ kb({"action":"docs","kb":"54aa…@bob"})
 
 - 省略 `kb` / `kb_ids` = 所有已绑定 KB；
 - 跨 provider 同名时用 `名称@provider` 消歧；
+- **严格引用**：`kb ask` 的答案里带 `[来源N]` 时，最终回答必须原样保留；提示词禁止模型另写 `来源：[1][2]` 或自行重编号；
+- 检索/问答结果的 source 会带 `file_ref`（`kb://provider/kb_id/file_id`）、
+  `filename` 与稳定的 `url`（`/api/kb/files/provider/kb_id/file_id`），
+  qi-lab 代理下载，URL 可以随历史消息落盘；
 - 输出有单段 / 单次字符上限，知识库正文用 `<<<KB_CONTENT … KB_CONTENT>>>` 包起来，
   提示词声明它是数据不是指令；
 - 某个 provider 失败只影响它自己，结果里带 `warnings`。

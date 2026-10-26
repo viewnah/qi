@@ -213,6 +213,7 @@ curl -X PATCH http://127.0.0.1:3456/api/mcp -H 'X-Qi-Confirm: yes' -H 'Content-T
 | POST | `POST /api/kb/search` | 只检索 chunk | `kb.md` |
 | POST | `POST /api/kb/ask` | 上游 RAG 问答 | `kb.md` |
 | POST | `POST /api/kb/ask/stream` | 流式 RAG 问答（SSE） | `kb.md` |
+| GET | `GET /api/kb/files/{provider}/{kb_id}/{file_id}` | 稳定的源文件下载/预览 | `kb.md` |
 | POST | `POST /api/kb/install` | 安装 KB(需确认头;冲突 409) | `kb.md` |
 | POST | `POST /api/kb/uninstall` | 卸载 KB(需确认头) | `kb.md` |
 | PATCH | `PATCH /api/kb/defaults` | 写默认参数(需确认头) | `kb.md` |

@@ -203,6 +203,7 @@ qi-lab 只做**代理与界面**（进程内懒 import `qi_kb.service`，与商�
 | POST | `/api/kb/install` / `uninstall` | 装 / 卸（写要确认头；冲突 409） |
 | POST | `/api/kb/search` / `ask` | 检索 / 上游 RAG 问答 |
 | POST | `/api/kb/ask/stream` | 流式 RAG 问答（SSE） |
+| GET | `/api/kb/files/{provider}/{kb_id}/{file_id}` | 稳定的源文件下载/预览 |
 | PATCH | `/api/kb/defaults` | 默认参数（写要确认头） |
 
 三条口径：
@@ -213,7 +214,15 @@ qi-lab 只做**代理与界面**（进程内懒 import `qi_kb.service`，与商�
   前端弹「保留 / 覆盖为当前 provider」；覆盖 = rebind，不复制文档；
 - **令牌不回显**：响应只有登录态；写操作过 `X-Qi-Confirm`。
 
-**测试控制台的「流式问答」**：边生成边显示 token，最后追加 sources；可随时停止。
+**测试控制台的「流式问答」**：边生成边显示 token，最后追加可点击的 sources（文件名 → 源文件）；可随时停止。
+
+**回答正文下方的来源**：如果本轮调用了 `kb` 工具，回答正文下面会有一条分割线 +
+「来源」chip（文件名 + 分数），点击直接打开源文件；历史回放同样显示。正文里的
+`[来源N]` 会按 sources 的 `index`（没有就按数组顺序）变成指向同一文件的链接；
+模型自己写的 `来源：[1][2]` 行在有结构化 sources 时会被清掉，避免和下方 chip 重复。
+普通 `[N]` 只有在 sources 里存在对应编号时才会转成链接。
+来源来自 tool entry 的 `details.sources` / `details.results`，旧历史只有 `file_ref`
+时也能还原链接。
 
 **对话页的知识库 chip**：输入卡右下角可以只勾选本轮要查的已绑定 KB。它通过
 `forwardedProps.kbIds` 传给宿主，宿主把选择记进当前会话的进程内 scope；清空 = 回到

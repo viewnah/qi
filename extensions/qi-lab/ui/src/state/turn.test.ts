@@ -667,3 +667,81 @@ describe("子运行的状态与耗时", () => {
     expect(formatElapsed(Number.NaN)).toBe("");
   });
 });
+
+
+describe("kb 来源挂到回答下方", () => {
+   const tool: AguiEvent[] = [
+      { type: "TOOL_CALL_START", toolCallId: "k1", toolCallName: "kb" },
+      { type: "TOOL_CALL_ARGS", toolCallId: "k1", delta: '{"action":"search"}' },
+      { type: "TOOL_CALL_END", toolCallId: "k1" },
+      {
+         type: "TOOL_CALL_RESULT",
+         messageId: "tm1",
+         toolCallId: "k1",
+         content: "ok",
+         metadata: {
+            "qi.tool": {
+               status: "ok",
+               details: {
+                  results: [{
+                     filename: "a.pdf",
+                     doc_name: "a.pdf",
+                     score: 0.34,
+                     url: "/api/kb/files/alice/kb1/f1",
+                  }],
+               },
+            },
+         },
+      },
+   ];
+
+   it("直播:回答行带上 sources", () => {
+      const live = withUserMessage(emptyTurn, "问题");
+      const afterTool = tool.reduce(reduce, live);
+      const afterText = write("答案").reduce(reduce, afterTool);
+      expect(sayOf(afterText.rows)?.sources?.[0]).toMatchObject({
+         filename: "a.pdf",
+         url: "/api/kb/files/alice/kb1/f1",
+      });
+   });
+
+   it("同回合多次 kb 调用:只用最后一个有来源的结果", () => {
+      const live = withUserMessage(emptyTurn, "问题");
+      const first = tool.reduce(reduce, live);
+      const second = [
+         { type: "TOOL_CALL_START", toolCallId: "k2", toolCallName: "kb" },
+         { type: "TOOL_CALL_ARGS", toolCallId: "k2", delta: '{"action":"search"}' },
+         { type: "TOOL_CALL_END", toolCallId: "k2" },
+         {
+            type: "TOOL_CALL_RESULT",
+            messageId: "tm2",
+            toolCallId: "k2",
+            content: "ok",
+            metadata: { "qi.tool": { status: "ok", details: {
+               results: [{ filename: "b.pdf", score: 0.8,
+                           url: "/api/kb/files/alice/kb1/f2" }],
+            } } },
+         },
+      ] as AguiEvent[];
+      const afterSecond = second.reduce(reduce, first);
+      const afterText = write("答案").reduce(reduce, afterSecond);
+      expect(sayOf(afterText.rows)?.sources).toEqual([
+         { filename: "b.pdf", score: 0.8, url: "/api/kb/files/alice/kb1/f2" },
+      ]);
+   });
+
+   it("历史:assistant message 带上 sources", () => {
+      const rows = fromEntries([
+         { type: "message", role: "user", content: "问题", id: "u1" },
+         { type: "tool", tool: "kb", status: "ok", details: {
+            results: [{ filename: "a.pdf", score: 0.34,
+                        url: "/api/kb/files/alice/kb1/f1" }],
+         }, id: "t1" },
+         { type: "message", role: "assistant", content: "答案", id: "a1" },
+      ] as Entry[]);
+      expect(sayOf(rows)?.sources?.[0]).toMatchObject({
+         filename: "a.pdf",
+         url: "/api/kb/files/alice/kb1/f1",
+      });
+   });
+});

@@ -1451,6 +1451,42 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
         except Exception as exc:  # noqa: BLE001
             raise _kb_error(exc) from exc
 
+    def _kb_file_url(provider: str, kb_id: str, file_id: str) -> str:
+        return (f"/api/kb/files/{quote(provider, safe='')}/{quote(kb_id, safe='')}/"
+                f"{quote(file_id, safe='')}")
+
+    def _kb_link_items(items: list[dict]) -> None:
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            ref = str(item.get("file_ref") or item.get("fileRef") or "")
+            if ref.startswith("kb://"):
+                parts = ref[5:].split("/", 2)
+                if len(parts) == 3 and all(parts):
+                    item["url"] = _kb_file_url(*parts)
+            elif item.get("file_id") and item.get("kb_id") and item.get("provider"):
+                item["url"] = _kb_file_url(
+                    str(item["provider"]), str(item["kb_id"]), str(item["file_id"]))
+
+    def _kb_with_links(data: dict) -> dict:
+        if not isinstance(data, dict):
+            return data
+        for key in ("sources", "results", "documents"):
+            _kb_link_items(data.get(key) or [])
+        answer = str(data.get("answer") or "")
+        sources = data.get("sources") or []
+        if answer and sources:
+            def repl(match: re.Match[str]) -> str:
+                index = int(match.group(1))
+                found = next((s for s in sources
+                              if int(s.get("index") or 0) == index), None)
+                if found is None and 0 < index <= len(sources):
+                    found = sources[index - 1]
+                url = str((found or {}).get("url") or "")
+                return f"[来源{index}]({url})" if url else match.group(0)
+            data["answer"] = re.sub(r"\[来源\s*(\d+)\](?!\()", repl, answer)
+        return data
+
     @app.get("/api/kb/status", response_model=schemas.KbStatus,
              dependencies=[Depends(guard)])
     async def kb_status() -> schemas.KbStatus:
@@ -1557,7 +1593,7 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
             return schemas.KbDocs(available=False, error=reason)
         data = await _in_kb(service.documents, cwd=web.default_cwd,
                             kb=kbId, provider=provider or None)
-        return schemas.KbDocs(**data)
+        return schemas.KbDocs(**_kb_with_links(data))
 
     @app.post("/api/kb/search", response_model=schemas.KbSearchResult,
               dependencies=[Depends(guard)])
@@ -1569,7 +1605,7 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
                             kb_ids=body.kbIds or None, provider=body.provider or None,
                             top_k=body.topK, strategy=body.strategy,
                             use_rerank=body.useRerank, rerank_top_k=body.rerankTopK)
-        return schemas.KbSearchResult(available=True, **data)
+        return schemas.KbSearchResult(available=True, **_kb_with_links(data))
 
     @app.post("/api/kb/ask", response_model=schemas.KbAskResult,
               dependencies=[Depends(guard)])
@@ -1581,7 +1617,7 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
                             kb_ids=body.kbIds or None, provider=body.provider or None,
                             top_k=body.topK, strategy=body.strategy,
                             use_rerank=body.useRerank, rerank_top_k=body.rerankTopK)
-        return schemas.KbAskResult(available=True, **data)
+        return schemas.KbAskResult(available=True, **_kb_with_links(data))
 
     @app.post("/api/kb/ask/stream", dependencies=[Depends(guard)])
     async def kb_ask_stream(body: schemas.KbAskRequest) -> StreamingResponse:
@@ -1607,6 +1643,8 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
                 ):
                     if stop.is_set():
                         break
+                    if isinstance(event, dict) and event.get("type") == "sources":
+                        _kb_link_items(event.get("content") or [])
                     loop.call_soon_threadsafe(queue.put_nowait, event)
             except Exception as exc:  # noqa: BLE001 错误也走 SSE，不弄断连接
                 message = str(exc)
@@ -1634,6 +1672,27 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
             "Cache-Control": "no-cache, no-transform",
             "X-Accel-Buffering": "no",
         })
+
+    @app.get("/api/kb/files/{provider}/{kb_id}/{file_id}")
+    async def kb_file(request: Request, provider: str, kb_id: str,
+                      file_id: str) -> Response:
+        """稳定的文件下载链接（qi-lab 代理）。浏览器直接点，不需要 Authorization。"""
+        if not check_host(allowed, request.headers.get("host"), bind_host):
+            raise HTTPException(status_code=400, detail="Host 头不被允许")
+        service, reason = _kb()
+        if service is None:
+            raise HTTPException(status_code=503, detail=reason)
+        data = await _in_kb(service.download_file, cwd=web.default_cwd,
+                            provider=provider, kb_id=kb_id, file_id=file_id)
+        filename = quote(str(data.get("filename") or file_id), safe="")
+        return Response(
+            content=data["content"],
+            media_type=str(data.get("mediaType") or "application/octet-stream"),
+            headers={
+                "Content-Disposition": f"inline; filename*=UTF-8''{filename}",
+                "Cache-Control": "private, max-age=300",
+            },
+        )
 
     @app.post("/api/kb/install", response_model=schemas.KbInstallResult,
               dependencies=[Depends(guard)])

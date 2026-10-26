@@ -1051,3 +1051,72 @@ qi lab
 6. **同一 KB 去重**：按 `(instance, kbId)` 只保留一份；重复安装时**提示是否覆盖（rebind）**，
    默认保留；非交互必须 `--rebind` / `--keep`。
 7. **多 provider 默认全查**；`provider` / `@provider` / `defaultProvider` 可收窄。
+
+---
+
+## 11. 文档来源链接（已实现）
+
+目标：检索/问答的 source 不只有文件名，还能**点击直接打开源文件**。
+
+### 11.1 上游事实
+
+- `ask` / `retrieval/search` 的 source 只有 `doc_id`、`kb_id`、`doc_name`、`metadata`；
+- **没有 `file_id`**；
+- 下载端点要 `file_id`：
+  ```http
+  GET /api/rag/kb/{kb_id}/files/{file_id}/download?token=<access>
+  ```
+- `GET /api/rag/kb/{kb_id}/documents` 能给出 `doc_id -> file_id / filename`。
+
+### 11.2 分层
+
+```text
+qi-kb
+  ├─ links.py：doc_id → file_id/filename（缓存 5 分钟）
+  ├─ source 增加 file_id / filename / file_ref
+  └─ file_ref = kb://<provider>/<kb_id>/<file_id>   （稳定引用，不是 URL）
+
+qi-lab
+  ├─ /api/kb/files/{provider}/{kb_id}/{file_id}
+  │    稳定链接，不签名、不过期；浏览器点击不需要 Authorization
+  ├─ search/ask 响应把 file_ref 变成 url
+  └─ 非流式 answer 把 [来源N] 重写成 [来源N](url)
+```
+
+### 11.3 为什么链接由 qi-lab 生成，不由 qi-kb 拼
+
+- qi-kb 不知道浏览器从哪个 origin 访问（CLI / qi-lab / 别的宿主）；
+- 不能把 hikqin 的 access token 放进 URL（会进历史、日志、Referer）；
+- qi-lab 的 `/api/kb/files/...` 是稳定代理链接，文件由 qi-lab 代理下载，
+  hikqin token 不出宿主；链接本身不带凭证，因此可以直接落进历史消息。
+
+### 11.4 source 形状
+
+```json
+{
+  "index": 1,
+  "doc_name": "a.pdf",
+  "filename": "a.pdf",
+  "provider": "alice",
+  "kb_id": "54aa…",
+  "doc_id": "…",
+  "file_id": "e4e2…",
+  "file_ref": "kb://alice/54aa…/e4e2…",
+  "url": "/api/kb/files/alice/54aa…/e4e2…"
+}
+```
+
+### 11.5 流式
+
+- 流式 token 不能提前改写链接；
+- `sources` 事件带 `url`；
+- qi-lab 前端在收到 sources 后把答案里的 `[来源N]` 重写成 Markdown 链接；
+- 非流式 `ask` 由后端直接改写；
+- 聊天历史里，前端按 `source.index`（缺失时按数组顺序）把 `[来源N]`
+  映射到同一个 `url`，因此正文脚注和下方来源 chip 的顺序一致。
+
+### 11.6 缓存与失效
+
+- `doc_id -> file_id` 缓存 5 分钟；文档删除后可能短暂 404，前端保留文件名但链接失败；
+- `url` 是稳定路径，不签名、不过期，可以随历史消息落盘；
+- 真正的 hikqin 凭证仍然只在 qi-lab 进程内，URL 只暴露 provider / kb / file id。

@@ -48,6 +48,19 @@ export interface ThinkRow {
  *   opening   —— agent 开场白(不进 LLM 上下文)
  * 三者视觉权重不同,因为读者对它们的关心程度不同。
  */
+export interface KbSource {
+  index?: number;
+  filename?: string;
+  doc_name?: string;
+  doc_id?: string;
+  provider?: string;
+  kb_name?: string;
+  score?: number;
+  url?: string;
+  downloadUrl?: string;
+  file_ref?: string;
+}
+
 export interface SayRow {
   kind: "say";
   key: string;
@@ -57,6 +70,8 @@ export interface SayRow {
   tone: "final" | "narration" | "opening";
   /** 落盘 entry 的 id(直播中那一条还没有 —— 见 `YouRow.entryId`)。 */
   entryId?: string;
+  /** 本轮 `kb` 工具返回的来源；渲染在回答正文下方。 */
+  sources?: KbSource[];
 }
 
 /**
@@ -503,6 +518,32 @@ export function groupProcess(rows: Row[]): Block[] {
   return blocks;
 }
 
+function kbSourcesOf(row: ToolRowData): KbSource[] {
+   if (row.tool !== "kb" || !row.details) return [];
+   const raw = [
+      ...(Array.isArray(row.details.sources) ? row.details.sources : []),
+      ...(Array.isArray(row.details.results) ? row.details.results : []),
+   ];
+   return raw.filter((item): item is KbSource => {
+      if (!item || typeof item !== "object") return false;
+      const source = item as KbSource;
+      return Boolean(source.url || source.downloadUrl || source.file_ref);
+   });
+}
+
+/** 本轮（最后一条 user 之后）**最后一个有来源的** kb 工具结果。 */
+function sourcesSinceUser(rows: Row[]): KbSource[] {
+   for (let i = rows.length - 1; i >= 0; i -= 1) {
+      const row = rows[i];
+      if (row.kind === "you") break;
+      if (row.kind === "tool") {
+         const found = kbSourcesOf(row);
+         if (found.length > 0) return found;
+      }
+   }
+   return [];
+}
+
 export function fromEntries(entries: Entry[]): Row[] {
   const rows: Row[] = [];
   /**
@@ -514,12 +555,14 @@ export function fromEntries(entries: Entry[]): Row[] {
    * 对齐到直播:**提问在前,分派紧跟其后**(它回答的是"谁在回答这个问题")。
    */
   const pendingRoutes: Row[] = [];
+  let turnSources: KbSource[] = [];
   for (const e of entries) {
     switch (e.type) {
       case "message": {
         const text = e.content ?? "";
         if (!text) break;
         if (e.role === "user") {
+          turnSources = [];
           rows.push({
             kind: "you",
             key: nextKey("you"),
@@ -537,6 +580,7 @@ export function fromEntries(entries: Entry[]): Row[] {
             live: false,
             tone: "final",
             entryId: e.id,
+            ...(turnSources.length > 0 ? { sources: [...turnSources] } : {}),
           });
         }
         break;
@@ -591,6 +635,10 @@ export function fromEntries(entries: Entry[]): Row[] {
           details: e.details ?? null,
           activity: [],        // 回放没有直播:活动只活在运行中的那一轮
         });
+        {
+          const found = kbSourcesOf(rows[rows.length - 1] as ToolRowData);
+          if (found.length > 0) turnSources = found;
+        }
         break;
       case "compaction":
         rows.push({
@@ -677,6 +725,7 @@ export function reduce(state: TurnState, ev: AguiEvent): TurnState {
     // ── 文本 ──
     case "TEXT_MESSAGE_START": {
       const key = nextKey("say");
+      const sources = sourcesSinceUser(state.rows);
       return {
         ...state,
         ids: { ...state.ids, [ev.messageId]: key },
@@ -689,6 +738,7 @@ export function reduce(state: TurnState, ev: AguiEvent): TurnState {
             text: "",
             live: true,
             tone: "final",
+            ...(sources.length > 0 ? { sources } : {}),
           },
         ],
       };

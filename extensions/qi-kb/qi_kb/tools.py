@@ -69,9 +69,11 @@ async def _execute(args: dict[str, Any], ctx: Any) -> ToolOutcome:
                 rerank_top_k=args.get("rerank_top_k"),
                 session_id=session_id,
             )
-            return ToolOutcome(result=fmt.format_search(data),
-                               details={"results": data.get("results") or [],
-                                        "kbIds": data.get("kbIds") or []})
+            return ToolOutcome(
+                result=fmt.format_search(data),
+                details={"results": [_slim(item) for item in (data.get("results") or [])],
+                         "kbIds": data.get("kbIds") or []},
+            )
 
         if action == "ask":
             question = str(args.get("question") or args.get("query") or "").strip()
@@ -87,9 +89,11 @@ async def _execute(args: dict[str, Any], ctx: Any) -> ToolOutcome:
                 rerank_top_k=args.get("rerank_top_k"),
                 session_id=session_id,
             )
-            return ToolOutcome(result=fmt.format_ask(data),
-                               details={"answer": data.get("answer") or "",
-                                        "sources": data.get("sources") or []})
+            return ToolOutcome(
+                result=fmt.format_ask(data),
+                details={"answer": data.get("answer") or "",
+                         "sources": [_slim(item) for item in (data.get("sources") or [])]},
+            )
 
         if action == "docs":
             kb = str(args.get("kb") or (args.get("kb_ids") or [""])[0] or "").strip()
@@ -116,6 +120,13 @@ async def _execute(args: dict[str, Any], ctx: Any) -> ToolOutcome:
         return f"知识库调用失败：{type(exc).__name__}: {exc}"
 
 
+def _slim(item: Any) -> Any:
+    """落盘 details 不需要正文：正文已在 result 里，source 链接信息要留下。"""
+    if not isinstance(item, dict):
+        return item
+    return {k: v for k, v in item.items() if k != "content"}
+
+
 def _selectors(args: dict[str, Any]) -> list[str]:
     values = args.get("kb_ids")
     if isinstance(values, list):
@@ -139,5 +150,9 @@ def build_tool() -> Tool:
             "先用 action=search 检索，需要综合答案时再用 action=ask。",
             "kb 的 kb / kb_ids 参数可以写成 名称@provider 精确指定账号；"
             "不要编造知识库内容，证据不足要明确说明。",
+            "kb 工具返回的答案里如果有 [来源N] 标记，最终回答引用知识库内容时必须"
+            "原样保留这些编号，不要改写或删除；编号与来源列表一一对应。",
+            "不要在最终回答里另写 `来源：[1][2]` 或自行重编号；只引用工具结果里"
+            "实际存在的 [来源N]。",
         ],
     )

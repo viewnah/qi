@@ -25,6 +25,7 @@ import {
   IconCheckOutline16,
   IconChevronDownOutline14,
   IconCopyOutline16,
+  IconFileOutline16,
 } from "./icons";
 import { Markdown } from "../markdown/render";
 import { processLabel } from "../state/stats";
@@ -209,6 +210,31 @@ function Details({
       </div>
     );
   }
+  const sources = sourceRows(details);
+  if (sources.length > 0) {
+    return (
+      <ul className="kb-sources">
+        {sources.map((item, index) => {
+          const url = sourceUrl(item);
+          const name = String(item.filename || item.doc_name || item.doc_id
+            || `来源 ${index + 1}`);
+          const meta = [item.provider, item.kb_name].filter(Boolean).join(" / ");
+          return (
+            <li key={`${url}:${index}`}>
+              {url ? (
+                <a href={url} target="_blank" rel="noreferrer noopener">
+                  {name}
+                </a>
+              ) : (
+                <span>{name}</span>
+              )}
+              {meta ? <span className="kb-sources__meta"> · {meta}</span> : null}
+            </li>
+          );
+        })}
+      </ul>
+    );
+  }
   const ui = details.ui;
   if (Array.isArray(ui)) {
     const nodes = skipCards
@@ -224,6 +250,65 @@ function Details({
     );
   }
   return <pre className="evidence">{JSON.stringify(details, null, 2)}</pre>;
+}
+
+/** 把正文里的 `[来源N]`（以及模型自己写的 `[N]`）按 sources 变成可点击链接。 */
+function linkCitations(text: string, sources?: SayRow["sources"]): string {
+   if (!text || !sources || sources.length === 0) return text;
+   const sourceAt = (index: number) =>
+      sources.find((item) => Number(item.index) === index) ?? sources[index - 1];
+   const toLink = (match: string, raw: string) => {
+      const index = Number(raw);
+      const source = sourceAt(index);
+      if (!source) return match;
+      const url = absoluteUrl(sourceUrl(source as Record<string, unknown>));
+      return url ? `[来源${index}](${url})` : match;
+   };
+   // 模型有时会自己写一行「来源：[1] ... [2] ...」；有结构化 sources 时删掉，
+   // 避免和下方 chip 重复且编号对不上。
+   const cleaned = text.replace(
+      /(^|\n)[ \t]*来源[:：][^\n]*\[\d+\][^\n]*(?=\n|$)/g,
+      "$1",
+   );
+   return cleaned
+      .replace(/\[来源\s*(\d+)\](?!\()/g, toLink)
+      .replace(/\[(\d+)\](?!\()/g, toLink);
+}
+
+function absoluteUrl(url: string): string {
+   if (!url) return "";
+   if (/^https?:/i.test(url)) return url;
+   try {
+      return new URL(url, window.location.origin).toString();
+   } catch {
+      return url;
+   }
+}
+
+/** 工具 details 里的 KB 来源：`kb` 的 ask 用 `sources`，search 用 `results`。 */
+function sourceRows(details: Record<string, unknown>): Record<string, unknown>[] {
+   const raw = [
+      ...(Array.isArray(details.sources) ? details.sources : []),
+      ...(Array.isArray(details.results) ? details.results : []),
+   ];
+   return raw.filter((item): item is Record<string, unknown> => {
+      if (!item || typeof item !== "object") return false;
+      const row = item as Record<string, unknown>;
+      return Boolean(row.url || row.downloadUrl || row.file_ref);
+   });
+}
+
+/** `url` 优先；老历史只有 `file_ref` 时按稳定代理路径还原。 */
+function sourceUrl(item: Record<string, unknown>): string {
+   const direct = String(item.url || item.downloadUrl || "");
+   if (direct) return direct;
+   const ref = String(item.file_ref || "");
+   if (!ref.startsWith("kb://")) return "";
+   const parts = ref.slice(5).split("/", 2);
+   const fileId = ref.slice(5).split("/")[2] || "";
+   if (parts.length < 2 || !fileId) return "";
+   return `/api/kb/files/${encodeURIComponent(parts[0])}/`
+      + `${encodeURIComponent(parts[1])}/${encodeURIComponent(fileId)}`;
 }
 
 /** 委派正文:横幅契约切出的「一个 agent 一张卡」(TUI `AgentCard` 同构)。
@@ -596,6 +681,40 @@ function Process({ rows }: { rows: ProcessRow[] }) {
   );
 }
 
+/** 回答正文下方的来源：一条分割线 + 文件名 chip（点击打开源文件）。 */
+function AnswerSources({ sources }: { sources: SayRow["sources"] }) {
+   if (!sources || sources.length === 0) return null;
+   return (
+      <div className="answer-sources">
+         <div className="answer-sources__label">来源</div>
+         <div className="answer-sources__list">
+            {sources.map((source, index) => {
+               const url = sourceUrl(source as Record<string, unknown>);
+               const name = String(source.filename || source.doc_name
+                  || source.doc_id || `来源 ${index + 1}`);
+               const score = Number(source.score);
+               const pct = Number.isFinite(score) && score > 0
+                  ? `${Math.round(Math.max(0, Math.min(1, score)) * 100)}%`
+                  : "";
+               return (
+                  <a
+                     key={`${url}:${index}`}
+                     className="answer-source"
+                     href={url || undefined}
+                     target={url ? "_blank" : undefined}
+                     rel={url ? "noreferrer noopener" : undefined}
+                  >
+                     <IconFileOutline16 size={12} />
+                     <span>{name}</span>
+                     {pct ? <span className="answer-source__pct">({pct})</span> : null}
+                  </a>
+               );
+            })}
+         </div>
+      </div>
+   );
+}
+
 // ── 助手文本 ──────────────────────────────────────────────
 
 /**
@@ -622,7 +741,14 @@ function Say({
 }) {
   return (
     <Plain kind="say" attrs={{ "data-tone": row.tone }}>
-      <Markdown text={row.text} onCopy={onCopy} streaming={row.live} />
+      <Markdown
+        text={linkCitations(row.text, row.sources)}
+        onCopy={onCopy}
+        streaming={row.live}
+      />
+      {row.sources && row.sources.length > 0 ? (
+        <AnswerSources sources={row.sources} />
+      ) : null}
       {row.live ? null : (
         <MessageActions
           text={row.text}

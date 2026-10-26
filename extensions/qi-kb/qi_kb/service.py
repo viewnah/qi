@@ -9,7 +9,7 @@ import hashlib
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
-from . import auth, config, format as fmt, providers
+from . import auth, config, format as fmt, links, providers
 from .client import KbClient
 from .errors import KbError, NotFound, UsageError
 
@@ -201,12 +201,30 @@ def documents(cwd: Path | None, kb: str, *, provider: str | None = None) -> dict
     ref = config.find_kb(cfg, f"{kb}@{provider}" if provider and "@" not in kb else kb)
     with KbClient(cfg, ref.provider, auth_store=auth.AuthStore()) as client:
         docs = client.documents(ref.kb_id)
+    for doc in docs:
+        file_id = str(doc.get("file_id") or "")
+        doc["file_id"] = file_id
+        doc["provider"] = ref.provider
+        doc["filename"] = str(doc.get("filename") or "")
+        doc["file_ref"] = (f"kb://{ref.provider}/{ref.kb_id}/{file_id}" if file_id else "")
+        doc["url"] = links.proxy_url(ref.provider, ref.kb_id, file_id) if file_id else ""
+        if not file_id:
+            doc["link_error"] = "源文件不存在或已清理"
     return {"available": True, "provider": ref.provider, "kbId": ref.kb_id,
             "name": ref.name, "documents": docs, "total": len(docs),
             "warnings": []}
 
 
 # ── 安装 / 卸载 ──────────────────────────────────────────
+
+
+def download_file(cwd: Path | None, provider: str, kb_id: str,
+                  file_id: str) -> dict[str, Any]:
+    cfg = config.load(cwd)
+    cfg.provider(provider)                       # 校验 provider 存在
+    with KbClient(cfg, provider, auth_store=auth.AuthStore()) as client:
+        data = client.download(kb_id, file_id)
+    return {"provider": provider, "kb_id": kb_id, "file_id": file_id, **data}
 
 
 def plan_install(cwd: Path | None, kb: str, provider: str, *,
@@ -281,24 +299,26 @@ def search(cwd: Path | None, query: str, *, kb_ids: Iterable[str] | None = None,
     for name, group in _group_by_provider(refs):
         ids = [ref.kb_id for ref in group]
         used_ids.extend(ids)
+        batch: list[dict[str, Any]] = []
         try:
             with KbClient(cfg, name, auth_store=store) as client:
                 data = client.search(query, ids, **kwargs)
+                for item in data.get("results") or []:
+                    if isinstance(item, dict):
+                        item = dict(item)
+                        item["provider"] = name
+                        item.setdefault("doc_name", item.get("doc_name")
+                                        or (item.get("metadata") or {}).get("filename"))
+                        item.setdefault("index", len(batch) + 1)
+                        batch.append(item)
+                _rescore_zero(client, query, ids, batch, kwargs)
+                links.enrich(client, batch)
         except KbError as exc:
             warnings.append(f"{name}: {fmt.error_text(exc)}")
             continue
         strategy_used = strategy_used or str(data.get("strategy") or kwargs["strategy"])
         rerank_used = rerank_used or data.get("rerank_method")
-        for item in data.get("results") or []:
-            if isinstance(item, dict):
-                item = dict(item)
-                item["provider"] = name
-                item.setdefault("kbName", item.get("kb_name"))
-                item.setdefault("docName", item.get("doc_name")
-                                or (item.get("metadata") or {}).get("filename"))
-                item.setdefault("kbId", item.get("kb_id"))
-                item.setdefault("docId", item.get("doc_id"))
-                results.append(item)
+        results.extend(batch)
     if not results and warnings:
         raise _first_warning(warnings)
     return {
@@ -348,9 +368,17 @@ def ask(cwd: Path | None, question: str, *, kb_ids: Iterable[str] | None = None,
         ids = [ref.kb_id for ref in group]
         used_ids.extend(ids)
         qa_session_id = _qa_session_id(session_id, name, ids) if reuse else None
+        batch: list[dict[str, Any]] = []
         try:
             with KbClient(cfg, name, auth_store=store) as client:
                 data = client.ask(question, ids, qa_session_id=qa_session_id, **kwargs)
+                for source in data.get("sources") or []:
+                    if isinstance(source, dict):
+                        source = dict(source)
+                        source["provider"] = name
+                        batch.append(source)
+                _rescore_zero(client, question, ids, batch, kwargs)
+                links.enrich(client, batch)
         except KbError as exc:
             warnings.append(f"{name}: {fmt.error_text(exc)}")
             continue
@@ -360,11 +388,7 @@ def ask(cwd: Path | None, question: str, *, kb_ids: Iterable[str] | None = None,
                 answers.append(f"### {name}\n\n{answer}")
             else:
                 answers.append(answer)
-        for source in data.get("sources") or []:
-            if isinstance(source, dict):
-                source = dict(source)
-                source["provider"] = name
-                sources.append(source)
+        sources.extend(batch)
     if not answers and warnings:
         raise _first_warning(warnings)
     top_score = max((_number(s.get("score")) for s in sources), default=0.0)
@@ -422,6 +446,8 @@ def ask_stream(cwd: Path | None, question: str, *, kb_ids: Iterable[str] | None 
                         source = dict(source)
                         source["provider"] = name
                         sources.append(source)
+                _rescore_zero(client, question, ids, sources, kwargs)
+                links.enrich(client, sources)
                 yield {"type": "sources", "content": sources, "provider": name}
             elif kind == "done":
                 yield {"type": "done", "provider": name, "kbIds": ids}
@@ -543,6 +569,47 @@ def _qa_session_id(session_id: str | None, provider: str, ids: list[str]) -> str
         return None
     scope = ",".join(sorted(ids))
     return hashlib.md5(f"{session_id}:{provider}:{scope}".encode("utf-8")).hexdigest()
+
+
+def _rescore_zero(client: KbClient, query: str, ids: list[str],
+                   items: list[dict[str, Any]], kwargs: dict[str, Any]) -> None:
+    """rerank 全给 0 分时，用一次纯检索分数兜底（只为展示置信度）。"""
+    if not items:
+        return
+    if any(_number(item.get("score")) > 0 for item in items):
+        return
+    try:
+        data = client.search(
+            query, ids,
+            top_k=int(kwargs.get("top_k") or 5),
+            strategy=str(kwargs.get("strategy") or "hybrid"),
+            hybrid_alpha=float(kwargs.get("hybrid_alpha") or 0.7),
+            use_rerank=False,
+            rerank_top_k=int(kwargs.get("rerank_top_k") or 3),
+            rerank_score_threshold=0.0,
+            kb_hit_threshold=None,
+        )
+    except KbError:
+        return
+    best: dict[tuple[str, Any], float] = {}
+    for result in data.get("results") or []:
+        if not isinstance(result, dict):
+            continue
+        meta = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+        chunk = meta.get("chunk_index")
+        if chunk is None:
+            chunk = result.get("chunk_index")
+        key = (str(result.get("doc_id") or ""), chunk)
+        best[key] = max(best.get(key, 0.0), _number(result.get("score")))
+    for item in items:
+        meta = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        chunk = item.get("chunk_index")
+        if chunk is None:
+            chunk = meta.get("chunk_index")
+        key = (str(item.get("doc_id") or ""), chunk)
+        score = best.get(key, 0.0)
+        if score > 0:
+            item["score"] = score
 
 
 def _scope_selectors(session_id: str | None, selectors: list[str],

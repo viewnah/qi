@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../api/client";
 import type { KbItem, KbStatus } from "../api/types";
+import { Markdown } from "../markdown/render";
 import { globalKbItems, globalKbProviders } from "../state/scope";
 
 export function KbPanel({ canWrite, onChanged }: { canWrite: boolean; onChanged?: () => void }) {
@@ -22,7 +23,7 @@ export function KbPanel({ canWrite, onChanged }: { canWrite: boolean; onChanged?
    const [query, setQuery] = useState("");
    const [search, setSearch] = useState<string>("");
    const [askAnswer, setAskAnswer] = useState("");
-   const [askSources, setAskSources] = useState("");
+   const [askSources, setAskSources] = useState<Record<string, unknown>[]>([]);
    const [askRunning, setAskRunning] = useState(false);
    const askAbort = useRef<(() => void) | null>(null);
    const [form, setForm] = useState({
@@ -153,7 +154,7 @@ export function KbPanel({ canWrite, onChanged }: { canWrite: boolean; onChanged?
       setBusy(true);
       setError(null);
       setAskAnswer("");
-      setAskSources("");
+      setAskSources([]);
       void api
          .kbSearch({ query: query.trim(), provider: provider || undefined })
          .then((data) => {
@@ -178,7 +179,7 @@ export function KbPanel({ canWrite, onChanged }: { canWrite: boolean; onChanged?
       setError(null);
       setSearch("");
       setAskAnswer("");
-      setAskSources("");
+      setAskSources([]);
       setAskRunning(true);
       askAbort.current = api.kbAskStream(
          { question: query.trim(), provider: provider || undefined },
@@ -186,7 +187,9 @@ export function KbPanel({ canWrite, onChanged }: { canWrite: boolean; onChanged?
             if (event.type === "token") {
                setAskAnswer((prev) => prev + String(event.content ?? ""));
             } else if (event.type === "sources") {
-               setAskSources(JSON.stringify(event.content ?? [], null, 2));
+               setAskSources(Array.isArray(event.content)
+                  ? event.content as Record<string, unknown>[]
+                  : []);
             } else if (event.type === "done") {
                setAskRunning(false);
                setBusy(false);
@@ -352,12 +355,35 @@ export function KbPanel({ canWrite, onChanged }: { canWrite: boolean; onChanged?
          </div>
 
          {search ? <pre className="set-store__path">{search}</pre> : null}
-         {askAnswer || askSources || askRunning ? (
+         {askAnswer || askSources.length > 0 || askRunning ? (
             <div className="set-store__login">
-               <pre className="set-store__path">{askAnswer || "…"}</pre>
-               {askSources ? (
-                  <pre className="set-store__path">{`来源：
-${askSources}`}</pre>
+               <div className="set-store__answer">
+                  <Markdown text={linkifyAnswer(askAnswer, askSources) || "…"}
+                            streaming={askRunning} />
+               </div>
+               {askSources.length > 0 ? (
+                  <ul className="set-store__sources">
+                     {askSources.map((source, index) => {
+                        const url = absoluteUrl(String(source.url || source.downloadUrl || ""));
+                        const name = String(source.filename || source.doc_name
+                           || `来源 ${index + 1}`);
+                        const label = name;
+                        const meta = [source.provider, source.kb_name]
+                           .filter(Boolean).join(" / ");
+                        return (
+                           <li key={`${url}:${index}`}>
+                              {url ? (
+                                 <a href={url} target="_blank" rel="noreferrer">
+                                    {label}
+                                 </a>
+                              ) : (
+                                 <span>{label}</span>
+                              )}
+                              {meta ? <span className="set-store__off"> · {meta}</span> : null}
+                           </li>
+                        );
+                     })}
+                  </ul>
                ) : null}
             </div>
          ) : null}
@@ -422,4 +448,27 @@ ${askSources}`}</pre>
          ) : null}
       </div>
    );
+}
+
+function linkifyAnswer(answer: string, sources: Record<string, unknown>[]): string {
+   if (!answer) return answer;
+   return answer.replace(/\[来源\s*(\d+)\](?!\()/g, (match, n: string) => {
+      const index = Number(n);
+      const source = sources.find((s) => Number(s.index) === index)
+         ?? sources[index - 1];
+      const url = absoluteUrl(String(source?.url || source?.downloadUrl || ""));
+      if (!url) return match;
+      const name = String(source?.filename || source?.doc_name || match);
+      return `[来源${index}：${name}](${url})`;
+   });
+}
+
+function absoluteUrl(url: string): string {
+   if (!url) return "";
+   if (/^https?:/i.test(url)) return url;
+   try {
+      return new URL(url, window.location.origin).toString();
+   } catch {
+      return url;
+   }
 }

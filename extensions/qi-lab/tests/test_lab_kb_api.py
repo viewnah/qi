@@ -173,7 +173,10 @@ def test_ask_stream(project, monkeypatch):
     def fake_stream(*args, **kwargs):
         yield {"type": "token", "content": "你", "provider": "alice"}
         yield {"type": "token", "content": "好", "provider": "alice"}
-        yield {"type": "sources", "content": [{"doc_name": "a.pdf"}], "provider": "alice"}
+        yield {"type": "sources", "content": [{
+            "index": 1, "doc_name": "a.pdf", "filename": "a.pdf",
+            "file_ref": "kb://alice/kb1/file1", "provider": "alice",
+        }], "provider": "alice"}
         yield {"type": "done", "provider": "alice", "kbIds": ["kb1"]}
 
     monkeypatch.setattr(service, "ask_stream", fake_stream)
@@ -183,3 +186,44 @@ def test_ask_stream(project, monkeypatch):
     assert "text/event-stream" in res.headers["content-type"]
     assert '"content": "你"' in res.text
     assert '"type": "done"' in res.text
+    assert '"url":' in res.text
+
+
+def test_links_are_stable_and_download_works(project, monkeypatch):
+    _seed_kb(project)
+    from qi_kb import service
+
+    monkeypatch.setattr(service, "search", lambda *a, **k: {
+        "provider": "alice", "query": "q", "results": [{
+            "content": "片段", "score": 0.5, "provider": "alice",
+            "kb_id": "kb1", "doc_id": "d1", "file_id": "file1",
+            "filename": "a.pdf", "file_ref": "kb://alice/kb1/file1",
+        }], "total": 1, "strategy": "hybrid", "rerankMethod": None,
+        "kbIds": ["kb1"], "warnings": [],
+    })
+    monkeypatch.setattr(service, "download_file", lambda *a, **k: {
+        "content": b"PDFDATA", "filename": "a.pdf",
+        "mediaType": "application/pdf",
+    })
+    with _client(project) as client:
+        body = client.post("/api/kb/search", json={"query": "q"}).json()
+        url = body["results"][0]["url"]
+        assert url == "/api/kb/files/alice/kb1/file1"
+        assert "?" not in url
+        assert client.get(url).content == b"PDFDATA"
+
+
+def test_ask_answer_links_are_rewritten(project, monkeypatch):
+    _seed_kb(project)
+    from qi_kb import service
+
+    monkeypatch.setattr(service, "ask", lambda *a, **k: {
+        "provider": "alice", "question": "q", "answer": "答案 [来源1]",
+        "sources": [{"index": 1, "doc_name": "a.pdf", "filename": "a.pdf",
+                     "provider": "alice", "file_ref": "kb://alice/kb1/file1"}],
+        "kbIdsUsed": ["kb1"], "evidenceSufficient": True, "warnings": [],
+    })
+    with _client(project) as client:
+        body = client.post("/api/kb/ask", json={"question": "q"}).json()
+    assert "[来源1](" in body["answer"]
+    assert "/api/kb/files/alice/kb1/file1" in body["answer"]

@@ -174,3 +174,25 @@ def test_client_ask_stream(kb_home):
         events = list(c.ask_stream("问题", ["kb1"]))
     assert [e["type"] for e in events] == ["token", "token", "sources", "done"]
     assert events[0]["content"] == "你"
+
+
+def test_client_download(kb_home):
+    write_kb(kb_home)
+    cfg = config.load()
+    store = auth.AuthStore()
+    store.set("alice", {"access": jwt(), "exp": int(time.time()) + 3600})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/rag/kb/kb1/files/f1/download")
+        return httpx.Response(
+            200, content=b"PDFDATA",
+            headers={"Content-Type": "application/pdf",
+                     "Content-Disposition": "attachment; filename*=UTF-8''a.pdf"},
+        )
+
+    http = httpx.Client(transport=httpx.MockTransport(handler))
+    with client.KbClient(cfg, "alice", auth_store=store, http=http) as c:
+        data = c.download("kb1", "f1")
+    assert data["content"] == b"PDFDATA"
+    assert data["filename"] == "a.pdf"
+    assert data["mediaType"] == "application/pdf"

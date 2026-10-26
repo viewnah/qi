@@ -38,7 +38,7 @@ def test_format_search_truncates_content():
         "query": "问", "provider": "alice", "kbIds": ["kb1"],
         "strategy": "hybrid", "rerankMethod": None,
         "results": [{"content": "x" * (fmt.MAX_CHUNK_CHARS + 50), "score": 0.5,
-                     "kbName": "测试库", "docName": "a.pdf",
+                     "kb_name": "测试库", "doc_name": "a.pdf",
                      "metadata": {"chunk_index": 3}}],
     }
     text = fmt.format_search(data)
@@ -68,8 +68,8 @@ async def test_tool_search(kb_home, monkeypatch):
     def fake_search(cwd, query, **kwargs):
         return {"query": query, "provider": "alice", "kbIds": ["kb1"],
                 "strategy": "hybrid", "rerankMethod": None,
-                "results": [{"content": "片段", "score": 0.5, "kbName": "测试库",
-                             "docName": "a.pdf", "metadata": {}}]}
+                "results": [{"content": "片段", "score": 0.5, "kb_name": "测试库",
+                             "doc_name": "a.pdf", "metadata": {}}]}
 
     monkeypatch.setattr(service, "search", fake_search)
     out = await _execute({"action": "search", "query": "问"}, _Ctx(kb_home))

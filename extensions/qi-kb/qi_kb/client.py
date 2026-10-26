@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import time
 from typing import Any, Callable
+from urllib.parse import unquote
 
 import httpx
 
@@ -252,6 +253,58 @@ class KbClient:
                     f"连不上 {self.provider.get('baseUrl')}：{exc}",
                     hint="检查 provider 的 baseUrl / apiPrefix 与网络",
                 ) from exc
+        message = last_body.get("message") if isinstance(last_body, dict) else None
+        raise NotLoggedIn(
+            f"provider `{self.provider_name}` 认证失败：{message or '令牌无效'}",
+            hint=f"`qi kb provider login {self.provider_name}`",
+        )
+
+
+    def download(self, kb_id: str, file_id: str) -> dict[str, Any]:
+        """下载源文件（给 qi-lab 的稳定链接代理用）。"""
+        path = f"/rag/kb/{kb_id}/files/{file_id}/download"
+        if not _is_allowed("GET", path):
+            raise UpstreamError(f"内部错误：GET {path} 不在白名单里")
+        url = auth.api_url(self.provider, path)
+        last_body: Any = None
+        for attempt in (1, 2):
+            info = auth.ensure_access(
+                self.cfg, self.provider_name, auth_store=self._auth_store,
+                http=self._http, force_refresh=(attempt == 2), clock=self._clock,
+            )
+            try:
+                response = self._http.get(
+                    url, headers={"Authorization": f"Bearer {info.access}"},
+                    timeout=120.0,
+                )
+            except httpx.HTTPError as exc:
+                raise UpstreamError(
+                    f"连不上 {self.provider.get('baseUrl')}：{exc}",
+                    hint="检查 provider 的 baseUrl / apiPrefix 与网络",
+                ) from exc
+            if response.status_code == 401 and attempt == 1:
+                try:
+                    last_body = response.json()
+                except ValueError:
+                    last_body = None
+                continue
+            if response.status_code >= 400:
+                try:
+                    body = response.json()
+                except ValueError:
+                    body = None
+                _unwrap_error(response.status_code, body, url)
+            disposition = response.headers.get("content-disposition", "")
+            filename = ""
+            if "filename*=UTF-8''" in disposition:
+                filename = unquote(disposition.split("filename*=UTF-8''", 1)[1].split(";", 1)[0].strip().strip('"'))
+            elif "filename=" in disposition:
+                filename = disposition.split("filename=", 1)[1].split(";", 1)[0].strip().strip('"')
+            return {
+                "content": response.content,
+                "filename": filename or file_id,
+                "mediaType": response.headers.get("content-type") or "application/octet-stream",
+            }
         message = last_body.get("message") if isinstance(last_body, dict) else None
         raise NotLoggedIn(
             f"provider `{self.provider_name}` 认证失败：{message or '令牌无效'}",

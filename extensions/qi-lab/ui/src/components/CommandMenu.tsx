@@ -17,12 +17,13 @@
  *      描述右对齐是刻意的 —— 所有描述收在同一条右边缘上,标题因此读成一列。
  *      别名(如 `/fork`)用三级字色,让人顺便学会斜杠写法。
  *
- * **键盘归 Composer(Dock)管**:dsh 用的是 combobox 形态 —— 焦点**始终留在输入框**,
- * 菜单只画一个高亮行(`aria-activedescendant`)。所以这里不接受 focus,行也只在
- * `onMouseDown` 上取(`preventDefault` 保住输入框焦点),真正的 ↑/↓/Enter/Esc 在
- * `Dock` 的 textarea `onKeyDown` 里处理。
+ * **键盘与关闭归 Composer(Dock)管**:dsh 用的是 combobox 形态 —— 焦点**始终留在输入框**,
+ * 菜单只画一个高亮行(`aria-activedescendant`)。所以这里不接受 focus:行是
+ * `tabIndex={-1}`,且只在 `onMouseDown` 上取(`preventDefault` 保住输入框焦点)。
+ * ↑/↓/Enter 在 `Dock` 的 textarea `onKeyDown` 里处理;**Esc / 点外部 / 焦点离开**
+ * 在 `Dock` 的 document 级监听里(菜单是 portal 出去的,关闭逻辑不能只靠输入框)。
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ReactNode, RefObject } from "react";
 
@@ -50,6 +51,9 @@ export function CommandMenu({
   emptyHint,
   /** 输入卡元素:菜单按它的 rect 定位(左/宽/贴在它上沿 4px)。 */
   anchor,
+  /** 菜单面板本身:Dock 用它判断“点外部 / 焦点离开”(portal 出去之后
+   * 已经不在 `anchor` 的 DOM 子树里,只能靠这个 ref 认)。 */
+  panelRef,
 }: {
   /** 已过滤的条目(顺序即显示顺序,分节按 `section` 变化自动插入标题)。 */
   items: CommandItem[];
@@ -63,10 +67,11 @@ export function CommandMenu({
    * 用 ref 而不是元素 —— 首帧 `ref.current` 还是 `null`,传元素会让菜单
    * 在第一帧拿不到位置(而且之后也不会自己重量)。 */
   anchor: RefObject<HTMLElement | null>;
+  /** 面板 ref:关闭逻辑在 Dock(点外部 / 焦点离开 / Esc)。 */
+  panelRef: RefObject<HTMLDivElement | null>;
 }) {
   const optionId = (index: number) => `qi-command-${index}`;
   const [rect, setRect] = useState<DOMRect | null>(null);
-  const panel = useRef<HTMLDivElement | null>(null);
 
   /**
    * 把高亮行滚进视野。
@@ -77,10 +82,10 @@ export function CommandMenu({
    */
   useEffect(() => {
     if (active < 0) return;
-    panel.current
+    panelRef.current
       ?.querySelector(`#${optionId(active)}`)
       ?.scrollIntoView({ block: "nearest" });
-  }, [active]);
+  }, [active, panelRef]);
 
   // 定位:量输入卡。窗口尺寸变化时重量一次(面板是 fixed,不重量就会错位)。
   useEffect(() => {
@@ -93,7 +98,7 @@ export function CommandMenu({
   if (rect === null) return null;
   return createPortal(
     <div
-      ref={panel}
+      ref={panelRef}
       id="qi-command-menu"
       className="cmdmenu"
       role="listbox"
@@ -122,6 +127,7 @@ export function CommandMenu({
             id={optionId(index)}
             type="button"
             role="option"
+            tabIndex={-1}
             aria-selected={index === active}
             className="cmdmenu__item"
             data-active={index === active}

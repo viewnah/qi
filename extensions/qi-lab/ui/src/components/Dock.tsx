@@ -39,7 +39,7 @@
  * 文本域用 `<textarea>` 自增长(max-height 由 CSS 封顶):`Enter` 发送、
  * `Shift+Enter` 换行。dsh 用 contenteditable(它要内联 chip),qi 不需要。
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgentMenu } from "./AgentMenu";
 import { KbMenu } from "./KbMenu";
 import { CommandMenu } from "./CommandMenu";
@@ -128,6 +128,10 @@ export function Dock({
   const ref = useRef<HTMLTextAreaElement | null>(null);
   /** 输入卡本身:指令菜单按它的 rect 定位(见 CommandMenu 的文件头)。 */
   const cardRef = useRef<HTMLDivElement | null>(null);
+  /** 菜单面板(portal 到 body):判断“点外部 / 焦点离开”时要用它。 */
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  /** 「+」触发件:点它交给自己的 toggle,不被“点外部关闭”抢走。 */
+  const addRef = useRef<HTMLButtonElement | null>(null);
   const canSend = !disabled && value.trim().length > 0;
   /** 当前智能体的 `opening`（选择 agent 时就能拿到，不依赖 run）。 */
   const opening = agent === null
@@ -194,6 +198,19 @@ export function Dock({
   /** `/` 之后的过滤串;由「+」打开时为空(显示全部)。 */
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
+  /**
+   * 这次 `/token` 是否已被用户**显式关掉**(Esc / 点外部 / 再点「+」)。
+   *
+   * 没有它的话,Esc 关掉菜单后输入框里还留着 `/foo` —— 再敲一个字又会立刻弹回来,
+   * 用户会觉得“退出没生效”。清掉 `/`、或换一段普通文本后重置。
+   */
+  const [dismissed, setDismissed] = useState(false);
+
+  // 输入被清空 / 变成普通文本时,**解除**“已忽略”状态:否则换会话或清空草稿后
+  // 第一次输入 `/` 会打不开菜单。
+  useEffect(() => {
+    if (!/^\/(\S*)$/.test(value)) setDismissed(false);
+  }, [value]);
 
   /** 可用性 + 过滤。`/` 之后的串按标题、别名、描述三处匹配(大小写不敏感)。 */
   const items = useMemo(() => {
@@ -212,11 +229,56 @@ export function Dock({
     });
   }, [canCompact, canFork, query]);
 
-  const closeMenu = () => {
-    setMenuOpen(false);
-    setQuery("");
-    setActive(0);
-  };
+  const closeMenu = useCallback(
+    (reason: "pick" | "submit" | "dismiss" = "pick") => {
+      setMenuOpen(false);
+      setQuery("");
+      setActive(0);
+      // 只有“用户主动关掉”才抑制重新弹出;执行指令 / 发送消息都不抑制。
+      setDismissed(reason === "dismiss" && /^\/(\S*)$/.test(value));
+    },
+    [value],
+  );
+
+  /**
+   * 菜单开着时的三条**全局**退出路径(Esc / 点外部 / 焦点离开);
+   * “再点 +”与“选中一条”在各自 handler 里。
+   *
+   * `pointerdown` 而不是 `click`:它早于目标控件的 click,关闭不会晚一帧;
+   * 且这里**不 preventDefault**,所以被点中的控件照常工作。
+   */
+  useEffect(() => {
+    if (!menuOpen) return;
+    const inside = (target: EventTarget | null) => {
+      if (!(target instanceof Node)) return false;
+      return Boolean(
+        menuRef.current?.contains(target) ||
+          ref.current?.contains(target) ||
+          addRef.current?.contains(target),
+      );
+    };
+    const dismiss = () => closeMenu("dismiss");
+    const onPointerDown = (event: PointerEvent) => {
+      if (!inside(event.target)) dismiss();
+    };
+    const onFocusIn = (event: FocusEvent) => {
+      if (!inside(event.target)) dismiss();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      event.preventDefault();
+      dismiss();
+      ref.current?.focus();
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("focusin", onFocusIn);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("focusin", onFocusIn);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [closeMenu, menuOpen]);
 
   /**
    * 执行一项指令。
@@ -227,7 +289,7 @@ export function Dock({
   const pick = (index: number) => {
     const item = items[index];
     if (item === undefined || item.disabled === true) return;
-    closeMenu();
+    closeMenu("pick");
     if (value.startsWith("/")) onChange("");
     onCommand(item.id);
   };
@@ -243,6 +305,8 @@ export function Dock({
 
   const submit = () => {
     if (!canSend) return;
+    // 发送是“离开菜单”的动作:即使菜单里没有可选项(Enter 落到发送),也要收起来。
+    closeMenu("submit");
     onSend();
   };
 
@@ -324,6 +388,7 @@ export function Dock({
               onHover={setActive}
               emptyHint={`没有匹配「${query}」的指令`}
               anchor={cardRef}
+              panelRef={menuRef}
             />
           ) : null}
           <textarea
@@ -349,11 +414,14 @@ export function Dock({
               // 整段就是 `/token` 才当命令:普通句子里出现的 `/` 不弹菜单。
               const slash = /^\/(\S*)$/.exec(next);
               if (slash) {
+                // 被 Esc / 点外部关掉之后,继续在同一个 `/token` 上敲字不再弹回来。
+                if (dismissed) return;
                 setQuery(slash[1] ?? "");
                 setActive(0);
                 setMenuOpen(true);
-              } else if (menuOpen) {
-                closeMenu();
+              } else {
+                setDismissed(false);
+                if (menuOpen) closeMenu("pick");
               }
             }}
             onKeyDown={(e) => {
@@ -377,11 +445,7 @@ export function Dock({
                     return;
                   }
                 }
-                if (e.key === "Escape") {
-                  e.preventDefault();
-                  closeMenu();
-                  return;
-                }
+                // Esc 由 document 级监听统一处理(焦点不在输入框时也能关)。
               }
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
@@ -394,6 +458,7 @@ export function Dock({
               {/* 左:调用指令。点一下**直接弹出指令列表**(`aria-haspopup="listbox"` +
                   `aria-expanded`,与 dsh 那颗加号一致);再点一下收起来。 */}
               <button
+                ref={addRef}
                 type="button"
                 className="composer__add"
                 aria-haspopup="listbox"
@@ -407,8 +472,9 @@ export function Dock({
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => {
                   if (menuOpen) {
-                    closeMenu();
+                    closeMenu("dismiss");
                   } else {
+                    setDismissed(false);
                     setQuery("");
                     setActive(0);
                     setMenuOpen(true);

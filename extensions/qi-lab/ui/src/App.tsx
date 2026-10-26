@@ -998,6 +998,9 @@ export function App() {
           /* 宿主支不支持**删角色**(`/api/meta` 的 `agent_write`):没有它 → Agent 那一节
              只读 —— 读端点一直在,所以只是少一个键(与 mcp_write 同一条降级规矩)。 */
           agentWrite={meta?.capabilities.agent_write === true}
+          /* 宿主支不支持应用助手目录的写端点(`/api/meta` 的 `assistant_write`):
+             没有它 → 设置页那一节只读 —— 读端点仍在,只是少一排写键。 */
+          assistantWrite={meta?.capabilities.assistant_write === true}
           /* 宿主支不支持**新建 provider**(`/api/meta` 的 `provider_write`)。
              没有它 → 「添加 Provider」只保留“登录已有”。 */
           providerWrite={meta?.capabilities.provider_write === true}

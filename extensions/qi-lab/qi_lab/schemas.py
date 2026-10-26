@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 #: AG-UI 改造是**破坏性**的:事件形状、传输形态(单 POST)、续传机制全变了,
 #: 所以升到 2。前端此刻仍声明 "1" → 会走它自己的显式报错分支(而不是白屏),
@@ -1095,3 +1095,85 @@ class KbUninstallResult(BaseModel):
 class KbDefaultsRequest(BaseModel):
     defaults: dict = Field(default_factory=dict)
     scope: Literal["global", "project"] = "global"
+
+
+# ── 应用助手目录(assistants.json,项目级)──────────────────
+#
+# 字段名与磁盘上的 JSON 一致:没有 camelCase ↔ snake_case 的翻译层。
+# `id` 由服务端生成;写端点返回整份列表视图,界面一次往返就刷新完。
+
+class AssistantInfo(BaseModel):
+    """一个应用助手。`url` 是**外链**,qi 不跟目标系统做任何交换。"""
+
+    id: str
+    name: str
+    description: str
+    tasks: list[str] = Field(default_factory=list)
+    outputs: list[str] = Field(default_factory=list)
+    url: str
+    keywords: list[str] = Field(default_factory=list)
+    #: 参与推荐 = true。停用只是隐藏，记录还在；删才是真没了。
+    enabled: bool = True
+
+
+class AssistantList(BaseModel):
+    """`GET /api/assistants` 的响应。
+
+    `unavailable` = 没装 qi-assistants 扩展(读不到目录,但界面不白屏)。
+    `created` / `skipped` 只在 `POST /api/assistants/import` 的响应里有意义。
+    """
+
+    path: str = ""
+    exists: bool = False
+    assistants: list[AssistantInfo] = Field(default_factory=list)
+    unavailable: bool = False
+    error: str = ""
+    created: int = 0
+    skipped: int = 0
+
+
+class AssistantWrite(BaseModel):
+    """`POST /api/assistants` —— 新建。`id` 不收,服务端生成。"""
+
+    #: 多一个键就 422:拼错字段名不该被静默忽略(尤其是把 `id` 传进来)。
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    description: str
+    tasks: list[str]
+    outputs: list[str]
+    url: str
+    keywords: list[str] | None = None
+    enabled: bool | None = None
+
+
+class AssistantPatch(BaseModel):
+    """`PATCH /api/assistants` —— 只改送来的键。
+
+    `null` 与省略同义(都不改);清空数组请传 `[]`。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    name: str | None = None
+    description: str | None = None
+    tasks: list[str] | None = None
+    outputs: list[str] | None = None
+    url: str | None = None
+    keywords: list[str] | None = None
+    enabled: bool | None = None
+
+
+class AssistantDelete(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+
+
+class AssistantImport(BaseModel):
+    """导入包内示例。`merge` 跳过同名;`replace` 先清空再写。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["merge", "replace"] = "merge"

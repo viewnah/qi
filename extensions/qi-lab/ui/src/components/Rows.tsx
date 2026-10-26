@@ -17,8 +17,9 @@
  * 折叠策略不变:**过程可折叠,结论不可折叠**。
  */
 import { useEffect, useState } from "react";
-import type { UiNode } from "../api/types";
+import type { AssistantCard, UiNode } from "../api/types";
 import { itemDepth, parseBanners, type SubSegment } from "../state/segments";
+import { isExternalHttpUrl } from "../state/url";
 import {
   IconBranchOutline16,
   IconCheckOutline16,
@@ -57,6 +58,57 @@ import type {
  * 因为运行期随时可能收到**旧宿主不认识的**节点(插件可能比宿主新),
  * 那种情况必须退回 JSON 显示,而不是丢弃。
  */
+/**
+ * 推荐卡组。**结论级**内容：过程块折叠时它仍然可见（`groupProcess` 会把它提成
+ * 独立的 `cards` 块）。同一份数据在工具详情里就不再画一遍（`Details` 的 `skipCards`）。
+ */
+function AssistantCards({ items }: { items: AssistantCard[] }) {
+  if (items.length === 0) {
+    return <div className="ui-note">没有可展示的助手。</div>;
+  }
+  return (
+    <div className="ui-assistants">
+      {items.map((item) => {
+        // 链接来自插件数据，不能假设它一定干净：协议/空白/凭据再挡一次。
+        const safe = isExternalHttpUrl(item.url);
+        return (
+          <article className="ui-assistant" key={item.id || item.name}>
+            <div className="ui-assistant__head">
+              <span className="ui-assistant__name">{item.name}</span>
+              {safe ? (
+                <a
+                  className="ui-assistant__go"
+                  href={item.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  进入助手 →
+                </a>
+              ) : (
+                <span className="ui-assistant__bad">链接不可用</span>
+              )}
+            </div>
+            {item.reason ? (
+              <p className="ui-assistant__reason">{item.reason}</p>
+            ) : null}
+            <p className="ui-assistant__desc">{item.description}</p>
+            <div className="ui-assistant__meta">
+              <span>
+                <b>典型任务</b>
+                {(item.tasks ?? []).join("、")}
+              </span>
+              <span>
+                <b>核心产出</b>
+                {(item.outputs ?? []).join("、")}
+              </span>
+            </div>
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
 function UiNodeView({ node }: { node: UiNode }) {
   switch (node.type) {
     case "list": {
@@ -132,6 +184,8 @@ function UiNodeView({ node }: { node: UiNode }) {
       );
     case "note":
       return <div className="ui-note">{node.text}</div>;
+    case "assistant_cards":
+      return <AssistantCards items={node.items ?? []} />;
     default:
       // 运行期可能收到比宿主新的节点类型。原样显示 JSON。**不丢**。
       return <pre className="evidence">{JSON.stringify(node, null, 2)}</pre>;
@@ -139,7 +193,14 @@ function UiNodeView({ node }: { node: UiNode }) {
 }
 
 /** 工具结构化结果:认得的走词汇表,不认得的(或没有的)退回原始 JSON。 */
-function Details({ details }: { details: Record<string, unknown> | null }) {
+function Details({
+   details,
+   skipCards = false,
+}: {
+   details: Record<string, unknown> | null;
+   /** 推荐卡已经提到过程块外，这里不再画第二遍。 */
+   skipCards?: boolean;
+}) {
   if (details === null) return null;
   if (details._truncated === true) {
     return (
@@ -150,9 +211,13 @@ function Details({ details }: { details: Record<string, unknown> | null }) {
   }
   const ui = details.ui;
   if (Array.isArray(ui)) {
+    const nodes = skipCards
+      ? ui.filter((node) => (node as { type?: unknown } | null)?.type !== "assistant_cards")
+      : ui;
+    if (nodes.length === 0) return null;
     return (
       <div className="ui">
-        {ui.map((node, i) => (
+        {nodes.map((node, i) => (
           <UiNodeView key={i} node={node as UiNode} />
         ))}
       </div>
@@ -592,10 +657,21 @@ function cost(row: ToolRowData): string {
  *
  * 状态不单靠颜色:运行中是脉动的点,结束必须带形符(设计清单第 9 条)。
  */
+function hasAssistantCards(details: Record<string, unknown> | null): boolean {
+  const ui = details?.ui;
+  if (!Array.isArray(ui)) return false;
+  return ui.some((node) => {
+    if (typeof node !== "object" || node === null) return false;
+    return (node as { type?: unknown }).type === "assistant_cards";
+  });
+}
+
 function Tool({ row }: { row: ToolRowData }) {
   const [open, setOpen] = useState(false);
   const [touched, setTouched] = useState(false);
   const running = row.status === "running";
+  // 推荐卡已经由 `groupProcess` 提到过程块外，这里只用来把重复的原始文本收进折叠。
+  const cards = hasAssistantCards(row.details);
   // 委派卡:一有直播就自动展开(同样只在用户没动过时)。结束后保持展开,
   // 横幅卡(Segments)直接接管视线 —— 用户刚盯着看的东西不能自己合上。
   // 普通工具(无直播)不自动展开:每次调用都弹开是闪动,不是信息。
@@ -645,7 +721,7 @@ function Tool({ row }: { row: ToolRowData }) {
           {args ? (
             <pre className="evidence">{JSON.stringify(row.args, null, 2)}</pre>
           ) : null}
-          {row.details ? <Details details={row.details} /> : null}
+          {row.details ? <Details details={row.details} skipCards /> : null}
           {/* 直播只在运行中出现;结束后 result 的横幅卡接管(同一批文字不显两遍) */}
           {running && row.activity.length > 0 ? (
             <ActivityPane entries={row.activity} />
@@ -653,7 +729,8 @@ function Tool({ row }: { row: ToolRowData }) {
           {/* 正文按横幅契约切成卡(切不动就整个退回原文,一个字不丢) */}
           {segs ? <Segments segs={segs} /> : null}
           {row.result ? (
-            segs ? (
+            segs || cards ? (
+              // 卡已经把同一段内容画出来了，原始文本收进折叠，避免同一批字显两遍。
               <details className="seg-raw">
                 <summary className="seg-raw__sum">原始输出</summary>
                 <pre
@@ -781,6 +858,7 @@ export function BlockView({
   onCopy: (text: string) => Promise<boolean>;
   onFork: (entryId: string) => void;
 }) {
+  if (block.kind === "cards") return <AssistantCards items={block.items} />;
   if (block.kind === "process") return <Process rows={block.rows} />;
   return (
     <RowView

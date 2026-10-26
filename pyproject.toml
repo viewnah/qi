@@ -62,4 +62,4 @@ asyncio_mode = "auto"
 # 新增一个 tests 目录不同步加进来,它就是静默不跑(没报错、也没覆盖)。
 testpaths = ["tests", "extensions/qi-agents/tests", "extensions/qi-lab/tests",
              "extensions/qi-a2a/tests", "extensions/qi-store/tests",
-             "extensions/qi-kb/tests"]
+             "extensions/qi-kb/tests", "extensions/qi-assistants/tests"]

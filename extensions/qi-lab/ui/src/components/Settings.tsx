@@ -24,6 +24,9 @@
  * 当前 cwd 仓库走的 `.qi/…`、`.agents/skills/`)不展示、也不写 —— 过滤口径集中在
  * `state/scope.ts`。后端契约不变(CLI 与其它宿主仍可读写项目层)。
  *
+ * **唯一的例外是「应用助手」**:它本来就只有项目级(`.qi/assistants.json`),没有全局层，
+ * 所以这一节直接写当前 cwd 的那份文件,页头把绝对路径写出来。
+ *
  * 唯一可写动作是**凭证**:必须过二次确认层(显示目标文件绝对路径 + 掩码值),
  * 请求再带 `X-Qi-Confirm: yes`(后端也拦,双保险)。
  */
@@ -55,6 +58,7 @@ import type {
 import { ConfirmDialog } from "./ConfirmDialog";
 import { StorePanel } from "./StorePanel";
 import { KbPanel } from "./KbPanel";
+import { AssistantsPanel } from "./AssistantsPanel";
 import {
    A2ADeleteDialog,
    A2ADialog,
@@ -87,6 +91,7 @@ import {
 export type SettingsSectionKey =
    | "models"
    | "agents"
+   | "assistants"
    | "skills"
    | "store"
    | "kb"
@@ -117,6 +122,7 @@ const SECTIONS: {
 }[] = [
    { key: "models", label: "模型", icon: <IconDataOutline16 size={16} /> },
    { key: "agents", label: "Agent", icon: <IconAgentPresetOutline16 size={16} /> },
+   { key: "assistants", label: "应用助手", icon: <IconAgentPresetOutline16 size={16} /> },
    { key: "skills", label: "技能", icon: <IconSkillOutline16 size={16} /> },
    { key: "mcp", label: "MCP", icon: <IconLinkOutline16 size={16} /> },
    { key: "a2a", label: "A2A", icon: <IconShareOutline16 size={16} /> },
@@ -187,6 +193,7 @@ export function Settings({
    mcpWrite = false,
    a2aWrite = false,
    agentWrite = false,
+   assistantWrite = false,
    providerWrite = false,
    storeWrite = false,
    kbWrite = false,
@@ -221,6 +228,11 @@ export function Settings({
     * 只读展示(读端点一直在)。
     */
    agentWrite?: boolean;
+   /**
+    * 宿主支不支持**应用助手目录的写端点**(`/api/meta` 的 `assistant_write`)。
+    * 没有它 → 这一节只读(读端点仍在)。
+    */
+   assistantWrite?: boolean;
    /**
     * 宿主支不支持**新建 provider**(`/api/meta` 的 `provider_write`)。没有它 →
     * 「添加 Provider」只保留“登录已有 provider”那条路(写凭证的端点一直在)。
@@ -282,6 +294,11 @@ export function Settings({
     */
    const [mcpError, setMcpError] = useState<string | null>(null);
    const [mcpBusy, setMcpBusy] = useState(false);
+   /**
+    * 应用助手面板里压着一层弹层(新建 / 编辑 / 删除 / 导入)。
+    * 它由面板自己管;外壳只知道"有弹层",`Esc` 时先让它关,别把整个设置一起关掉。
+    */
+   const [assistantModal, setAssistantModal] = useState(false);
    /** 角色删除:待删的那个、错误与在写标记(错误**报在弹层里** —— 顶部 notice 被遮罩挡着)。 */
    const [agentRemoving, setAgentRemoving] = useState<AgentInfo | null>(null);
    const [agentError, setAgentError] = useState<string | null>(null);
@@ -343,6 +360,7 @@ export function Settings({
    useEffect(() => {
       const onKeyDown = (event: KeyboardEvent) => {
          if (event.key !== "Escape") return;
+         if (assistantModal) return;      // 面板自己的 ConfirmDialog 会处理这一下
          if (editing !== null) {
             setEditing(null);
             return;
@@ -380,8 +398,8 @@ export function Settings({
       };
       document.addEventListener("keydown", onKeyDown, true);
       return () => document.removeEventListener("keydown", onKeyDown, true);
-   }, [onClose, editing, providerAdding, removing, skillRemoving, mcpTarget, mcpRemoving,
-       agentRemoving]);
+   }, [onClose, assistantModal, editing, providerAdding, removing, skillRemoving,
+       mcpTarget, mcpRemoving, agentRemoving]);
 
    /**
     * 技能清单**每次进这一节都重读**。
@@ -1017,6 +1035,22 @@ export function Settings({
                               ))}
                            </ul>
                         )}
+                     </Section>
+                  ) : null}
+
+                  {section === "assistants" ? (
+                     <Section
+                        title="应用助手"
+                        intro={
+                           <>
+                              项目级目录（<code>.qi/assistants.json</code>）：
+                              名称、描述、典型任务、核心产出与跳转链接。只有「启用」的会被
+                              角色「训练评估」推荐；链接是外链，点击在新标签打开。
+                           </>
+                        }
+                     >
+                        <AssistantsPanel canWrite={assistantWrite}
+                                         onModalChange={setAssistantModal} />
                      </Section>
                   ) : null}
 

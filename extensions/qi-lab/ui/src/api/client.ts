@@ -23,6 +23,9 @@ import type {
   AgentDeleteBody,
   AgentInfo,
   AgentList,
+  AssistantList,
+  AssistantPatchBody,
+  AssistantWriteBody,
   AguiEvent,
   /** 手动压缩的结果(`POST /api/sessions/{id}/compact`)。 */
   CompactionResult,
@@ -252,6 +255,42 @@ export const api = {
     }),
 
   agentList: async (): Promise<AgentInfo[]> => (await api.agents()).agents,
+
+  // ── 应用助手目录(项目级 assistants.json)────────────────
+  //
+  // 推荐不在这里:推荐是角色 `训练评估` 在对话里调工具完成的。这里只有 CRUD,
+  // 且四个写端点都回**整份列表视图**(一次往返刷新完)。
+
+  assistants: () => request<AssistantList>("/api/assistants"),
+
+  createAssistant: (body: AssistantWriteBody) =>
+    request<AssistantList>("/api/assistants", {
+      method: "POST",
+      headers: { "X-Qi-Confirm": "yes" },
+      body: JSON.stringify(body),
+    }),
+
+  updateAssistant: (body: AssistantPatchBody) =>
+    request<AssistantList>("/api/assistants", {
+      method: "PATCH",
+      headers: { "X-Qi-Confirm": "yes" },
+      body: JSON.stringify(body),
+    }),
+
+  deleteAssistant: (id: string) =>
+    request<AssistantList>("/api/assistants", {
+      method: "DELETE",
+      headers: { "X-Qi-Confirm": "yes" },
+      body: JSON.stringify({ id }),
+    }),
+
+  /** 导入包内示例:`merge` 跳过同名,`replace` 先清空。 */
+  importAssistants: (mode: "merge" | "replace" = "merge") =>
+    request<AssistantList>("/api/assistants/import", {
+      method: "POST",
+      headers: { "X-Qi-Confirm": "yes" },
+      body: JSON.stringify({ mode }),
+    }),
 
   config: () => request<ConfigView>("/api/config"),
 

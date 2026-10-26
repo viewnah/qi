@@ -359,7 +359,7 @@ describe("groupProcess(把一轮的过程收成一个块)", () => {
     partial as Row;
   const think = (key: string): Row =>
     row({ kind: "think", key, text: "想", live: false });
-  const tool = (key: string): Row =>
+  const tool = (key: string, details: Record<string, unknown> | null = null): Row =>
     row({
       kind: "tool",
       key,
@@ -371,7 +371,7 @@ describe("groupProcess(把一轮的过程收成一个块)", () => {
       exitCode: 0,
       error: null,
       result: "",
-      details: null,
+      details,
       activity: [],
     });
   const say = (key: string, tone: "final" | "narration"): Row =>
@@ -411,6 +411,32 @@ describe("groupProcess(把一轮的过程收成一个块)", () => {
   it("没有过程行时一个块都不出", () => {
     const blocks = groupProcess([say("f1", "final")]);
     expect(blocks.map((b) => b.kind)).toEqual(["row"]);
+  });
+
+  it("推荐卡提到过程块外,成为独立块(过程折叠也看得见)", () => {
+    const card = {
+      id: "as_1",
+      name: "评估方案生成助手",
+      description: "生成方案",
+      tasks: ["意图分析"],
+      outputs: ["评估方案文档"],
+      url: "https://eval.example.com/plan",
+      reason: "任务需要先出方案",
+    };
+    const blocks = groupProcess([
+      think("t1"),
+      tool("x1", { ui_version: 1, ui: [{ type: "assistant_cards", items: [card] }] }),
+      say("n1", "narration"),
+      say("f1", "final"),
+    ]);
+    // 卡片跟着**整段过程**一起收口：过程 → 卡片 → 结论，不会被后续过程行截断。
+    expect(blocks.map((b) => b.kind)).toEqual(["process", "cards", "row"]);
+    const first = blocks[0];
+    if (first?.kind !== "process") throw new Error("第一块应当是过程块");
+    expect(first.rows.map((r) => r.key)).toEqual(["t1", "x1", "n1"]);
+    const cards = blocks[1];
+    if (cards?.kind !== "cards") throw new Error("第二块应当是推荐卡");
+    expect(cards.items).toEqual([card]);
   });
 
   it("两轮各自成块(中间隔着结论,不会跨轮合并)", () => {

@@ -291,7 +291,20 @@ export type UiNode =
    | { type: "kv"; rows: [string, string][] }
    | { type: "progress"; value: number; max: number; label?: string }
    | { type: "code"; lang?: string; text: string }
-   | { type: "note"; text: string };
+   | { type: "note"; text: string }
+   /** v1.2：应用助手推荐卡。`url` 是外链；渲染端仍要再校验一次协议。 */
+   | { type: "assistant_cards"; items: AssistantCard[] };
+
+/** `assistant_cards` 里的一项。字段与目录一致，`reason` 是模型给的一句推荐理由。 */
+export interface AssistantCard {
+   id: string;
+   name: string;
+   description: string;
+   tasks: string[];
+   outputs: string[];
+   url: string;
+   reason: string;
+}
 
 /** `details["ui"]` 的载荷形状。`ui_version` 用于将来做兼容判断。 */
 export interface UiPayload {
@@ -447,6 +460,65 @@ export interface McpDeleteBody {
 export interface AgentList {
    agents: AgentInfo[];
    unavailable: boolean;
+}
+
+// ── 应用助手目录(项目级 `.qi/assistants.json`)──────────────
+
+/**
+ * 一个应用助手。`url` 是**外链**：点击在新标签打开，qi 不跟目标系统交换数据。
+ *
+ * 字段名与磁盘 JSON 一致（没有 camelCase 翻译层）。`id` 由服务端生成、不可改。
+ */
+export interface AssistantInfo {
+   id: string;
+   name: string;
+   description: string;
+   tasks: string[];
+   outputs: string[];
+   url: string;
+   /** 只用于召回，不展示。 */
+   keywords: string[];
+   /** 参与推荐 = true。停用只是隐藏，记录还在；删才是真没了。 */
+   enabled: boolean;
+}
+
+/**
+ * `GET /api/assistants`。`unavailable` = 没装 qi-assistants（界面说清楚，而不是当空目录）。
+ *
+ * `created` / `skipped` 只在 `POST /api/assistants/import` 的响应里有意义。
+ */
+export interface AssistantList {
+   /** 项目级文件绝对路径（让“写到哪儿”在界面上可见）。 */
+   path: string;
+   exists: boolean;
+   assistants: AssistantInfo[];
+   unavailable: boolean;
+   error: string;
+   created: number;
+   skipped: number;
+}
+
+/** `POST /api/assistants`：`id` 不收，由服务端生成。 */
+export interface AssistantWriteBody {
+   name: string;
+   description: string;
+   tasks: string[];
+   outputs: string[];
+   url: string;
+   keywords?: string[];
+   enabled?: boolean;
+}
+
+/** `PATCH /api/assistants`：只改送来的键；`null` 与省略同义。 */
+export interface AssistantPatchBody {
+   id: string;
+   name?: string;
+   description?: string;
+   tasks?: string[];
+   outputs?: string[];
+   url?: string;
+   keywords?: string[];
+   enabled?: boolean;
 }
 
 /**

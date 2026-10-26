@@ -693,6 +693,21 @@ v1.1 **没有**引入树节点(嵌套仍靠 `depth` 平铺表达),这是刻意�
 "一张卡一个 agent"(`segments.ts: parseBanners`,切不动就退回原文 `<pre>` )。
 两条路各管一半:**结构进 `details`,正文进 `result`,不重复存储**。
 
+#### v1.2(2026-10-26,由应用助手推荐引入)
+
+| 新增 | 谁发 | 老渲染端的降级 |
+| --- | --- | --- |
+| `assistant_cards`(`items[]` 带 `id/name/description/tasks/outputs/url/reason`) | qi-assistants 的 `assistant_recommend` 工具 | 不认识的 `type` → 退回原始 JSON(硬规则 1),链接与文字都不丢 |
+
+宿主侧:卡片在 `extensions/qi-lab/ui/src/components/Rows.tsx`(`UiNodeView`),外链在
+`state/url.ts` 里再校验一次(`http(s)`、无凭据、无空白/反斜杠)。卡片**不留在过程块里**:
+`state/turn.ts` 的 `groupProcess` 把它提成独立的 `cards` 块,放在过程之后、结论之前 ——
+过程默认折叠,但卡片始终可见。工具详情不再重复画卡,原始文本收进「原始输出」折叠。
+
+与 v1.1 的分工一样:**结构进 `details`,正文进 `result`**。区别是这里的 `url` 是
+**数据**,不是模型生成的文本 —— 模型只选 `id`,链接由 `assistant_recommend` 从目录回填,
+所以渲染端拿到的一定是目录里的那一份。词汇表仍然只约定已知键、不禁止附加键。
+
 ### 16.3 为什么是数据契约,不是代码契约
 
 三种成熟做法摆在一起:

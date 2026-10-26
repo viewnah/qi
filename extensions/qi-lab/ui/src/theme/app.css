@@ -2742,18 +2742,18 @@ pre,
 
 /* 状态类标签只换色相、不换形状:整张卡里"形状"只承担"这是标签"这一件事。 */
 .set-card__tag--on {
- border-color: var(--dsw-alias-state-success-border, #b7ddc6);
+ border-color: var(--dsw-alias-state-success-tertiary);
  color: var(--dsw-alias-state-success-primary);
 }
 
 .set-card__tag--off {
- border-color: var(--dsw-alias-state-error-border, #e7c4c0);
+ border-color: var(--dsw-alias-state-error-bg);
  color: var(--dsw-alias-state-error-primary);
 }
 
 .set-card__tag--warn {
- border-color: var(--dsw-alias-state-warning-border, #e6d7ae);
- color: var(--dsw-alias-state-warning-primary, #8a6a00);
+ border-color: var(--dsw-alias-state-warning-bg);
+ color: var(--dsw-alias-state-warn-primary);
 }
 
 .set-card__actions {
@@ -3579,6 +3579,89 @@ pre,
  color: var(--dsw-alias-state-error-primary);
 }
 
+/* 应用助手推荐卡(v1.2 `assistant_cards`)。它是**这一轮的结论**,不是证据块:
+   所以是一张张可点的卡,而不是等宽文本。网格按可用宽度自适应,窄屏单列。 */
+.ui-assistants {
+ display: grid;
+ grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+ gap: 10px;
+ /* 它是过程块之外的**结论级**卡组：与上方的过程、下方的回答各留一口气。 */
+ margin: 12px 0;
+}
+
+.ui-assistant {
+ display: flex;
+ flex-direction: column;
+ gap: 6px;
+ min-width: 0;
+ padding: 12px 14px;
+ border: 0.5px solid var(--dsw-alias-border-l2);
+ border-radius: var(--dsw-radius-md);
+ background: var(--dsw-alias-bg-layer-2);
+}
+
+.ui-assistant__head {
+ display: flex;
+ align-items: center;
+ gap: 8px;
+}
+
+.ui-assistant__name {
+ flex: 1;
+ min-width: 0;
+ overflow: hidden;
+ color: var(--dsw-alias-label-primary);
+ font: var(--dsw-font-s-strong-14);
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+
+.ui-assistant__go {
+ flex: none;
+ color: var(--dsw-alias-state-business-primary);
+ font: var(--dsw-font-xxs-12);
+ text-decoration: none;
+ white-space: nowrap;
+}
+
+.ui-assistant__go:hover {
+ text-decoration: underline;
+}
+
+.ui-assistant__bad {
+ flex: none;
+ color: var(--dsw-alias-state-error-primary);
+ font: var(--dsw-font-xxs-12);
+}
+
+.ui-assistant__reason,
+.ui-assistant__desc {
+ margin: 0;
+ color: var(--dsw-alias-label-secondary);
+ font: var(--dsw-font-xxs-12);
+ overflow-wrap: anywhere;
+}
+
+.ui-assistant__desc {
+ color: var(--dsw-alias-label-tertiary);
+}
+
+.ui-assistant__meta {
+ display: flex;
+ flex-direction: column;
+ gap: 3px;
+ padding-top: 8px;
+ border-top: 0.5px solid var(--dsw-alias-border-l1);
+ color: var(--dsw-alias-label-secondary);
+ font: var(--dsw-font-xxs-12);
+}
+
+.ui-assistant__meta b {
+ margin-right: 6px;
+ color: var(--dsw-alias-label-tertiary);
+ font-weight: 400;
+}
+
 /* ── 委派分段(`parseBanners` 从横幅正文切出的卡)──────────────────
    形状抄 TUI 的 AgentCard:一张卡一个 agent,卡头「名字 ← 归属 · 深度 ✓/✗」,
    卡内三区 `·` 活动 / `✎` 思考 / 输出;层级用缩进,**不画树地图**。
@@ -4351,4 +4434,9 @@ pre,
 .set-skill__hint {
  color: var(--dsw-alias-label-tertiary);
  font: var(--dsw-font-xxs-12);
+}
+
+/* 应用助手:卡片里的链接是外链,长 URL 必须能在卡片内硬断(不撑破网格轨道)。 */
+.set-card__fields .set-mono {
+ overflow-wrap: anywhere;
 }

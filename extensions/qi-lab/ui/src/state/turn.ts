@@ -8,7 +8,7 @@
  * 为什么用 `switch (ev.type)`:AG-UI 是判别联合,switch 能被编译器**穷尽检查**,
  * 漏一个分支就编译不过。旧版"读 SSE 的 event: 名 + 手写 kind 表"做不到这一点。
  */
-import type { AguiEvent, Entry } from "../api/types";
+import type { AguiEvent, AssistantCard, Entry } from "../api/types";
 import { QI_CUSTOM } from "../api/types";
 
 // ── 行模型 ──────────────────────────────────────────────
@@ -414,10 +414,34 @@ export function lastUsage(entries: Entry[]): Record<string, unknown> | null {
  */
 export type ProcessRow = ThinkRow | ToolRowData | SayRow;
 
-/** 转录的渲染单元:单行,或一个可折叠的过程块。 */
+/** 转录的渲染单元:单行、一个可折叠的过程块,或一张**结论级**的推荐卡组。 */
 export type Block =
   | { kind: "row"; key: string; row: Row }
-  | { kind: "process"; key: string; rows: ProcessRow[] };
+  | { kind: "process"; key: string; rows: ProcessRow[] }
+  /**
+   * 从工具 `details["ui"]` 里提取出来的推荐卡。
+   *
+   * 它**必须**是独立块,不能留在过程块里:过程块默认折叠,卡片是这一轮的结论,
+   * 折起来就等于没推荐。工具行本身仍留在过程块里(证据仍可展开查看),
+   * 卡片在过程块之后、结论之前,始终可见。
+   */
+  | { kind: "cards"; key: string; items: AssistantCard[] };
+
+/** 一个过程行里带的推荐卡(只有工具行可能有)。没有就是空数组。 */
+export function assistantCardsOf(row: ProcessRow): AssistantCard[] {
+  if (row.kind !== "tool") return [];
+  const ui = row.details?.ui;
+  if (!Array.isArray(ui)) return [];
+  const out: AssistantCard[] = [];
+  for (const node of ui) {
+    if (typeof node !== "object" || node === null) continue;
+    const candidate = node as { type?: unknown; items?: unknown };
+    if (candidate.type !== "assistant_cards") continue;
+    if (!Array.isArray(candidate.items)) continue;
+    out.push(...(candidate.items as AssistantCard[]));
+  }
+  return out;
+}
 
 function isProcessRow(row: Row): row is ProcessRow {
   return (
@@ -439,20 +463,37 @@ function isProcessRow(row: Row): row is ProcessRow {
  * `提问 → 分派 → [过程] → 回答`,中间夹着的工具往返全在块里。
  * `final` 回答 / `opening` 开场白 / 分派 / 标记 / 错误都**不进块** ——
  * 它们是结论或元信息,本来就该单独可见。
+ *
+ * 一个例外:**推荐卡**(工具 `details.ui` 里的 `assistant_cards`)提到过程块之外,
+ * 成为独立的 `cards` 块。它和 `final` 一样是结论,不能随过程一起折起来。
  */
 export function groupProcess(rows: Row[]): Block[] {
   const blocks: Block[] = [];
   let pending: ProcessRow[] = [];
   let pendingKey = "";
+  /** 本段过程里出现的推荐卡；跟着过程块一起收口，不打断过程。 */
+  let pendingCards: AssistantCard[] = [];
+  let cardsKey = "";
   const flush = () => {
-    if (pending.length === 0) return;
-    blocks.push({ kind: "process", key: pendingKey, rows: pending });
-    pending = [];
+    if (pending.length > 0) {
+      blocks.push({ kind: "process", key: pendingKey, rows: pending });
+      pending = [];
+    }
+    if (pendingCards.length > 0) {
+      blocks.push({ kind: "cards", key: cardsKey, items: pendingCards });
+      pendingCards = [];
+      cardsKey = "";
+    }
   };
   for (const row of rows) {
     if (isProcessRow(row)) {
       if (pending.length === 0) pendingKey = row.key;
       pending.push(row);
+      const cards = assistantCardsOf(row);
+      if (cards.length > 0) {
+        if (cardsKey === "") cardsKey = `${row.key}:cards`;
+        pendingCards.push(...cards);
+      }
       continue;
     }
     flush();

@@ -47,7 +47,7 @@ Python 侧是 editable 安装,改完即生效;前端改动要 `cd ui && npm run 
 
 ### 2. 写操作的第二道闸:确认头
 
-**24 条写端点**要求显式带:
+**28 条写端点**要求显式带:
 
 ```
 X-Qi-Confirm: yes
@@ -71,6 +71,10 @@ X-Qi-Confirm: yes
 | `POST /api/skills/import` | 导入技能 |
 | `POST /api/skills/reload` | 重扫技能缓存(不写文件,但保住“`POST /api/skills` 系列一律带确认头”的规矩) |
 | `DELETE /api/agents` | 删角色(整目录) |
+| `POST /api/assistants` | 新建应用助手 |
+| `PATCH /api/assistants` | 改应用助手 |
+| `DELETE /api/assistants` | 删应用助手 |
+| `POST /api/assistants/import` | 导入应用助手示例 |
 | `POST /api/store/login` | 商店登录(写本地凭证) |
 | `POST /api/store/logout` | 商店退出(删本地凭证) |
 | `POST /api/store/install` | 安装商店条目 |
@@ -141,7 +145,7 @@ curl -X PATCH http://127.0.0.1:3456/api/mcp -H 'X-Qi-Confirm: yes' -H 'Content-T
 
 ---
 
-## 端点总表(65)
+## 端点总表(70)
 
 | 方法 | 路径 | 说明 | 文档 |
 | --- | --- | --- | --- |
@@ -166,6 +170,11 @@ curl -X PATCH http://127.0.0.1:3456/api/mcp -H 'X-Qi-Confirm: yes' -H 'Content-T
 | GET | `GET /api/files/raw` | 原字节预览(图片/PDF/HTML) | `files.md` |
 | GET | `GET /api/agents` | 角色列表(qi-agents) | `agents.md` |
 | DELETE | `DELETE /api/agents` | 删角色(整目录,需确认头) | `agents.md` |
+| GET | `GET /api/assistants` | 应用助手目录(含 draft / archived) | `assistants.md` |
+| POST | `POST /api/assistants` | 新建助手(201,需确认头) | `assistants.md` |
+| PATCH | `PATCH /api/assistants` | 改助手(只改送来的键,需确认头) | `assistants.md` |
+| DELETE | `DELETE /api/assistants` | 删助手(需确认头) | `assistants.md` |
+| POST | `POST /api/assistants/import` | 导入示例(需确认头) | `assistants.md` |
 | GET | `GET /api/mcp` | MCP 声明表(三层,只回结构) | `mcp.md` |
 | POST | `POST /api/mcp` | 新建 server(201,需确认头) | `mcp.md` |
 | PATCH | `PATCH /api/mcp` | 改 server(只改送来的键) | `mcp.md` |
@@ -224,6 +233,7 @@ curl -X PATCH http://127.0.0.1:3456/api/mcp -H 'X-Qi-Confirm: yes' -H 'Content-T
 | [`mcp.md`](mcp.md) | MCP 声明的读与增删改(三层、确认头、只改送来的键) |
 | [`a2a.md`](a2a.md) | A2A 条目:两层深合并、确认头、`null` = 不改、名片探测、手写页面 `GET /a2a` |
 | [`agents.md`](agents.md) | 角色:读(元数据,不回正文)与删除(两层、按显示名、整目录、只删该层) |
+| [`assistants.md`](assistants.md) | 应用助手目录:字段、CRUD、导入示例、URL 规则、状态码 |
 | [`config.md`](config.md) | 配置/模型/扩展的只读视图,凭证写入 |
 | [`skills.md`](skills.md) | 技能:读(六层来源)与添加 / 删除 / 导入 / 重扫缓存(确认头、可写边界、zip 防御) |
 | [`workspaces.md`](workspaces.md) | 工作区显示名、删除语义、目录选择器 |

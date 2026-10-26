@@ -36,7 +36,8 @@ from qi_agent.llm import THINKING_LEVELS
 from qi_agent.loader import LoadError
 from qi_agent.session import usage_summary
 from qi_agent.workspaces import WorkspaceStore, normalize
-from . import (activity, agui, agents as agentapi, browse, files as fileapi,
+from . import (activity, agui, agents as agentapi, browse,
+               assistants as assistantapi, files as fileapi,
                schemas, skills as skillapi)
 from .security import check_credentials, check_host, mask_key
 from .serve import pin_role, remote_role_for
@@ -177,6 +178,10 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
                           "store_write": _store_available(),
                           # 知识库面：qi-kb 的 provider / KB / 检索问答。
                           "kb_write": _kb_available(),
+                          # 应用助手目录:真的 import 一次 qi-assistants(同 store/kb)。
+                          # 没有它 → 设置页「应用助手」只读;读端点仍在但会回
+                          # unavailable,不会 500。
+                          "assistant_write": assistantapi.probe()[0],
                           # 扩展面:插件据这两个开关决定要不要发结构化 UI。
                           # `ag_ui` = 事件形状是 AG-UI;`ui_v1` = 认 details["ui"] 的词汇表
                           # (见 design/web.md §16.2)。缺哪个都退回"折叠显示原始 JSON"。
@@ -352,6 +357,82 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
         servers.pop(name)
         _write_mcp_servers(path, servers)
         return await list_mcp()
+
+    # ── 应用助手目录(项目级 assistants.json)──────────────
+    # 与 MCP / A2A 同一套写闸(确认头 + 读端回结构),三处不同:
+    #   · **只有一层**:没有 global/project 合并,也没有 `scope` 参数;
+    #   · **只支持外链**:`url` 必须是 http(s) 绝对地址,qi 不跟目标系统交换数据;
+    #   · **目录由独立扩展提供**:没装 qi-assistants 时读端回 `unavailable`,
+    #     写端 503,能力位 `assistant_write` 为 false(界面据此把那一节变只读)。
+    # 四个写端点都返回**整份列表视图**:界面一次往返刷新完,不必再补一次 GET。
+
+    def _assistant_call(fn, /, *args, **kwargs):
+        """把 `AssistantError.status` 翻成 HTTPException(同步函数,供 to_thread)。"""
+        try:
+            return fn(*args, **kwargs)
+        except assistantapi.AssistantError as exc:
+            raise HTTPException(status_code=exc.status, detail=exc.detail) from exc
+
+    async def _assistant_view() -> schemas.AssistantList:
+        ok, reason = assistantapi.probe()
+        if not ok:
+            return schemas.AssistantList(unavailable=True, error=reason)
+        data = await asyncio.to_thread(
+            _assistant_call, assistantapi.read, web.default_cwd)
+        return schemas.AssistantList(**data)
+
+    @app.get("/api/assistants", response_model=schemas.AssistantList,
+             dependencies=[Depends(guard)])
+    async def list_assistants() -> schemas.AssistantList:
+        """读整个目录(含已停用的条目;是否展示由调用方决定)。"""
+        return await _assistant_view()
+
+    @app.post("/api/assistants", status_code=201,
+              response_model=schemas.AssistantList, dependencies=[Depends(guard)])
+    async def create_assistant(body: schemas.AssistantWrite,
+                               confirm: str | None = Header(None, alias="X-Qi-Confirm")
+                               ) -> schemas.AssistantList:
+        """新建一条;`id` 由服务端生成,同名(忽略大小写)→ 409。"""
+        confirm_gate(confirm)
+        payload = body.model_dump(exclude_none=True)
+        data = await asyncio.to_thread(
+            _assistant_call, assistantapi.create, web.default_cwd, payload)
+        return schemas.AssistantList(**data)
+
+    @app.patch("/api/assistants", response_model=schemas.AssistantList,
+               dependencies=[Depends(guard)])
+    async def patch_assistant(body: schemas.AssistantPatch,
+                              confirm: str | None = Header(None, alias="X-Qi-Confirm")
+                              ) -> schemas.AssistantList:
+        """局部更新:**只改送来的键**;`null` / 省略 = 不改,清空数组传 `[]`。"""
+        confirm_gate(confirm)
+        patch = body.model_dump(exclude_unset=True, exclude_none=True)
+        patch.pop("id", None)
+        data = await asyncio.to_thread(
+            _assistant_call, assistantapi.update, web.default_cwd, body.id, patch)
+        return schemas.AssistantList(**data)
+
+    @app.delete("/api/assistants", response_model=schemas.AssistantList,
+                dependencies=[Depends(guard)])
+    async def delete_assistant(body: schemas.AssistantDelete,
+                               confirm: str | None = Header(None, alias="X-Qi-Confirm")
+                               ) -> schemas.AssistantList:
+        """硬删一条。想“下线但保留”请把 `enabled` 改成 `false`。"""
+        confirm_gate(confirm)
+        data = await asyncio.to_thread(
+            _assistant_call, assistantapi.delete, web.default_cwd, body.id)
+        return schemas.AssistantList(**data)
+
+    @app.post("/api/assistants/import", response_model=schemas.AssistantList,
+              dependencies=[Depends(guard)])
+    async def import_assistants(body: schemas.AssistantImport,
+                                confirm: str | None = Header(None, alias="X-Qi-Confirm")
+                                ) -> schemas.AssistantList:
+        """导入包内示例:`merge` 跳过同名(重复点不报错),`replace` 先清空。"""
+        confirm_gate(confirm)
+        data = await asyncio.to_thread(
+            _assistant_call, assistantapi.import_seed, web.default_cwd, body.mode)
+        return schemas.AssistantList(**data)
 
     # ── A2A 条目(两层 a2a.json):读 + 增删改 + 探测 ──────
     # 与 MCP 同一套规矩(确认头、只写读端指的那一层、值只进不回),两处不同:

@@ -38,7 +38,7 @@ curl -s http://127.0.0.1:3456/api/meta | jq
     "model_switch": true, "provider_write": true,
     "mcp_write": true, "skill_write": true,
     "agent_write": true, "a2a_write": true,
-    "store_write": true, "kb_write": true,
+    "store_write": true, "kb_write": true, "assistant_write": true,
     "activity": true, "ag_ui": true, "ui_v1": true
   }
 }
@@ -61,11 +61,12 @@ curl -s http://127.0.0.1:3456/api/meta | jq
 | `a2a_write` | `/api/a2a` 的 POST/PATCH/DELETE + `/api/a2a/probe` 存在 | **A2A 节退回只读**:不画"添加/编辑/删除/探测"(读端点一直在) |
 | `store_write` | `/api/store/*` 的写端点可用 | **商店节只读**:不画"登录/安装/卸载";面板仍可读 `status` / `search` / `installed` |
 | `kb_write` | `/api/kb/*` 的写端点可用 | **知识库节只读**:不画"provider / KB / 默认参数"的写操作;检索与问答仍可用 |
+| `assistant_write` | `/api/assistants` 的写端点可用(真的 import 一次 qi-assistants) | **应用助手节只读**:不画"新建 / 编辑 / 删除 / 导入";读端点仍在 |
 | `activity` | 委派直播(`ACTIVITY_SNAPSHOT` 帧)在发 | **看不到子运行在干什么**:结束前的工具卡里只有参数(退回一期) |
 | `ag_ui` | 事件形状是 AG-UI | 退成折叠显示原始 JSON |
 | `ui_v1` | `details["ui"]` 的词汇表可用 | 同上 |
 
-`store_write` / `kb_write` **不是写死的 `true`**:宿主每次请求都真的 `import` 一次
+`store_write` / `kb_write` / `assistant_write` **不是写死的 `true`**:宿主每次请求都真的 `import` 一次
 `qi_store.service` / `qi_kb.service`,没装就是 `false`。这样界面不必靠“点了才 404”来发现
 少装了一个扩展。老前端不认识某个新键 → 按上表退回上一档,不会白屏。
 

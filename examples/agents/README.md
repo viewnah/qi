@@ -39,12 +39,18 @@ code-analyst/
 | code-reviewer | 代码审查与重构建议 | read, ls, grep, find, bash |
 | data-analyst | 数据查询与分析 | read, ls, find, grep, write, edit, bash, clarify |
 | 训练数据 | 联合训练数据知识助手（两级快捷提问示例） | 继承宿主全部可用工具 |
+| training-evaluator（训练评估） | 联合训练评估助手：按任务推荐应用助手（一次、不追问） | assistant_search, assistant_recommend |
 | doc-writer | 编写与维护文档 | read, ls, find, grep, bash, write, edit, clarify |
 | test-runner | 跑测试并汇报 | read, ls, find, grep, bash |
 
 > 后四个原本是 qi 仓库自己的 `.qi/agents/`(本地 dogfood 角色)。P-E4c 把 core 里的
 > “角色”概念整体移出之后,它们先搬到这里当样例(见 design/extensions-design.md 的 E15);
 > qi-agents 扩展落地后可以再搬回 `.qi/agents/` 作为该扩展的实测样例。
+
+`training-evaluator` 依赖 **qi-assistants** 扩展：工具从项目级
+`<项目>/.qi/assistants.json` 读目录，推荐卡片的链接由目录回填（模型拿不到 `url`）。
+目录在 qi-lab 的「设置 → 应用助手」里维护，或先点「导入示例」。
+角色名是 `训练评估`（文件名保持英文，方便命令行引用）。
 
 `训练数据` 演示 **`opening.suggestions` 的两级结构**:一级是标题
 （联合训练任务 / 联合岛屿作战 / 联合海上机动作战 / 联合边境自卫作战 /

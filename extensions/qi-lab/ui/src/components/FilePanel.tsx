@@ -19,6 +19,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, ApiError } from "../api/client";
 import type { FileContent, FileEntry, FileListing } from "../api/types";
+import type { OpenKbFileDetail } from "../state/source";
 import {
   IconChevronDownOutline14,
   IconCloseFill14,
@@ -42,6 +43,14 @@ type Tab =
       size: number;
       raw: boolean;
       content: FileContent | null;
+    }
+  | {
+      id: string;
+      kind: "remote";
+      url: string;
+      name: string;
+      provider?: string;
+      kb_name?: string;
     };
 
 const FILES_TAB: Tab = { id: "files", kind: "files" };
@@ -86,9 +95,12 @@ function humanSize(bytes: number): string {
 export function FilePanel({
   sessionId,
   onClose,
+  external,
 }: {
   sessionId: string | null;
   onClose: () => void;
+  /** 知识库来源文件：由 App 的全局点击事件转进来。 */
+  external?: (OpenKbFileDetail & { nonce: number }) | null;
 }) {
   const [tabs, setTabs] = useState<Tab[]>([FILES_TAB]);
   const [activeId, setActiveId] = useState<string>("files");
@@ -125,6 +137,26 @@ export function FilePanel({
     setActiveId("files");
     setDir("");
   }, [sessionId]);
+
+  // 知识库来源文件：在右栏开一个远程预览页签（同一 URL 只开一次）。
+  useEffect(() => {
+    if (!external?.url) return;
+    const id = `remote:${external.url}`;
+    setActiveId(id);
+    setTabs((prev) => {
+      if (prev.some((tab) => tab.id === id)) {
+        return prev.map((tab) =>
+          tab.id === id && tab.kind === "remote"
+            ? { ...tab, name: external.name || tab.name }
+            : tab,
+        );
+      }
+      return [...prev, { id, kind: "remote", url: external.url,
+                         name: external.name || "来源文件",
+                         provider: external.provider, kb_name: external.kb_name }];
+    });
+    // nonce 让同一个 URL 再次点击时也切回这个页签
+  }, [external?.nonce, external?.url]);
 
   const readFile = useCallback(
     (entry: FileEntry, id: string) => {
@@ -281,7 +313,9 @@ export function FilePanel({
       ) : null}
 
       <div className="files__body">
-        {active.kind === "file" ? (
+        {active.kind === "remote" ? (
+          <RemotePreview tab={active} />
+        ) : active.kind === "file" ? (
           <PreviewBody tab={active} sessionId={sessionId} />
         ) : error === null ? listing === null ? (
           <p className="files__note">读取中…</p>
@@ -322,6 +356,49 @@ export function FilePanel({
           <p className="files__note">{error}</p>
         )}
       </div>
+    </div>
+  );
+}
+
+/** 知识库来源文件：同源代理 URL，直接在这里预览，不跳浏览器新页。 */
+function RemotePreview({
+  tab,
+}: {
+  tab: Extract<Tab, { kind: "remote" }>;
+}) {
+  const kind = kindOf(tab.name);
+  if (kind === "image") {
+    return (
+      <div className="fileprev">
+        <img className="fileprev__img" src={tab.url} alt={tab.name} />
+      </div>
+    );
+  }
+  if (kind === "pdf") {
+    return (
+      <div className="fileprev">
+        <iframe className="fileprev__frame" src={tab.url} title={tab.name} />
+      </div>
+    );
+  }
+  if (kind === "html") {
+    return (
+      <div className="fileprev">
+        <iframe className="fileprev__frame" src={tab.url} title={tab.name} sandbox="" />
+        <p className="files__note">HTML 预览:脚本已禁用(沙箱)。</p>
+      </div>
+    );
+  }
+  return (
+    <div className="fileprev">
+      <p className="files__note">
+        <a href={tab.url} target="_blank" rel="noreferrer">打开 / 下载源文件</a>
+      </p>
+      {tab.provider || tab.kb_name ? (
+        <p className="files__note">
+          {[tab.provider, tab.kb_name].filter(Boolean).join(" / ")}
+        </p>
+      ) : null}
     </div>
   );
 }

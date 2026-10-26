@@ -12,6 +12,7 @@ import { api, ApiError } from "../api/client";
 import type { KbItem, KbStatus } from "../api/types";
 import { Markdown } from "../markdown/render";
 import { globalKbItems, globalKbProviders } from "../state/scope";
+import { openKbFile } from "../state/source";
 
 export function KbPanel({ canWrite, onChanged }: { canWrite: boolean; onChanged?: () => void }) {
    const [status, setStatus] = useState<KbStatus | null>(null);
@@ -373,7 +374,20 @@ export function KbPanel({ canWrite, onChanged }: { canWrite: boolean; onChanged?
                         return (
                            <li key={`${url}:${index}`}>
                               {url ? (
-                                 <a href={url} target="_blank" rel="noreferrer">
+                                 <a
+                                    href={url}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    onClick={(event) => {
+                                       event.preventDefault();
+                                       openKbFile({
+                                          url,
+                                          name,
+                                          provider: String(source.provider || ""),
+                                          kb_name: String(source.kb_name || ""),
+                                       });
+                                    }}
+                                 >
                                     {label}
                                  </a>
                               ) : (

@@ -28,6 +28,7 @@ import {
   IconFileOutline16,
 } from "./icons";
 import { Markdown } from "../markdown/render";
+import { openKbFile } from "../state/source";
 import { processLabel } from "../state/stats";
 import { formatElapsed, latestActivityLine } from "../state/turn";
 import type {
@@ -222,7 +223,20 @@ function Details({
           return (
             <li key={`${url}:${index}`}>
               {url ? (
-                <a href={url} target="_blank" rel="noreferrer noopener">
+                <a
+                  href={url}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    openKbFile({
+                      url,
+                      name,
+                      provider: String(item.provider || ""),
+                      kb_name: String(item.kb_name || ""),
+                    });
+                  }}
+                >
                   {name}
                 </a>
               ) : (
@@ -703,6 +717,16 @@ function AnswerSources({ sources }: { sources: SayRow["sources"] }) {
                      href={url || undefined}
                      target={url ? "_blank" : undefined}
                      rel={url ? "noreferrer noopener" : undefined}
+                     onClick={(event) => {
+                        if (!url) return;
+                        event.preventDefault();
+                        openKbFile({
+                           url,
+                           name,
+                           provider: String(source.provider || ""),
+                           kb_name: String(source.kb_name || ""),
+                        });
+                     }}
                   >
                      <IconFileOutline16 size={12} />
                      <span>{name}</span>

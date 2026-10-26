@@ -64,6 +64,7 @@ import {
 import type { TurnState } from "./state/turn";
 import { parseSessionHash, sessionHash } from "./state/route";
 import { commandHelpText } from "./commands";
+import { OPEN_KB_FILE, type OpenKbFileDetail } from "./state/source";
 import { applyTheme, readTheme } from "./theme/theme";
 
 const PLACEHOLDER = "描述你想做的事。Enter 发送,Shift+Enter 换行";
@@ -211,6 +212,8 @@ export function App() {
   const [railCollapsed, setRailCollapsed] = useState(false);
   /** 右侧文件面板开着没有(会话目录的树 + 预览,见 FilePanel)。 */
   const [filesOpen, setFilesOpen] = useState(false);
+  /** 知识库来源文件：点来源 chip 后交给右侧 FilePanel 预览。 */
+  const [kbFile, setKbFile] = useState<(OpenKbFileDetail & { nonce: number }) | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [nameDraft, setNameDraft] = useState("");
@@ -314,6 +317,17 @@ export function App() {
     })();
     return () => abortRef.current?.();
   }, [refreshSessions]);
+
+  useEffect(() => {
+    const onOpen = (event: Event) => {
+      const detail = (event as CustomEvent<OpenKbFileDetail>).detail;
+      if (!detail?.url) return;
+      setKbFile({ ...detail, nonce: Date.now() });
+      setFilesOpen(true);
+    };
+    window.addEventListener(OPEN_KB_FILE, onOpen);
+    return () => window.removeEventListener(OPEN_KB_FILE, onOpen);
+  }, []);
 
   /**
    * 模型清单:**跟着会话走**。
@@ -1028,7 +1042,8 @@ export function App() {
           开着才挂载 —— 收起时不留一棵没人看的树在后台。 */}
       <aside className="files-side">
         {filesOpen ? (
-          <FilePanel sessionId={sessionId} onClose={() => setFilesOpen(false)} />
+          <FilePanel sessionId={sessionId} external={kbFile}
+                     onClose={() => setFilesOpen(false)} />
         ) : null}
       </aside>
 

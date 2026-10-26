@@ -40,10 +40,11 @@ code-analyst/
 | data-analyst | 数据查询与分析 | read, ls, find, grep, write, edit, bash, clarify |
 | 训练数据 | 联合训练数据知识助手（两级快捷提问示例） | 继承宿主全部可用工具 |
 | training-evaluator（训练评估） | 联合训练评估助手：按任务推荐应用助手（一次、不追问） | assistant_search, assistant_recommend |
+| training-situation（训练态势） | 联合训练态势研判：态势总览、推演预判、风险预警与处置建议 | 继承宿主全部可用工具 |
 | doc-writer | 编写与维护文档 | read, ls, find, grep, bash, write, edit, clarify |
 | test-runner | 跑测试并汇报 | read, ls, find, grep, bash |
 
-> 后四个原本是 qi 仓库自己的 `.qi/agents/`(本地 dogfood 角色)。P-E4c 把 core 里的
+> 后五个原本是 qi 仓库自己的 `.qi/agents/`(本地 dogfood 角色)。P-E4c 把 core 里的
 > “角色”概念整体移出之后,它们先搬到这里当样例(见 design/extensions-design.md 的 E15);
 > qi-agents 扩展落地后可以再搬回 `.qi/agents/` 作为该扩展的实测样例。
 
@@ -58,6 +59,11 @@ code-analyst/
 页面初始只显示一级标题，点击标题后才展开二级问题；支持多选，全部选中即“全域”。
 **全域不是一级分类**，不要把“全域”写成 title。
 把它拷到 `~/.qi/agent/agents/` 或 `<项目>/.qi/agents/` 后，在 qi-lab 选择该智能体即可看到。
+
+`training-situation`（角色名 `训练态势`）与 `训练数据` / `训练评估` 组成联合训练的三个入口：
+查数据、看态势、找评估助手。它同样使用两级快捷提问，按“综合态势 / 各作战方向 /
+风险与复盘”分组；默认输出是“结论 + 关键态势表 + 风险预警 + 处置建议 + 依据与假设”，
+推演部分必须写清假设、时间步长和置信度，不能把推演当成已发生事实。
 
 路由回归集:`tests/router_cases.yaml`(输入 → 期望 agent)。
 **注**:它测的是 core 里的 Dispatcher(auto 分派);那个模块已随 P-E4c 移出 core,

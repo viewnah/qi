@@ -10,7 +10,7 @@
  * qi 的 TUI 有 28 条命令,但**终端专属**或需要新能力的那些这里一条都不放:
  * `/quit` `/clear` `/hotkeys` `/changelog`(终端界面)、`/tree`(要一棵会话树 UI)、
  * `/thinking` `/mode` `/agent` `/scoped-models`(web 没有这些旋钮)、
- * `/reload` `/import` `/login`(需要新的写能力)。**菜单里放一条点了没反应的"命令"
+ * `/reload` `/login`(需要新的写能力)。**菜单里放一条点了没反应的"命令"
  * 比不放更糟** —— 用户在菜单里看到的东西,就应该真的能用。
  *
  * 反过来,web 有的能力这里尽量都放进来:能做的每一条都对应一个已实现的调用
@@ -33,6 +33,7 @@ import {
   IconPaperclipOutline16,
   IconQuestionOutline14,
   IconSettingsOutline16,
+  IconUploadOutline16,
 } from "./components/icons";
 import type { CommandItem } from "./components/CommandMenu";
 
@@ -82,6 +83,14 @@ export const COMMANDS: CommandItem[] = [
     alias: "/name",
     description: "改当前会话的标题",
     icon: <IconEditOutline16 size={16} />,
+  },
+  {
+    id: "import",
+    section: SECTION_COMMANDS,
+    label: "导入会话",
+    alias: "/import",
+    description: "从 JSONL 文件导入一条会话",
+    icon: <IconUploadOutline16 size={16} />,
   },
   {
     id: "export",

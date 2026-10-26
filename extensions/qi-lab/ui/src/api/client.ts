@@ -55,6 +55,7 @@ import type {
   ProviderAddBody,
   RunAgentInput,
   SessionDetail,
+  SessionImportBody,
   SessionList,
   SessionSummary,
   SkillList,
@@ -194,6 +195,19 @@ export const api = {
       : decodeURIComponent(utf8);
     return { blob: await res.blob(), name };
   },
+
+  /**
+   * 导入会话 JSONL(`POST /api/sessions/import`)。
+   *
+   * 与导出配对:把文件读成文本原样送上去。宿主会分配新 id、把 `cwd` 改成宿主的
+   * 固定工作目录 —— 所以从别的机器导进来的会话也会出现在左栏里。**只新建文件**,
+   * 不覆盖已有会话,与 `createSession` / `forkSession` 同一口径(不需要确认头)。
+   */
+  importSession: (content: string, title = "") =>
+    request<SessionSummary>("/api/sessions/import", {
+      method: "POST",
+      body: JSON.stringify({ content, title } satisfies SessionImportBody),
+    }),
 
   /** 手动压缩上下文(= TUI 的 `/compact`)。运行中会被 409 拒掉。 */
   compactSession: (id: string) =>

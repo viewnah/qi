@@ -233,6 +233,8 @@ export function App() {
   const titlePollRef = useRef(0);
   /** 左栏底部「设置」行:浮层关掉时焦点还给它(见 Settings 的 `returnFocusTo`)。 */
   const settingsTriggerRef = useRef<HTMLButtonElement | null>(null);
+  /** 导入会话用的隐藏文件选择器:`/import` 指令点它。 */
+  const importInputRef = useRef<HTMLInputElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const cwd = turn.host.cwd ?? meta?.default_cwd ?? "";
 
@@ -246,6 +248,11 @@ export function App() {
   }, []);
 
   const describe = describeError;
+
+  /** 本地反馈行(不经过模型、不进上下文):导出的成功/失败、导入的失败都走它。 */
+  const note = useCallback((label: string, detail: string) => {
+    setTurn((prev) => withNote(prev, label, detail));
+  }, []);
 
   const refreshSessions = useCallback(async () => {
     try {
@@ -433,6 +440,53 @@ export function App() {
     }
   }, []);
 
+  /**
+   * 导出会话 JSONL:后端原样发文件,文件名也由后端给(`Content-Disposition`)。
+   * 这里只负责触发浏览器下载 + 把结果说一句 —— 左栏行尾菜单与 `/export` 共用它。
+   */
+  const exportSession = useCallback(
+    async (id: string) => {
+      try {
+        const { blob, name } = await api.exportSession(id);
+        // 触发一次浏览器下载;对象 URL 用完就撤,免得一直占着内存。
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = name;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(url);
+        note("已导出会话", name);
+      } catch (err) {
+        note("导出失败", describe(err));
+      }
+    },
+    [note],
+  );
+
+  /** 打开文件选择器。`/import` 指令走这里,行为只此一处。 */
+  const askImportSession = useCallback(() => {
+    importInputRef.current?.click();
+  }, []);
+
+  /**
+   * 真正导入:把文件读成文本 → `POST /api/sessions/import` → 刷新列表 → 打开它。
+   *
+   * 失败只插一行 note:文件坏了是“这一步没成”,不是“应用坏了”(与 `/copy` 同口径)。
+   */
+  const importSessionFile = useCallback(
+    async (file: File) => {
+      try {
+        const imported = await api.importSession(await file.text());
+        await refreshSessions();
+        await openSession(imported.id);
+      } catch (err) {
+        note("导入失败", describe(err));
+      }
+    },
+    [note, openSession, refreshSessions],
+  );
 
   /** 真正发起一轮:单次 POST,响应就是流。 */
   const sendTo = useCallback(
@@ -725,10 +779,6 @@ export function App() {
    */
   const runCommand = useCallback(
     async (id: string) => {
-      /** 指令的反馈:本地插一行 note(不经过模型、不进上下文)。 */
-      const note = (label: string, detail: string) =>
-        setTurn((prev) => withNote(prev, label, detail));
-
       if (id === "help") {
         note("可用指令", commandHelpText());
       } else if (id === "info") {
@@ -765,22 +815,10 @@ export function App() {
             note("复制失败", describe(err));
           }
         }
+      } else if (id === "import") {
+        askImportSession();
       } else if (id === "export" && sessionId !== null) {
-        try {
-          const { blob, name } = await api.exportSession(sessionId);
-          // 触发一次浏览器下载;对象 URL 用完就撤,免得一直占着内存。
-          const url = URL.createObjectURL(blob);
-          const link = document.createElement("a");
-          link.href = url;
-          link.download = name;
-          document.body.appendChild(link);
-          link.click();
-          link.remove();
-          URL.revokeObjectURL(url);
-          note("已导出会话", name);
-        } catch (err) {
-          note("导出失败", describe(err));
-        }
+        await exportSession(sessionId);
       } else if (id === "name" && sessionId !== null) {
         // 复用会话行「…」里的那个改名弹层:同一个动作不该有两套 UI。
         const summary = sessions.find((s) => s.id === sessionId);
@@ -815,11 +853,14 @@ export function App() {
     },
     // 依赖列全:漏一个就会拿到过期闭包(这个文件里为此踩过一次,见 design/web.md §18.8)。
     [
+      askImportSession,
       askRenameSession,
       createSession,
       cwd,
+      exportSession,
       forkSession,
       modelFull,
+      note,
       openSession,
       sessionId,
       sessions,
@@ -865,6 +906,20 @@ export function App() {
       {...(railCollapsed ? { "data-rail": "collapsed" } : {})}
       {...(filesOpen ? { "data-files": "open" } : {})}
     >
+      {/* 导入会话的文件选择器:视觉上不存在,`/import` 指令通过 `askImportSession()`
+          点它。`value` 每次选中后清空 —— 否则再选
+          **同一个文件**不会触发 onChange(浏览器不会为相同的值发事件)。 */}
+      <input
+        ref={importInputRef}
+        type="file"
+        accept=".jsonl,.ndjson,application/x-ndjson,application/json,text/plain"
+        hidden
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          event.target.value = "";
+          if (file !== undefined) void importSessionFile(file);
+        }}
+      />
       <aside className="rail">
         <Rail
           sessions={sessions}
@@ -875,6 +930,7 @@ export function App() {
           onCreate={() => void createSession()}
           onRenameSession={askRenameSession}
           onForkSession={(id) => void forkSession(id)}
+          onExportSession={(session) => void exportSession(session.id)}
           onDeleteSession={askDeleteSession}
           settingsOpen={view === "settings"}
           settingsTriggerRef={settingsTriggerRef}

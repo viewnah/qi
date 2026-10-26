@@ -92,6 +92,10 @@ X-Qi-Confirm: yes
 `mcp.json`,一次误删连那层私有声明一起没;商店 / 知识库的写端点会落凭证、配置或磁盘文件。
 与写凭证同一道闸,前端弹层确认后才带上这个头。
 
+> 例外是会话自己的三个“只新增文件”的写端点:`POST /api/sessions`、
+> `POST /api/sessions/{sid}/fork`、`POST /api/sessions/import`。它们不覆盖、不删除
+> 任何已有数据(导入也会分配新 id),所以与分叉同一口径,不要确认头。
+
 ```bash
 curl -X PATCH http://127.0.0.1:3456/api/mcp -H 'X-Qi-Confirm: yes' -H 'Content-Type: application/json' -d '…'
 # 不带头:428 {"detail":"写操作需要二次确认:带上请求头 X-Qi-Confirm: yes"}
@@ -145,7 +149,7 @@ curl -X PATCH http://127.0.0.1:3456/api/mcp -H 'X-Qi-Confirm: yes' -H 'Content-T
 
 ---
 
-## 端点总表(70)
+## 端点总表(72)
 
 | 方法 | 路径 | 说明 | 文档 |
 | --- | --- | --- | --- |
@@ -158,6 +162,7 @@ curl -X PATCH http://127.0.0.1:3456/api/mcp -H 'X-Qi-Confirm: yes' -H 'Content-T
 | DELETE | `DELETE /api/sessions/{sid}` | 删一条(204) | `sessions.md` |
 | DELETE | `DELETE /api/sessions` | 批量删「未分组」 | `sessions.md` |
 | GET | `GET /api/sessions/{sid}/export` | 导出 JSONL 文件 | `sessions.md` |
+| POST | `POST /api/sessions/import` | 导入 JSONL 会话(201) | `sessions.md` |
 | POST | `POST /api/sessions/{sid}/compact` | 手动压缩上下文 | `sessions.md` |
 | POST | `POST /api/sessions/{sid}/fork` | 分叉出新会话(201) | `sessions.md` |
 | POST | `POST /api/ag-ui` | **运行入口**:POST → SSE 流 | `ag-ui.md` |
@@ -229,7 +234,7 @@ curl -X PATCH http://127.0.0.1:3456/api/mcp -H 'X-Qi-Confirm: yes' -H 'Content-T
 | 文件 | 内容 |
 | --- | --- |
 | [`meta.md`](meta.md) | `/api/meta`、`/api/health` —— 能力位怎么读 |
-| [`sessions.md`](sessions.md) | 会话的增删改查、导出、压缩、分叉、批量删 |
+| [`sessions.md`](sessions.md) | 会话的增删改查、导出、导入、压缩、分叉、批量删 |
 | [`ag-ui.md`](ag-ui.md) | `POST /api/ag-ui`:请求体、SSE 帧格式、事件表、取消语义 |
 | [`mcp.md`](mcp.md) | MCP 声明的读与增删改(三层、确认头、只改送来的键) |
 | [`a2a.md`](a2a.md) | A2A 条目:两层深合并、确认头、`null` = 不改、名片探测、手写页面 `GET /a2a` |

@@ -304,6 +304,31 @@ export const IconDownloadOutline16 = ({ size = 16, className }: IconProps) => (
   </svg>
 )
 
+/** IconUploadOutline16(导入会话(从 JSONL 文件读入))—— 与导出同一个 16px 盒。 */
+export const IconUploadOutline16 = ({ size = 16, className }: IconProps) => (
+  <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none">
+    <path
+      d="M8 1.75V9.5"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+    />
+    <path
+      d="M4.75 4.75L8 1.5L11.25 4.75"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <path
+      d="M2.25 10V13.25C2.25 13.8023 2.69772 14.25 3.25 14.25H12.75C13.3023 14.25 13.75 13.8023 13.75 13.25V10"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+    />
+  </svg>
+)
+
 /** IconCopyOutline16(复制最后一条回答)—— 逐字节取自 dsh `ui-primitives`。 */
 export const IconCopyOutline16 = ({ size = 16, className }: IconProps) => (
   <svg width={size} height={size} className={className} viewBox="0 0 16 16" fill="none">

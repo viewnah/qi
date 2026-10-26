@@ -40,6 +40,17 @@ class SessionRename(BaseModel):
     title: str = Field(min_length=1)
 
 
+class SessionImport(BaseModel):
+    """导入一份导出的会话 JSONL(与 `GET /api/sessions/{sid}/export` 配对)。
+
+    `content` 是**文件全文**,不是 base64:导出的就是 UTF-8 JSONL,原样读进来即可。
+    `title` 空 = 用文件 header 里的标题;非空 = 覆盖它(给“同一个标题导多份”留个出口)。
+    """
+
+    content: str = Field(min_length=1)
+    title: str = ""
+
+
 class ModelOption(BaseModel):
     """模型菜单里的一条:`provider` + 模型 id。
 

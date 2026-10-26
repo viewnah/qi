@@ -49,6 +49,54 @@ STATIC_DIR = Path(__file__).parent / "static"
 PAGES_DIR = Path(__file__).parent / "pages"
 DEFAULT_WINDOW = 200          # 会话明细默认窗口(渐进恢复:老会话不因细节太多而卡住)
 
+#: 导入会话的两条上限。会话文件是用户自己的数据,但**导入端点收的是任意请求体**:
+#: 不设限的话,一个几十万行的 JSONL 会在解析时把宿主内存吃满。上限取“正常会话不会
+#: 碰到、异常输入能兜住”的量级(`SessionStore` 自己读文件时没有这个限制 —— 那是本地
+#: 已经存在的文件,不是网络输入)。
+MAX_IMPORT_BYTES = 32 * 1024 * 1024
+MAX_IMPORT_ENTRIES = 200_000
+
+
+def _parse_session_jsonl(content: str) -> list[dict]:
+    """把导出的 JSONL 解析成 entry 列表(第一项必须是 header)。
+
+    **坏行直接 400,不跳过**:`SessionStore._read()` 对本地文件跳过坏行,是因为
+    “读不出来比丢一行严重”;导入面对的是**要新建的文件**,半截文件落盘后每一次打开
+    都会再跳一次,不如当场拒绝。空行仍然跳过(并发导出时末尾可能多一个换行)。
+    """
+    if len(content.encode("utf-8")) > MAX_IMPORT_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"会话文件太大(上限 {MAX_IMPORT_BYTES // (1024 * 1024)} MiB)",
+        )
+    entries: list[dict] = []
+    for lineno, line in enumerate(content.splitlines(), 1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"第 {lineno} 行不是合法 JSON:{exc.msg}")
+        if not isinstance(entry, dict):
+            raise HTTPException(
+                status_code=400, detail=f"第 {lineno} 行不是 JSON 对象")
+        entries.append(entry)
+        if len(entries) > MAX_IMPORT_ENTRIES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"会话条目太多(上限 {MAX_IMPORT_ENTRIES} 条)",
+            )
+    if not entries:
+        raise HTTPException(status_code=400, detail="文件是空的(没有会话头)")
+    if entries[0].get("type") != "session":
+        raise HTTPException(status_code=400, detail="第一行不是会话头(type 必须是 session)")
+    if any(entry.get("type") == "session" for entry in entries[1:]):
+        raise HTTPException(status_code=400, detail="文件里有多个会话头,一次只能导入一个会话")
+    return entries
+
+
 #: SSE 心跳间隔(秒):队列空闲这么久就发一行注释,顶开“攒够字节/时间才转发”的中间层
 #: (内网穿透 / 远程端口映射 / 反代)。太小会白占带宽,太大则中间层的阈值先到 —— 10s 是
 #: 常见的 keep-alive 量级。
@@ -730,6 +778,53 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
                 "Access-Control-Expose-Headers": "Content-Disposition",
             },
         )
+
+    @app.post("/api/sessions/import", response_model=schemas.SessionSummary,
+              status_code=201, dependencies=[Depends(guard)])
+    async def import_session(body: schemas.SessionImport) -> schemas.SessionSummary:
+        """导入一份导出的 JSONL(与 `/export` 配对)。**只新增文件**,不覆盖任何已有会话。
+
+        三处改写都是有理由的:
+          - **id**:新会话给新 id,导入两次不会撞在一起,也不信文件里那个可能是 `../` 的串;
+          - **cwd**:改写成本宿主的固定工作目录 —— `GET /api/sessions` 只列这个目录下的
+            会话,保留源机器的 cwd 会让导入的会话“导进来了但左栏看不见”;
+          - **parentSession**:那是**源机器**上的文件路径,留着只会指到一个不存在的文件。
+
+        entry 的 `id` / `parentId` 原样保留(链在新文件里自洽);v1 线性文件走
+        `SessionStore.migrate()` 补链。**不需要确认头**:与 `POST /api/sessions`、分叉
+        同一口径 —— 它不动任何已有数据。"""
+        content = body.content.lstrip("\ufeff")      # 容忍编辑器加的 UTF-8 BOM
+        entries = _parse_session_jsonl(content)
+        header = dict(entries[0])
+        tail = entries[1:]
+        title = body.title.strip() or str(header.get("title") or "")
+        created_at = str(header.get("created_at") or "")
+
+        # 先让 store 定下 id 与路径(它同时把 header 写成一个空会话);随后整文件重写。
+        # 这中间没有 await,同一个事件循环里没有别的请求能看见那个临时文件。
+        new = web.sessions.create(title="", cwd=web.default_cwd)
+        try:
+            header.update({
+                "type": "session", "version": 2, "id": new.id,
+                "title": title, "created_at": created_at or new.created_at,
+                "cwd": str(web.default_cwd),
+            })
+            header.pop("parentSession", None)
+            new.entries = [header, *tail]
+            new.title = title
+            new.created_at = str(header["created_at"])
+            new.cwd = str(web.default_cwd)
+            new.version = 2
+            web.sessions.migrate(new.entries)
+            web.sessions.save(new)
+            new.position = None                 # 下次提问挂在文件最后一条(leaf)
+        except Exception:
+            try:
+                new.path.unlink(missing_ok=True)    # 写失败别留一个只有 header 的孤儿文件
+            except OSError:
+                pass                            # 清理失败也不该盖掉真正的错
+            raise
+        return summary(new)
 
     @app.post("/api/sessions/{sid}/compact", response_model=schemas.CompactionResult,
               dependencies=[Depends(guard)])

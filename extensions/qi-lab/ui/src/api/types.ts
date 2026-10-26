@@ -162,6 +162,14 @@ export interface SessionDetail {
    usage: UsageSummary;
 }
 
+/** `POST /api/sessions/import` 的请求体:导出的 JSONL 全文 + 可选标题覆盖。 */
+export interface SessionImportBody {
+   /** 会话 JSONL 文件全文(UTF-8 文本,一行一个 JSON 对象)。 */
+   content: string;
+   /** 空 = 用文件 header 里的标题;非空 = 覆盖它。 */
+   title?: string;
+}
+
 /** `agent.md` 的 `opening`:开场白 + 选择期快捷提问。 */
 export interface AgentSuggestionGroup {
    /** 一级标题（如“联合岛屿作战”）；空串 = 全域基线，不占一级分类 */

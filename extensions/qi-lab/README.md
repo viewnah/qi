@@ -45,6 +45,28 @@ qi lab -H 0.0.0.0 --password 口令
 一起改,再 `cd ui && npm run build`(Python 侧是 editable 安装、改完即生效;前端改完**必须**
 重新 build 才进 `static/`)。
 
+## 会话导出 / 导入
+
+导出在 qi-web 就有(`GET /api/sessions/{sid}/export`,原样发 JSONL);qi-lab 把导入也补上了。
+界面上两条入口:
+
+- 导出:左栏会话行「…」里的「导出」,或输入卡 `/export`;浏览器直接下载 `<标题>-<id>.jsonl`。
+- 导入:输入卡 `/import`;选一个 `.jsonl` 文件。
+
+导入是 `POST /api/sessions/import`,请求体是**文件全文** + 可选标题。三处**必须**改写
+(其余原样保留):
+
+| 改写 | 为什么 |
+| --- | --- |
+| `header.id` → 新 id | 导两次不会撞车;也不信文件里那个可能是路径成分的串 |
+| `header.cwd` → 宿主固定工作目录 | 列表只列 `default_cwd` 下的会话,不改写就会“导进来了但左栏看不见” |
+| 去掉 `header.parentSession` | 那是源机器上的文件路径,留着只会指到一个不存在的文件 |
+
+entry 的 `id` / `parentId` **原样保留**;v1 线性文件补链。导入**只新增文件**,
+不覆盖任何已有会话,所以与新建 / 分叉同一口径 —— **不要** `X-Qi-Confirm`。
+坏文件 400 **且一个文件都不建**;上限 32 MiB / 200 000 条。
+回归测试:`tests/test_lab_session_import.py`;契约在 `docs/api/sessions.md`。
+
 ## MCP 声明的增删改(相对 qi-web 的第一处分化)
 
 qi-web 的设置页里 MCP 节是**只读**的(它只有 `GET /api/mcp`)。qi-lab 把写也补齐了:
@@ -266,14 +288,14 @@ qi-lab 只做**代理与界面**（进程内懒 import `qi_kb.service`，与商�
 
 ## 接口文档
 
-**`docs/api/`** —— 63 条 `/api` 路由的完整契约(请求体、响应字段表、状态码、curl 例子、
+**`docs/api/`** —— 72 条 `/api` 路由的完整契约(请求体、响应字段表、状态码、curl 例子、
 写端的规矩与坑):
 
 | 文件 | 内容 |
 | --- | --- |
 | [`docs/api/README.md`](docs/api/README.md) | 索引 + 通用约定(口令/Host/`X-Qi-Confirm` 确认头/错误形状/能力位) |
 | [`docs/api/meta.md`](docs/api/meta.md) | `/api/meta`、`/api/health` |
-| [`docs/api/sessions.md`](docs/api/sessions.md) | 会话:列表、明细、改名、删除、导出、压缩、分叉 |
+| [`docs/api/sessions.md`](docs/api/sessions.md) | 会话:列表、明细、改名、删除、导出、导入、压缩、分叉 |
 | [`docs/api/ag-ui.md`](docs/api/ag-ui.md) | 运行入口:POST → SSE 的帧格式与事件表、取消语义 |
 | [`docs/api/mcp.md`](docs/api/mcp.md) | MCP 声明(全局 / 项目 / 角色私有)的读与增删改 |
 | [`docs/api/a2a.md`](docs/api/a2a.md) | A2A 条目:两层深合并、确认头、`null` = 不改、名片探测 |
@@ -335,6 +357,7 @@ cd extensions/qi-lab && pytest tests   # 从扩展内也行(根 ini 会向上被
 | --- | --- |
 | `tests/test_lab_agent_write_api.py` | 角色:读(含 `opening.groups` / `opening.suggestions`)与删除(确认闸、两个层、整目录、按显示名、符号链接 400、`agent_write` 能力位、没装 qi-agents → 503) |
 | `tests/test_lab_api.py` | API 契约:会话 CRUD、AG-UI 线格式 + 落盘回放、口令与 Host 允许表、凭证二次确认闸 |
+| `tests/test_lab_session_import.py` | 会话导入:新 id / cwd 改写、v1 补链、标题覆盖、坏文件 400 不落盘、大小上限 |
 | `tests/test_lab_browse.py` | 目录浏览的纯逻辑(`~` 展开、软链、排序、只列目录) |
 | `tests/test_lab_docs_api.py` | 文档 ↔ 路由**双向**对齐(`docs/api/` 少写一条、多写一条都红) |
 | `tests/test_lab_extensions_api.py` | 扩展面:智能体 chip 走 `before_agent_start`、角色列表 |

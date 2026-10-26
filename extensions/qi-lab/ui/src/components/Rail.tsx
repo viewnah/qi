@@ -16,17 +16,16 @@
 import { useMemo, useState } from "react";
 import type { RefObject } from "react";
 import {
+  IconBranchOutline16,
+  IconDownloadOutline16,
+  IconEditOutline16,
   IconNewChatOutline16,
   IconPanelLeftOutline16,
   IconSettingsOutline16,
+  IconTrashOutline16,
 } from "./icons";
 import { RowMenu } from "./RowMenu";
 import { SidebarSection } from "./SidebarSection";
-import {
-  IconBranchOutline16,
-  IconEditOutline16,
-  IconTrashOutline16,
-} from "./icons";
 import { relativeLabel, stampOf } from "../state/projects";
 import type { SessionSummary } from "../api/types";
 
@@ -39,6 +38,7 @@ export function Rail({
   onCreate,
   onRenameSession,
   onForkSession,
+  onExportSession,
   onDeleteSession,
   onOpenSettings,
   settingsOpen = false,
@@ -56,9 +56,11 @@ export function Rail({
   onSelect: (id: string) => void;
   /** 新建会话。工作目录固定,不需要参数。 */
   onCreate: () => void;
-  /** 会话行「…」里的三件事(重命名 / 分叉 / 删除),由 App 弹层确认。 */
+  /** 会话行「…」里的四件事(重命名 / 分叉 / 导出 / 删除),由 App 弹层确认或直接执行。 */
   onRenameSession: (session: SessionSummary) => void;
   onForkSession: (id: string) => void;
+  /** 导出这一条会话的 JSONL(浏览器直接下载)。 */
+  onExportSession: (session: SessionSummary) => void;
   onDeleteSession: (session: SessionSummary) => void;
   onOpenSettings: () => void;
   /** 设置浮层当前是否开着(只为了 `aria-expanded`,交互不走它)。 */
@@ -165,6 +167,11 @@ export function Rail({
                     icon: <IconBranchOutline16 size={16} />,
                   },
                   {
+                    id: "export",
+                    label: "导出",
+                    icon: <IconDownloadOutline16 size={16} />,
+                  },
+                  {
                     id: "delete",
                     label: "删除",
                     icon: <IconTrashOutline16 size={16} />,
@@ -174,6 +181,7 @@ export function Rail({
                 onSelect={(id) => {
                   if (id === "rename") onRenameSession(session);
                   else if (id === "fork") onForkSession(session.id);
+                  else if (id === "export") onExportSession(session);
                   else if (id === "delete") onDeleteSession(session);
                 }}
               />

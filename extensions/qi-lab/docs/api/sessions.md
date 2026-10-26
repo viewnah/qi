@@ -1,7 +1,7 @@
 # 会话
 
 会话 = 一份本地 JSONL 文件(树形:一条主分支 + 分叉)。这里管它的**列表、明细、标题、
-删除、导出、压缩、分叉**。通用约定见 [`README.md`](README.md);跑起来见 [`ag-ui.md`](ag-ui.md)。
+删除、导出、导入、压缩、分叉**。通用约定见 [`README.md`](README.md);跑起来见 [`ag-ui.md`](ag-ui.md)。
 
 > 共同的占用规则:**`running=true` 的会话,删 / 压缩 / 分叉一律 `409`**。
 > 它们都要动那份正在被追加的 JSONL,拷到半截回合或删掉正在写的文件都是不可逆的。
@@ -146,6 +146,41 @@
 | --- | --- |
 | 404 | 会话不存在 / 文件已被外部删掉 |
 
+## `POST /api/sessions/import`
+
+导入一份导出的 JSONL(与上面的 `/export` 配对)。**只新增文件**:分配新会话 id、
+不覆盖任何已有会话,所以**不需要 `X-Qi-Confirm`**(与 `POST /api/sessions`、分叉
+同一口径 —— 它不动任何已有数据)。
+
+### 请求体 `SessionImport`
+
+| 字段 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `content` | `string` | — | **文件全文**(UTF-8 JSONL),不能为空 |
+| `title` | `string` | `""` | 覆盖标题;空 = 用文件 header 里的 `title` |
+
+导入时**必须改写**三处:
+
+- `header.id` → 新 id(文件名跟着它)。文件里那个 id 不复用 —— 导两次不会撞车,
+  也不把它当路径成分;
+- `header.cwd` → 宿主固定工作目录(`/api/meta` 的 `default_cwd`)。列表只列这个目录
+  下的会话,保留源机器的 cwd 会让导入的会话“导进来了但左栏看不见”;
+- 删掉 `header.parentSession`(那是**源机器**上的文件路径)。
+
+entry 的 `id` / `parentId` 原样保留(链在新文件里自洽);`created_at` 保留源值。
+**v1 线性文件**(entry 没有 id/parentId)按文件顺序补链(`SessionStore.migrate()`)。
+解析规则:**空行跳过,坏行 400**(不静默丢行 —— 这个文件是现在要新建的,
+半截落盘之后每次打开都会再跳一次)。
+
+上限:`content` ≤ **32 MiB**、≤ **200 000** 条 entry。
+
+### 响应 `SessionSummary` (201)
+
+| 码 | 什么时候 |
+| --- | --- |
+| 400 | 不是合法 JSON / 某行不是 JSON 对象 / 第一行不是会话头 / 文件里有多个会话头 / 超过大小或条数上限 |
+| 422 | `content` 为空(或字段类型不对) |
+
 ## `POST /api/sessions/{sid}/compact`
 
 手动压缩上下文(= TUI 的 `/compact`:把旧消息摘要掉)。
@@ -201,6 +236,11 @@ curl -s -X PATCH http://127.0.0.1:3456/api/sessions/<sid> \
 
 # 导出
 curl -OJ 'http://127.0.0.1:3456/api/sessions/<sid>/export'
+
+# 导入(把文件全文塞进 JSON 的 content 字段;jq -Rs 会把整个文件读成一个字符串)
+jq -Rs '{content: .}' session.jsonl \
+  | curl -s -X POST http://127.0.0.1:3456/api/sessions/import \
+      -H 'Content-Type: application/json' --data-binary @- | jq '{id,title,cwd}'
 
 # 分叉(从某个 entry 之后另起一条)
 curl -s -X POST http://127.0.0.1:3456/api/sessions/<sid>/fork \

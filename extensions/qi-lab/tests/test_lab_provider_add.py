@@ -20,6 +20,8 @@ import pytest
 from qi_agent import paths
 from qi_agent.auth import AuthStore
 from qi_agent.config import load_models_file
+
+pytest.importorskip("fastapi")   # qi-lab 的 API 层依赖;核心 venv(只装 qi)不带它
 from qi_lab.app import create_app
 from qi_lab.state import WebState
 

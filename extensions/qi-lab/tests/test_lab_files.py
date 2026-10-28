@@ -150,6 +150,8 @@ def test_read_bytes_rejects_oversized(tmp_path):
 @pytest.fixture
 def web(tmp_path, monkeypatch):
     """最小宿主(复用 test_web_api 的那套环境变量约定)。"""
+    # 只有端点层需要 qi_lab.app(fastapi);文件层测试不该被一起跳过
+    pytest.importorskip("fastapi")
     from qi_agent.runtime import QiRuntime, RuntimeConfig
     from qi_agent.session import SessionStore
     from qi_lab.app import create_app

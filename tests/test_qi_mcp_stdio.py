@@ -23,6 +23,8 @@ sys.path.insert(0, str(REPO / "extensions" / "qi-mcp"))
 
 import pytest  # noqa: E402
 
+# 端到端要真拉起 MCP server:`mcp` 2.x SDK 是运行时依赖,核心 venv(只装 qi)不带
+pytest.importorskip("mcp")
 from qi_mcp.client import connect, connect_stdio  # noqa: E402
 from qi_mcp.config import ServerSpec  # noqa: E402
 from qi_mcp.proxy import build_tool  # noqa: E402

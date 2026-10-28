@@ -22,6 +22,7 @@ from qi_agent.config import load_config, resolve_model
 from qi_agent.llm import LLMDelta, ToolCallOut
 from qi_agent.runtime import QiRuntime, RuntimeConfig
 from qi_agent.session import SessionStore
+pytest.importorskip("fastapi")   # qi-web 的 API 层依赖;核心 venv(只装 qi)不带它
 from qi_web.app import create_app
 from qi_web.schemas import CONTRACT_VERSION
 from qi_web.security import is_loopback, mask_key, require_safe_config

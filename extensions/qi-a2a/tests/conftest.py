@@ -14,10 +14,16 @@
 from __future__ import annotations
 
 import importlib.metadata
+import importlib.util
 import sys
 from pathlib import Path
 
 import pytest
+
+# 依赖(`a2a-sdk`)没装就整目录不收集 —— 虚拟环境可以只装 qi 本体,
+# 扩展的三方依赖缺失时该跳过而不是报收集错误(同 tests/test_web_api.py 的 fastapi 口径)。
+if importlib.util.find_spec("a2a") is None:
+    collect_ignore_glob = ["test_*.py"]
 
 REPO = Path(__file__).resolve().parents[3]   # tests/ → qi-a2a/ → extensions/ → 仓库根
 

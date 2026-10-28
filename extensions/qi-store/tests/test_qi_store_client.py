@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 import json
 import time
+from typing import Any
 
 import httpx
 import pytest
@@ -18,7 +19,7 @@ from qi_store.errors import NotLoggedIn, UpstreamError
 
 
 def jwt(exp: int | None = None, username: str = "admin", role: str = "admin") -> str:
-    payload = {"username": username, "role": role}
+    payload: dict[str, Any] = {"username": username, "role": role}
     if exp is not None:
         payload["exp"] = exp
     raw = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")

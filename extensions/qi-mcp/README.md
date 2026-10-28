@@ -1,5 +1,7 @@
 # qi-mcp
 
+> **qi-lab 内置扩展**：安装 `qi-lab` 时已随包提供，无需单独安装。下面的安装 / CLI 用法是它作为独立扩展时的路径；提取发布后仍按这些步骤使用。
+
 qi 的 MCP 支持。形状**照搬 [`pi-mcp-adapter`](https://pi.dev/packages/pi-mcp-adapter)**
 (见 `design/extensions-design.md` 的 E25)。
 

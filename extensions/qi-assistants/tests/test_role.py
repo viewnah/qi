@@ -8,7 +8,7 @@ from pathlib import Path
 from qi_agents.discovery import discover
 
 REPO = Path(__file__).resolve().parents[3]
-ROLE = REPO / "examples" / "agents" / "training-evaluator"
+ROLE = REPO / "extensions" / "qi-agents" / "qi_agents" / "builtin" / "agents" / "training-evaluator"
 
 
 def test_register_adds_both_tools():

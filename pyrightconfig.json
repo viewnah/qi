@@ -8,18 +8,18 @@
     "extensions"
   ],
   "extraPaths": [
-    "extensions/qi-agents",
+    "src",
     "extensions/qi-mcp",
-    "extensions/qi-web",
-    "extensions/qi-lab",
-    "src"
+    "extensions/qi-agents",
+    "extensions/qi-a2a",
+    "extensions/qi-store",
+    "extensions/qi-kb",
+    "extensions/qi-assistants"
   ],
   "exclude": [
     "**/__pycache__",
     ".venv",
-    "extensions/qi-web/ui/node_modules",
-    "extensions/qi-web/ui/dist",
-    "extensions/qi-lab/ui/node_modules",
-    "extensions/qi-lab/ui/dist"
+    "ui/node_modules",
+    "ui/dist"
   ]
 }

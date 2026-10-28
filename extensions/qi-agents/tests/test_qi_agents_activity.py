@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any, cast
 from types import SimpleNamespace
 
-REPO = Path(__file__).resolve().parents[2]   # tests/ → extensions/
+REPO = Path(__file__).resolve().parents[3]   # tests/ → extensions/
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "extensions" / "qi-agents"))
 
@@ -129,7 +130,7 @@ async def test_pushes_start_act_think_done_with_attribution(tmp_path, monkeypatc
     updates = _collect()
     out = await sub._run_one(
         _Api([_think("先定范围"), _act(path="a.py")]), role, "读一遍",
-        ToolContext(agent_name="qi", workdir=tmp_path, ui=_Ui(),
+        ToolContext(agent_name="qi", workdir=tmp_path, ui=cast(Any, _Ui()),
                     on_update=updates.append))
 
     assert out["ok"] is True
@@ -162,7 +163,7 @@ async def test_live_lines_are_verbatim_the_result_lines(tmp_path, monkeypatch):
     updates = _collect()
     out = await sub._run_one(
         _Api([_think("第一轮:先定范围"), _act(path="a.py"), _think("第二轮:再看细节")]),
-        role, "x", ToolContext(agent_name="qi", workdir=tmp_path, ui=_Ui(),
+        role, "x", ToolContext(agent_name="qi", workdir=tmp_path, ui=cast(Any, _Ui()),
                                on_update=updates.append))
 
     lines = [u["qi"].get("line") for u in updates if u["qi"]["phase"] in ("act", "think")]
@@ -189,7 +190,7 @@ async def test_nested_run_attributes_depth_and_parent(tmp_path, monkeypatch):
                           name="coordinator")
     out = await sub._run_one(
         _Api([]), role, "x",
-        ToolContext(agent_name="coordinator", workdir=tmp_path, ui=_Ui(),
+        ToolContext(agent_name="coordinator", workdir=tmp_path, ui=cast(Any, _Ui()),
                     on_update=updates.append),
         parent=parent)
 
@@ -214,7 +215,7 @@ async def test_stream_frame_carries_the_whole_round(tmp_path, monkeypatch):
     await sub._run_one(
         _Api([_delta("先想", "thinking_delta"), _delta("一点直出文本"),
               _think("本轮结束")]),
-        role, "x", ToolContext(agent_name="qi", workdir=tmp_path, ui=_Ui(),
+        role, "x", ToolContext(agent_name="qi", workdir=tmp_path, ui=cast(Any, _Ui()),
                                on_update=updates.append),
         holder=[_Card()])
 
@@ -239,7 +240,7 @@ async def test_without_on_update_the_run_is_untouched(tmp_path, monkeypatch):
     _write_role(tmp_path / "home" / "agents", "scout")
     role = sub.discover(None, "user")["scout"]
 
-    ctx = ToolContext(agent_name="qi", workdir=tmp_path, ui=_Ui())
+    ctx = ToolContext(agent_name="qi", workdir=tmp_path, ui=cast(Any, _Ui()))
     assert getattr(ctx, "on_update", None) is None
     out = await sub._run_one(_Api([_act(path="a.py")]), role, "x", ctx)
     assert out["ok"] is True and out["steps"] == ['· read {"path": "a.py"}']
@@ -262,5 +263,5 @@ async def test_a_broken_on_update_does_not_kill_the_run(tmp_path, monkeypatch):
 
     out = await sub._run_one(
         _Api([_act(path="a.py")]), role, "x",
-        ToolContext(agent_name="qi", workdir=tmp_path, ui=_Ui(), on_update=boom))
+        ToolContext(agent_name="qi", workdir=tmp_path, ui=cast(Any, _Ui()), on_update=boom))
     assert out["ok"] is True, "直播失败不该带倒子运行"

@@ -47,6 +47,7 @@ async def test_recommend_fills_url_and_ui_cards(ctx):
     outcome = await tools.recommend(
         {"ids": [plan.id], "reasons": {plan.id: "任务需要先产出评估方案"}}, ctx)
     assert plan.url in outcome.result
+    assert outcome.details is not None
     (node,) = outcome.details["ui"]
     assert node["type"] == "assistant_cards"
     item = node["items"][0]
@@ -77,6 +78,7 @@ async def test_reason_falls_back_to_description_first_sentence(ctx):
     plan = next(a for a in catalog.load(ctx.cwd).assistants
                 if a.name == "评估方案生成助手")
     outcome = await tools.recommend({"ids": [plan.id]}, ctx)
+    assert outcome.details is not None
     reason = outcome.details["ui"][0]["items"][0]["reason"]
     assert reason
     assert reason in plan.description
@@ -102,4 +104,5 @@ async def test_recommend_dedupes_ids(ctx):
     plan = next(a for a in catalog.load(ctx.cwd).assistants
                 if a.name == "评估方案生成助手")
     outcome = await tools.recommend({"ids": [plan.id, plan.id]}, ctx)
+    assert outcome.details is not None
     assert len(outcome.details["ui"][0]["items"]) == 1

@@ -16,8 +16,9 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Any, cast
 
-REPO = Path(__file__).resolve().parents[2]  # tests/ → extensions/qi-agents/tests/,层级深了一层
+REPO = Path(__file__).resolve().parents[3]  # tests/ → extensions/qi-agents/tests/,层级深了一层
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "extensions" / "qi-agents"))
 
@@ -148,10 +149,11 @@ def test_builtin_roles_are_discovered_and_can_be_overridden(tmp_path, monkeypatc
     home = _env(tmp_path, monkeypatch)
     roles = discover(None, "user", include_remote=False)
     for name in ("训练数据", "训练评估", "训练态势"):
-        assert roles[name].source == "builtin"
-        assert roles[name].prompt
-        assert roles[name].path is not None
-        assert "builtin" in roles[name].path.parts
+        role = roles[name]
+        assert role.source == "builtin"
+        assert role.prompt
+        assert role.path is not None
+        assert "builtin" in Path(role.path).parts
 
     assert discover(None, "user", include_remote=False,
                     include_builtin=False) == {}
@@ -648,7 +650,7 @@ async def test_child_tool_start_flows_back_as_timeline_blocks(tmp_path, monkeypa
     role = sub.discover(None, "user")["scout"]
     out = await sub._run_one(
         FakeApi(), role, "x",
-        ToolContext(agent_name="qi", workdir=tmp_path, ui=ui))
+        ToolContext(agent_name="qi", workdir=tmp_path, ui=cast(Any, ui)))
 
     assert out["ok"] is True and out["depth"] == 1
     assert ui.messages[:2] == ["━━━ 委派 → scout ━━━━━━━", '  · read {"path": "src/x.py"}'], \
@@ -698,7 +700,7 @@ async def test_timeline_titles_each_agent_once_and_previews_thinking(
     role = sub.discover(None, "user")["scout"]
     out = await sub._run_one(
         FakeApi(), role, "x",
-        ToolContext(agent_name="qi", workdir=tmp_path, ui=ui))
+        ToolContext(agent_name="qi", workdir=tmp_path, ui=cast(Any, ui)))
 
     assert out["ok"] is True
     # 黄标题只出一次;两轮思考与活动都是缩进内容块
@@ -754,6 +756,7 @@ async def test_stream_deltas_flush_into_agent_card_and_timeline_skips_thinking(
 
     class FakeApi:
         async def run_agent(self, spec, task, *, abort=None, on_event=None):
+            assert on_event is not None
             for chunk in ("先想", "一点"):
                 on_event(SimpleNamespace(kind="thinking_delta", text=chunk))
             on_event(SimpleNamespace(kind="tool_start", tool="read",
@@ -775,7 +778,7 @@ async def test_stream_deltas_flush_into_agent_card_and_timeline_skips_thinking(
     role = sub.discover(None, "user")["scout"]
     out = await sub._run_one(
         FakeApi(), role, "x",
-        ToolContext(agent_name="qi", workdir=tmp_path, ui=ui), holder=[card])
+        ToolContext(agent_name="qi", workdir=tmp_path, ui=cast(Any, ui)), holder=[card])
 
     assert out["ok"] is True
     # 架子上为本 run 追加了一张卡,标题信息 = 名字 ← 父 · 深度
@@ -902,6 +905,7 @@ async def test_frontend_timeline_never_carries_thinking_previews(tmp_path, monke
 
     class FakeApi:
         async def run_agent(self, spec, task, *, abort=None, on_event=None):
+            assert on_event is not None
             on_event(SimpleNamespace(kind="assistant_message",
                                      data={"thinking": "独轮思考"}))
             on_event(SimpleNamespace(kind="tool_start", tool="read",
@@ -924,7 +928,7 @@ async def test_frontend_timeline_never_carries_thinking_previews(tmp_path, monke
     sub._LAST_TITLE = ""
     ui = _Ui(frontend=True)
     out = await sub._run_one(FakeApi(), role, "x",
-                             ToolContext(agent_name="qi", workdir=tmp_path, ui=ui),
+                             ToolContext(agent_name="qi", workdir=tmp_path, ui=cast(Any, ui)),
                              holder=[])
     assert out["ok"] is True
     assert ui.messages == [], \
@@ -934,7 +938,7 @@ async def test_frontend_timeline_never_carries_thinking_previews(tmp_path, monke
     sub._LAST_TITLE = ""
     ui2 = _Ui(frontend=False)
     out = await sub._run_one(FakeApi(), role, "x",
-                             ToolContext(agent_name="qi", workdir=tmp_path, ui=ui2))
+                             ToolContext(agent_name="qi", workdir=tmp_path, ui=cast(Any, ui2)))
     assert out["ok"] is True
     assert any("独轮思考" in m for m in ui2.messages), ui2.messages
     assert any('· read {"path": "a.py"}' in m for m in ui2.messages), ui2.messages

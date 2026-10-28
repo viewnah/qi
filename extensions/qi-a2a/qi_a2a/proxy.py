@@ -168,7 +168,7 @@ def format_result(result: SendResult, entry: config.A2AEntry) -> str:
 # ── 动作 ────────────────────────────────────────────────
 
 async def _list_entries(args: dict, ctx: Any,
-                         client_factory: Callable[[config.A2AEntry], A2AClient]) -> str:
+                         client_factory: Callable[[config.A2AEntry], Any]) -> str:
     cwd = _cwd(ctx)
     trusted = _trusted(ctx)
     all_entries = config.resolve(cwd, trusted=trusted)
@@ -216,7 +216,7 @@ async def _list_entries(args: dict, ctx: Any,
 
 
 async def _card_action(args: dict, ctx: Any,
-                       client_factory: Callable[[config.A2AEntry], A2AClient]) -> str:
+                       client_factory: Callable[[config.A2AEntry], Any]) -> str:
     entry = _pick_entry(_entries(ctx), str(args.get("server") or ""))
     async with client_factory(entry) as client:
         cards = await fetch_cards(client, entry)
@@ -277,7 +277,7 @@ async def send_with_entry(entry: config.A2AEntry, args: dict, ctx: Any,
 
 
 async def _send_action(args: dict, ctx: Any,
-                       client_factory: Callable[[config.A2AEntry], A2AClient], *,
+                       client_factory: Callable[[config.A2AEntry], Any], *,
                        resume: bool = False) -> str:
     entry = _pick_entry(_entries(ctx), str(args.get("server") or ""))
     payload = dict(args)
@@ -288,7 +288,7 @@ async def _send_action(args: dict, ctx: Any,
 
 
 async def _task_action(args: dict, ctx: Any,
-                       client_factory: Callable[[config.A2AEntry], A2AClient], *,
+                       client_factory: Callable[[config.A2AEntry], Any], *,
                        cancel: bool) -> str:
     entry = _pick_entry(_entries(ctx), str(args.get("server") or ""))
     task_id = str(args.get("task_id") or "")
@@ -305,7 +305,7 @@ async def _task_action(args: dict, ctx: Any,
 
 # ── 工具 ────────────────────────────────────────────────
 
-def build_tool(client_factory: Callable[[config.A2AEntry], A2AClient] | None = None) -> Tool:
+def build_tool(client_factory: Callable[[config.A2AEntry], Any] | None = None) -> Tool:
     """构造代理工具。`client_factory` 只给测试注入假客户端用。"""
     factory = client_factory or A2AClient
 

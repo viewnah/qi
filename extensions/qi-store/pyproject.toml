@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "qi-store"
-version = "0.1.0"
+version = "0.4.0"
 description = "qi 的应用商店:从 hikqin 安装 MCP server 配置 / Skill 包 / A2A 名片"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -14,6 +14,11 @@ dependencies = ["httpx>=0.27"]
 
 [project.entry-points."qi.extensions"]
 store = "qi_store:register"
+
+[tool.qi]
+# 独立发布时声明兼容的 qi-coding-agent 范围;内置 bundle 阶段由 qi-lab 统一校验。
+host = ">=0.4,<0.5"
+bundle = "qi-lab"
 
 [tool.hatch.build.targets.wheel]
 packages = ["qi_store"]

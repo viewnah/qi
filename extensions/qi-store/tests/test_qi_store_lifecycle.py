@@ -106,6 +106,7 @@ def test_upgrade_moves_to_the_new_version_and_keeps_the_target(store_home, proje
     target = paths.global_agent_dir() / "skills" / "ppt-generator"
     before = Ledger.load().find("skill:4")
     assert before is not None
+    assert before is not None
 
     assert cli.run(["upgrade", "skill:4", "-y"], cwd=project,
                    http_factory=factory(upstream(skills=bumped_skills()))) == EXIT_OK
@@ -122,11 +123,13 @@ def test_upgrade_dry_run_changes_nothing(store_home, project, capsys):
     seed_login()
     installed(project)
     before = Ledger.load().find("skill:4")
+    assert before is not None
     capsys.readouterr()
     assert cli.run(["upgrade", "--dry-run"], cwd=project,
                    http_factory=factory(upstream(skills=bumped_skills()))) == EXIT_OK
     assert "dry-run" in capsys.readouterr().out
-    assert Ledger.load().find("skill:4").version == before.version
+    record = Ledger.load().find("skill:4")
+    assert record is not None and record.version == before.version
 
 
 def test_upgrade_with_nothing_to_do_says_so(store_home, project, capsys):

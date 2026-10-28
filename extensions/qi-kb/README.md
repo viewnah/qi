@@ -1,5 +1,7 @@
 # qi-kb
 
+> **qi-lab 内置扩展**：安装 `qi-lab` 时已随包提供，无需单独安装。下面的安装 / CLI 用法是它作为独立扩展时的路径；提取发布后仍按这些步骤使用。
+
 把 **hikqin 知识库**接成 qi 的 provider/model：一个 hikqin 账号 = 一个 `provider`，
 一个知识库 = 该 provider 下的一个 `knowledgeBase`。模型通过一个 `kb` 工具检索 / 问答。
 
@@ -130,7 +132,7 @@ kb({"action":"docs","kb":"54aa…@bob"})
 - **qi-store**：新增 `kb` kind，目录来自 `GET /api/rag/kb/available`；`install` 把账号复制到
   qi-kb 配置。`store.json` 的 schema 不变。
 - **qi-lab**：`/api/kb/*` + 设置页「知识库」面板（provider / KB / 检索问答）。
-  契约见 `extensions/qi-lab/docs/api/kb.md`。
+  契约见 `docs/api/kb.md`。
 
 ## 设计文档
 

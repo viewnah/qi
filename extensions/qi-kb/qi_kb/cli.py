@@ -207,7 +207,8 @@ def cmd_ask(args: argparse.Namespace) -> int:
         if sources:
             console.print("来源：")
             for index, source in enumerate(sources, start=1):
-                meta = source.get("metadata") if isinstance(source.get("metadata"), dict) else {}
+                raw_meta = source.get("metadata")
+                meta = raw_meta if isinstance(raw_meta, dict) else {}
                 doc = source.get("doc_name") or meta.get("filename") or "-"
                 console.print(f"[{index}] {source.get('provider') or '-'} / "
                               f"{source.get('kb_name') or '-'} / {doc}")

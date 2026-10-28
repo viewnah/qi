@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "qi-assistants"
-version = "0.1.0"
+version = "0.4.0"
 description = "qi 的应用助手目录：assistants.json 的读写 + 推荐工具"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -13,6 +13,11 @@ dependencies = []
 
 [project.entry-points."qi.extensions"]
 assistants = "qi_assistants:register"
+
+[tool.qi]
+# 独立发布时声明兼容的 qi-coding-agent 范围;内置 bundle 阶段由 qi-lab 统一校验。
+host = ">=0.4,<0.5"
+bundle = "qi-lab"
 
 [tool.hatch.build.targets.wheel]
 packages = ["qi_assistants"]

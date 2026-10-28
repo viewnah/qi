@@ -3,32 +3,41 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "qi-coding-agent"
-version = "0.3.0"
-description = "编码 agent 框架:单 agent core + 扩展(MCP / 多 agent / web)"
-keywords = ["agent", "coding-agent", "cli", "tui", "llm", "mcp"]
+name = "qi-lab"
+version = "0.4.0"
+description = "qi-lab:以 qi-coding-agent 为运行时的 Web UI,内置 MCP / 角色 / A2A / 知识库等扩展"
+keywords = ["agent", "coding-agent", "web", "tui", "llm", "mcp"]
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 classifiers = [
     "Development Status :: 3 - Alpha",
-    "Environment :: Console",
+    "Environment :: Web Environment",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries :: Application Frameworks",
 ]
+
+# 宿主 qi-coding-agent 从 PyPI 安装。core 独立发版,这里只声明兼容范围。
+# 内置扩展的第三方依赖必须在这里汇总 —— 它们的 pyproject.toml 不参与安装解析。
 dependencies = [
-    "pydantic>=2.10",
-    "typer>=0.12",
-    "rich>=13.0",
-    "textual>=0.80",
+    "qi-coding-agent>=0.4,<0.5",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "rich>=13",
+    "mcp>=1.0",
+    "httpx>=0.27",
+    "a2a-sdk>=1.1.2,<2",
     "PyYAML>=6.0",
-    "litellm>=1.40",
 ]
 
 [project.optional-dependencies]
+dev = ["pytest>=8", "pytest-asyncio>=0.24"]
+
+# uv 的默认开发组:`uv sync` 就会装测试依赖。
+[dependency-groups]
 dev = ["pytest>=8", "pytest-asyncio>=0.24"]
 
 [project.urls]
@@ -38,28 +47,57 @@ Issues = "https://github.com/viewnah/qi/issues"
 Documentation = "https://github.com/viewnah/qi/tree/dev/docs"
 
 [project.scripts]
-qi = "qi_agent.cli:main"
-
-[project.entry-points."qi.extensions"]
+qi-lab = "qi_lab.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/qi_agent"]
+packages = ["src/qi_lab"]
 
+# 内置扩展随 qi-lab wheel 一起分发。运行期由 qi_lab.bundled 用目录通道加载,
+# 不是独立的 pip distribution。逐项列出 extension.py + 包目录:测试、pyproject、
+# README、docs 不随 wheel 走。
 [tool.hatch.build.targets.wheel.force-include]
-# 手册跟包一起走:提示词里要报出**实际**路径(`paths.docs_dir()`),模型才能自己读。
-# 只打 `docs/`;`design/` 是写给改动者的,不进 wheel、不注入提示词。
-"docs" = "qi_agent/docs"
-# 移植自 pi 的素材(themes / 压缩提示词)要随包带上它们的 MIT 声明 —— 这是 MIT 的要求,
-# 只放在仓库根目录对**装包的用户**不算"随附"。
-"THIRD_PARTY_NOTICES.md" = "qi_agent/THIRD_PARTY_NOTICES.md"
+"extensions/bundle.toml" = "qi_lab/extensions/bundle.toml"
+"extensions/qi-mcp/extension.py" = "qi_lab/extensions/qi-mcp/extension.py"
+"extensions/qi-mcp/qi_mcp" = "qi_lab/extensions/qi-mcp/qi_mcp"
+"extensions/qi-agents/extension.py" = "qi_lab/extensions/qi-agents/extension.py"
+"extensions/qi-agents/qi_agents" = "qi_lab/extensions/qi-agents/qi_agents"
+"extensions/qi-a2a/extension.py" = "qi_lab/extensions/qi-a2a/extension.py"
+"extensions/qi-a2a/qi_a2a" = "qi_lab/extensions/qi-a2a/qi_a2a"
+"extensions/qi-store/extension.py" = "qi_lab/extensions/qi-store/extension.py"
+"extensions/qi-store/qi_store" = "qi_lab/extensions/qi-store/qi_store"
+"extensions/qi-kb/extension.py" = "qi_lab/extensions/qi-kb/extension.py"
+"extensions/qi-kb/qi_kb" = "qi_lab/extensions/qi-kb/qi_kb"
+"extensions/qi-assistants/extension.py" = "qi_lab/extensions/qi-assistants/extension.py"
+"extensions/qi-assistants/qi_assistants" = "qi_lab/extensions/qi-assistants/qi_assistants"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/qi_lab",
+    "extensions",
+    "tests",
+    "docs",
+    "design",
+    "ui",
+    "scripts",
+    "README.md",
+    "LICENSE",
+    "pyproject.toml",
+]
 
 [tool.pytest.ini_options]
 markers = [
     "real_extensions: 本测试要装载**本机真装的扩展**(退出默认的 entry-point stub)",
 ]
 asyncio_mode = "auto"
-# 扩展自带的测试放在各自目录下(与宿主 `tests/` 分开);pytest 只认这里**列出来的**目录 ——
-# 新增一个 tests 目录不同步加进来,它就是静默不跑(没报错、也没覆盖)。
-testpaths = ["tests", "extensions/qi-agents/tests", "extensions/qi-lab/tests",
-             "extensions/qi-a2a/tests", "extensions/qi-store/tests",
-             "extensions/qi-kb/tests", "extensions/qi-assistants/tests"]
+# 扩展自带的测试放在各自目录下;新增 tests 目录要同步加进来,否则它就是静默不跑。
+testpaths = ["tests", "extensions"]
+norecursedirs = ["ui", "node_modules", ".venv", "static", "docs", "design", "dist", "build"]
+pythonpath = [
+    "src",
+    "extensions/qi-mcp",
+    "extensions/qi-agents",
+    "extensions/qi-a2a",
+    "extensions/qi-store",
+    "extensions/qi-kb",
+    "extensions/qi-assistants",
+]

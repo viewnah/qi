@@ -9,6 +9,7 @@ import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 
 REPO = Path(__file__).resolve().parents[3]  # tests/ → qi-a2a/ → extensions/ → 仓库根
 sys.path.insert(0, str(REPO))
@@ -29,6 +30,10 @@ def _write(project: Path, servers: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"a2aServers": servers}, ensure_ascii=False),
                     encoding="utf-8")
+
+
+def _text(result: Any) -> str:
+    return result.result if hasattr(result, "result") else str(result)
 
 
 def _ctx(project: Path) -> SimpleNamespace:
@@ -99,7 +104,7 @@ async def test_list_is_offline_and_shows_source_and_paths(tmp_path):
                                  "description": "本地网关"}})
     tool = build_tool(lambda _entry: FakeClient(fail=AssertionError("list 不该联网")))
 
-    text = await tool.execute({"action": "list"}, _ctx(tmp_path))
+    text = _text(await tool.execute({"action": "list"}, _ctx(tmp_path)))
 
     assert "hikqin" in text
     assert "[项目]" in text and "本地网关" in text
@@ -111,7 +116,7 @@ async def test_list_can_discover_cards(tmp_path):
     _write(tmp_path, {"hikqin": {"baseUrl": "http://gw:8080", "tenant": "agent-1"}})
     tool = build_tool(lambda _entry: FakeClient())
 
-    text = await tool.execute({"action": "list", "discover": True}, _ctx(tmp_path))
+    text = _text(await tool.execute({"action": "list", "discover": True}, _ctx(tmp_path)))
 
     assert "数据分析助手" in text and "agent-1" in text
 
@@ -124,7 +129,7 @@ async def test_send_returns_state_ids_and_text(tmp_path):
     fake = FakeClient()
     tool = build_tool(lambda _entry: fake)
 
-    text = await tool.execute({"action": "send", "message": "分析一下"}, _ctx(tmp_path))
+    text = _text(await tool.execute({"action": "send", "message": "分析一下"}, _ctx(tmp_path)))
 
     assert fake.sent[0]["text"] == "分析一下"
     assert fake.sent[0]["tenant"] == "agent-1"
@@ -207,7 +212,7 @@ async def test_input_required_renders_actionable_next_step(tmp_path):
                    "review_configs": [{"allowed_decisions": ["approve", "reject"]}]}))
     tool = build_tool(lambda _entry: fake)
 
-    text = await tool.execute({"action": "send", "message": "删掉"}, _ctx(tmp_path))
+    text = _text(await tool.execute({"action": "send", "message": "删掉"}, _ctx(tmp_path)))
 
     assert "input-required" in text
     assert "delete_file" in text and 'task_id="t7"' in text
@@ -325,7 +330,7 @@ def test_register_wires_tool_command_and_session_hook():
             self.events.on(event, handler)
 
     api = Api()
-    register(api)
+    register(cast(Any, api))
 
     assert [tool.name for tool in api.registered] == ["a2a"]
     assert "a2a" in api.commands

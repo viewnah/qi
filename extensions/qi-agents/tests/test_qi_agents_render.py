@@ -11,7 +11,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "extensions" / "qi-agents"))
 
@@ -126,7 +126,7 @@ async def test_agent_card_not_clipped_by_vertical_default_height():
     card.set_stream("\n".join(f"流式{i}" for i in range(40)), "think")
 
     host = App()
-    host.CSS = ".msg { width: 1fr; height: auto; }"   # core 对消息块的约定
+    host.CSS = ".msg { width: 1fr; height: auto; }"   # type: ignore[attr-defined]  # core 对消息块的约定
 
     async with host.run_test(size=(80, 30)) as pilot:
         await host.mount(Vertical(stack, classes="msg"))

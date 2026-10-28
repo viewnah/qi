@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "qi-agents"
-version = "0.3.0"
+version = "0.4.0"
 description = "qi 的角色系统扩展:角色发现 + 角色选择 + subagent 工具(进程内受管子运行)"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -17,6 +17,11 @@ dependencies = ["PyYAML>=6.0", "qi-mcp"]
 
 [project.entry-points."qi.extensions"]
 agents = "qi_agents:register"
+
+[tool.qi]
+# 独立发布时声明兼容的 qi-coding-agent 范围;内置 bundle 阶段由 qi-lab 统一校验。
+host = ">=0.4,<0.5"
+bundle = "qi-lab"
 
 [tool.hatch.build.targets.wheel]
 packages = ["qi_agents"]

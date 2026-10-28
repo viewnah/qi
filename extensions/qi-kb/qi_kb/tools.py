@@ -37,7 +37,7 @@ PARAMETERS = {
 }
 
 
-async def _execute(args: dict[str, Any], ctx: Any) -> ToolOutcome:
+async def _execute(args: dict[str, Any], ctx: Any) -> str | ToolOutcome:
     cwd = getattr(ctx, "workdir", None) or getattr(ctx, "cwd", None)
     env = getattr(ctx, "session_env", None)
     session_id = env.get("QI_SESSION_ID") if isinstance(env, dict) else None

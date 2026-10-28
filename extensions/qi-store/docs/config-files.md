@@ -109,7 +109,7 @@
 | `version` | **内容**。`check` 靠它比上游哈希；同 id 换了内容才看得出来 |
 | `target` + `files` / `patches` | `uninstall` 只删自己写过的：目录类按 `files[]` 删并清空目录；JSON 类只删 `patches[]` 里那个键，**文件里别人的内容原样活着** |
 | `scope` | 同一 itemId 可以在 global 与 project 各装一份（两份独立账目） |
-| `needs_config` | 装完的待办项，`list` 与 `qi lab` 面板都要能显示 |
+| `needs_config` | 装完的待办项，`list` 与 `qi-lab` 面板都要能显示 |
 
 - **账本只在用户级**（一份），每条带 `scope` 与绝对 `target` → 项目级安装也记得住，
   不会因为换 cwd 就"忘了自己装过什么"。

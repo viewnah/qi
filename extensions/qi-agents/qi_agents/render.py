@@ -37,12 +37,10 @@ from typing import Any
 
 from rich.text import Text
 
-try:  # qi 主体自带 textual;缺席(裁剪环境)时整层降级为内置渲染,不影响执行面
-    from textual.containers import Vertical, VerticalScroll
-    from textual.widgets import Static
-except ImportError:  # pragma: no cover - 正常安装不存在
-    Vertical = VerticalScroll = None  # type: ignore[assignment]
-    Static = None  # type: ignore[assignment]
+# core 自带 textual,这里不再做「缺席时降级」的分支:把变量声明成 Optional 会让
+# 每个组件类都变成不可继承的 `None | type`。真缺 textual 时 core 自己就起不来。
+from textual.containers import Vertical, VerticalScroll
+from textual.widgets import Static
 
 #: 展开态每段正文最多画的行数(完整文本在 result 里,模型与导出不截这个)。
 BODY_LINES = 30

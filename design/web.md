@@ -1,5 +1,8 @@
 # Web 能力设计(宿主 + UI 插件)
 
+> **2026-10 结构变更**:`qi-web` 已删除,产品是 **qi-lab**;前端源码在 `ui/`,Python 包在
+> `src/qi_lab/`。本文里 `extensions/qi-web/*` 的路径是历史记录,不再存在。
+
 > ⚠️ **v3 归属变更**:整个 web(HTTP 宿主 + AG-UI 桥 + UI 资源)要**拆成独立官方 pip 包 `qi-web`**,core 不内置、不默认装 —— 不装时 `qi web` 这条子命令不存在。本文的 **API 契约 / AG-UI 事件 / 安全规则仍然有效**,变的是「谁提供它」。见 [extensions-design.md](extensions-design.md)。
 >
 > 状态:设计定稿(v2 实现)。相关文档:[plugins.md](plugins.md)(插件机制)、[how-qi-works.md](../docs/how-qi-works.md)(ToolCatalog)。参照物:pi 的 RPC 模式、pi-web(独立 Web 应用)、hikqin(宿主形态)。
@@ -683,7 +686,7 @@ data={"status": …, "duration_ms": …, "exit_code": …, "error": …}
 | `state: "error"` | qi-agents `_ui_items`(委派失败) | 当 `pending` 画成 ○,**但 `note` 里是错误原文** —— 读不到形状,至少读得到字 |
 | `items[].depth` | 同上(委派深度,1 起) | 忽略字段,回退 label 的前导空格(两级一格);两个都没有 = 顶层 |
 
-宿主侧的实现在 `extensions/qi-lab/ui/src/state/segments.ts`(`itemDepth`)与
+宿主侧的实现在 `ui/src/state/segments.ts`(`itemDepth`)与
 `Rows.tsx`(`UiNodeView` 的 list 分支)。**词汇表仍然只约定已知键、不禁止附加键** ——
 v1.1 **没有**引入树节点(嵌套仍靠 `depth` 平铺表达),这是刻意的:树地图是重复的
 第二份信息(TUI 的同一取舍,见 `web-lab.md` §2)。
@@ -699,7 +702,7 @@ v1.1 **没有**引入树节点(嵌套仍靠 `depth` 平铺表达),这是刻意�
 | --- | --- | --- |
 | `assistant_cards`(`items[]` 带 `id/name/description/tasks/outputs/url/reason`) | qi-assistants 的 `assistant_recommend` 工具 | 不认识的 `type` → 退回原始 JSON(硬规则 1),链接与文字都不丢 |
 
-宿主侧:卡片在 `extensions/qi-lab/ui/src/components/Rows.tsx`(`UiNodeView`),外链在
+宿主侧:卡片在 `ui/src/components/Rows.tsx`(`UiNodeView`),外链在
 `state/url.ts` 里再校验一次(`http(s)`、无凭据、无空白/反斜杠)。卡片**不留在过程块里**:
 `state/turn.ts` 的 `groupProcess` 把它提成独立的 `cards` 块,放在过程之后、结论之前 ——
 过程默认折叠,但卡片始终可见。工具详情不再重复画卡,原始文本收进「原始输出」折叠。

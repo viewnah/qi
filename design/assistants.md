@@ -3,7 +3,7 @@
 > 状态：**P0 + P1 已实现（2026-10-26）**。`qi-lab` 的「设置 → 应用助手」负责增删改查；
 > 角色「训练评估」在对话里推荐；`url` 是纯外链。
 >
-> 相关：`extensions/qi-assistants/README.md`、`extensions/qi-lab/docs/api/assistants.md`、
+> 相关：`extensions/qi-assistants/README.md`、`docs/api/assistants.md`、
 > `examples/agents/training-evaluator/agent.md`、`design/web.md` §16.2（`assistant_cards`）。
 
 ## 0. 最终形态
@@ -93,7 +93,7 @@
 
 - `extensions/qi-assistants/tests`：目录校验 / 原子写 / 合并导入 / 召回 / 工具 /
   角色可发现（45 例）；
-- `extensions/qi-lab/tests/test_lab_assistants_api.py`：CRUD、确认头、422/409/503、
+- `tests/test_lab_assistants_api.py`：CRUD、确认头、422/409/503、
   能力位、导入幂等（17 例）；
 - `test_lab_docs_api.py`：路由与能力位文档对拍；
 - 前端：`state/url.test.ts`、`tsc --noEmit`、`vitest`、`check:design`、`npm run build`；

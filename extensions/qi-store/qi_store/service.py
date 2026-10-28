@@ -233,8 +233,8 @@ def _item_out(item: StoreItem, ledger: Ledger) -> dict[str, Any]:
         "updatedAt": item.updated_at, "requiresConfig": item.requires_config,
         "safety": item.safety, "badges": item.badges,
         "installed": live,
-        "installedVersion": record.version if live else None,
-        "updateAvailable": bool(live and record.version != item.version),
+        "installedVersion": record.version if live and record is not None else None,
+        "updateAvailable": bool(live and record is not None and record.version != item.version),
     }
 
 

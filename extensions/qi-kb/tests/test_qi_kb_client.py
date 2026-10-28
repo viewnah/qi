@@ -110,7 +110,8 @@ def test_client_refreshes_expired_access(kb_home):
     with client.KbClient(cfg, "alice", auth_store=store, http=http) as c:
         assert c.list_available() == []
     assert calls[0].endswith("/auth/refresh")
-    assert store.get("alice")["refresh"] == "r2"
+    entry = store.get("alice")
+    assert entry is not None and entry["refresh"] == "r2"
 
 
 def test_client_401_refreshes_once(kb_home):
@@ -136,7 +137,8 @@ def test_client_401_refreshes_once(kb_home):
     with client.KbClient(cfg, "alice", auth_store=store, http=http) as c:
         assert c.list_available() == []
     assert available_calls == 2
-    assert store.get("alice")["refresh"] == "r2"
+    entry = store.get("alice")
+    assert entry is not None and entry["refresh"] == "r2"
 
 
 def test_client_rejects_unknown_path(kb_home):

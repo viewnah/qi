@@ -264,9 +264,11 @@ def load(cwd: Path | None = None) -> KbConfig:
         provider.setdefault("knowledgeBases", {})
 
     cfg.providers = merged_providers
+    user_defaults = user_raw.get("defaults")
+    project_defaults = project_raw.get("defaults")
     cfg.defaults = deep_merge(
-        user_raw.get("defaults") if isinstance(user_raw.get("defaults"), dict) else {},
-        project_raw.get("defaults") if isinstance(project_raw.get("defaults"), dict) else {},
+        user_defaults if isinstance(user_defaults, dict) else {},
+        project_defaults if isinstance(project_defaults, dict) else {},
     )
     cfg.default_provider = project_raw.get("defaultProvider") or user_raw.get("defaultProvider")
     cfg.default_knowledge_base = (

@@ -43,7 +43,7 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from qi_agent.extensions import Tool
 
@@ -363,8 +363,9 @@ async def _run_remote(role: Role, task: str, ctx: Any, *, depth: int,
     except ImportError:                 # 装完又被卸了:当失败处理,不让工具崩
         run = None
     else:
+        assert role.remote is not None, "远端角色必须带 remote 声明"
         run = await run_remote(
-            role.remote, task,
+            cast(Any, role.remote), task,
             on_progress=_activity,
             signal=_abort_signal(ctx),
         )
@@ -385,14 +386,15 @@ async def _run_remote(role: Role, task: str, ctx: Any, *, depth: int,
             except Exception:           # noqa: BLE001
                 pass
     ui = getattr(ctx, "ui", None)
-    if callable(getattr(ui, "notify", None)) and not getattr(ui, "has_frontend", False):
+    notify = getattr(ui, "notify", None)
+    if callable(notify) and not getattr(ui, "has_frontend", False):
         indent = "  " * max(0, depth - 1)
-        ui.notify(f"{indent}── {name} {'✓' if result['ok'] else '✗'} 深度{depth} "
-                  f"· {elapsed}ms ──", level="info" if result["ok"] else "error")
+        notify(f"{indent}── {name} {'✓' if result['ok'] else '✗'} 深度{depth} "
+               f"· {elapsed}ms ──", level="info" if result["ok"] else "error")
         body = str(result.get("output") or result.get("error") or "")
         for line in body.splitlines()[:DONE_SUMMARY_LINES]:
             if line.strip():
-                ui.notify(indent + "  " + line)
+                notify(indent + "  " + line)
     return result
 
 
@@ -494,13 +496,14 @@ async def _run_one(api: Any, role: Role, task: str, ctx: Any,
         global _LAST_TITLE
         try:
             ui = getattr(ctx, "ui", None)
-            if not callable(getattr(ui, "notify", None)):
+            notify = getattr(ui, "notify", None)
+            if not callable(notify):
                 return
             indent = "  " * max(0, depth - 1)
             if _LAST_TITLE != name:
-                ui.notify(f"{indent}━━━ 委派 → {name} ━━━━━━━", level="warning")
+                notify(f"{indent}━━━ 委派 → {name} ━━━━━━━", level="warning")
                 _LAST_TITLE = name
-            ui.notify(indent + line, level=level)
+            notify(indent + line, level=level)
         except Exception:  # noqa: BLE001 时间线是旁路:失败不该带倒子运行
             pass
 
@@ -570,21 +573,22 @@ async def _run_one(api: Any, role: Role, task: str, ctx: Any,
         (节点 + 输出摘要) —— 那时它是唯一日志。失败色保留(error)。"""
         try:
             ui = getattr(ctx, "ui", None)
-            if not callable(getattr(ui, "notify", None)):
+            notify = getattr(ui, "notify", None)
+            if not callable(notify):
                 return
             if getattr(ui, "has_frontend", False):
                 return  # 前端:连节点块也归卡,时间线零扩展输出
             indent = "  " * max(0, depth - 1)
-            ui.notify(f"{indent}── {name} {'✓' if ok_ else '✗'} 深度{depth} ──",
-                      level="info" if ok_ else "error")
+            notify(f"{indent}── {name} {'✓' if ok_ else '✗'} 深度{depth} ──",
+                   level="info" if ok_ else "error")
             body = (str(res_.get("output") or "") if ok_
                     else str(res_.get("error") or "失败"))
             lines = body.splitlines()
             head = [ln for ln in lines[:DONE_SUMMARY_LINES] if ln.strip()]
             for ln in head or ["(无文本输出)"]:
-                ui.notify(indent + "  " + ln)
+                notify(indent + "  " + ln)
             if len(lines) > DONE_SUMMARY_LINES:
-                ui.notify(indent + f"  …(+{len(lines) - DONE_SUMMARY_LINES} 行,全文见卡片)")
+                notify(indent + f"  …(+{len(lines) - DONE_SUMMARY_LINES} 行,全文见卡片)")
         except Exception:  # noqa: BLE001 时间线是旁路:失败不该带倒子运行
             pass
 
@@ -628,6 +632,7 @@ async def _run_one(api: Any, role: Role, task: str, ctx: Any,
                 thinking = data.get("thinking")
                 has_think = isinstance(thinking, str) and bool(thinking.strip())
                 if has_think:
+                    assert isinstance(thinking, str)
                     last_thinking = thinking
                     if len(thoughts) < THOUGHT_ROUNDS:
                         thoughts.append(thinking if len(thinking) <= THOUGHT_CHARS

@@ -73,14 +73,14 @@ async def test_tool_search(kb_home, monkeypatch):
 
     monkeypatch.setattr(service, "search", fake_search)
     out = await _execute({"action": "search", "query": "问"}, _Ctx(kb_home))
-    text = out.result if hasattr(out, "result") else str(out)
+    text = getattr(out, "result", str(out))
     assert "片段" in text
 
 
 @pytest.mark.asyncio
 async def test_tool_unknown_action():
     out = await _execute({"action": "nope"}, _Ctx(None))
-    text = out.result if hasattr(out, "result") else str(out)
+    text = getattr(out, "result", str(out))
     assert "不认识的 action" in text
 
 

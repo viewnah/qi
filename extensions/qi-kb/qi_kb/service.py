@@ -571,7 +571,7 @@ def _qa_session_id(session_id: str | None, provider: str, ids: list[str]) -> str
     return hashlib.md5(f"{session_id}:{provider}:{scope}".encode("utf-8")).hexdigest()
 
 
-def _rescore_zero(client: KbClient, query: str, ids: list[str],
+def _rescore_zero(client: Any, query: str, ids: list[str],
                    items: list[dict[str, Any]], kwargs: dict[str, Any]) -> None:
     """rerank 全给 0 分时，用一次纯检索分数兜底（只为展示置信度）。"""
     if not items:
@@ -595,14 +595,16 @@ def _rescore_zero(client: KbClient, query: str, ids: list[str],
     for result in data.get("results") or []:
         if not isinstance(result, dict):
             continue
-        meta = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+        raw_meta = result.get("metadata")
+        meta = raw_meta if isinstance(raw_meta, dict) else {}
         chunk = meta.get("chunk_index")
         if chunk is None:
             chunk = result.get("chunk_index")
         key = (str(result.get("doc_id") or ""), chunk)
         best[key] = max(best.get(key, 0.0), _number(result.get("score")))
     for item in items:
-        meta = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+        raw_meta = item.get("metadata")
+        meta = raw_meta if isinstance(raw_meta, dict) else {}
         chunk = item.get("chunk_index")
         if chunk is None:
             chunk = meta.get("chunk_index")

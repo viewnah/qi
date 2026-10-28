@@ -1014,7 +1014,7 @@ qi kb provider login alice
 qi kb provider remove alice --cascade
 
 # 5. lab
-qi lab
+qi-lab
 ```
 
 验收：

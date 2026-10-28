@@ -57,7 +57,8 @@ def _copy_auth(provider_name: str, source: dict[str, Any], *,
                copy_auth: bool = True) -> None:
     if not copy_auth:
         return
-    payload = source.get("auth") if isinstance(source.get("auth"), dict) else {}
+    raw_auth = source.get("auth")
+    payload: dict[str, Any] = raw_auth if isinstance(raw_auth, dict) else {}
     access = payload.get("access") or source.get("access")
     refresh = payload.get("refresh") or source.get("refresh")
     if not access and not refresh:

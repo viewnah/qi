@@ -138,7 +138,7 @@ SKILL_ZIPS = {
 }
 
 
-def upstream(*, mcp_servers: list[dict] | None = None,
+def upstream(*, mcp_servers: list[dict] | dict | None = None,
              skill_zip: bytes = SKILL_ZIP,
              skills: dict | None = None,
              agents: list[dict] | None = None,

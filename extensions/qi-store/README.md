@@ -1,5 +1,7 @@
 # qi-store
 
+> **qi-lab 内置扩展**：安装 `qi-lab` 时已随包提供，无需单独安装。下面的安装 / CLI 用法是它作为独立扩展时的路径；提取发布后仍按这些步骤使用。
+
 把 **hikqin** 当成应用商店：`qi store install` 一条命令，把 MCP server 配置 / Skill 包 /
 A2A 名片装进 qi 自己的配置目录。
 
@@ -529,7 +531,7 @@ extensions/qi-store/
 | **P0** ✅ | fixtures + `client.py`（login/refresh/拆包/白名单）+ `login`/`logout`/`whoami`/`sources` | 三个 kind 的响应样本落进 `tests/fixtures/`；拆包与字段名有测试钉住（**已过，47 条**） |
 | **P1** ✅ | `search`/`info`/`install`/`download`/`list`/`uninstall`，skill + mcp + a2a，编号选择器 | `qi store install ppt-generator` → 技能落盘且 **qi 的 loader 真能扫到**；`uninstall` 干净（**已过，75 条**） |
 | **P2** ✅ | `check` / `upgrade` / `sync` + `wanted[]` 声明层 | 上游更新后 `check` 报漂移，`upgrade` 保持原落点并备份旧版，`sync` 只补不删（**已过，90 条**） |
-| **P3** ✅ | qi-lab：`/api/store/*`（7 条）+ 设置面「商店」一节 | `qi lab` 里搜到 → 看计划 → 装 → 技能面板立刻出现（**已过：qi-store 91 + qi-lab 商店 API 13**） |
+| **P3** ✅ | qi-lab：`/api/store/*`（7 条）+ 设置面「商店」一节 | `qi-lab` 里搜到 → 看计划 → 装 → 技能面板立刻出现（**已过：qi-store 91 + qi-lab 商店 API 13**） |
 | **P4** ✅ | `agent` kind（详情 + 逐个取资源 → 角色目录：agent.md + 私有 mcp.json + 私有 skills + 子角色摊平） | 装完 `qi` 的角色表里能看到、能被 `subagent` 指派（**已过：qi-store 108 条**） |
 | **P5** | `extension` kind（让 `qi install --index-url <hikqin>/api/pypi/simple/` 直连） | — |
 

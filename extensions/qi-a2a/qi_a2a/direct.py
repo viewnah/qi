@@ -48,7 +48,7 @@ def _note(api: Any, ctx: Any, text: str) -> None:
 def _make_execute(entry: config.A2AEntry):
     async def execute(args: dict, ctx: Any) -> str:
         try:
-            async with A2AClient() as client:
+            async with A2AClient(entry) as client:
                 return await send_entry_direct(entry, args, ctx, client)
         except (config.ConfigError, CardError, RpcError) as exc:
             raise ToolError(str(exc)) from exc

@@ -13,7 +13,7 @@ import httpx
 import pytest
 
 from qi_store import cli, config, ledger as ledger_mod, paths, planner
-from qi_store.catalog import load as load_catalog
+from qi_store.catalog import Catalog, load as load_catalog
 from qi_store.client import StoreClient
 from qi_store.errors import EXIT_CONFLICT, EXIT_OK, EXIT_USAGE
 from qi_store.kinds import mcp as mcp_kind
@@ -46,7 +46,7 @@ def logged_in(store_home, project):
 # ── 目录解析 ────────────────────────────────────────────
 
 
-def _catalog(transport) -> object:
+def _catalog(transport) -> Catalog:
     source = config.Source(name="hikqin", base_url="http://h:6091", auth={"access": jwt()})
     client = StoreClient(source, http=httpx.Client(transport=transport))
     return load_catalog(client, store_name="hikqin", allow_cache=False)

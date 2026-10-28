@@ -1,0 +1,52 @@
+# qi-lab 内置扩展清单。
+#
+# - key 是仓库里的扩展目录名,也是 qi-lab 日志 / doctor 里用的名字;
+# - extension 是扩展在 qi-coding-agent 里的名字(entry point 名,或目录名);
+# - dist 是它将来独立发布时的 PyPI 发行名;
+# - requires 只写**内置扩展之间**的硬依赖,qi-lab 会按它做拓扑排序;
+# - enabled = false 只关掉内置副本,不影响用户自己安装的外部版本。
+#
+# 外部优先规则:如果同名扩展已经通过 settings.packages 声明、且 entry point 真的存在,
+# 或者项目/用户级 extensions/ 里有同名目录,qi-lab 会跳过这里的副本。
+
+[extensions.qi-mcp]
+path = "qi-mcp"
+extension = "mcp"
+dist = "qi-mcp"
+requires = []
+enabled = true
+
+[extensions.qi-agents]
+path = "qi-agents"
+extension = "agents"
+dist = "qi-agents"
+requires = ["qi-mcp"]
+enabled = true
+
+[extensions.qi-a2a]
+path = "qi-a2a"
+extension = "a2a"
+dist = "qi-a2a"
+requires = []
+enabled = true
+
+[extensions.qi-store]
+path = "qi-store"
+extension = "store"
+dist = "qi-store"
+requires = []
+enabled = true
+
+[extensions.qi-kb]
+path = "qi-kb"
+extension = "kb"
+dist = "qi-kb"
+requires = []
+enabled = true
+
+[extensions.qi-assistants]
+path = "qi-assistants"
+extension = "assistants"
+dist = "qi-assistants"
+requires = []
+enabled = true

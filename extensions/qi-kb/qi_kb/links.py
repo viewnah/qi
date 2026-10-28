@@ -50,7 +50,7 @@ def _doc_map(client: KbClient, kb_id: str, *, clock=time.time) -> dict[str, dict
     return mapping
 
 
-def enrich(client: KbClient, items: list[dict[str, Any]], *,
+def enrich(client: Any, items: list[dict[str, Any]], *,
            clock=time.time) -> list[dict[str, Any]]:
     """给 sources / search results 补 `file_id` / `filename` / `file_ref`。
 

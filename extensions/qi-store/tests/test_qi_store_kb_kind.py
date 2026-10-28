@@ -63,7 +63,8 @@ def test_install_copies_account_to_qi_kb(monkeypatch, kb_home, project):
     from qi_kb import config as kb_config
     kb_cfg = kb_config.load(project)
     assert "54aa228821324031876bc06d94b538e9" in kb_cfg.providers["hikqin"]["knowledgeBases"]
-    assert kb_auth.AuthStore().get("hikqin")["access"] == "a1"
+    kb_entry = kb_auth.AuthStore().get("hikqin")
+    assert kb_entry is not None and kb_entry["access"] == "a1"
     assert store_file.read_text(encoding="utf-8") == before
 
     installed = service.installed(project)["items"]

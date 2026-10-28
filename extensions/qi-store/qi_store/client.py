@@ -71,7 +71,8 @@ def _auth_from_login(payload: dict[str, Any], login: str | None = None) -> dict[
     refresh = payload.get("refresh_token") or payload.get("refresh")
     if not access:
         raise UpstreamError("登录响应里没有 access_token")
-    user = payload.get("user") if isinstance(payload.get("user"), dict) else {}
+    raw_user = payload.get("user")
+    user: dict[str, Any] = raw_user if isinstance(raw_user, dict) else {}
     return {
         "login": user.get("username") or login,
         "role": user.get("role"),

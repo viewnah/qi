@@ -1,7 +1,7 @@
 # 开发与测试
 
-面向要改 qi 本身的人。用户手册在 [docs/index.md](../docs/index.md);**其余设计与决策记录在 [PLAN.md](PLAN.md)**
-(那是给改动者看的,不是手册)。
+面向要改 qi-lab 的人。qi-lab 是产品仓库;`qi-coding-agent` 是它从 PyPI 安装的运行时,
+core 源码不在这里。
 
 ## 1. 拉起来
 
@@ -13,184 +13,151 @@ cd qi
 uv sync
 ```
 
-`uv sync` 会把 **qi 本体装成 editable**(`.venv/lib/python3.12/site-packages/_editable_impl_qi_agent.pth`)
-并装上 dev 依赖(`pytest` / `pytest-asyncio`)。
+`uv sync` 会把 **qi-lab 装成 editable**,并装上 `qi-coding-agent>=0.4,<0.5` 与内置扩展
+需要的第三方依赖(mcp / fastapi / a2a-sdk / httpx / PyYAML)。
 
-**三个扩展要单独装**——它们各自是独立 pip 包,而仓库**没有配 uv workspace**(故意的:core 不该
-默认拖上 MCP / FastAPI 那些依赖):
-
-```bash
-pip install -e extensions/qi-agents -e extensions/qi-mcp -e extensions/qi-web
-# 或: uv pip install -e extensions/qi-agents -e extensions/qi-mcp -e extensions/qi-web
-```
-
-不装也能跑测试(见 §3);但要在开发机上**手工验证扩展行为**,这三个装上是必须的。
-
-> **还要声明它们才会加载** —— pip 通道的 entry point 只有在 `settings.packages` 里
-> 声明过才装载(对齐 pi)。editable 装完再把名字写进 `~/.qi/agent/settings.json`(或项目
-> `.qi/settings.json`)的 `packages`,例如 `"packages": ["qi-mcp", "qi-agents", "qi-web"]`;
-> `qi list` 会把没声明的列在「已装但未声明」。
+内置扩展不是独立 distribution,不需要单独 `pip install`;qi-lab 运行期通过目录通道加载
+`extensions/*/extension.py`。
 
 ## 2. 从源码跑
 
 ```bash
-uv run qi doctor              # 或 .venv/bin/qi doctor
-uv run qi --mode json "你好"   # 改完想看一眼事件流时最快
+uv run qi-lab                  # 默认 127.0.0.1:3456
+uv run qi-lab --list-extensions
+uv run qi-lab -p 4321 --no-open
 ```
 
-`uv run` 用的是仓库里的 `.venv`,所以改 `src/qi_agent/` 立即生效(editable),不需要重装。
+`qi` 命令由 `qi-coding-agent` 提供,与 qi-lab 无关。想单独用终端 agent:
 
-> **`qi` 保持调用者的工作目录**,所以从任何地方跑都不会把你的 cwd 换掉。
+```bash
+uv run qi --version
+uv run qi -p "你好"
+```
 
 ## 3. 测试
 
 ```bash
-.venv/bin/python -m pytest            # 全量(88 个测试文件,约 90 秒)
-.venv/bin/python -m pytest -q tests/test_session_store.py   # 单个文件
+.venv/bin/python -m pytest            # qi-lab + 内置扩展
+.venv/bin/python -m pytest -q tests/test_lab_api.py
 uv run pytest -q                      # 等价写法
 ```
 
-**qi 没有 `test.sh`** —— 上面就是唯一入口(别去敲不存在的包装脚本)。
+布局:
 
-### 扩展的测试放扩展自己目录下
+```text
+tests/                    # qi-lab 的集成测试(根 conftest 在这里)
+extensions/qi-*/tests/    # 每个内置扩展自己的测试
+```
 
-`tests/` 是**宿主**的用例;扩展自带的用例放各自目录(`extensions/qi-agents/tests/`、
-`extensions/qi-lab/tests/`),不往根目录里搬 —— 扩展是独立发行包,测试跟着它走。两个前提缺一不可:
-
-1. **`pyproject.toml` 的 `testpaths` 要同时登记**新目录。pytest 只认列出来的目录,
-   忘了登记不会报错,只是那一批测试**静默不跑**(没失败、也没覆盖);
-2. **conftest 按目录生效**,根 `tests/conftest.py` 覆盖不到子目录 —— 所以每个扩展的 tests/
-   自带一份同源精简版(entry-point stub、`~/.qi` 隔离、必要时再加 `minimal_config`)。
-   改根 conftest 的隔离逻辑时**两边一起改**,否则隔离只对一半测试生效。
+`pyproject.toml` 的 `testpaths = ["tests", "extensions"]`。新增扩展或测试目录时同步检查这里,
+否则那批测试会**静默不跑**。
 
 ### 默认不装载"本机真装的扩展"
 
-`tests/conftest.py` 里有一个 autouse 夹具,把 `qi.extensions` 这组 entry point **stub 成空**。
-理由写在那里的注释里,值得抄一遍:
-
-> 三个扩展一旦 `pip install -e` 装上(开发机上很常见),entry point 就会在每个测试的 runtime
-> 里被装载 —— 于是**测试结果取决于这台机器上装了什么**。那种漂移最难查:同一条测试在你这里是
-> 绿的、在 CI 上也是绿的,只是因为它们测的不是同一件事。
-
-要测 entry point 行为本身的文件显式退出:
+`tests/conftest.py` 里有 autouse 夹具,把 `qi.extensions` 这组 entry point stub 成空。
+这样开发机上 `pip install -e` 装过的外部扩展不会让测试结果漂移。要测外部扩展装载行为时显式退出:
 
 ```python
-pytestmark = pytest.mark.real_extensions      # 只对这类文件生效
+pytestmark = pytest.mark.real_extensions
 ```
-
-跑它们:
 
 ```bash
 .venv/bin/python -m pytest -m real_extensions
 ```
 
-夹具只 stub `qi.extensions` 这一组,其它 `entry_points()` 调用(查 dist 版本等)原样放行 ——
-所以"扩展有没有把宿主写进 `dependencies`"这类检查照样被测到。
+### 内置扩展的加载
 
-## 4. 静态检查
+`qi_lab/bundled.py` 负责:
 
-`pyrightconfig.json` 把三处都纳进来了:
+- 读 `extensions/bundle.toml`;
+- 按 `requires` 拓扑排序(qi-mcp 先于 qi-agents);
+- 如果同名扩展已经通过 `settings.packages` 声明、且 entry point 存在,或项目/用户级
+  `extensions/` 里有同名目录,跳过内置副本;
+- 把生效的内置扩展目录作为 `extra_extension_paths` 传给 `QiRuntime`。
 
-```jsonc
-"include":    ["src", "tests", "extensions"],
-"extraPaths": ["extensions/qi-agents", "extensions/qi-mcp", "extensions/qi-web",
-               "extensions/qi-lab", "src"]
-```
-
-`extraPaths` 是为了让跨包 import(`from qi_agents.discovery import discover`)在类型检查器里也能解析 ——
-仓库不是 uv workspace,所以没有安装声明可依。
-
-**约定:不为工具链的问题改产品代码。** 分析器偶尔会对新装的 editable 包报旧判定(会话内缓存了
-环境/路径);记录在 [extensions-design.md](extensions-design.md) 的实测表里。处理原则是**等分析器重启再复核**,
-而不是加 `# type: ignore` 或改运行期代码。
-
-## 5. 仓库布局
-
-```text
-src/qi_agent/        # core:单包(一个 wheel)。裸启动 = 单 agent
-extensions/          # 四个独立 pip 包,各自有自己的 pyproject.toml / README / tests
-  qi-agents/         #   角色系统 + subagent 委派(用例在 qi-agents/tests/)
-  qi-mcp/            #   MCP 支持
-  qi-web/            #   HTTP 宿主 + 官方 UI(UI 在 qi-web/ui/,自带 package.json)
-  qi-lab/            #   qi-web 的副本 + 分化(用例在 qi-lab/tests/,契约在 qi-lab/docs/api/)
-design/              # 内部设计、决策记录、变更记录 —— **不进 wheel、不注入提示词**
-docs/                # 手册(见 docs/index.md)+ docs.json(导航清单)
-examples/            # 教学样例(不自动加载)
-tests/               # 宿主的 pytest 用例(扩展自带的在各自 extensions/*/tests/)
-```
-
-判据很简单:**只有 `src/qi_agent/` 进 wheel**;`docs/` 目前也不进(要把手册随包发布得改
-`[tool.hatch.build.targets.wheel]`)。**扩展的手册归扩展自己**(各自的 README);core 的 `docs/` 只讲机制,
-不复述任何扩展自己的用法。
-
-## 6. 改完自检
+调试时看状态:
 
 ```bash
-.venv/bin/python -m pytest -q                    # 全量
-.venv/bin/python -m pytest -m real_extensions    # 真扩展那几条
-uv run qi doctor                                 # 冒烟:配置/凭证/扩展/包声明
+uv run qi-lab --list-extensions
+# 或 GET /api/meta 的 bundled_extensions
 ```
 
-改到文档时,顺手确认链接没断:`docs/docs.json` 的 `navigation` 每一条 path 都必须真实存在
-(它是导航清单,也是"文档还缺哪几篇"的账本;补完一篇就从 `planned` 移进 `navigation`)。
+## 4. 前端
 
-## 7. 发布(四个 distribution)
+```bash
+cd ui
+npm install
+npm run typecheck
+npm test
+npm run check:design
+npm run build          # 产物 → src/qi_lab/static/
+```
 
-仓库里有**四个** PyPI distribution,锁步同版本:
+前端源码改动必须重新 build;Python 侧是 editable,改完即生效。
 
-| 包 | 发行名 | 说明 |
-| --- | --- | --- |
-| core | **`qi-coding-agent`** | import 包名仍是 `qi_agent`,命令仍是 `qi` |
-| 扩展 | `qi-mcp` / `qi-agents` / `qi-web` | 各自独立;`qi-agents` 依赖 `qi-mcp` |
+## 5. 静态检查
 
-> **为什么发行名不是 `qi-agent`**:PyPI 上的 `qi-agent`(以及 `qi`)**已被别的项目占用**(前者 2026-09 还在发版,不是抢注),PEP 503 归一后也不能靠大小写/下划线绕开。发行名只影响 `pip install` 的那串名字 —— import 包名与命令都没变。旧名写进扩展依赖会被装载时单独报出来(见 `registry.warn_host_dependency`)。
+```jsonc
+// pyrightconfig.json
+"include":    ["src", "tests", "extensions"],
+"extraPaths": ["src", "extensions/qi-mcp", "extensions/qi-agents", …]
+```
 
-### 发布前
+约定:**不为工具链的问题改产品代码**。分析器缓存导致旧判定时,重启后再复核,不要加
+`# type: ignore`。
 
-1. **四个 `pyproject.toml` 的 `version` 一起改**(core + 三个扩展):
-   `python3 scripts/check_versions.py`(可加 `TAG=v0.2.0` 顺便核 tag)。
-2. 本地过一遍全量测试与构建:
+## 6. 仓库布局
+
+```text
+src/qi_lab/          # Web 宿主 / AG-UI 桥 / 内置扩展 loader / 适配层
+ui/                  # React + Vite 前端源码
+extensions/          # 内置扩展,每个都是完整、可独立发布的 qi 扩展
+  bundle.toml        #   顺序 / 依赖 / 开关
+  qi-mcp/            #   extension.py + pyproject.toml + qi_mcp/ + README + tests
+  qi-agents/
+  qi-a2a/
+  qi-store/
+  qi-kb/
+  qi-assistants/
+tests/               # qi-lab 集成测试
+docs/                # /api 契约与使用文档
+design/              # 内部设计/决策记录(不进 wheel)
+scripts/             # 版本检查、e2e
+```
+
+判据:**只有 `src/qi_lab/` 和 `extensions/*` 的运行文件进 qi-lab wheel**;
+内置扩展的 `tests/`、`pyproject.toml`、README、docs 不进 wheel。
+
+## 7. 改完自检
 
 ```bash
 .venv/bin/python -m pytest -q
-uv build --out-dir dist && uv build extensions/qi-mcp --out-dir dist \
-  && uv build extensions/qi-agents --out-dir dist && uv build extensions/qi-web --out-dir dist
+.venv/bin/python -m pytest -m real_extensions
+uv run qi-lab --list-extensions
+cd ui && npm run typecheck && npm test && npm run build
+python3 scripts/check_versions.py
 ```
 
-### 走 workflow(推荐)
+## 8. 构建
 
-`.github/workflows/publish.yml`:
+qi-lab 目前**不发布到 PyPI**,也没有发布 workflow。构建只用于本地/内部分发:
 
-- **打 tag 发布**:`git tag v0.1.0 && git push origin v0.1.0` → 构建 + 发布到 **PyPI**;
-- **手动触发**:Actions → publish → Run workflow,两个输入:
-  - `target`:`testpypi`(默认,试跑)/ `pypi`;
-  - `packages`:**`core`(默认,只发 `qi-coding-agent`)** / `all`(连三个扩展一起发)。
-    选 `core` 时版本检查只核 core(四个锁步那条不适用);扩展还没发布时保持默认。
-- **action 全部按 commit SHA 固定**(发布 job 持有 PyPI 权限,不吃可变 tag),并关掉 uv 缓存
-  (`cache-poisoning`)、`checkout` 不带 git 凭证(`persist-credentials: false`);
-- 用的是 **Trusted Publishing(OIDC)**,不需要 API token —— 但要在两处各配一次 publisher:
+1. 改版本:根 `pyproject.toml` 与 `extensions/*/pyproject.toml` 必须同版本
+   (`python3 scripts/check_versions.py`;`TAG=v0.4.0` 时顺带核 tag)。
+2. 构建: `uv build --out-dir dist`。
+3. 产物:`dist/qi_lab-<version>-py3-none-any.whl` 与 sdist;内置扩展在 wheel 的
+   `qi_lab/extensions/` 里。内部分发时直接发 wheel,或 `uv pip install dist/*.whl`。
 
-| 索引 | Publisher 配置 |
-| --- | --- |
-| PyPI | Owner `viewnah` · Repository `qi` · Workflow `publish.yml` · Environment **`pypi`** |
-| TestPyPI | 同上,Environment **`testpypi`** |
+`qi-coding-agent` 独立发版,qi-lab 只声明 `>=0.4,<0.5` 的兼容范围;不要把 core 加进
+内置扩展的 `dependencies`(E11:会让 pip 把宿主降级)。
 
-workflow 里两个 job 都声明了 `environment`,与这里的名字必须一致;`id-token: write` 是 OIDC 的前提。
-TestPyPI 那步带 `skip-existing`,所以同一个版本可以反复试跑。
+### 提取一个内置扩展
 
-从 TestPyPI 验装(依赖仍在正式索引):
+1. `git mv extensions/qi-mcp ../qi-mcp`;
+2. 在独立仓库里 `uv build`(pyproject / entry point / README / tests 已经齐了);
+3. 按需发布到私有索引或直接分发 wheel;
+4. 用户 `qi install qi-mcp`,qi-lab 检测到已声明且 entry point 存在后自动使用外部版本,
+   不再加载同名的内置副本。
 
-```bash
-uv tool install --index-url https://test.pypi.org/simple/ \
-  --extra-index-url https://pypi.org/simple qi-coding-agent
-```
-
-### 手动发布(不想用 CI 时)
-
-```bash
-uv build --out-dir dist && uv build extensions/qi-web --out-dir dist   # …四个都构建
-uv publish --token "$UV_PUBLISH_TOKEN"        # 或 twine upload dist/*
-```
-
-**首次发布尤其建议先走 TestPyPI** —— 名字是否可用、metadata 是否合法、`README` 能否渲染成描述页,
-这些在正式索引上改不了(同一个版本号不能重发,只能 bump)。
+提取演练是这套结构的验收标准:如果某个扩展移出去后需要改 qi-lab 主代码才能用,说明边界
+还没守住。

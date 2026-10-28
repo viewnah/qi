@@ -266,7 +266,8 @@ def login(cfg: config.KbConfig, name: str, login_name: str, password: str, *,
     refresh = payload.get("refresh_token") or payload.get("refresh")
     if not access:
         raise UpstreamError("登录响应里没有 access_token")
-    user = payload.get("user") if isinstance(payload.get("user"), dict) else {}
+    raw_user = payload.get("user")
+    user: dict[str, Any] = raw_user if isinstance(raw_user, dict) else {}
     entry = {
         "login": user.get("username") or login_name,
         "role": user.get("role"),

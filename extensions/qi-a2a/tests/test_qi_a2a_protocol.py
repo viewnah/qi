@@ -261,6 +261,7 @@ async def test_input_required_carries_hitl_payload():
         result = await client.send(card_from_dict(card(), entry()), "删文件")
 
     assert result.state == "input-required"
+    assert result.interrupt is not None
     assert result.interrupt["action_requests"][0]["name"] == "delete_file"
     assert result.interrupt["review_configs"][0]["allowed_decisions"] == ["approve", "reject"]
 

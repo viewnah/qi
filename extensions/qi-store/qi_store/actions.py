@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import json
 from dataclasses import dataclass, field
 from pathlib import Path

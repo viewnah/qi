@@ -1,5 +1,10 @@
 # qi:开发计划与未决清单
 
+> **2026-10 结构变更**:core(`qi-coding-agent`)已拆到独立仓库;本仓库是 **qi-lab**,
+> 当前布局与开发方式以 [development.md](development.md) 为准。本文是拆库前的 core 计划,
+> 其中的 `src/qi_agent/`、`qi-coding-agent` wheel 构建等内容属于历史记录。
+
+
 > 总设计见 [overview.md](overview.md)。本文只放**怎么干**(阶段/验收)与**开工前要拍板的事**。
 > 与上游 pi 的逐节对照(原 `docs/` 各页的「与 pi 的对应」小节)汇总在 [pi-alignment.md](pi-alignment.md)。
 > **v3 扩展化重构(进行中)的完整设计在 [extensions.md](../docs/extensions.md)**,阶段表见本文 §3。

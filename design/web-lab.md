@@ -4,7 +4,7 @@
 > 一期的落地记录与两处与原计划的偏差写在 §5.1 末尾的「落地」小节;
 >
 > 相关文档:[web.md](web.md)(AG-UI 事件 / `details["ui"]` 词汇表,§16 是本文的落点)、
-> [development.md](development.md)(测试布局)、`extensions/qi-lab/docs/api/ag-ui.md`(事件表)、
+> [development.md](development.md)(测试布局)、`docs/api/ag-ui.md`(事件表)、
 > `extensions/qi-agents` 的 `render.py` / `subagent.py`(TUI 侧的既有答案)。
 >
 > 本文回答四个问题:**① 现在 web 上到底显示了什么 ② TUI 的设计思路能抄什么 ③ AG-UI 协议里
@@ -314,7 +314,7 @@ FINISHED / ERROR`:
 
 用户反馈「subagent 的执行过程在完全执行结束后才展示,过程中不展示」。这次没有猜:
 写了一**真链路**测试(真 `subagent` 工具 + qi-lab 的 AG-UI 流,见
-`extensions/qi-lab/tests/test_lab_subagent_stream.py`),第一次跑就复现 —— 帧序列里只有
+`tests/test_lab_subagent_stream.py`),第一次跑就复现 —— 帧序列里只有
 `SUBAGENT_STARTED` / `SUBAGENT_FINISHED`,**一个 `ACTIVITY_SNAPSHOT` 都没有**。
 
 根因在 `qi-agents/subagent.py: _on_event`:
@@ -467,6 +467,6 @@ curl -sL "https://cdn.jsdelivr.net/npm/@ag-ui/core@0.0.59/dist/index.d.ts" | gre
 curl -sL "https://cdn.jsdelivr.net/npm/@ag-ui/core@1.0.2/dist/index.d.ts"
 ```
 
-qi 侧没有依赖 `@ag-ui/*`(`extensions/qi-lab/ui/package.json` 无该依赖)——
+qi 侧没有依赖 `@ag-ui/*`(`ui/package.json` 无该依赖)——
 事件类型是手写的(`ui/src/api/types.ts`),所以"协议演进了而 qi 没跟上"这件事
 不会有任何工具报警。这也是本文要把核对方法写下来的原因。

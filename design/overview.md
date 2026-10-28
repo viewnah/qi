@@ -1,5 +1,10 @@
 # qi 总设计:架构总览、决策索引与运行时布局
 
+> **2026-10 结构变更**:core(`qi-coding-agent`)已拆到独立仓库并从 PyPI 安装;本仓库是
+> **qi-lab 产品仓库**,内置扩展在 `extensions/`。本文中指向 core 手册(`docs/cli.md` 等)
+> 的链接是历史记录,core 文档请到 core 仓库看;qi-lab 当前文档在 [docs/api/](../docs/api/)。
+> `qi-web` 已删除,由 qi-lab 取代。
+
 > **这是设计记录,不是手册。** 现行行为以 [docs/](../docs/index.md) 手册为准;阶段计划与验收在
 > [PLAN.md](PLAN.md);扩展机制的设计与决策在 [extensions-design.md](extensions-design.md);
 > 与上游 pi 的逐节对照在 [pi-alignment.md](pi-alignment.md)。
@@ -53,7 +58,7 @@ core 移除:core 只认 `RunSpec`,而且 `AgentRunner` **不再自己拼 prompt*
 | 插件 → 扩展 | pip 包(entry point `qi.extensions`)+ 本地目录双通道;`register(api)`:工具 / 事件 / 命令 / 旗标 / 能力交接整套面(P-E1 改名) | [extensions.md](../docs/extensions.md) · [plugins.md](plugins.md) |
 | 运行 | **单 agent**(core 不分派);多 agent 走 **agent-as-tool**(qi-agents);P-E4c 取消 auto 与 `--agent` | [cli.md](../docs/cli.md) · [extensions-design.md](extensions-design.md) |
 | 命令 | 参数尽量对齐 pi:`qi [-p\|-c\|…] [--] [@files…] [msg…]` + 子命令 | [cli.md](../docs/cli.md) |
-| Web | HTTP 宿主 + UI 都在 **qi-web** 扩展里(core 不内置);`qi web` 由扩展注册;不做外置 RPC 桥 | [web.md](web.md) · [qi-web README](../extensions/qi-web/README.md) |
+| Web | **qi-lab** 是独立产品:HTTP 宿主 + UI + 内置扩展;命令 `qi-lab`(不再注册 `qi lab`) | [web-lab.md](web-lab.md) · [README](../README.md) |
 | 配置形态 | 模型配置 = JSON `models.json`(分层:env → 项目 → 用户);应用设置与声明 = `settings.json` | [settings.md](../docs/settings.md) |
 | 会话 | JSONL 每会话文件(entry 带 `type`);位置:**全局 `~/.qi/agent/sessions/`** | [sessions.md](../docs/sessions.md) · [session-format.md](../docs/session-format.md) |
 | Dispatcher | v1:auto 分派(信号分层 L1 规则 / L2 embedding / L3 Router / L4 兜底 + `@` 点名,每轮重路由)。**v3 整体取消** | [dispatcher.md](dispatcher.md) |
@@ -71,7 +76,7 @@ core 移除:core 只认 `RunSpec`,而且 `AgentRunner` **不再自己拼 prompt*
 | CLI | typer + rich(薄;**无独立 REPL**,交互 = TUI) | ✅ |
 | TUI | textual(事件驱动增量渲染,渲染器 = event → lines) | ✅ |
 | 配置 | `models.json`(格式对齐 pi)+ `settings.json`(分层深合并)+ pydantic 校验;凭证不入配置文件(auth store / env) | ✅ |
-| Web | FastAPI + uvicorn —— **在 qi-web 扩展里**,core 不带这两个依赖 | ✅ |
+| Web | FastAPI + uvicorn —— **在 qi-lab 里**,core 不带这两个依赖 | ✅ |
 
 > **litellm 的实测代价**:`import litellm` ≈ **6.8s**(2026-09,热缓存 3 次稳定)。这既是
 > 子 agent 选**进程内**的量化依据,也是"别让每次 `qi -p` 都重付一遍"的理由 ——

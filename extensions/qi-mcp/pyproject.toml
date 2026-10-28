@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "qi-mcp"
-version = "0.3.0"
+version = "0.4.0"
 description = "qi 的 MCP 支持:两层 mcp.json 声明表 + 一个 mcp 代理工具 + lazy server"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -14,6 +14,11 @@ dependencies = ["mcp>=1.0"]
 
 [project.entry-points."qi.extensions"]
 mcp = "qi_mcp:register"
+
+[tool.qi]
+# 独立发布时声明兼容的 qi-coding-agent 范围;内置 bundle 阶段由 qi-lab 统一校验。
+host = ">=0.4,<0.5"
+bundle = "qi-lab"
 
 [tool.hatch.build.targets.wheel]
 packages = ["qi_mcp"]

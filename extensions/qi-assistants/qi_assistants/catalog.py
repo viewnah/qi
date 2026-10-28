@@ -182,7 +182,7 @@ def _enabled(value: object) -> bool:
     return value
 
 
-def _clean(payload: object, *, entry_id: str, others: set[str]) -> Assistant:
+def _clean(payload: object, *, entry_id: object, others: set[str]) -> Assistant:
     """校验并归一化一条记录。`others` 是**除自己以外**已占用的小写名字。"""
     if not isinstance(payload, dict):
         raise CatalogError("条目必须是 JSON 对象")

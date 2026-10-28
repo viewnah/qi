@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[3]
 
 # 扩展是**独立发行包**(不装进 venv),连同宿主 `src/` 一起放进 path 才能 import
 for _rel in ("extensions/qi-agents", "src"):

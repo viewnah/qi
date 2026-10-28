@@ -1,10 +1,7 @@
 {
   "ignore": [
-    "src/qi_agent/web/static/**",
-    "extensions/qi-web/ui/node_modules/**",
-    "extensions/qi-web/ui/dist/**",
-    "extensions/qi-lab/ui/node_modules/**",
-    "extensions/qi-lab/ui/dist/**",
+    "ui/node_modules/**",
+    "ui/dist/**",
     "**/*.min.js"
   ],
   "format": {

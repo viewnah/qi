@@ -326,7 +326,7 @@ def test_init_interactive_lists_and_materializes_presets(tmp_path, monkeypatch):
     inp = "\n".join([
         str(preset_names().index("deepseek") + 1),   # 选 deepseek [预置]
         "",     # Base URL 回车保留(预置的)
-        "",     # API 类型 回车(预置的)
+        # 预置**不再问** API 类型(from_preset 只打印默认值,见 _configure_provider)
         "",     # API key 回车跳过(用 $DEEPSEEK_API_KEY)
         "",     # Add a model? 否(预置已带模型)
         "",     # Configure another provider? 否
@@ -337,13 +337,13 @@ def test_init_interactive_lists_and_materializes_presets(tmp_path, monkeypatch):
     assert res.exit_code == 0, res.output
     for name in preset_names():                     # 每家预置都要在列表里
         assert f"{name} [预置]" in res.output, name
-    assert "已套用预置 deepseek" in res.output
 
     data = _models(tmp_path)
     assert set(data["providers"]) == {"deepseek"}          # 只物化选中的那家
     prov = data["providers"]["deepseek"]
-    assert prov["baseUrl"] == "https://api.deepseek.com"
+    assert "baseUrl" not in prov                   # 端点展开写在每个模型上
     assert prov["apiKey"] == "$DEEPSEEK_API_KEY"
+    assert all(m["baseUrl"] == "https://api.deepseek.com" for m in prov["models"])
     assert [m["id"] for m in prov["models"]] == ["deepseek-flash", "deepseek-v4-pro"]
     assert _settings(tmp_path) == {"defaultProvider": "deepseek",
                                    "defaultModel": "deepseek-flash"}
@@ -352,13 +352,244 @@ def test_init_interactive_lists_and_materializes_presets(tmp_path, monkeypatch):
         auth_path.read_text(encoding="utf-8"))
 
 
+def test_init_remove_deletes_a_provider_and_its_default(tmp_path, monkeypatch):
+    """`qi init --remove <名>`:删 models.json 里的 provider 定义,默认模型指着它时一并清掉;
+    密钥、以及指向它的默认模型一起删(用户反馈:没有清除机制;又说别分两步)。"""
+    from qi_agent.auth import AuthStore
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("QI_AGENT_HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    AuthStore().set_key("zai", "sk-zai")
+    runner.invoke(app, ["init", "--preset", "zai"])
+    assert "zai" in json.loads((home / "models.json").read_text(encoding="utf-8"))["providers"]
+
+    # 别名(zhipu)也认;定义 + 密钥一次删干净
+    res = runner.invoke(app, ["init", "--remove", "zhipu"])
+    assert res.exit_code == 0, res.output
+    assert "zai" not in json.loads((home / "models.json").read_text(encoding="utf-8"))["providers"]
+    assert "zai" not in json.loads((home / "auth.json").read_text(encoding="utf-8"))
+    # 默认模型指向它 → 已清掉,不留“默认模型不存在”的坑
+    settings = json.loads((home / "settings.json").read_text(encoding="utf-8"))
+    assert "defaultProvider" not in settings and "defaultModel" not in settings
+
+
+
+
+def test_init_interactive_can_skip_provider_config(tmp_path, monkeypatch):
+    """已经配好 provider 时,选择器里有「✓ 下一步」—— 只想改默认模型的人不必再走一遍
+    provider 向导(改名 `选择 provider` → `配置 provider`,因为这一步就是"要不要改配置")。"""
+    from qi_agent.auth import AuthStore
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("QI_AGENT_HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    AuthStore().set_key("zai", "sk-zai")
+    runner.invoke(app, ["init", "--preset", "zai"])
+    (home / "settings.json").write_text("{}", encoding="utf-8")     # 先把默认模型清掉
+
+    inp = "\n".join([
+        "✓ 下一步",
+        "",     # Activate:provider
+        "",     # Activate:model
+    ]) + "\n"
+    res = runner.invoke(app, ["init"], input=inp)
+    assert res.exit_code == 0, res.output
+    assert "配置 provider" in res.output and "选择 provider" not in res.output
+    assert "跳过 provider 配置" in res.output
+    # provider 定义没被动过,只写了默认模型
+    assert list(json.loads((home / "models.json").read_text(encoding="utf-8"))["providers"]) == ["zai"]
+    assert json.loads((home / "settings.json").read_text(encoding="utf-8")) == {
+        "defaultProvider": "zai", "defaultModel": "glm-5.2"}
+
+
+def test_init_interactive_has_no_skip_option_without_providers(tmp_path, monkeypatch):
+    """零配置时不该出现「下一步」(没东西可跳过)—— 否则会直接走到“没有可用模型”报错。"""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("QI_AGENT_HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    res = runner.invoke(app, ["init", "--list-presets"])
+    assert res.exit_code == 0
+    # 交互流程:只有预置 + 新建,没有 下一步 / 删除
+    inp = "\n".join(["＋ 新建 provider", "my-llm", "http://localhost:1234/v1", "",
+                      "1", "m1", "", "", "", "", "", "", "", ""]) + "\n"
+    out = runner.invoke(app, ["init"], input=inp).output
+    assert "下一步" not in out and "删除 provider" not in out
+
+
+def test_init_interactive_can_delete_a_provider(tmp_path, monkeypatch):
+    """交互流里的「－ 删除 provider」:与 `qi init --remove` 同一条逻辑 ——
+    用户反馈:命令行有 --remove,交互式却没有。"""
+    from qi_agent.auth import AuthStore
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("QI_AGENT_HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    AuthStore().set_key("zai", "sk-zai")
+    runner.invoke(app, ["init", "--preset", "zai"])
+    runner.invoke(app, ["init", "--preset", "deepseek"])
+    assert set(json.loads((home / "models.json").read_text(encoding="utf-8"))["providers"]) == {
+        "zai", "deepseek"}
+
+    inp = "\n".join([
+        "－ 删除 provider",   # 选择器里的删除入口
+        "2",    # 删哪个:sorted(providers) = deepseek / zai → zai
+        "1",    # 确认删除:是(一步到位:模型清单 + 密钥 + 默认模型)
+        "deepseek [✓]",   # 回到选择器,选 deepseek 继续
+        "",     # API key 回车保留
+        "",     # Models: Done
+        "",     # Configure another provider? 否
+        "",     # Activate:provider(只有 deepseek)
+        "",     # Activate:model(第一个)
+    ]) + "\n"
+    res = runner.invoke(app, ["init"], input=inp)
+    assert res.exit_code == 0, res.output
+    assert "已删除 1 个 provider" in res.output
+    assert set(json.loads((home / "models.json").read_text(encoding="utf-8"))["providers"]) == {
+        "deepseek"}
+    # 一步全删:密钥也不留
+    assert "zai" not in json.loads((home / "auth.json").read_text(encoding="utf-8"))
+
+
+def test_init_remove_refuses_providers_that_only_come_from_presets(tmp_path, monkeypatch):
+    """只由预置补出来的 provider 不在文件里 —— 删它要说清楚,而不是静默成功。"""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("QI_AGENT_HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    res = runner.invoke(app, ["init", "--remove", "qwen"])
+    assert res.exit_code == 1
+    assert "没找到定义" in res.output and "预置" in res.output
+
+
+def test_provider_marks_say_what_is_missing(tmp_path, monkeypatch):
+    """`[✓]` / `[✗ …]` = 这家的模型**现在能不能跑**:端点 + 模型 + 密钥,缺什么写什么。
+
+    用户反馈:预置物化后端点写在模型上(provider 段只有 apiKey),旧判定只认
+    provider 级 baseUrl,于是**全都显示 ✗**,看不出哪家真能用。
+    """
+    from qi_agent.auth import AuthStore
+    from qi_agent.cli import _provider_mark
+    from qi_agent.paths import QI_AGENT_HOME as HOME_ENV
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv(HOME_ENV, str(home))
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+
+    no_models = {"baseUrl": "https://x/v1", "models": []}
+    assert _provider_mark("p", no_models) == "✗ 没有模型"
+    no_endpoint = {"models": [{"id": "m"}]}
+    assert _provider_mark("p", no_endpoint) == "✗ 没有端点"
+    endpoint_on_model = {"apiKey": "$DEEPSEEK_API_KEY", "models": [{"id": "m", "baseUrl": "https://x/v1"}]}
+    assert _provider_mark("deepseek", endpoint_on_model) == "✗ 缺密钥"   # 端点够、key 缺
+    AuthStore().set_key("deepseek", "sk-x")
+    assert _provider_mark("deepseek", endpoint_on_model) == "✓"
+
+
+def test_init_provider_picker_defaults_to_the_first_item(tmp_path, monkeypatch):
+    """零配置的第一问:回车 = 第一项(deepseek),不是最后一项「＋ 新建 provider」。
+
+    用户反馈:指针默认停在最后一个,想选国产预置得一路往回按。
+    """
+    monkeypatch.setenv("QI_AGENT_HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    inp = "\n".join([
+        "",     # 选择 provider:直接回车 = 第一项(deepseek 预置)
+        "",     # Base URL 回车保留(预置的)
+        "",     # API key 回车跳过(用 $DEEPSEEK_API_KEY)
+        "",     # Add a model? 否(预置已带模型)
+        "",     # Configure another provider? 否
+        "",     # Select provider for LLM(只有它)
+        "",     # Select LLM model(第一个)
+    ]) + "\n"
+    res = runner.invoke(app, ["init"], input=inp)
+    assert res.exit_code == 0, res.output
+    # 列表顺序:国产在前,deepseek 打头
+    lines = [ln.strip() for ln in res.output.splitlines()
+             if ln.strip().endswith("[预置]")]
+    assert lines[0].endswith("deepseek [预置]")
+    assert lines[1].endswith("zai [预置]")
+    assert lines[-1].endswith("opencode-go [预置]")
+    assert "+ 新建 provider" in res.output or "＋ 新建 provider" in res.output
+    assert set(_models(tmp_path)["providers"]) == {"deepseek"}
+
+
 def test_init_yes_provider_matching_preset_materializes_it(tmp_path, monkeypatch):
     """`-y --provider <预置名>` 同样先物化 —— 否则写出的 provider 没有 baseUrl,是坏的。"""
     res = _run(tmp_path, monkeypatch, "-y", "--provider", "deepseek",
                "--model", "deepseek-flash")
     assert res.exit_code == 0, res.output
     prov = _models(tmp_path)["providers"]["deepseek"]
-    assert prov["baseUrl"] == "https://api.deepseek.com"
+    assert "baseUrl" not in prov
     assert prov["apiKey"] == "$DEEPSEEK_API_KEY"
+    assert all(m["baseUrl"] == "https://api.deepseek.com" for m in prov["models"])
     assert {"deepseek-flash", "deepseek-v4-pro"} <= {m["id"] for m in prov["models"]}
     assert _settings(tmp_path)["defaultModel"] == "deepseek-flash"
+
+
+# ── OpenCode 预置:混合 API 形态的 provider ───────────────────────────
+
+
+def test_init_interactive_opencode_materializes_mixed_api_models(tmp_path, monkeypatch):
+    """物化 opencode:不问 Base URL / API 类型(端点与形态都写在模型上),原样落盘。"""
+    monkeypatch.setenv("QI_AGENT_HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    inp = "\n".join([
+        str(preset_names().index("opencode") + 1),   # 选 opencode [预置]
+        "",     # API key 回车跳过(用 $OPENCODE_API_KEY)
+        "",     # Models: Done(预置已带模型)
+        "",     # Configure another provider? 否
+        "",     # Select provider for LLM
+        "",     # Select LLM model(默认第一个)
+    ]) + "\n"
+    res = runner.invoke(app, ["init"], input=inp)
+    assert res.exit_code == 0, res.output
+    # provider 段不带 api/baseUrl(端点随 API 形态变后缀,一个 URL 表达不了)
+    prov = _models(tmp_path)["providers"]["opencode"]
+    assert "baseUrl" not in prov and "api" not in prov
+    assert prov["apiKey"] == "$OPENCODE_API_KEY"
+    by_id = {m["id"]: m for m in prov["models"]}
+    assert by_id["gpt-5.6-sol"]["api"] == "openai-responses"
+    assert by_id["gpt-5.6-sol"]["baseUrl"] == "https://opencode.ai/inference/v1"
+    assert by_id["claude-sonnet-5-5"]["api"] == "anthropic-messages"
+    assert by_id["claude-sonnet-5-5"]["baseUrl"] == "https://opencode.ai/inference"
+    assert by_id["deepseek-v4.1-flash"]["api"] == "openai-completions"
+    assert by_id["deepseek-v4.1-flash"]["baseUrl"] == "https://opencode.ai/inference/v1"
+    assert _settings(tmp_path) == {"defaultProvider": "opencode",
+                                   "defaultModel": "gpt-5.6-sol"}
+    # 列表里能看见模型级覆盖(否则用户看不出这些模型走的不是同一个 API)
+    assert "api: openai-responses" in res.output
+    assert "api: anthropic-messages" in res.output
+
+
+def test_adding_a_model_to_a_mixed_provider_asks_api_and_base_url(tmp_path, monkeypatch):
+    """混合形态 provider 才追问 API 类型,且 api 一变就**成对**追问 baseUrl
+    (mimo anthropic / opencode 的 `/inference` 形态都是成对的);单形态 provider 不问。"""
+    monkeypatch.setenv("QI_AGENT_HOME", str(tmp_path / "home"))
+    monkeypatch.chdir(tmp_path)
+    inp = "\n".join([
+        str(preset_names().index("opencode") + 1),   # 选 opencode [预置]
+        "",     # API key 回车跳过
+        "1",    # Models: ＋ Add a model
+        "claude-opus-5",   # id
+        "",     # display name(默认=id)
+        "",     # reasoning(默认否)
+        "",     # contextWindow(默认)
+        "",     # maxTokens(默认)
+        "3",    # API 类型 → anthropic-messages(SUPPORTED_APIS 第三个)
+        "https://opencode.ai/inference",   # 该模型自己的 Base URL(端点成对地换)
+        "",     # Models: Done
+        "",     # Configure another provider? 否
+        "", "", # activate:provider / model(默认)
+    ]) + "\n"
+    res = runner.invoke(app, ["init"], input=inp)
+    assert res.exit_code == 0, res.output
+    models = _models(tmp_path)["providers"]["opencode"]["models"]
+    added = next(m for m in models if m["id"] == "claude-opus-5")
+    assert added["api"] == "anthropic-messages"
+    assert added["baseUrl"] == "https://opencode.ai/inference"

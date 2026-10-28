@@ -58,11 +58,16 @@ class PresetModel:
 
     `context_window` = 上下文窗口(最大输入),`max_output` = 模型的最大输出 tokens
     (pi 的 `maxTokens` 字段同义)。两个数都必须有出处 —— 见模块 docstring 的口径。
+
+    `api` / `base_url` 是**模型级覆盖**(不写就跟随 provider):同一批模型走不同
+    API 形态 / 端点时用(实例:OpenCode Zen 的 anthropic 模型走另一个 baseUrl)。
     """
 
     id: str
     context_window: int
     max_output: int
+    api: str | None = None
+    base_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -71,10 +76,13 @@ class Preset:
 
     provider: str                    # provider 名(`provider/模型` 里那个)
     label: str                       # 人看的名字
-    base_url: str
     api_key_env: str                 # 约定环境变量名(与 auth.DEFAULT_API_KEY_ENV 一致)
+    base_url: str | None = None      # 厂商统一端点(None = 各模型自带,如 opencode)
+    #: 拉模型目录的基址(`GET {catalog_base}/models`);None = 就是 `base_url`。
+    #: 少数厂商两者不同:Anthropic 形态的基址不带 `/v1`(SDK 自己拼),但目录在 `/v1/models`
+    catalog_base: str | None = None
     models: tuple[PresetModel, ...] = field(default_factory=tuple)
-    api: str = DEFAULT_API
+    api: str | None = DEFAULT_API    # provider 级 API 形态;None = 不写(模型各自声明)
     note: str = ""                   # 需要提醒用户的话(写进 `qi init --preset` 的输出)
 
     @property
@@ -97,20 +105,107 @@ PRESETS: dict[str, Preset] = {
         models=(PresetModel("deepseek-flash", 1_000_000, 393_216),
                 PresetModel("deepseek-v4-pro", 1_000_000, 393_216)),
     ),
-    "dashscope": Preset(
-        provider="dashscope",
-        label="阿里云百炼(通义千问)",
+    # ── 智谱 / Z.ai:国际站(`api.z.ai`)与国内站(`open.bigmodel.cn`)路径一样,
+    #    只换域名 —— 按"裸名 = 国际、`-cn` = 国内"命名(与 pi 一致)。
+    #    标准 API 与订阅套餐(GLM Coding Plan)是**两套端点、两套 key**,各自成对。
+    "zai": Preset(
+        provider="zai",
+        label="Z.ai 智谱 GLM(国际站)",
+        base_url="https://api.z.ai/api/paas/v4",
+        api_key_env="ZAI_API_KEY",
+        # 智谱「模型概览」:旗舰 GLM-5.2(1M / 128K);GLM-4.7 是 200K / 128K
+        models=(PresetModel("glm-5.2", 1_048_576, 131_072),
+                PresetModel("glm-4.7", 202_752, 131_072)),
+    ),
+    "zai-cn": Preset(
+        provider="zai-cn",
+        label="智谱 GLM(国内站)",
+        base_url="https://open.bigmodel.cn/api/paas/v4",
+        api_key_env="ZAI_CN_API_KEY",
+        models=(PresetModel("glm-5.2", 1_048_576, 131_072),
+                PresetModel("glm-4.7", 202_752, 131_072)),
+        note="两站 key 不通用;国际站是 `--preset zai`(`https://api.z.ai/api/paas/v4`)",
+    ),
+    "zai-coding": Preset(
+        provider="zai-coding",
+        label="Z.ai 智谱 GLM Coding Plan(国际站)",
+        base_url="https://api.z.ai/api/coding/paas/v4",
+        api_key_env="ZAI_CODING_API_KEY",
+        models=(PresetModel("glm-5.3", 1_000_000, 131_072),          # 默认
+                PresetModel("glm-5.3-flash", 1_000_000, 131_072),
+                PresetModel("glm-5.3-highspeed", 1_000_000, 131_072)),
+        note="套餐 key **只能**打 `/api/coding/paas/v4`(标准端点用不了,反之亦然);"
+             "国内站是 `--preset zai-coding-cn`",
+    ),
+    "zai-coding-cn": Preset(
+        provider="zai-coding-cn",
+        label="智谱 GLM Coding Plan(国内站)",
+        base_url="https://open.bigmodel.cn/api/coding/paas/v4",
+        api_key_env="ZAI_CODING_CN_API_KEY",
+        models=(PresetModel("glm-5.3", 1_000_000, 131_072),          # 默认
+                PresetModel("glm-5.3-flash", 1_000_000, 131_072),
+                PresetModel("glm-5.3-highspeed", 1_000_000, 131_072)),
+        note="套餐 key **只能**打 `/api/coding/paas/v4`;套餐里另有视觉模型 `glm-4.6v`"
+             "(128K / 32K),要的话 `qi init --refresh zai-coding-cn` 拉回来;"
+             "国际站是 `--preset zai-coding`",
+    ),
+    # ── 阿里云:DashScope(百炼)就是通义千问的服务平台,provider 名统一用 `qwen`。
+    #    国内站 `dashscope.aliyuncs.com` / 国际站 `dashscope-intl.aliyuncs.com`;
+    #    套餐(Token Plan)另有两个区域:北京 `cn-beijing` / 新加坡 `ap-southeast-1`。
+    "qwen": Preset(
+        provider="qwen",
+        label="通义千问 Qwen(国际站)",
+        base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        api_key_env="QWEN_API_KEY",
+        # 百炼模型页(逐个核过):三者都是 上下文 1000000 / 最大输出 131072。
+        models=(PresetModel("qwen3.7-plus", 1_000_000, 131_072),     # 默认
+                PresetModel("qwen3.8-max", 1_000_000, 131_072),
+                PresetModel("qwen3.8-flash", 1_000_000, 131_072)),
+    ),
+    "qwen-cn": Preset(
+        provider="qwen-cn",
+        label="通义千问 Qwen(国内站 / 百炼)",
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         api_key_env="DASHSCOPE_API_KEY",
-        # 百炼模型页(逐个核过):三者都是 上下文 1000000 / 最大输出 131072。
         # 官方选型建议:`qwen3.7-plus` 能力与成本均衡、工具调用完整,是编码/Agent 场景的
         # “多面手”(排第一 = 默认);要最强推理用 `qwen3.8-max`,要更省用 `qwen3.8-flash`。
         models=(PresetModel("qwen3.7-plus", 1_000_000, 131_072),
                 PresetModel("qwen3.8-max", 1_000_000, 131_072),
                 PresetModel("qwen3.8-flash", 1_000_000, 131_072)),
         note="北京地域新账号可能要用工作空间专属域名:"
-             "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+             "https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1;"
+             "国际站是 `--preset qwen`(`dashscope-intl.aliyuncs.com`)",
     ),
+    "qwen-token-plan": Preset(
+        provider="qwen-token-plan",
+        label="阿里云 Token Plan(新加坡)",
+        base_url="https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+        api_key_env="QWEN_TOKEN_PLAN_API_KEY",
+        # 套餐目录有 20 个模型(2026-10 取自 pi 目录),这里只放 5 个主力;
+        # 窗口/输出按 pi 目录逐条抄(接口不返回这两个数)。
+        models=(PresetModel("qwen3.8-max", 1_000_000, 131_072),      # 默认
+                PresetModel("qwen3.7-plus", 1_000_000, 65_536),
+                PresetModel("deepseek-v4.1-flash", 1_000_000, 384_000),
+                PresetModel("glm-5.2", 1_000_000, 131_072),
+                PresetModel("kimi-k2.7-code", 262_144, 262_144)),
+        note="这是个**聚合网关**(qwen / deepseek / glm / kimi / minimax 都在上面);"
+             "国内站是 `--preset qwen-token-plan-cn`(北京);"
+             "全量目录用 `qi init --refresh qwen-token-plan` 拉",
+    ),
+    "qwen-token-plan-cn": Preset(
+        provider="qwen-token-plan-cn",
+        label="阿里云 Token Plan(北京)",
+        base_url="https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        api_key_env="QWEN_TOKEN_PLAN_CN_API_KEY",
+        models=(PresetModel("qwen3.8-max", 1_000_000, 131_072),      # 默认
+                PresetModel("qwen3.7-plus", 1_000_000, 65_536),
+                PresetModel("deepseek-v4.1-flash", 1_000_000, 384_000),
+                PresetModel("glm-5.2", 1_000_000, 131_072),
+                PresetModel("kimi-k2.7-code", 262_144, 262_144)),
+        note="套餐 key 与百炼按量付费(`qwen-cn`)不通用;新加坡站是 "
+             "`--preset qwen-token-plan`;全量目录用 `qi init --refresh qwen-token-plan-cn` 拉",
+    ),
+    # ── 小米 MiMo:按量付费只有一个全球域名;套餐(Token Plan)按区域分 cn/sgp/ams。
     "mimo": Preset(
         provider="mimo",
         label="小米 MiMo",
@@ -119,118 +214,190 @@ PRESETS: dict[str, Preset] = {
         # MiMo 模型页 + list-models(2026-09 核):现役文本模型是 v2.6 系列,
         # 上下文 1M(=1048576)/ 最大输出 128K(=131072);`flash` 官方定位“高智能、
         # 低成本”(默认),`pro` 是旗舰。**旧的 `mimo-v2.5` / `mimo-v2.5-pro` 官方公告
-        # 2026-10-21 10:00 下线**(建议切新版),所以种子只放 v2.6 —— 下线公告:
+        # 2026-10-21 10:00 下线**,所以种子只放 v2.6 —— 下线公告:
         # https://mimo.mi.com/docs/zh-CN/quick-start/summary/model
-        # `mimo-v2.6-pro-ultraspeed` = pro 的**速度档**(官方定位强实时场景,限流是
-        # “定制服务,联系平台”),同样 1M / 128K —— id、规格都核到了,一并收进种子。
+        # `mimo-v2.6-pro-ultraspeed` = pro 的**速度档**,限流是定制服务,同样 1M / 128K。
         models=(PresetModel("mimo-v2.6-flash", 1_048_576, 131_072),
                 PresetModel("mimo-v2.6-pro", 1_048_576, 131_072),
                 PresetModel("mimo-v2.6-pro-ultraspeed", 1_048_576, 131_072)),
-        note="订阅套餐(Token Plan)是另一个域名:`https://token-plan-cn.xiaomimimo.com/v1`,"
-             "Key 形如 `tp-…`(按量付费的 Key 形如 `sk-…`,两者不可混用);"
-             "`mimo-v2.5` / `mimo-v2.5-pro` 官方公告 2026-10-21 10:00 下线,"
-             "新模型是 `mimo-v2.6-*`(`qi init --refresh mimo` 拉全量);"
-             "其中 `mimo-v2.6-pro-ultraspeed` 是速度档,限流为定制服务(调前先问平台)",
+        note="**Token Plan 的 key(形如 `tp-…`)打这个端点会 401 `Invalid API Key`**"
+             " —— 套餐用 `--preset mimo-token-plan-cn`(`https://token-plan-cn.xiaomimimo.com/v1`);"
+             "按量付费的 key 形如 `sk-…`,两者不可混用;"
+             "`mimo-v2.5` / `mimo-v2.5-pro` 官方公告 2026-10-21 10:00 下线;"
+             "另有 **Anthropic 兼容端点** `https://api.xiaomimimo.com/anthropic/v1`"
+             "(同 key)—— 要走它就在模型条目上**成对**写 "
+             "`\"api\": \"anthropic-messages\"` + `\"baseUrl\": \"…/anthropic/v1\"`",
     ),
+    "mimo-token-plan-cn": Preset(
+        provider="mimo-token-plan-cn",
+        label="小米 MiMo Token Plan(国内套餐)",
+        base_url="https://token-plan-cn.xiaomimimo.com/v1",
+        api_key_env="MIMO_TOKEN_PLAN_CN_API_KEY",
+        models=(PresetModel("mimo-v2.6-flash", 1_048_576, 131_072),
+                PresetModel("mimo-v2.6-pro", 1_048_576, 131_072)),
+        note="套餐 key **只能**打这个域名(打到按量付费端点会 401 `Invalid API Key`);"
+             "另有区域端点 `token-plan-sgp` / `token-plan-ams`.xiaomimimo.com,换 baseUrl 即可",
+    ),
+    # ── 月之暗面:国际站 `api.moonshot.ai` / 国内站 `api.moonshot.cn`;
+    #    订阅版(Kimi for Coding)是另一个域名 + Anthropic 形态。
     "moonshot": Preset(
         provider="moonshot",
-        label="月之暗面 Kimi",
-        base_url="https://api.moonshot.cn/v1",
+        label="月之暗面 Kimi(国际站)",
+        base_url="https://api.moonshot.ai/v1",
         api_key_env="MOONSHOT_API_KEY",
         # Kimi 文档:k3 上下文 1M、max_completion_tokens 上限 131072;
         # k2.7-code 上下文 256K、max_tokens 默认 32768
         models=(PresetModel("kimi-k3", 1_048_576, 131_072),
                 PresetModel("kimi-k2.7-code", 262_144, 32_768)),
     ),
-    "zhipu": Preset(
-        provider="zhipu",
-        label="智谱 GLM",
-        base_url="https://open.bigmodel.cn/api/paas/v4",
-        api_key_env="ZHIPUAI_API_KEY",
-        # 智谱「模型概览」(2026-09 核):线上旗舰是 **GLM-5.2**(1M 上下文 / 最大输出 128K);
-        # GLM-5.3 官方页面写的是“API 即将上线”,所以不放进种子(上线后
-        # `qi init --refresh zhipu` 就能拉回来)。GLM-4.7:200K / 128K。
-        models=(PresetModel("glm-5.2", 1_048_576, 131_072),
-                PresetModel("glm-4.7", 202_752, 131_072)),
-        note="GLM-5.3 官方标注“API 即将上线”(Bailian 已可调);上线后 `qi init --refresh zhipu` 拉一下",
+    "moonshot-cn": Preset(
+        provider="moonshot-cn",
+        label="月之暗面 Kimi(国内站)",
+        base_url="https://api.moonshot.cn/v1",
+        api_key_env="MOONSHOT_CN_API_KEY",
+        models=(PresetModel("kimi-k3", 1_048_576, 131_072),
+                PresetModel("kimi-k2.7-code", 262_144, 32_768)),
+        note="两站 key 不通用;国际站是 `--preset moonshot`(`api.moonshot.ai`)",
     ),
+    # 订阅版:与按量付费完全两套(端点、key、协议形态都不同)。
+    "kimi-coding": Preset(
+        provider="kimi-coding",
+        label="月之暗面 Kimi for Coding(套餐)",
+        base_url="https://api.kimi.com/coding",
+        api="anthropic-messages",        # SDK 自己拼 `/v1/messages`,所以基址不带 /v1
+        catalog_base="https://api.kimi.com/coding/v1",   # 目录在 /coding/v1/models
+        api_key_env="KIMI_CODING_API_KEY",
+        models=(PresetModel("k3", 1_048_576, 131_072),               # 默认
+                PresetModel("k3-256k", 262_144, 131_072),
+                PresetModel("kimi-for-coding", 1_048_576, 32_768),
+                PresetModel("kimi-for-coding-highspeed", 262_144, 32_768)),
+        note="走 **Anthropic 形态**(`/coding` 基址,SDK 拼 `/v1/messages`),不是 OpenAI 兼容;"
+             "订阅 key 与按量付费的 `moonshot` / `moonshot-cn` 不通用",
+    ),
+    # ── MiniMax:国际站 `api.minimax.io` / 国内站 `api.minimax.cn`。
     "minimax": Preset(
         provider="minimax",
-        label="MiniMax",
-        base_url="https://api.minimax.cn/v1",
+        label="MiniMax(国际站)",
+        base_url="https://api.minimax.io/v1",
         api_key_env="MINIMAX_API_KEY",
-        # MiniMax 文档:上下文 1,000,000;最大输出 128K
+        # MiniMax 模型页:M3 上下文 1M / 最大输出 128K(pi 目录同值)
         models=(PresetModel("MiniMax-M3", 1_000_000, 131_072),),
     ),
-    "siliconflow": Preset(
-        provider="siliconflow",
-        label="硅基流动(SiliconFlow)",
-        base_url="https://api.siliconflow.cn/v1",
-        api_key_env="SILICONFLOW_API_KEY",
-        # 硅基流动模型页:1M 上下文 + 最高 384K 输出
-        models=(PresetModel("deepseek-ai/DeepSeek-V4-Flash", 1_000_000, 393_216),),
-        note="聚合平台:模型 id 带组织前缀(`zai-org/GLM-5.2`、`Qwen/…`、`Pro/…`),"
-             "各家新模型在这儿的 id 与官方不同 —— 以模型广场/`qi init --refresh siliconflow` 为准",
+    "minimax-cn": Preset(
+        provider="minimax-cn",
+        label="MiniMax(国内站)",
+        base_url="https://api.minimax.cn/v1",
+        api_key_env="MINIMAX_CN_API_KEY",
+        models=(PresetModel("MiniMax-M3", 1_000_000, 131_072),),
+        note="两站 key 不通用;国际站是 `--preset minimax`(`api.minimax.io`)",
     ),
-    "stepfun": Preset(
-        provider="stepfun",
-        label="阶跃星辰 StepFun",
-        base_url="https://api.stepfun.com/v1",
-        api_key_env="STEP_API_KEY",
-        # 阶跃/百炼模型页:上下文 262144 / 最大输出 262144
-        models=(PresetModel("step-3.7-flash", 262_144, 262_144),),
+    # ── OpenCode:一个品牌的两个计费体系,拆成两个 provider(端点/模型集/额度都不同)
+    # 端点已**迁到 `/inference/…`**(2026-10 探测:
+    #   Zen  GET https://opencode.ai/inference/v1/models  (84 个,匿名可拉;
+    #        `POST /inference/v1/{chat/completions,responses,messages}` 均可达)
+    #   Go   GET https://opencode.ai/inference/go/v1/models (目录在 pi 的 model store;
+    #        `/zen/go/v1` 是同网关的旧别名,`/inference/go/v1/models` 自身 404)
+    # pi 的 models-store.json 也是这个形状:**每个模型自带 api + baseUrl**,
+    # provider 段既无 api 也无 baseUrl —— 同一厂商的端点随 API 形态变后缀
+    # (openai 形态带 `/v1`、anthropic 形态不带,SDK 自己拼 `/v1/messages`),
+    # 一个 provider 一个 URL 表达不了,所以这里照 pi 把两条都落到模型上。
+    # —— 厂商不公布窗口/输出上限表,所以下面的数字分两类写注释:
+    #   有厂商出处的(deepseek/glm/minimax/kimi/qwen):复用本表同模型已核过的值;
+    #   没有的(gpt/claude):取自 pi-ai 目录(其源为厂商模型页),复核入口是
+    #   厂商文档 + `qi init --refresh opencode`。模型 id 是活跃目录核对过的硬事实。
+    "opencode": Preset(
+        provider="opencode",
+        label="OpenCode Zen(按量付费)",
+        api_key_env="OPENCODE_API_KEY",
+        api=None,                    # provider 段不写 api(每个模型自带)
+        # 端点自带三套 API 形态,异构发生在模型间 → api/baseUrl 全在模型上。
+        # `x-opencode-session` 头已内置(见 provider_headers.py),不用装扩展。
+        models=(PresetModel("gpt-5.6-sol", 1_050_000, 128_000,   # 默认;Responses 形态
+                            api="openai-responses",
+                            base_url="https://opencode.ai/inference/v1"),
+                PresetModel("claude-sonnet-5-5", 1_000_000, 128_000,
+                            api="anthropic-messages",
+                            base_url="https://opencode.ai/inference"),
+                PresetModel("deepseek-v4.1-flash", 1_000_000, 393_216,   # 同 deepseek 预置
+                            api="openai-completions",
+                            base_url="https://opencode.ai/inference/v1"),
+                PresetModel("glm-5.2", 1_048_576, 131_072,               # 同 zhipu 预置
+                            api="openai-completions",
+                            base_url="https://opencode.ai/inference/v1"),
+                PresetModel("minimax-m3", 1_000_000, 131_072,            # 同 minimax 预置
+                            api="openai-completions",
+                            base_url="https://opencode.ai/inference/v1")),
+        note="按量付费网关:Key 从 `opencode auth login` / opencode.ai 控制台拿;"
+             "端点按 API 形态分(`/inference/v1` = openai 形态含 Responses,`/inference` = Anthropic 形态),"
+             "所以 api/baseUrl 都写在**模型**上(同 pi 的 models-store.json);"
+             "`qi init --refresh opencode` 随时以厂商目录为准换新模型",
     ),
-    "hunyuan": Preset(
-        provider="hunyuan",
-        label="腾讯混元(TokenHub)",
-        base_url="https://tokenhub.tencentmaas.com/v1",
-        api_key_env="HUNYUAN_API_KEY",
-        # 腾讯已把混元迁到 **TokenHub**(旧平台 `api.hunyuan.cloud.tencent.com` 不再新增模型)。
-        # TokenHub 模型列表(2026-09 核):`hy4-preview` 上下文 1M / 最大输出 64K;
-        # `hy3` 上下文 256K / 最大输出 128K。
-        models=(PresetModel("hy4-preview", 1_048_576, 65_536),
-                PresetModel("hy3", 262_144, 131_072)),
-        note="这里是 TokenHub(新平台,Key 也从 TokenHub 控制台拿);"
-             "旧平台仍是 `https://api.hunyuan.cloud.tencent.com/v1` + `hunyuan-turbos-latest`,"
-             "两边的 Key 不通用",
-    ),
-    "volcengine": Preset(
-        provider="volcengine",
-        label="火山方舟(豆包)",
-        base_url="https://ark.cn-beijing.volces.com/api/v3",
-        api_key_env="ARK_API_KEY",
-        # 厂商产品页(2026-09 核):上下文 256K(=262144)。最大输出两处口径不一(产品页写 256K、
-        # 文档写“单次最大输出 128K(含思考)”)—— **取小的那侧**(要 128K 之上的输出极少见,
-        # 而报一个超出上限的值会被接口打回)。
-        # `doubao-seed-evolving` 是**版本无关**的统一 id(周更自动迭代,不用改配置),所以排第一。
-        models=(PresetModel("doubao-seed-evolving", 262_144, 131_072),
-                PresetModel("doubao-seed-2-1-pro-260628", 262_144, 131_072)),
-        note="方舟的普通模型 id 带日期后缀(会变);`doubao-seed-evolving` 是统一 id 不需要换。"
-             "自定义部署还要用 Endpoint ID —— 以控制台“模型列表”里的调用名为准",
-    ),
-    "qianfan": Preset(
-        provider="qianfan",
-        label="百度千帆(文心)",
-        base_url="https://qianfan.baidubce.com/v2",
-        api_key_env="QIANFAN_API_KEY",
-        # 千帆模型列表:上下文 128k(=131072) / 最大输出 65536
-        # 千帆模型列表:`ernie-5.1` 是文心系列**最新**模型,与 `ernie-5.0` 同为
-        # 上下文 128k(=131072) / 最大输出 65536
-        models=(PresetModel("ernie-5.1", 131_072, 65_536),
-                PresetModel("ernie-5.0", 131_072, 65_536)),
+    "opencode-go": Preset(
+        provider="opencode-go",
+        label="OpenCode Go(套餐额度)",
+        api_key_env="OPENCODE_API_KEY",
+        api=None,                    # 同上:形态与端点都在模型上
+        # Go 是套餐额度体系(与按量付费分开计),目录 38 个模型;同 key。
+        # 端点前缀 `/inference/go`(与 pi 的 models-store.json 一致)。
+        models=(PresetModel("deepseek-v4.1-flash", 1_000_000, 393_216,  # 默认;同 deepseek 预置
+                            api="openai-completions",
+                            base_url="https://opencode.ai/inference/go/v1"),
+                PresetModel("glm-5.2", 1_048_576, 131_072,
+                            api="openai-completions",
+                            base_url="https://opencode.ai/inference/go/v1"),
+                PresetModel("kimi-k3", 1_048_576, 131_072,               # 同 moonshot 预置
+                            api="openai-completions",
+                            base_url="https://opencode.ai/inference/go/v1"),
+                PresetModel("qwen3.7-plus", 1_000_000, 131_072,          # pi store 里是 Anthropic 形态
+                            api="anthropic-messages",
+                            base_url="https://opencode.ai/inference/go"),
+                PresetModel("gpt-5.6-luna", 1_050_000, 128_000,          # Responses 形态
+                            api="openai-responses",
+                            base_url="https://opencode.ai/inference/go/v1")),
+        note="套餐额度体系(与 Zen 按量付费分开计费),与 Zen 共用 `OPENCODE_API_KEY`;"
+             "端点按 API 形态分(`/inference/go/v1` / `/inference/go`),api/baseUrl 写在模型上;"
+             "模型集以 `qi init --refresh opencode-go` 拉到的目录为准(比 Zen 少得多)"
     ),
 }
 """预置表(键 = `--preset` 收的名字,也是默认 provider 名)。"""
 
 
+#: 预置的**展示顺序**:国产在前(deepseek / zhipu 打头),国外网关排最后。
+#: `qi init` 的 provider 列表与 `--list-presets` 都按它走 —— 字典序会把 opencode 排到
+#: 国产厂商中间,选起来别扭。没列进来的名字(order 落后于新增预置时)按字典序补在末尾。
+PRESET_ORDER: tuple[str, ...] = (
+    "deepseek",
+    "zai", "zai-cn", "zai-coding", "zai-coding-cn",
+    "qwen", "qwen-cn", "qwen-token-plan", "qwen-token-plan-cn",
+    "mimo", "mimo-token-plan-cn",
+    "moonshot", "moonshot-cn", "kimi-coding",
+    "minimax", "minimax-cn",
+    "opencode", "opencode-go",
+)
+
+
 def preset_names() -> list[str]:
-    """全部预置名(排序,给 `--list-presets` 与补全用)。"""
-    return sorted(PRESETS)
+    """全部预置名,按**展示顺序**(见 `PRESET_ORDER`;`qi init` 与补全都用它)。"""
+    ordered = [name for name in PRESET_ORDER if name in PRESETS]
+    return ordered + [name for name in sorted(PRESETS) if name not in PRESET_ORDER]
+
+
+#: 别名 → 真名(承认生态里其它工具的叫法;物化后 provider 名永远是真名)
+ALIASES: dict[str, str] = {
+    "opencode-zen": "opencode",      # pi / 旧扩展管 Zen 叫 opencode-zen
+    "zhipu": "zai",                  # 旧名(pi 已改用 zai)
+    "zhipu-coding": "zai-coding",    # 旧名
+    "zai-coding-cn": "zai-coding-cn",  # 真名(保留以免被旧别名误解)
+    "dashscope": "qwen",             # DashScope 就是通义千问的服务平台
+    "dashscope-cn": "qwen-cn",
+    "mimo-token-plan": "mimo-token-plan-cn",   # 补 -cn 之前的名字
+}
 
 
 def get_preset(name: str) -> Preset | None:
-    """按名字取预置(大小写不敏感;认 provider 名本身)。"""
+    """按名字取预置(大小写不敏感;认 provider 名本身与 `ALIASES` 别名)。"""
     key = (name or "").strip().lower()
+    key = ALIASES.get(key, key)
     if key in PRESETS:
         return PRESETS[key]
     for preset in PRESETS.values():          # 也认 label 里的 provider 名
@@ -239,22 +406,49 @@ def get_preset(name: str) -> Preset | None:
     return None
 
 
+def default_model_shape(preset: Preset) -> tuple[str | None, str | None]:
+    """预置的"默认形态"`(api, baseURL)` —— 给刷新新加的模型兜底用。
+
+    优先取 chat completions 形态(opencode 的绝大多数模型是它);没有就退到第一个
+    带完整覆盖的模型。预置只有 provider 级端点时直接返回那对。
+    """
+    for model in preset.models:
+        if model.api == DEFAULT_API and model.base_url:
+            return model.api, model.base_url
+    for model in preset.models:
+        if model.api and model.base_url:
+            return model.api, model.base_url
+    return preset.api, preset.base_url
+
+
 def provider_entry(preset: Preset) -> dict[str, Any]:
-    """预置 → `models.json` 里的 provider 段(不含 models,便于合并时分开处理)。"""
-    return {
-        "api": preset.api,
-        "baseUrl": preset.base_url,
-        "apiKey": f"${preset.api_key_env}",
-    }
+    """预置 → `models.json` 里的 provider 段(不含 models,便于合并时分开处理)。
+
+    **只有 `apiKey`**:`api` / `baseUrl` 一律展开写到每个模型条目上 —— 这是 pi 的
+    模型目录的形状(连 deepseek 也是每条模型自带),provider 级那条只是默认值。
+    好处是规则只有一条("端点看模型"),不用记"哪家要写哪级"。
+    """
+    return {"apiKey": f"${preset.api_key_env}"}
 
 
-def model_entry(model: PresetModel) -> dict[str, Any]:
-    """预置模型 → `models.json` 的模型条目(`contextWindow` + `maxTokens` 都是核过的值)。"""
-    return {
+def model_entry(model: PresetModel, preset: Preset | None = None) -> dict[str, Any]:
+    """预置模型 → `models.json` 的模型条目(`contextWindow` + `maxTokens` 都是核过的值)。
+
+    `api` / `baseUrl` **每条都写**:模型自己没写就用 `preset` 的统一值(单端点厂商)。
+    这样落盘的模型永远"自解释" —— 读 models.json 的人不用回头翻 provider 段。
+    """
+    entry: dict[str, Any] = {
         "id": model.id,
         "contextWindow": model.context_window,
         "maxTokens": model.max_output,
     }
+    api = model.api or (preset.api if preset is not None else None)
+    base_url = model.base_url or (preset.base_url if preset is not None else None)
+    if api:
+        entry["api"] = api
+    if base_url:
+        entry["baseUrl"] = base_url
+    return entry
 
 
 def apply_presets(data: dict[str, Any], names: list[str]) -> tuple[dict[str, Any], list[str]]:
@@ -288,6 +482,6 @@ def apply_presets(data: dict[str, Any], names: list[str]) -> tuple[dict[str, Any
         for model in preset.models:
             if model.id in known:
                 continue
-            models.append(model_entry(model))
+            models.append(model_entry(model, preset))
             changed.append(f"{preset.provider}/{model.id}")
     return data, changed

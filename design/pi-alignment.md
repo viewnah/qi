@@ -110,6 +110,11 @@ qi 在这一层**刻意与 pi 保持一致**:字段名、命令名、`/tree` 语
 | 订阅登录(Claude Pro/Max、Copilot、Codex、xAI) | **支持**(OAuth,带刷新) | **不支持** —— 只有 API key。`print-bearer-token` 与 `--no-refresh` 为兼容 pi 命令面而存在,语义是空操作 |
 | auth store 结构 | `type` 支持多种(含 OAuth 凭证) | 只有 `type: api_key` |
 | 云 provider(Azure / Bedrock / Vertex / Cloudflare) | 有独立章节 | 走 litellm 通用 provider 配置,没有专门文档 |
+| 小米的四个 provider | `xiaomi`(按量付费)、`xiaomi-token-plan-cn/-sgp/-ams`(套餐) | 同 拆法:`mimo`(按量付费)+ `mimo-token-plan`(CN 套餐,`mimo-token-plan-cn` 为别名;sgp/ams 换 baseUrl) |
+| 其余套餐/订阅变体 | `zai` / `zai-coding-cn`(智谱)、`qwen-token-plan-cn` / `-individual`(阿里)、`kimi-coding`(月之暗面,Anthropic 形态) | 同 拆法:`zai-coding` / `zai-coding-cn`、`qwen-token-plan` / `-cn`、`kimi-coding`;区域差异用 baseUrl 表达,key 环境变量各一套 |
+| 国际站 / 国内站命名 | `moonshotai` / `moonshotai-cn`、`minimax` / `minimax-cn`、`zai` / `zai-coding-cn` | 同约定:**裸名 = 国际站,`-cn` = 国内站**(`zai` / `zai-cn`、`qwen` / `qwen-cn`、`moonshot` / `moonshot-cn`、`minimax` / `minimax-cn`);旧名 `zhipu` / `dashscope` 留作别名 |
+| 内置 provider(预置) | opencode / opencode-go / xiaomi 等随 pi-ai 发布的模型目录 | `presets.py` 预置表;opencode 两个(Zen 按量付费 / Go 套餐额度),端点与 pi 的 `models-store.json` 对齐(`/inference/…`;`api`+`baseUrl` 落在**模型**上),种子 id 对厂商 `/models` 目录核过 |
+| OpenCode 会话头 `x-opencode-session` | `withOpenCodeSessionHeader` 包住全部 4 种 api 实现自动注入 | **同**(内置 `provider_headers.py`:值 = 当前会话 id,没会话回退 `"qi"`;provider/模型 `headers` 可覆盖,扩展事件最后跑) |
 
 **没有 OAuth 的直接后果**:用订阅额度(而非 API key)的用户在 qi 上跑不通,必须换成 API key。
 要补这块,需要的是 auth store 的 `type` 扩展 + 刷新逻辑 —— 现在没有([providers.md](../docs/providers.md) 因此不描述不存在的机制)。
@@ -297,6 +302,8 @@ pi 的 `ToolDefinition.executionMode` 是 `"sequential" | "parallel"`(默认顺�
 | `apiKey` 值语法 | `!cmd` / `$ENV` / 转义 | 同 |
 | `auth.json` 结构 | `type: api_key` 等 | 同格式,但只有 `api_key` 一种 |
 | **分派模型**(`routerProvider` / `routerModel`) | pi 无此概念(qi v1 的 Dispatcher 用) | **已作废**:`auto` 分派取消,core 是单 agent。配置里这两个键仍在(老配置不报错),但没有自动分派会用到它们;`qi doctor` 仍会打印解析结果 |
+| 模型数据里的 API 形态 | 模型数据全量标注 `api` + `baseUrl`,按 `model.api` 分发到实现(api map) | 同语义走**覆盖链**:`models[].api` / `models[].baseUrl` > `providers.<name>.api|baseUrl`(默认值)> `openai-completions`。预置物化照 pi 的目录形状**每条模型都写 `api`+`baseUrl`**(单端点厂商从统一值展开),所以端点随形态变后缀(opencode:`/inference/v1` vs `/inference`)与单端点(deepseek/mimo)是同一形状;mimo 的 anthropic 端点由此成对表达 |
+| `openai-responses` 的请求形态 | 直接用 responses 实现(打 `/v1/responses`) | 走 litellm 的 `openai/responses/` 前缀桥接(修复后与 pi 同形态;此前被当 chat completions 发) |
 
 ## 13. TUI(原 `tui.md` 的几段对照)
 

@@ -77,14 +77,44 @@ qi 通过 litellm 调各家模型。provider 与模型定义都在 `models.json`
 | `providers.<name>.baseUrl` | | | API endpoint |
 | `providers.<name>.api` | | `openai-completions` | `openai-completions` / `openai-responses` / `anthropic-messages` / `google-generative-ai` |
 | `providers.<name>.apiKey` | | | 引用:字面量 / `$ENV` / `${ENV}` / `!command`;省略则查 auth store / 约定环境变量 |
-| `providers.<name>.headers` | | | 自定义请求头,值语法同 `apiKey` |
+| `providers.<name>.headers` | | | 自定义请求头,值语法同 `apiKey`;**请求前**解析(见下「内置请求头」) |
 | `providers.<name>.models[]` | | | 模型列表,每个至少 `id` |
+| `models[].api` | | = provider | **覆盖**该模型的 API 形态(与 `models[].baseUrl` 常成对写,见下) |
+| `models[].baseUrl` | | = provider | **覆盖**该模型的 endpoint(如 mimo 的 Anthropic 兼容端点) |
+| `models[].headers` | | = provider | **覆盖**该模型的自定义请求头(逐名合并,模型层赢) |
 | `models[].reasoning` | | `false` | 是否支持扩展思考(决定要不要下发 `reasoning_effort`) |
 | `models[].contextWindow` | | `128000` | 上下文窗口 token(自动压缩的阈值基于它) |
 | `models[].maxTokens` | | `16384` | 最大输出 token(作为请求的 `max_tokens` 上限) |
 | `models[].input` | | `["text"]` | 输入类型 |
 
 模型条目可缺省,`resolve_model()` 会用 provider 默认 + 内置默认补齐。
+
+**模型级覆盖链**:`models[].api` / `models[].baseUrl` / `models[].headers` 一旦写了就**覆盖**
+provider 级的同名字段(provider 级从此只是**默认值**)。同一批模型走不同 API 形态时就靠它:
+
+```jsonc
+"opencode": {                       // provider 段只剩 key:端点随 API 形态变后缀
+  "apiKey": "$OPENCODE_API_KEY",
+  "models": [
+    { "id": "gpt-5.6-sol", "api": "openai-responses",        // Responses 形态
+      "baseUrl": "https://opencode.ai/inference/v1" },
+    { "id": "claude-sonnet-5-5", "api": "anthropic-messages", // Anthropic 形态
+      "baseUrl": "https://opencode.ai/inference" }            // 不带 /v1(SDK 自己拼)
+  ]
+}
+```
+
+`qi init --preset` 物化出来的就是**每条模型都带 `api` + `baseUrl`**、provider 段只剩
+`apiKey` 的形状 —— 与 pi 的模型目录(`api` 分组、每条模型自带 `baseUrl`)一致,单端点厂商
+(deepseek、mimo…)的端点会从预置的统一值展开写到每个模型上。provider 级 `api` / `baseUrl`
+仍然支持(自己手写配置时可以省点字),`resolve_model()` 照样按覆盖链取值。
+
+`reasoning` / `contextWindow` / `maxTokens` 的覆盖规则同上(provider 级同样有默认)。
+
+**内置请求头(provider 自带,不用配)**:打 OpenCode(`opencode` / `opencode-go`,或 baseUrl
+主机名在 `opencode.ai` 下)时 qi 自动带 `x-opencode-session`,值 = **当前会话 id**(没会话回退
+`"qi"`)。想改就用上面的 `headers`(provider / 模型层都行,会**盖过**内置值);扩展的
+`before_provider_headers` 事件最后跑,能覆盖或删除任意头(值写 `None` = 删)。
 
 **`apiKey` 值语法**:
 
@@ -97,10 +127,12 @@ qi 通过 litellm 调各家模型。provider 与模型定义都在 `models.json`
 
 ## 手写还是让 `qi init` 写
 
-`qi init` 引导默认模型,三步:**选 provider**(已有 / 预置 `[预置]` / 新建 → Base URL → API 类型 →
+`qi init` 引导默认模型,三步:**选 provider**(已有 / 预置 `[预置]` / 新建 → Base URL →
+**默认 API 类型**(新建才问;预置只打印它的默认值 —— 模型可各自覆盖,见上面的覆盖链)→
 API Key,直接写 `auth.json`)→ **Add Models**(`＋ Add a model` / `↻ Refresh model list (GET /models)` /
-`✓ Done` 循环)→ **Activate LLM Model**(写 `defaultProvider` / `defaultModel` 进 `settings.json`)。
-`-l` 写项目 `<cwd>/.qi/models.json`(否则全局)。
+`✓ Done` 循环;**模型异构的 provider**(如有模型带自己的 `api`)加模型时才多问一句 API 类型,
+且选了非默认的会**成对**追问该模型的 Base URL)→ **Activate LLM Model**
+(写 `defaultProvider` / `defaultModel` 进 `settings.json`)。`-l` 写项目 `<cwd>/.qi/models.json`(否则全局)。
 
 ```bash
 qi init                       # 交互式
@@ -145,3 +177,4 @@ models.json:  $QI_AGENT_CONFIG(env 指定文件,最高)
 | provider 拒收 `reasoning_effort` | qi 会自动去掉参数重试并在 footer 提示一次;也可把该模型的 `reasoning` 改成 `false` |
 | 回合失败出现 `'ascii' codec can't encode` | **API key 里有非 ASCII 字符**(多半是把一段中文提示误粘进了密钥框)。现在 qi 在请求前就报“API key 含非 ASCII 字符(来源:…)”;修:`qi auth list` 看来源 → 重新 `qi auth login <provider>` / 改环境变量 / 改 `models.json` 的 `apiKey` |
 | 相容端点返回 4xx | 先确认 `api` 形态选对(`openai-completions` vs `openai-responses` vs `anthropic-messages`) |
+| 自定义 `headers` 没生效 | qi 在**请求前**就解析(`$ENV` 缺失 / `!command` 失败会直接报 `provider 的 header 'X' 无法解析`,消息里不带值);先查这个名字、再查它的来源 |

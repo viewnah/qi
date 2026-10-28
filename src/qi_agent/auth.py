@@ -52,17 +52,26 @@ DEFAULT_API_KEY_ENV = {
     "groq": "GROQ_API_KEY",
     "mistral": "MISTRAL_API_KEY",
     "xai": "XAI_API_KEY",
-    # 预置的国产 provider(见 presets.py)
-    "dashscope": "DASHSCOPE_API_KEY",
+    # 预置的国产 provider(见 presets.py;裸名 = 国际站,`-cn` = 国内站)
+    "zai": "ZAI_API_KEY",
+    "zai-cn": "ZAI_CN_API_KEY",
+    "zai-coding": "ZAI_CODING_API_KEY",
+    "zai-coding-cn": "ZAI_CODING_CN_API_KEY",
+    "qwen": "QWEN_API_KEY",
+    "qwen-cn": "DASHSCOPE_API_KEY",          # 国内站沿用百炼的老变量名
+    "qwen-token-plan": "QWEN_TOKEN_PLAN_API_KEY",
+    "qwen-token-plan-cn": "QWEN_TOKEN_PLAN_CN_API_KEY",
     "moonshot": "MOONSHOT_API_KEY",
-    "zhipu": "ZHIPUAI_API_KEY",
+    "moonshot-cn": "MOONSHOT_CN_API_KEY",
     "minimax": "MINIMAX_API_KEY",
-    "siliconflow": "SILICONFLOW_API_KEY",
-    "stepfun": "STEP_API_KEY",
-    "hunyuan": "HUNYUAN_API_KEY",
-    "volcengine": "ARK_API_KEY",
+    "minimax-cn": "MINIMAX_CN_API_KEY",
+    "kimi-coding": "KIMI_CODING_API_KEY",
     "mimo": "MIMO_API_KEY",
-    "qianfan": "QIANFAN_API_KEY",
+    "mimo-token-plan-cn": "MIMO_TOKEN_PLAN_CN_API_KEY",
+    # OpenCode 两个 provider(Zen 按量付费 / Go 套餐额度)共用一个 key ——
+    # 与 presets 里 `api_key_env` 的口径一致(两处由 test_presets 锁住)。
+    "opencode": "OPENCODE_API_KEY",
+    "opencode-go": "OPENCODE_API_KEY",
 }
 
 KEYLESS_PROVIDERS = ("ollama",)

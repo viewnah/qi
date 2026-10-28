@@ -17,8 +17,15 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from . import __version__
+
 #: 一次刷新的超时(秒)。厂商的 /models 通常几十毫秒,20s 只用于兜住挂死的网络。
 DEFAULT_TIMEOUT = 20.0
+
+#: 请求的 UA。**必须显式给**:urllib 默认的 `Python-urllib/3.x` 会被 Cloudflare
+#: 的 WAF 规则拦下(实测 opencode.ai 返回 `Error 1010: Access denied` 的 403,
+#: 看着像"key 没权限",其实是 UA 被判成爬虫)。
+USER_AGENT = f"qi/{__version__}"
 
 
 class CatalogError(Exception):
@@ -74,14 +81,20 @@ def fetch_model_ids(base_url: str, api_key: str | None, *,
     if not base_url:
         raise CatalogError("这个 provider 没有 baseUrl,拉不了模型列表")
     url = models_url(base_url)          # 顺带把非 http(s) 的 baseUrl 挡在外面
-    request = urllib.request.Request(url, headers={"Accept": "application/json"})  # noqa: S310
+    request = urllib.request.Request(  # noqa: S310
+        url, headers={"Accept": "application/json", "User-Agent": USER_AGENT})
     if api_key:
         request.add_header("Authorization", f"Bearer {api_key}")
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310 URL 已过 scheme 检查
             raw = response.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:
-        hint = "API key 不对或没权限" if exc.code in (401, 403) else exc.reason
+        if exc.code == 401:
+            hint = "API key 不对或没权限"
+        elif exc.code == 403:
+            hint = "没权限,或被网关(WAF)拦住 —— 换个 UA / 确认 key 的套餐"
+        else:
+            hint = exc.reason
         raise CatalogError(f"{url} 返回 HTTP {exc.code}({hint})") from exc
     except (urllib.error.URLError, OSError) as exc:
         raise CatalogError(f"连不上 {url}: {exc}") from exc

@@ -83,6 +83,8 @@ def select(message: str, options: list[str], default: int = 0) -> int:
 
     idx = default
     n = len(options)
+    # 菜单不是输入框:藏掉光标,否则它会在菜单下面一闪一闪(看着像在等文字输入)
+    sys.stdout.write("\x1b[?25l")
     sys.stdout.write(f"{_QUESTION} {message}\n")
 
     def render() -> None:
@@ -94,23 +96,27 @@ def select(message: str, options: list[str], default: int = 0) -> int:
         sys.stdout.flush()
 
     render()
-    while True:
-        key = _read_key()
-        if key in _UP or key == "k":
-            idx = (idx - 1) % n
-        elif key in _DOWN or key == "j":
-            idx = (idx + 1) % n
-        elif key in _ENTER:
-            _clear_lines(n + 1)
-            sys.stdout.write(f"{_QUESTION} {message} \x1b[36m{options[idx]}\x1b[0m\n")
-            sys.stdout.flush()
-            return idx
-        elif key in ("\x03", "\x04"):  # Ctrl-C / Ctrl-D
-            raise KeyboardInterrupt
-        else:
-            continue
-        sys.stdout.write(f"\x1b[{n}A")
-        render()
+    try:
+        while True:
+            key = _read_key()
+            if key in _UP or key == "k":
+                idx = (idx - 1) % n
+            elif key in _DOWN or key == "j":
+                idx = (idx + 1) % n
+            elif key in _ENTER:
+                _clear_lines(n + 1)
+                sys.stdout.write(f"{_QUESTION} {message} \x1b[36m{options[idx]}\x1b[0m\n")
+                sys.stdout.flush()
+                return idx
+            elif key in ("\x03", "\x04"):  # Ctrl-C / Ctrl-D
+                raise KeyboardInterrupt
+            else:
+                continue
+            sys.stdout.write(f"\x1b[{n}A")
+            render()
+    finally:
+        sys.stdout.write("\x1b[?25h")     # 无论如何都把光标还回去
+        sys.stdout.flush()
 
 
 def _numbered(message: str, options: list[str], default: int) -> int:

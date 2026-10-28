@@ -43,15 +43,16 @@ provider 名 → 自动识别的环境变量(`DEFAULT_API_KEY_ENV`):
 | `groq` | `GROQ_API_KEY` |
 | `mistral` | `MISTRAL_API_KEY` |
 | `xai` | `XAI_API_KEY` |
-| `dashscope`(阿里云百炼) | `DASHSCOPE_API_KEY` |
-| `moonshot`(月之暗面 Kimi) | `MOONSHOT_API_KEY` |
-| `zhipu`(智谱 GLM) | `ZHIPUAI_API_KEY` |
-| `minimax` | `MINIMAX_API_KEY` |
-| `siliconflow`(硅基流动) | `SILICONFLOW_API_KEY` |
-| `stepfun`(阶跃星辰) | `STEP_API_KEY` |
-| `hunyuan`(腾讯混元) | `HUNYUAN_API_KEY` |
-| `volcengine`(火山方舟) | `ARK_API_KEY` |
-| `qianfan`(百度千帆) | `QIANFAN_API_KEY` |
+| `zai` / `zai-cn`(Z.ai 智谱 GLM,国际 / 国内) | `ZAI_API_KEY` / `ZAI_CN_API_KEY` |
+| `zai-coding` / `zai-coding-cn`(GLM Coding Plan) | `ZAI_CODING_API_KEY` / `ZAI_CODING_CN_API_KEY` |
+| `qwen` / `qwen-cn`(通义千问,国际 / 国内百炼) | `QWEN_API_KEY` / `DASHSCOPE_API_KEY` |
+| `qwen-token-plan` / `-cn`(阿里 Token Plan,新加坡 / 北京) | `QWEN_TOKEN_PLAN_API_KEY` / `QWEN_TOKEN_PLAN_CN_API_KEY` |
+| `moonshot` / `moonshot-cn`(月之暗面 Kimi,国际 / 国内) | `MOONSHOT_API_KEY` / `MOONSHOT_CN_API_KEY` |
+| `minimax` / `minimax-cn`(MiniMax,国际 / 国内) | `MINIMAX_API_KEY` / `MINIMAX_CN_API_KEY` |
+| `kimi-coding`(Kimi for Coding 套餐) | `KIMI_CODING_API_KEY` |
+| `mimo`(小米 MiMo,按量付费) | `MIMO_API_KEY` |
+| `mimo-token-plan-cn`(小米 MiMo,套餐额度) | `MIMO_TOKEN_PLAN_CN_API_KEY` |
+| `opencode` / `opencode-go`(OpenCode) | `OPENCODE_API_KEY`(两家共用) |
 
 下面那批是**预置 provider**(见 §2.1);表里的名字与 `presets.py` 一一对应,有测试锁住。
 
@@ -126,18 +127,28 @@ OpenAI 兼容端点接受并不一致。默认不带参最不容易 400;想开�
 | 预置 | baseUrl | 预置模型(id · ctx / max;**第一个 = 物化后的默认**) |
 | --- | --- | --- |
 | `deepseek` | `https://api.deepseek.com` | **`deepseek-flash`**(= V4.1 Flash)、`deepseek-v4-pro`(均 1M / 384K) |
-| `dashscope` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | **`qwen3.7-plus`**(官方推荐:均衡 + 完整工具调用)、`qwen3.8-max`、`qwen3.8-flash`(均 1M / 128K) |
-| `mimo` | `https://api.xiaomimimo.com/v1` | **`mimo-v2.6-flash`**(官方定位:高智能、低成本,排第一)、`mimo-v2.6-pro`、`mimo-v2.6-pro-ultraspeed`(速度档;均 1M / 128K;旧的 `mimo-v2.5*` **2026-10-21 下线**) |
-| `moonshot` | `https://api.moonshot.cn/v1` | **`kimi-k3`**(1M / 128K)、`kimi-k2.7-code`(256K / 32K) |
-| `zhipu` | `https://open.bigmodel.cn/api/paas/v4` | **`glm-5.2`**(1M / 128K)、`glm-4.7`(200K / 128K) |
-| `minimax` | `https://api.minimax.cn/v1` | **`MiniMax-M3`**(1M / 128K) |
-| `siliconflow` | `https://api.siliconflow.cn/v1` | **`deepseek-ai/DeepSeek-V4-Flash`**(1M / 384K) |
-| `stepfun` | `https://api.stepfun.com/v1` | **`step-3.7-flash`**(256K / 256K) |
-| `hunyuan` | `https://tokenhub.tencentmaas.com/v1` | **`hy4-preview`**(1M / 64K)、`hy3`(256K / 128K) |
-| `volcengine` | `https://ark.cn-beijing.volces.com/api/v3` | **`doubao-seed-evolving`**(统一 id,周更自动迭代)、`doubao-seed-2-1-pro-260628`(均 256K / 128K) |
-| `qianfan` | `https://qianfan.baidubce.com/v2` | **`ernie-5.1`**、`ernie-5.0`(均 128K / 64K) |
+| `zai` / `zai-cn` | `https://api.z.ai/api/paas/v4` / `https://open.bigmodel.cn/api/paas/v4` | **`glm-5.2`**(1M / 128K)、`glm-4.7`(200K / 128K) |
+| `zai-coding` / `-cn` | `https://api.z.ai/api/coding/paas/v4` / `https://open.bigmodel.cn/api/coding/paas/v4` | **`glm-5.3`**、`glm-5.3-flash`、`glm-5.3-highspeed`(均 1M / 128K;Coding Plan 套餐 key) |
+| `qwen` / `qwen-cn` | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` / `https://dashscope.aliyuncs.com/compatible-mode/v1` | **`qwen3.7-plus`**、`qwen3.8-max`、`qwen3.8-flash`(均 1M / 128K) |
+| `qwen-token-plan` / `-cn` | `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1` / `https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1` | **`qwen3.8-max`**、`qwen3.7-plus`、`deepseek-v4.1-flash`、`glm-5.2`、`kimi-k2.7-code`(聚合网关,目录 20 个) |
+| `mimo` | `https://api.xiaomimimo.com/v1` | **`mimo-v2.6-flash`**、`mimo-v2.6-pro`、`mimo-v2.6-pro-ultraspeed`(均 1M / 128K) |
+| `mimo-token-plan-cn` | `https://token-plan-cn.xiaomimimo.com/v1` | **`mimo-v2.6-flash`**、`mimo-v2.6-pro`(套餐另有两区域:`-sgp` / `-ams`) |
+| `moonshot` / `moonshot-cn` | `https://api.moonshot.ai/v1` / `https://api.moonshot.cn/v1` | **`kimi-k3`**(1M / 128K)、`kimi-k2.7-code`(256K / 32K) |
+| `kimi-coding` | `https://api.kimi.com/coding` | **`k3`**、`k3-256k`、`kimi-for-coding`、`-highspeed`(**Anthropic 形态**,SDK 拼 `/v1/messages`) |
+| `minimax` / `minimax-cn` | `https://api.minimax.io/v1` / `https://api.minimax.cn/v1` | **`MiniMax-M3`**(1M / 128K) |
+| `opencode` | (按模型,见右) | **`gpt-5.6-sol`**(Responses 形态 @ `…/inference/v1`)、`claude-sonnet-5-5`(Anthropic 形态 @ `…/inference`)、`deepseek-v4.1-flash`、`glm-5.2`、`minimax-m3` |
+| `opencode-go` | (按模型,见右) | **`deepseek-v4.1-flash`**、`glm-5.2`、`kimi-k3`(@ `…/inference/go/v1`)、`qwen3.7-plus`(Anthropic 形态 @ `…/inference/go`)、`gpt-5.6-luna`(Responses 形态) |
 
-这张表是 **2026-09 逐个厂商模型页核过的快照**(各条注释里写了出处)。换世代时它会过时 ——
+**命名约定**:裸名 = 国际站,`-cn` = 国内站(`zai` / `zai-cn`、`qwen` / `qwen-cn`、
+`moonshot` / `moonshot-cn`、`minimax` / `minimax-cn`、`qwen-token-plan` / `-cn`);旧名字
+(`zhipu` → `zai`、`dashscope` → `qwen`、`zhipu-coding` → `zai-coding`、`mimo-token-plan` →
+`mimo-token-plan-cn`)作为别名继续认,物化后一律写新名。
+
+`Base URL` 列是该厂商的**统一端点**;`qi init --preset` 物化时会把它和 `api` 一起**展开写到
+每个模型条目**上(provider 段只剩 `apiKey`)—— 单端点厂商与 opencode 那种"端点随 API 形态变"
+的厂商因此是同一个形状,规则只有一条:端点看模型。
+
+这张表是 **2026-09/10 逐个厂商(模型页 / `/models` 目录接口)核过的快照**(各条注释里写了出处)。换世代时它会过时 ——
 `qi init --refresh <名>` 就是为此准备的;`tests/test_presets.py` 里有一条快照测试,
 厂商换线时会红,提醒去核对而不是把断言改宽。
 
@@ -148,6 +159,16 @@ qi init --refresh deepseek           # GET {baseUrl}/models → 并进 models.js
 qi init --refresh deepseek,moonshot
 qi init --refresh-all                # 所有已配置(有凭证)的 provider
 qi init --refresh deepseek --local   # 写项目 .qi/models.json
+
+# ④ 删掉一个已配置的 provider(一步全删:定义 + 模型清单 + 密钥 + 指向它的默认模型)
+qi init --remove zai                 # 别名也认(zhipu)
+qi init --remove zai,opencode-go     # 逗号分隔
+qi auth logout zai                   # 只想删密钥、保留 provider 定义时才用它
+
+# 交互式的第一步是「配置 provider」(选择器),已有 provider 时底部多两项:
+#   － 删除 provider —— 选它 → 选要删的那家 → 确认一次(定义、密钥、默认模型一起清)
+#   ✓ 下一步 —— 不再增改,直接跳到选默认模型(排在最后;只想换默认模型时用)
+# 零配置时这两项不出现(没东西可跳过可删)。
 ```
 
 交互流里有同一条入口:`qi init` → `--- Add Models ---` 菜单选
@@ -176,26 +197,30 @@ qi init --refresh deepseek --local   # 写项目 .qi/models.json
 
 数过时的注意项(与 `--list-presets` 里打印的一致):
 
-- `dashscope`:北京新账号可能要换成工作空间专属域名
+- `qwen-cn`:北京新账号可能要换成工作空间专属域名
   `https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`;
-- `volcengine`:方舟的模型 id 带日期后缀(会变),自定义部署还得用 Endpoint ID ——
-  以控制台“模型列表”里的调用名为准;
-- `hunyuan`:腾讯正把混元迁到 TokenHub(新 id 形如 `hy3` / `hy4-preview`),表里是旧平台的
-  兼容端点;
-- `siliconflow` 是聚合平台,模型 id 带组织前缀(`zai-org/GLM-5.2`、`Qwen/…`、`Pro/…`),
-  与各家的官方 id 不同;
-- `mimo`:按量付费用 `api.xiaomimimo.com`,订阅套餐(Token Plan)是
-  `https://token-plan-cn.xiaomimimo.com/v1` 且 Key 前缀不同 —— 两家 token 不能混用;
-  另外 `mimo-v2.5` / `mimo-v2.5-pro` 官方公告 **2026-10-21 10:00 下线**(种子已切到
-  `mimo-v2.6-flash` / `mimo-v2.6-pro` / `mimo-v2.6-pro-ultraspeed` —— ultraspeed 是速度档,
-  限流为定制服务,调它之前先问平台);
-- `zhipu`:`GLM-5.3` 官方页面写着「API 即将上线」(Bailian 已可调),所以种子里是线上可用的
-  `GLM-5.2`;上线后 `qi init --refresh zhipu` 拉一下就有;
-- `hunyuan`:腾讯已把混元迁到 **TokenHub**(`https://tokenhub.tencentmaas.com/v1`,Key 也从
-  TokenHub 控制台拿);旧平台 `https://api.hunyuan.cloud.tencent.com/v1` + `hunyuan-turbos-latest`
-  仍可用但**Key 不通用**,且腾讯说旧平台不再新增模型;
-- `volcengine`:普通模型 id 带日期后缀(会变),`doubao-seed-evolving` 是**版本无关**的统一 id
-  (官方周更自动迭代、不用改配置),所以排第一。
+- `zai` / `zai-cn`:标准 API(`/api/paas/v4`)与 Coding Plan 套餐(`/api/coding/paas/v4`)
+  是两套端点;`GLM-5.3` 在标准 API 上官方还写着「API 即将上线」,所以标准种子是 `GLM-5.2`,
+  套餐种子才是 `GLM-5.3` 系列;
+- `mimo`:按量付费用 `api.xiaomimimo.com`,套餐是 `token-plan-cn.xiaomimimo.com`(另有 `-sgp` /
+  `-ams` 两个区域),Key 前缀不同(`sk-…` / `tp-…`)—— **不能混用**;
+  `mimo-v2.5` / `mimo-v2.5-pro` 官方公告 **2026-10-21 10:00 下线**(种子已切到 `mimo-v2.6-*`);
+- **套餐/订阅是独立 provider**:`zai` / `zai-coding`(国际)、`zai-cn` / `zai-coding-cn`
+  (国内)、`qwen` / `qwen-token-plan`(新加坡)、`qwen-cn` / `qwen-token-plan-cn`(北京)、
+  `moonshot` / `kimi-coding`、`mimo` / `mimo-token-plan-cn`。**两套 key 互不通用** ——
+  拿套餐 key 打标准端点(或反之)通常就是 `401 / 权限错误`,不是配置写错。pi 也是这么拆的。
+- `opencode` / `opencode-go`:一个品牌的**两个计费体系**(Zen 按量付费 / Go 套餐额度),端点与
+  模型集不同、**共用 `OPENCODE_API_KEY`**(`opencode-zen` 是 Zen 的别名,物化后就是 `opencode`)。
+  这家的模型**异构**,而且**端点随 API 形态变后缀**:openai 形态(chat completions / Responses)
+  在 `https://opencode.ai/inference/v1`(Go 是 `…/inference/go/v1`),Anthropic 形态在
+  `https://opencode.ai/inference`(Go 是 `…/inference/go`,不带 `/v1`,SDK 自己拼 `/v1/messages`)。
+  一个 provider 一个 URL 表达不了这件事,所以照 pi 的 `models-store.json` 把 **`api` 与
+  `baseUrl` 都写在模型条目上**,provider 段只有 `apiKey`(`/zen/…` 是同一网关的旧别名,仍通)。
+  会话头 `x-opencode-session` 已**内置**(`qi_agent/provider_headers.py`,值=当前会话 id),不用装扩展。
+  模型 id 已对厂商自己的目录核过(`GET https://opencode.ai/inference/v1/models` 84 个,匿名可拉;
+  Go 目录见 pi 的 model store,`/inference/go/v1/models` 自身 404);窗口/输出两个数里
+  deepseek/glm/minimax/kimi/qwen 复用本表已核值,
+  gpt-5.6-* / claude-sonnet-5-5 厂商不公布窗口表,取自 pi 目录 —— `qi init --refresh` 可随时对齐 id。
 
 **模型 id 会漂** —— 所以还有第三条路:**从接口拉**(见下)。表里的清单是核过厂商文档的快照。
 

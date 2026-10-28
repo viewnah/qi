@@ -606,6 +606,92 @@ def _cmd_export(session_id: str, out: Path) -> None:
     console.print(f"[green]已导出 {session.path} → {out}[/green]")
 
 
+def _remove_providers(names: str, *, local: bool) -> None:
+    """`qi init --remove <名[,名]>`:把 provider 删干净 —— **一步到位**,不留尾巴。
+
+    删三样(只要存在):
+    * provider 段(含它的模型清单),不动别的 provider;
+    * 默认模型指着它 → `defaultProvider` / `defaultModel` 一并清掉(否则下次启动
+      就是“默认模型不存在”);
+    * `auth store` 里的密钥(想留 key 就只删定义?没有这条路 —— 留着 key 又没定义,
+      用户几乎总要再 `qi auth logout` 收尾,不如一次删完)。
+
+    只被**预置**补出来的 provider(哪个文件都没写)删不了 —— 它压根不在文件里,
+    会明确报“没找到定义”。
+    """
+    from .presets import get_preset
+
+    wanted = [item.strip() for item in names.split(",") if item.strip()]
+    if not wanted:
+        console.print("[red]要删哪个 provider?[/red] `qi init --remove <名字>`")
+        raise typer.Exit(code=2)
+
+    store = AuthStore()
+    removed: list[str] = []
+    cleared_default = False
+    for raw_name in wanted:
+        preset = get_preset(raw_name)
+        name = preset.provider if preset is not None else raw_name
+        target_file = models_file_for_provider(name)
+        if target_file is None:
+            raise_local = project_home() / MODELS_FILE_NAME
+            hint = (f"它只由预置补出来,不在任何 models.json 里"
+                    f"({raise_local if local else global_home() / MODELS_FILE_NAME} 里没有)")
+            console.print(f"[yellow]{escape(name)}: 没找到定义[/yellow] —— {escape(hint)}")
+            continue
+        data = load_models_file(target_file)
+        providers = data.get("providers")
+        if not isinstance(providers, dict) or name not in providers:
+            console.print(f"[yellow]{escape(name)}: {target_file} 里没有这一项[/yellow]")
+            continue
+        del providers[name]
+        _write_models(target_file.parent, target_file, data)
+        removed.append(name)
+
+        # 默认模型指着它 → 清掉(否则启动就“默认模型不存在”)
+        prov_scope = "project" if target_file.parent == project_home() else "user"
+        defaults = load_settings_by_scope().get(prov_scope)
+        if defaults is not None and defaults.defaultProvider == name:
+            unset_value(prov_scope, "defaultProvider")
+            unset_value(prov_scope, "defaultModel")
+            cleared_default = True
+            console.print(f"[dim]默认模型指向 {escape(name)},已一并清除[/dim]")
+
+        if store.remove(name):
+            console.print(f"[dim]已删除 auth store 里的 {escape(name)} 密钥[/dim]")
+        else:
+            console.print(f"[dim]auth store 里本来就没有 {escape(name)}[/dim]")
+
+    if not removed:
+        raise typer.Exit(code=1)
+    console.print(f"[green]✓[/green] 已删除 {len(removed)} 个 provider:"
+                  f"{escape(', '.join(removed))}")
+    if cleared_default:
+        console.print("下一步:挑一个默认模型 —— `qi init`(或 `qi config --set "
+                      "defaultProvider=<名> --set defaultModel=<模型>`)")
+
+
+def _catalog_base_url(provider: str, entry: dict) -> str:
+    """拉 `/models` 用哪个 base。
+
+    顺序:`models.json` 里写的 provider 级(`entry.baseUrl`)> 预置的 `catalog_base`
+    > 模型级端点(端点写在模型上的 provider,如 opencode)。`catalog_base` 是为
+    Anthropic 形态留的:基址不带 `/v1`(SDK 自己拼 `/v1/messages`),但目录在 `/v1/models`。
+    """
+    base = str(entry.get("baseUrl") or "").strip()
+    if base:
+        return base
+    from .presets import get_preset
+
+    preset = get_preset(provider)
+    if preset is not None and preset.catalog_base:
+        return preset.catalog_base
+    for model in entry.get("models") or []:
+        if isinstance(model, dict) and model.get("baseUrl"):
+            return str(model["baseUrl"]).strip()
+    return ""
+
+
 def _refresh_entry_models(provider: str, entry: dict, *,
                           timeout: float = 20.0) -> bool:
     """`GET {baseUrl}/models` 并进 `entry`,报告新增与本地多出的(**只加不删**),返回成败。
@@ -622,12 +708,34 @@ def _refresh_entry_models(provider: str, entry: dict, *,
         console.print(f"[red]{provider}: 拿不到 API key[/red] {rk.describe()} —— "
                       f"`qi auth login {provider}` 或设约定环境变量")
         return False
+    base = _catalog_base_url(provider, entry)
+    if not base:
+        console.print(f"[red]{provider}: 没有 baseUrl[/red] (provider 与模型都没写)")
+        return False
     try:
-        ids = fetch_model_ids(str(entry.get("baseUrl") or ""), rk.key, timeout=timeout)
+        ids = fetch_model_ids(base, rk.key, timeout=timeout)
     except CatalogError as exc:
         console.print(f"[red]{provider}: 拉取失败[/red] {escape(str(exc))}")
         return False
     added, stale = merge_model_ids(entry, ids)
+    if added:
+        # 端点在模型上的 provider(opencode):新加的模型也得带 api/baseUrl,
+        # 否则 resolve 会退到 openai-completions + 没有端点 —— 到手就是坏的。
+        from .presets import default_model_shape, get_preset
+
+        preset = get_preset(provider)
+        if preset is not None and preset.models:
+            api, base = default_model_shape(preset)
+            for model in entry.get("models") or []:
+                if isinstance(model, dict) and model.get("id") in added:
+                    if api and not model.get("api"):
+                        model["api"] = api
+                    if base and not model.get("baseUrl"):
+                        model["baseUrl"] = base
+            if len({m.api for m in preset.models if m.api}) > 1:
+                console.print("  [dim]新模型一律按 chat completions 形态写入;"
+                              "Anthropic 形态的(如 claude/minimax)去 models.json 改 "
+                              "api + baseUrl[/dim]")
     console.print(f"[green]{provider}[/green]: 接口返回 {len(ids)} 个模型;"
                   f"新增 {len(added)}"
                   + (":" + ", ".join(added) if added else ""))
@@ -691,11 +799,16 @@ def _refresh_models(names: str, *, all_providers: bool, local: bool,
             # (接口不返回 ctx/max),而一旦写进 models.json,预置兜底就不再插手这个 provider。
             from .presets import apply_presets, get_preset
 
-            if get_preset(name) is not None:
+            preset = get_preset(name)
+            if preset is not None:
                 apply_presets(data, [name])
             entry = data["providers"].setdefault(name, {})
-            for key, value in (("baseUrl", prov.baseUrl), ("api", prov.api or DEFAULT_API),
-                               ("apiKey", prov.apiKey)):
+            # 端点写在模型上的预置(opencode)不补 provider 级 api/baseUrl —— 补了
+            # 反而会把“按模型”写成“按 provider”,和预置自己的口径冲突。
+            fill = [("apiKey", prov.apiKey)]
+            if preset is None or preset.base_url is not None:
+                fill += [("baseUrl", prov.baseUrl), ("api", prov.api or DEFAULT_API)]
+            for key, value in fill:
                 if value and not entry.get(key):
                     entry[key] = value
         if not _refresh_entry_models(name, entry, timeout=timeout):
@@ -767,7 +880,14 @@ def doctor() -> None:
         for name_, prov in cfg.providers.items():
             rk = resolve_key(name_, prov.apiKey, store)
             label = name_ + ("  [dim](预置)[/dim]" if name_ in cfg.presetProviders else "")
-            table.add_row(label, prov.baseUrl or "(内置)", prov.api or DEFAULT_API,
+            urls = {m.baseUrl for m in prov.models if m.baseUrl}
+            base_col = (prov.baseUrl or (urls.pop() if len(urls) == 1 else
+                                         ("按模型" if urls else "(内置)")))
+            # api 同理:预置物化后写在模型上,这里反推(单一形态就显示那个)
+            apis = {m.api for m in prov.models if m.api}
+            api_col = (prov.api or (apis.pop() if len(apis) == 1 else
+                                    ("按模型" if apis else DEFAULT_API)))
+            table.add_row(label, base_col, api_col,
                           str(len(prov.models)),
                           f"{'[green]OK[/green]' if rk.ok else '[red]缺密钥[/red]'}  {rk.describe()}")
         console.print(table)
@@ -1604,11 +1724,28 @@ def _mask(key: str) -> str:
     return f"{key[:4]}...{key[-2:]}"
 
 
-def _provider_configured(entry: dict) -> bool:
-    """已配置 = 有 baseUrl 且至少一个模型(QwenPaw 的 [✓]/[✗] 标记)。"""
+def _provider_mark(provider: str, entry: dict) -> str:
+    """`[✓]` / `[✗ …]` 标记:这家的模型现在**能不能跑**。
+
+    三件事都得有,缺什么就写在标记里(默认 `✗` 太含糊,用户还得自己去查):
+
+    * **端点**:provider 级 `baseUrl`,或模型级(预置物化后端点都在模型上);
+    * **模型**:至少一个带 id 的条目;
+    * **密钥**:auth store / 约定环境变量 / `apiKey` 引用能解析出值(缺了请求必然 401)。
+    """
     models = [m for m in entry.get("models", []) or []
               if isinstance(m, dict) and m.get("id")]
-    return bool(entry.get("baseUrl")) and bool(models)
+    if not models:
+        return "✗ 没有模型"
+    if not (entry.get("baseUrl") or any(m.get("baseUrl") for m in models)):
+        return "✗ 没有端点"
+    rk = resolve_key(provider, str(entry.get("apiKey") or ""), AuthStore())
+    return "✓" if rk.ok else "✗ 缺密钥"
+
+
+def _provider_configured(provider: str, entry: dict) -> bool:
+    """能不能直接用(见 `_provider_mark`)。"""
+    return _provider_mark(provider, entry) == "✓"
 
 
 def _provider_labels(providers: dict) -> list[tuple[str, str]]:
@@ -1616,18 +1753,27 @@ def _provider_labels(providers: dict) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
     for name in sorted(providers):
         entry = providers[name]
-        mark = "✓" if _provider_configured(entry) else "✗"
-        out.append((f"{name} [{mark}]", name))
+        out.append((f"{name} [{_provider_mark(name, entry)}]", name))
     return out
 
 
-def _select_existing_provider(providers: dict, default_provider: str | None) -> str | None:
-    """选 provider;返回 None 表示要新建。
+#: 交互式选择器里「删除 provider」/「下一步」这两项的哨兵值(不是真的 provider 名)。
+_DELETE_CHOICE = "\x00delete-provider"
+_DELETE_LABEL = "－ 删除 provider"
+_DONE_CHOICE = "\x00done"
+_DONE_LABEL = "✓ 下一步"
 
-    三种都列在一张单子里:**已有**(models.json 里写着的,带 `[✓]`/`[✗]`)、
+
+def _select_existing_provider(providers: dict, default_provider: str | None) -> str | None:
+    """选 provider;返回 None = 新建,`_DELETE_CHOICE` = 删一个已有的,
+    `_DONE_CHOICE` = 不再增改(直接进最后一步选默认模型)。
+
+    四种都列在一张单子里:**已有**(models.json 里写着的,带 `[✓]`/`[✗ 缺什么]`)、
     **预置**(还没物化的,标 `[预置]` —— 选中即 `apply_presets` 写进 models.json)、
-    **新建**(永远排最后)。预置不列出来的话,`qi init` 对零配置的新用户就只剩
-    「手抄 baseUrl」一条路 —— 那正是预置表想省掉的事。
+    **新建**、**下一步**、**删除**(后两项只在已有 provider 时才出现;`下一步` 让"已经配好
+    只想来改默认模型"的人不必走一遍 provider 向导,`删除` 等价于 `qi init --remove`)。
+    预置不列出来的话,`qi init` 对零配置的新用户就只剩「手抄 baseUrl」一条路 ——
+    那正是预置表想省掉的事。
     """
     from .presets import preset_names
 
@@ -1635,28 +1781,43 @@ def _select_existing_provider(providers: dict, default_provider: str | None) -> 
     preset_only = [name for name in preset_names() if name not in providers]
     labels = ([p[0] for p in pairs]
               + [f"{name} [预置]" for name in preset_only]
-              + ["＋ 新建 provider"])
-    names: list[str | None] = [p[1] for p in pairs] + preset_only + [None]
-    default = names.index(default_provider) if default_provider in names else len(names) - 1
-    idx = prompt.select("选择 provider", labels, default=default)
+              + ["＋ 新建 provider"]
+              + ([_DELETE_LABEL, _DONE_LABEL] if providers else []))
+    names: list[str | None] = ([p[1] for p in pairs] + preset_only + [None]
+                              + ([_DELETE_CHOICE, _DONE_CHOICE] if providers else []))
+    # 默认高亮:有当前 provider 就落在它上面;否则第一项(`names` 末尾的 `None` 是「新建」,
+    # 不能拿 `None in names` 判断 —— 那会把指针定到「新建」上)
+    default = (names.index(default_provider)
+               if default_provider and default_provider in names else 0)
+    idx = prompt.select("配置 provider", labels, default=default)
     chosen = names[idx]
     return chosen if chosen is not None else None
 
 
-def _configure_provider(provider: str, entry: dict) -> None:
-    """按 QwenPaw 流程配置单个 provider:baseUrl → api → API key。"""
+def _configure_provider(provider: str, entry: dict, *, from_preset: bool = False) -> None:
+    """按 QwenPaw 流程配置单个 provider:baseUrl → api → API key。
+
+    `from_preset`=这家是预置物化的:预置的 api 只是**默认值**(模型可各自覆盖,
+    见 `config.resolve_model` 的覆盖链),不再在向导里替预置做决定 —— 要改去
+    models.json 改;模型级覆盖的入口在下一段(Add Models,混合形态才会问)。
+    """
     store = AuthStore()
     current_key = store.get(provider) or ""
 
     base_default = entry.get("baseUrl") or None
-    base = prompt.text("Base URL (OpenAI-compatible endpoint)", default=base_default, required=True)
-    if base:
-        entry["baseUrl"] = base
+    if base_default is not None or not from_preset:
+        base = prompt.text("Base URL (OpenAI-compatible endpoint)", default=base_default,
+                           required=True)
+        if base:
+            entry["baseUrl"] = base
 
-    api_options: list[str] = list(SUPPORTED_APIS)
-    api_current = entry.get("api") if entry.get("api") in SUPPORTED_APIS else DEFAULT_API
-    api_index = next((i for i, a in enumerate(api_options) if a == api_current), 0)
-    entry["api"] = SUPPORTED_APIS[prompt.select("API 类型", api_options, default=api_index)]
+    if not from_preset:
+        api_options: list[str] = list(SUPPORTED_APIS)
+        api_current = entry.get("api") if entry.get("api") in SUPPORTED_APIS else DEFAULT_API
+        api_index = next((i for i, a in enumerate(api_options) if a == api_current), 0)
+        entry["api"] = SUPPORTED_APIS[
+            prompt.select("默认 API 类型 (模型可在 models.json 各自覆盖)",
+                          api_options, default=api_index)]
 
     # 凭证:可见输入;已有则回车保留(QwenPaw 的 [set] 语义)。
     # apiKey 是环境变量引用(`$DEEPSEEK_API_KEY`,预置的默认形态)时允许回车跳过 ——
@@ -1696,13 +1857,38 @@ def _add_models_interactive(provider: str, entry: dict) -> None:
     """
     models: list = entry.setdefault("models", [])
 
+    def default_api() -> str:
+        return entry.get("api") or DEFAULT_API
+
+    def is_mixed() -> bool:
+        """这家 provider 的模型是**异构**的吗(有模型带自己的 api 覆盖)?
+
+        只有异构的才在加模型时问 API 类型 —— 单形态 provider(绝大多数)再问一句
+        就是哆嗦;而 api 一变,端点常常跟着变(mimo 的 anthropic 兼容端点、
+        opencode 的 `/zen` 形态都是 `api` 与 `baseUrl` **成对**的),所以追问。
+        """
+        return any(isinstance(m, dict) and m.get("api") and m["api"] != default_api()
+                   for m in models)
+
+    def suggested_base(api: str) -> str | None:
+        """新模型的 baseUrl 默认值:同 API 形态的已有模型优先,再退到 provider 级。"""
+        for m in models:
+            if isinstance(m, dict) and m.get("baseUrl") and (m.get("api") or default_api()) == api:
+                return str(m["baseUrl"])
+        return entry.get("baseUrl") or _catalog_base_url(provider, entry) or None
+
     def show() -> None:
         console.print("\n[bold]--- Add Models ---[/bold]")
         if models:
             console.print(f"Current models for {provider}:")
             for m in models:
                 if isinstance(m, dict) and m.get("id"):
-                    console.print(f"  - {m.get('name') or m['id']} ({m['id']})")
+                    extra = ""
+                    if m.get("api") and m["api"] != default_api():
+                        extra += f", api: {m['api']}"
+                    if m.get("baseUrl") and m["baseUrl"] != entry.get("baseUrl"):
+                        extra += f" @ {m['baseUrl']}"
+                    console.print(f"  - {m.get('name') or m['id']} ({m['id']}{extra})")
         else:
             console.print(f"No models configured for {provider}.")
 
@@ -1722,8 +1908,34 @@ def _add_models_interactive(provider: str, entry: dict) -> None:
         reasoning = prompt.confirm("Supports reasoning (扩展思考)?", default=False)
         ctx = prompt.integer("contextWindow", DEFAULT_CONTEXT_WINDOW)
         mx = prompt.integer("maxTokens", DEFAULT_MAX_TOKENS)
-        new = {"id": mid, "name": name, "reasoning": reasoning,
-               "contextWindow": ctx, "maxTokens": mx}
+        new: dict = {"id": mid, "name": name, "reasoning": reasoning,
+                     "contextWindow": ctx, "maxTokens": mx}
+        if is_mixed():
+            # 异构 provider 才问;回车 = 跟随默认,不写进条目(保持最小)
+            options = [str(item) for item in SUPPORTED_APIS]
+            fallback = default_api()
+            idx = next((i for i, a in enumerate(options) if a == fallback), 0)
+            chosen = SUPPORTED_APIS[prompt.select("API 类型 (回车=跟随 provider 默认)",
+                                                  options, default=idx)]
+            if chosen != fallback:
+                new["api"] = chosen
+                # api 变了 → 端点常常成对地变(mimo anthropic / opencode `/inference`)
+                base = prompt.text("Base URL for this model", default=suggested_base(chosen),
+                                   required=not entry.get("baseUrl"))
+                if base and base != entry.get("baseUrl"):
+                    new["baseUrl"] = base
+            elif not entry.get("baseUrl"):
+                # provider 没有级联端点(端点写在模型上)→ 新模型必须带一个
+                base = prompt.text("Base URL for this model", default=suggested_base(chosen),
+                                   required=True)
+                if base:
+                    new["baseUrl"] = base
+        elif not entry.get("baseUrl"):
+            # 单形态但端点也在模型上(罕见):不能静默漏掉 baseUrl
+            base = prompt.text("Base URL for this model", default=suggested_base(default_api()),
+                               required=True)
+            if base:
+                new["baseUrl"] = base
         for i, m in enumerate(models):
             if isinstance(m, dict) and m.get("id") == mid:
                 models[i] = {**m, **new}
@@ -1747,7 +1959,7 @@ def _activate_llm(providers: dict, current: tuple[str | None, str | None]) -> tu
         raise typer.Exit(code=1)
 
     def _prov_label(n: str) -> str:
-        mark = "✓" if _provider_configured(providers[n]) else "✗"
+        mark = _provider_mark(n, providers[n])
         return f"{n} [{mark}]"
 
     cur_prov, cur_model = current
@@ -1818,6 +2030,24 @@ def _init_interactive(local: bool) -> None:
                   "选中即写进 models.json,之后归你改[/dim]")
     while True:
         provider = _select_existing_provider(providers, current[0])
+        if provider == _DONE_CHOICE:
+            console.print("[dim]跳过 provider 配置,直接选默认模型[/dim]")
+            break
+        if provider == _DELETE_CHOICE:
+            names = sorted(providers)
+            label = prompt.select("删除哪个 provider", names, default=0)
+            target = names[label]
+            if not prompt.confirm(f"删除 {target}?(模型清单和密钥一起删,"
+                                  f"默认模型指向它会一并清除)", default=False):
+                continue
+            try:
+                _remove_providers(target, local=local)
+            except typer.Exit:                    # 删不掉(不该发生)—— 回到选择器,别中断 init
+                pass
+            # 文件变了,重新装载(把删掉的从内存里也去掉)
+            providers.clear()
+            providers.update(load_models_file(target_file).get("providers") or {})
+            continue
         if provider is None:
             provider = prompt.text("Provider name", required=True)
         # 选中的是预置(或新建时敲了个预置名)→ 先物化:baseUrl / apiKey 引用 / 模型
@@ -1826,10 +2056,8 @@ def _init_interactive(local: bool) -> None:
         if preset is not None and preset.provider not in providers:
             apply_presets(data, [preset.provider])
             provider = preset.provider
-            console.print(f"[dim]已套用预置 {preset.provider}({preset.label});"
-                          f"下面回车即保留预置值[/dim]")
         entry = providers.setdefault(provider, {})
-        _configure_provider(provider, entry)
+        _configure_provider(provider, entry, from_preset=preset is not None)
         _add_models_interactive(provider, entry)
         if not prompt.confirm("Configure another provider?", default=False):
             break
@@ -1866,7 +2094,6 @@ def _init_noninteractive(*, provider: str | None, model: str | None, base_url: s
         provider = preset.provider
         if provider not in providers:
             apply_presets(data, [provider])
-            console.print(f"[dim]已套用预置 {provider}({preset.label})[/dim]")
 
     entry: dict = dict(providers.get(provider) or {})
     if base_url:
@@ -1950,6 +2177,8 @@ def init(
                                        help="从 provider 的 /models 接口拉模型列表写回(逗号分隔)"),
     refresh_all: bool = typer.Option(False, "--refresh-all",
                                      help="刷新所有已配置(有凭证)的 provider"),
+    remove: str | None = typer.Option(None, "--remove",
+                                      help="删掉 provider(逗号分隔;模型条目与密钥一起删)"),
 ) -> None:
     """引导默认模型:Provider Config → Add Models → Activate LLM,写 models.json + auth.json。
 
@@ -1961,6 +2190,9 @@ def init(
     """
     if list_presets:
         _print_presets()
+        return
+    if remove:
+        _remove_providers(remove, local=local)
         return
     if refresh or refresh_all:
         _refresh_models(refresh or "", all_providers=refresh_all, local=local)
@@ -1980,13 +2212,22 @@ def _print_presets() -> None:
     """`qi init --list-presets`:把预置表打印成人能看的样子。"""
     from .presets import PRESETS
 
-    for name in sorted(PRESETS):
+    from .presets import preset_names
+
+    for name in preset_names():
         preset = PRESETS[name]
         console.print(f"[bold]{name}[/bold]  [dim]{preset.label}[/dim]")
-        console.print(f"  baseUrl  {preset.base_url}")
+        console.print("  baseUrl  " + (preset.base_url or "(按模型,见下)"))
         console.print(f"  apiKey   ${preset.api_key_env}(或 `qi auth login {preset.provider}`)")
+        if preset.api is not None and preset.api != DEFAULT_API:
+            console.print(f"  api      {preset.api}(provider 默认;模型可覆盖)")
         console.print("  模型     " + ", ".join(
-            f"{m.id}(ctx {m.context_window:,} / max {m.max_output:,})"
+            m.id
+            # 模型级覆盖标出来(api 与 provider 默认不同 / 端点不同);
+            # `[anthropic-messages]` 会被 rich 当 markup 吃掉 —— 要 escape
+            + (escape(f"[{m.api}]") if m.api and m.api != preset.api else "")
+            + (f"@{m.base_url}" if m.base_url and m.base_url != preset.base_url else "")
+            + f"(ctx {m.context_window:,} / max {m.max_output:,})"
             for m in preset.models))
         if preset.note:
             console.print(f"  [yellow]注意[/yellow]  {preset.note}")

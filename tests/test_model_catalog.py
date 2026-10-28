@@ -97,6 +97,7 @@ def _patch_urlopen(monkeypatch, *, body: bytes | None = None, error: Exception |
     def fake_urlopen(request, timeout=None):
         seen["url"] = request.full_url
         seen["auth"] = request.get_header("Authorization")
+        seen["ua"] = request.get_header("User-agent")
         seen["timeout"] = timeout
         if error is not None:
             raise error
@@ -115,11 +116,26 @@ def test_fetch_model_ids_sends_bearer_and_parses(monkeypatch):
     assert seen["timeout"] == 3.0
 
 
+def test_fetch_model_ids_never_sends_the_default_urllib_user_agent(monkeypatch):
+    """回归:urllib 默认 UA(`Python-urllib/3.x`)会被 Cloudflare 的 WAF 拦成
+    `Error 1010: Access denied` 的 403 —— opencode.ai 实测如此,报出来的
+    "API key 不对或没权限" 完全是误导。请求必须自带 `qi/<版本>`。"""
+    seen = _patch_urlopen(monkeypatch, body=b'{"data": [{"id": "m"}]}')
+    fetch_model_ids("https://opencode.ai/inference/go/v1", "sk-x")
+    assert seen["ua"] == model_catalog.USER_AGENT
+    assert seen["ua"].startswith("qi/") and "urllib" not in seen["ua"].lower()
+
+
 def test_fetch_model_ids_reports_http_and_network_errors(monkeypatch):
     _patch_urlopen(monkeypatch, error=urllib.error.HTTPError(
         "u", 401, "Unauthorized", {}, None))                      # type: ignore[arg-type]
     with pytest.raises(CatalogError, match="401"):
         fetch_model_ids("https://api.deepseek.com", "bad")
+
+    _patch_urlopen(monkeypatch, error=urllib.error.HTTPError(
+        "u", 403, "Forbidden", {}, None))                         # type: ignore[arg-type]
+    with pytest.raises(CatalogError, match="WAF"):
+        fetch_model_ids("https://api.deepseek.com", "sk-x")
 
     _patch_urlopen(monkeypatch, error=urllib.error.URLError("dns"))
     with pytest.raises(CatalogError, match="连不上"):
@@ -167,8 +183,9 @@ def test_models_refresh_materializes_preset_and_merges_live_ids(tmp_path, monkey
 
     data = json.loads((home / "models.json").read_text(encoding="utf-8"))
     entry = data["providers"]["deepseek"]
-    assert entry["baseUrl"] == "https://api.deepseek.com"          # 预置的定义被写全
     assert entry["apiKey"] == "$DEEPSEEK_API_KEY"
+    assert "baseUrl" not in entry                                  # 端点写在每个模型上
+    assert all(m["baseUrl"] == "https://api.deepseek.com" for m in entry["models"])
     ids = [m["id"] for m in entry["models"]]
     assert ids[:2] == ["deepseek-flash", "deepseek-v4-pro"]        # 种子(带 ctx/max)
     assert entry["models"][0]["contextWindow"] == 1_000_000
@@ -177,6 +194,49 @@ def test_models_refresh_materializes_preset_and_merges_live_ids(tmp_path, monkey
     # 再刷一次:不该重复添加
     res = runner.invoke(app, ["init", "--refresh", "deepseek"])
     assert res.exit_code == 0 and "新增 0" in res.output
+
+
+def test_models_refresh_fills_api_and_base_url_for_opencode(tmp_path, monkeypatch):
+    """端点写在**模型**上的 provider(opencode-go):刷新回来的新模型也得带
+    api/baseUrl,否则 resolve 会退到 openai-completions + 没有端点,到手就是坏的。"""
+    from qi_agent.cli import app
+
+    home = _cli_env(tmp_path, monkeypatch)
+    AuthStore().set_key("opencode-go", "oc_sk_x")
+    monkeypatch.setattr("qi_agent.model_catalog.fetch_model_ids",
+                        lambda base_url, api_key, timeout=None: [
+                            "deepseek-v4.1-flash", "kimi-k3", "brand-new-model"])
+
+    res = runner.invoke(app, ["init", "--refresh", "opencode-go"])
+    assert res.exit_code == 0, res.output
+    entry = json.loads((home / "models.json").read_text(encoding="utf-8"))[
+        "providers"]["opencode-go"]
+    assert "baseUrl" not in entry and "api" not in entry        # provider 段仍然只有 key
+    added = next(m for m in entry["models"] if m["id"] == "brand-new-model")
+    assert added["api"] == "openai-completions"
+    assert added["baseUrl"] == "https://opencode.ai/inference/go/v1"
+    assert "Anthropic 形态的" in res.output                     # 混合形态的提示
+
+
+def test_models_refresh_uses_the_preset_catalog_base(tmp_path, monkeypatch):
+    """Anthropic 形态的基址不带 `/v1`(SDK 自己拼 `/v1/messages`),但目录在
+    `/v1/models` —— `kimi-coding` 的 `/coding/models` 实测是 404。"""
+    from qi_agent.cli import app
+
+    home = _cli_env(tmp_path, monkeypatch)
+    AuthStore().set_key("kimi-coding", "kc-x")
+    seen: list[str] = []
+    monkeypatch.setattr("qi_agent.model_catalog.fetch_model_ids",
+                        lambda base_url, api_key, timeout=None: seen.append(base_url) or ["k3"])
+
+    res = runner.invoke(app, ["init", "--refresh", "kimi-coding"])
+    assert res.exit_code == 0, res.output
+    assert seen == ["https://api.kimi.com/coding/v1"]
+    entry = json.loads((home / "models.json").read_text(encoding="utf-8"))[
+        "providers"]["kimi-coding"]
+    first = entry["models"][0]
+    assert first["api"] == "anthropic-messages"
+    assert first["baseUrl"] == "https://api.kimi.com/coding"        # 聊天基址仍然不带 /v1
 
 
 def test_models_refresh_needs_a_key_and_does_not_write(tmp_path, monkeypatch):
@@ -301,6 +361,7 @@ def test_models_refresh_materializes_a_preset_only_provider_at_user_level(tmp_pa
     assert res.exit_code == 0, res.output
     data = json.loads((home / "models.json").read_text(encoding="utf-8"))
     entry = data["providers"]["moonshot"]
-    assert entry["baseUrl"] == "https://api.moonshot.cn/v1"
+    assert "baseUrl" not in entry
+    assert all(m["baseUrl"] == "https://api.moonshot.ai/v1" for m in entry["models"])
     assert [m["id"] for m in entry["models"]] == ["kimi-k3", "kimi-k2.7-code", "kimi-new"]
     assert entry["models"][0]["maxTokens"] == 131_072     # 种子里核过的数还在

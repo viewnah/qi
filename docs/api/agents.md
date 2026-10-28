@@ -153,7 +153,7 @@ curl -X DELETE http://127.0.0.1:3456/api/agents \
 
 ### 删完要不要重扫
 
-不用。技能有 `WebState.refresh_skills()`,是因为 `QiRuntime` 按 cwd 缓存 `top_skills`;
+不用。技能有 `WebState.refresh_skills()`,是因为 `QiRuntime` 在构造时读一次 `top_skills`;
 **角色不进那个缓存** —— 每次派单都现 `discover()`(`qi_agents.subagent` / `qi_agents.__init__`),
 所以"读模型立刻少一条"就等于"下一次调用立刻看不见它"。
 

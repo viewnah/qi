@@ -50,7 +50,7 @@ curl -s http://127.0.0.1:3456/api/config | jq '{default_model, checks, providers
 
 | 名 | 类型 | 说明 |
 | --- | --- | --- |
-| `session` | `string` | 给了就**先绑定它** —— 当前值要反映那条会话的还原结果,而不是 runtime 上残留的上一轮状态(一个 runtime 服务多个会话)。不存在 → 404 |
+| `session` | `string` | 给了就**先绑定它** —— 当前值要反映那条会话的还原结果,而不是该 runtime 上残留的上一轮状态(每个会话一个 runtime)。不存在 → 404 |
 
 ### 响应 `ModelCatalog` (200)
 

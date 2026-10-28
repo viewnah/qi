@@ -3,6 +3,9 @@
 qi-lab 是以 **[qi-coding-agent](https://pypi.org/project/qi-coding-agent/)** 为运行时的 Web UI / 产品壳:
 HTTP 宿主(REST + SSE)+ AG-UI 桥 + React 界面,并内置 MCP、角色、A2A、商店、知识库、应用助手等扩展。
 
+- **多会话并行**:每个活跃会话一个 `QiRuntime`,切换会话不打断正在跑的会话;侧栏逐行显示 running。
+- **内置扩展随 wheel 分发**:不需要单独安装,外部已声明的同名扩展会优先。
+
 从源码运行(会自动从 PyPI 安装 `qi-coding-agent` 运行时):
 
 ```bash

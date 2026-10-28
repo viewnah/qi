@@ -73,6 +73,8 @@ DONE_SUMMARY_LINES = 3         # 时间线完成块的输出摘要行数(headles
 #: 时间线全局:最近出过标题的 run —— 同一 agent 连续内容不重复出标题;
 #: 切换(或新的工具调用开一条新时间线)时,下一个内容必出一个新标题块。
 _LAST_TITLE = ""
+#: 多会话:时间线标题按会话记;空 key(老测试 / 无 session_env)继续用 `_LAST_TITLE`。
+_LAST_TITLES: dict[str, str] = {}
 PER_TASK_CAP = 50_000          # 单个子结果进文本前截断(与工具输出同档)
 
 
@@ -118,15 +120,42 @@ class _RunInfo:
     on_update: Any = None
 
 
-REGISTRY: dict[str, _RunInfo] = {}    # 唯一 run 名 → 登记项(run 结束即注销)
+#: session id → (唯一 run 名 → 登记项)。一个 runtime 只服务一个会话,但 qi-agents
+#: 是模块级单例:多个会话并行时不能共用一张全局表。
+REGISTRY: dict[str, dict[str, _RunInfo]] = {}
 
 
-def _unique_name(base: str) -> str:
+def _session_key(ctx: Any) -> str:
+    env = getattr(ctx, "session_env", None) or {}
+    return str(env.get("QI_SESSION_ID") or env.get("QI_SESSION_FILE") or "")
+
+
+def _registry_for(ctx: Any) -> dict[str, _RunInfo]:
+    return REGISTRY.setdefault(_session_key(ctx), {})
+
+
+def _lookup_registry(ctx: Any) -> dict[str, _RunInfo]:
+    return REGISTRY.get(_session_key(ctx), {})
+
+
+def _pop_run(ctx: Any, name: str) -> None:
+    key = _session_key(ctx)
+    registry = REGISTRY.get(key)
+    if registry is None:
+        return
+    registry.pop(name, None)
+    if not registry:
+        REGISTRY.pop(key, None)
+        _LAST_TITLES.pop(key, None)
+
+
+def _unique_name(base: str, ctx: Any) -> str:
     """同名并发不撞:占用时加 `#2`、`#3` …(登记以**运行实例**为单位,不以角色名)。"""
-    if base not in REGISTRY:
+    registry = _lookup_registry(ctx)
+    if base not in registry:
         return base
     n = 2
-    while f"{base}#{n}" in REGISTRY:
+    while f"{base}#{n}" in registry:
         n += 1
     return f"{base}#{n}"
 
@@ -225,7 +254,8 @@ async def _role_mcp_names(api: Any, role: Role, ctx: Any,
         cwd=_cwd_of(ctx),
         # **保留 None**：qi-mcp 据此区分“没写 tools:”（自动接私有 server）与“写了但不含 MCP”
         role_tools=list(role_tools) if role_tools is not None else None,
-        on_note=(ui.notify if ui is not None else None))
+        on_note=(ui.notify if ui is not None else None),
+        session_key=_session_key(ctx))
 
 
 def _apply_disallowed(tools: list[str] | None, disallowed: list[str] | None,
@@ -319,11 +349,11 @@ async def _run_remote(role: Role, task: str, ctx: Any, *, depth: int,
     * `input-required`(远端等审批)**算成功**:它把话带回来了,只是没执行 ——
       正文里写清回传方式,主会话手里有 qi-a2a 的 `a2a` 工具可以接着 resume。
     """
-    name = _unique_name(role.name)
+    name = _unique_name(role.name, ctx)
     info = _RunInfo(depth=depth, tools=[], budget=_Budget(0), holder=holder, name=name,
                     on_update=on_update if on_update is not None else
                     getattr(ctx, "on_update", None))
-    REGISTRY[name] = info
+    _registry_for(ctx)[name] = info
     started = time.monotonic()
     stack = None
     if holder:
@@ -369,7 +399,7 @@ async def _run_remote(role: Role, task: str, ctx: Any, *, depth: int,
             on_progress=_activity,
             signal=_abort_signal(ctx),
         )
-    REGISTRY.pop(name, None)
+    _pop_run(ctx, name)
 
     if run is None:
         result = {"agent": role.name, "task": task, "ok": False, "depth": depth,
@@ -468,13 +498,13 @@ async def _run_one(api: Any, role: Role, task: str, ctx: Any,
     tools = _apply_disallowed(tools, role.disallowed_tools, api)
     # 登记运行实例:唯一名进 spec(`ToolContext.agent_name` 就是它),
     # 发起方凭 `_RunInfo` 回收 children(见模块文档)。
-    name = _unique_name(role.name)
+    name = _unique_name(role.name, ctx)
     info = _RunInfo(depth=depth, tools=tools, budget=budget,
                     holder=holder, name=name,
                     # 子层继承用的推送面:本层没给就退回 ctx 的(老的调用方形状不变)
                     on_update=on_update if on_update is not None
                     else getattr(ctx, "on_update", None))
-    REGISTRY[name] = info
+    _registry_for(ctx)[name] = info
     spec = {"system_prompt": role.prompt or f"你是 {role.name}。",
             "name": name, "tools": tools, "model": role.model}
     # 中断信号:`ctx` 在工具路径上是 `ToolContext`(字段 `abort`)、在 handler 路径上是
@@ -494,15 +524,20 @@ async def _run_one(api: Any, role: Role, task: str, ctx: Any,
         """往时间线推一个内容块:agent 切换时先出黄标题块(名字只标一次),
         内容按深度缩进跟随 —— 不再把 `[run名]` 塞在每一行前面。"""
         global _LAST_TITLE
+        key = _session_key(ctx)
+        last = _LAST_TITLES.get(key, "") if key else _LAST_TITLE
         try:
             ui = getattr(ctx, "ui", None)
             notify = getattr(ui, "notify", None)
             if not callable(notify):
                 return
             indent = "  " * max(0, depth - 1)
-            if _LAST_TITLE != name:
+            if last != name:
                 notify(f"{indent}━━━ 委派 → {name} ━━━━━━━", level="warning")
-                _LAST_TITLE = name
+                if key:
+                    _LAST_TITLES[key] = name
+                else:
+                    _LAST_TITLE = name
             notify(indent + line, level=level)
         except Exception:  # noqa: BLE001 时间线是旁路:失败不该带倒子运行
             pass
@@ -686,7 +721,7 @@ async def _run_one(api: Any, role: Role, task: str, ctx: Any,
     except Exception as exc:  # noqa: BLE001 子运行失败 → 结果里如实说
         ok, error, output = False, f"{type(exc).__name__}: {exc}", None
     finally:
-        REGISTRY.pop(name, None)
+        _pop_run(ctx, name)
     result: dict = {"agent": role.name, "task": task, "ok": ok, "depth": depth}
     if ok:
         if not (output or "").strip():
@@ -784,14 +819,18 @@ def build_tool(api: Any) -> Tool:
 
         # 一次工具调用 = 一条新时间线:下一个内容必出黄标题块(嵌套子调用自然接上)
         global _LAST_TITLE
-        _LAST_TITLE = ""
+        key = _session_key(ctx)
+        if key:
+            _LAST_TITLES[key] = ""
+        else:
+            _LAST_TITLE = ""
 
         # 身份闸(fail-closed,放最前):深度与“继承父”只认 RunRegistry。
         # 主会话(core 的 CORE_AGENT_NAME)不在表里 → 走根分支;其余查不到的一律拒绝 ——
         # 宁可让别的扩展的子运行拿到一句可读的拒绝,也不给“表漏了”留一个 depth=0 的后门
         # (depth=0 意味着新预算 + 主会话集合,恰是失控的方向)。
         agent_name = str(getattr(ctx, "agent_name", "") or "")
-        me = REGISTRY.get(agent_name)
+        me = _lookup_registry(ctx).get(agent_name)
         if me is None and not _is_root(agent_name):
             return (f"无法确认调用者身份(agent_name={agent_name!r} 不在运行登记表里),"
                     f"已按 fail-closed 拒绝 —— 只有主会话与本扩展起的子运行能用 subagent")

@@ -29,10 +29,13 @@ import { SidebarSection } from "./SidebarSection";
 import { relativeLabel, stampOf } from "../state/projects";
 import type { SessionSummary } from "../api/types";
 
+const NO_RUNNING: Set<string> = new Set();
+
 export function Rail({
   sessions,
   current,
   busy,
+  runningIds = NO_RUNNING,
   now,
   onSelect,
   onCreate,
@@ -51,6 +54,8 @@ export function Rail({
   sessions: SessionSummary[];
   current: string | null;
   busy: boolean;
+  /** 本地已知在跑的会话(后端 sessions 刷新有延迟时先显示 spinner)。 */
+  runningIds?: Set<string>;
   /** 当前 epoch 毫秒(行尾相对时间由它算出;由 App 定时推进)。 */
   now: number;
   onSelect: (id: string) => void;
@@ -144,7 +149,7 @@ export function Rail({
             }}
           >
             <span className="rail__slot">
-              {session.running ? (
+              {(session.running || runningIds.has(session.id)) ? (
                 <i className="rail__dot" title="运行中" />
               ) : null}
             </span>

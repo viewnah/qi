@@ -69,6 +69,9 @@ import { applyTheme, readTheme } from "./theme/theme";
 
 const PLACEHOLDER = "描述你想做的事。Enter 发送,Shift+Enter 换行";
 
+/** 未落盘的新会话页在 turns 里的 key。 */
+const DRAFT_KEY = "__draft__";
+
 /** 行尾相对时间的刷新周期。分钟级标签不需要秒级精度。 */
 const CLOCK_MS = 30_000;
 
@@ -175,7 +178,7 @@ export function App() {
    * 求和会静默少算。所以它在"打开会话"与"一轮结束"两个时点从 `/api/sessions/{id}`
    * 重取,不参与逐帧的流式状态。
    */
-  const [sessionUsage, setSessionUsage] = useState<UsageSummary | null>(null);
+  const [sessionUsages, setSessionUsages] = useState<Record<string, UsageSummary | null>>({});
   /**
    * 手动钉住的智能体:`null` = auto(默认,每轮由分派器决定)。
    *
@@ -198,7 +201,7 @@ export function App() {
   /** 一次模型/级别切换正在往返(禁重复点,免得两次请求互相覆盖)。 */
   const [modelBusy, setModelBusy] = useState(false);
   const [title, setTitle] = useState("");
-  const [turn, setTurn] = useState<TurnState>(emptyTurn);
+  const [turns, setTurns] = useState<Record<string, TurnState>>({});
   const [draft, setDraft] = useState("");
   /** 设置**浮层**开着没有(§18.17:它不再是"一个页面",而是盖在工作台上的面板)。 */
   const [view, setView] = useState<"work" | "settings">("work");
@@ -228,7 +231,12 @@ export function App() {
   /** 首屏"按 URL 打开会话"只做一次(列表可能在后续刷新里变)。 */
   const bootDone = useRef(false);
 
-  const abortRef = useRef<(() => void) | null>(null);
+  /**
+   * 每个会话自己的 run。key = session id(草稿页是 DRAFT_KEY)。
+   * 多会话并行时**不能**只留一个 abortRef —— 发 B 会 abort 掉 A。
+   */
+  const runsRef = useRef<Map<string, { abort: () => void; token: number }>>(new Map());
+  const runSeqRef = useRef(0);
   /**
    * 自动命名轮询的世代号。新的一轮开始时递增,旧的轮询看到世代不等就退出 ——
    * 避免多轮重叠时把旧请求的结果写回列表。
@@ -239,6 +247,25 @@ export function App() {
   /** 导入会话用的隐藏文件选择器:`/import` 指令点它。 */
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  const turnKey = sessionId ?? DRAFT_KEY;
+  const turn = turns[turnKey] ?? emptyTurn;
+  const sessionUsage = sessionUsages[turnKey] ?? null;
+
+  const updateTurn = useCallback(
+    (key: string, updater: (prev: TurnState) => TurnState) => {
+      setTurns((prev) => ({ ...prev, [key]: updater(prev[key] ?? emptyTurn) }));
+    },
+    [],
+  );
+  const setTurn = useCallback(
+    (updater: (prev: TurnState) => TurnState) => updateTurn(turnKey, updater),
+    [turnKey, updateTurn],
+  );
+  const updateUsage = useCallback((key: string, usage: UsageSummary | null) => {
+    setSessionUsages((prev) => ({ ...prev, [key]: usage }));
+  }, []);
+
   const cwd = turn.host.cwd ?? meta?.default_cwd ?? "";
 
   // 主题只在开机应用一次:Web 端没有切换入口(见 theme.ts),值来自 localStorage / auto。
@@ -255,7 +282,7 @@ export function App() {
   /** 本地反馈行(不经过模型、不进上下文):导出的成功/失败、导入的失败都走它。 */
   const note = useCallback((label: string, detail: string) => {
     setTurn((prev) => withNote(prev, label, detail));
-  }, []);
+  }, [setTurn]);
 
   const refreshSessions = useCallback(async () => {
     try {
@@ -315,7 +342,10 @@ export function App() {
         setFatal(describe(err));
       }
     })();
-    return () => abortRef.current?.();
+    return () => {
+      for (const { abort } of runsRef.current.values()) abort();
+      runsRef.current.clear();
+    };
   }, [refreshSessions]);
 
   useEffect(() => {
@@ -388,7 +418,7 @@ export function App() {
         setModelBusy(false);
       }
     },
-    [sessionId, describe],
+    [sessionId, describe, setTurn],
   );
 
   const onPickModel = useCallback(
@@ -440,19 +470,27 @@ export function App() {
       // 所以它只在"打开会话"与"一轮结束"两个时点刷新。
       // `?? null` 是给**老宿主**的:它的明细里没有 `usage` 字段,直接透传下去
       // 会让 Dock 读到 undefined 而抛错(整页白) —— 与可选端点同一条降级规矩。
-      setSessionUsage(detail.usage ?? null);
-      setTurn({
-        ...emptyTurn,
-        rows: fromEntries(detail.entries),
-        // 历史里**最后一轮**的用量:让遥测抽屉的"上下文"在刷新/重开之后也有数
-        // (`qi.usage` 那个流事件不会重放)。老会话没记过 → 保持空。
-        usage: lastUsage(detail.entries) ?? {},
-        phase: "idle",
+      updateUsage(detail.id, detail.usage ?? null);
+      setTurns((prev) => {
+        const existing = prev[detail.id];
+        // 正在跑的会话保留 live state;否则用磁盘上的历史重建(切走再切回来能看到新落盘)。
+        if (existing?.phase === "running") return prev;
+        return {
+          ...prev,
+          [detail.id]: {
+            ...emptyTurn,
+            rows: fromEntries(detail.entries),
+            // 历史里**最后一轮**的用量:让遥测抽屉的"上下文"在刷新/重开之后也有数
+            // (`qi.usage` 那个流事件不会重放)。老会话没记过 → 保持空。
+            usage: lastUsage(detail.entries) ?? {},
+            phase: "idle",
+          },
+        };
       });
     } catch (err) {
       setFatal(describe(err));
     }
-  }, []);
+  }, [updateUsage]);
 
   /**
    * 导出会话 JSONL:后端原样发文件,文件名也由后端给(`Content-Disposition`)。
@@ -502,15 +540,23 @@ export function App() {
     [note, openSession, refreshSessions],
   );
 
-  /** 真正发起一轮:单次 POST,响应就是流。 */
+  /** 真正发起一轮:单次 POST,响应就是流。每个会话各自一条流、各自一个 abort。 */
   const sendTo = useCallback(
     (id: string, text: string) => {
-      abortRef.current?.();
-      setTurn((prev) => withUserMessage(prev, text));
-      abortRef.current = run(id, text, {
-        onEvent: (ev) => setTurn((prev) => reduce(prev, ev)),
+      const previous = runsRef.current.get(id);
+      runsRef.current.delete(id);
+      previous?.abort();
+      const token = ++runSeqRef.current;
+      const current = () => runsRef.current.get(id)?.token === token;
+      updateTurn(id, (prev) => withUserMessage(prev, text));
+      const abort = run(id, text, {
+        onEvent: (ev) => {
+          if (current()) updateTurn(id, (prev) => reduce(prev, ev));
+        },
         onClose: () => {
-          setTurn((prev) => ({
+          if (!current()) return;          // 已被同会话的新一轮 / stop 取代
+          runsRef.current.delete(id);
+          updateTurn(id, (prev) => ({
             ...prev,
             phase: prev.phase === "running" ? "ok" : prev.phase,
           }));
@@ -525,13 +571,15 @@ export function App() {
           // 卡片下方那行统计因此在每轮结束后跟一步。
           void api
             .session(id)
-            .then((detail) => setSessionUsage(detail.usage ?? null))
+            .then((detail) => updateUsage(id, detail.usage ?? null))
             .catch(() => {
               // 拿不到就保持上一轮的数字:宁可旧一点,也不要变成空白。
             });
         },
         onError: (err) => {
-          setTurn((prev) =>
+          if (!current()) return;
+          runsRef.current.delete(id);
+          updateTurn(id, (prev) =>
             reduce(prev, { type: "RUN_ERROR", message: describe(err) }),
           );
         },
@@ -539,8 +587,11 @@ export function App() {
       // 第 4 个参数是**选项**:手动钉住时每轮都带过去(后端据此直派,source 记成 "manual")。
       // kbIds 只影响本轮的知识库范围；空数组 = 用 qi-kb 的全局/项目绑定。
       { agent, kbIds });
+      runsRef.current.set(id, { abort, token });
+      // 让左栏尽快显示 running(后端 begin 在响应开始前已经发生)。
+      void refreshSessions();
     },
-    [agent, kbIds, refreshSessions, refreshUntilTitled],
+    [agent, kbIds, refreshSessions, refreshUntilTitled, updateTurn, updateUsage],
   );
 
   /** 首屏会话列表到了之后,按 URL 打开它(**这就是"刷新回到当前会话"**)。 */
@@ -574,7 +625,7 @@ export function App() {
       const wanted = parseSessionHash(window.location.hash);
       if (wanted === null) {
         setSessionId(null);
-        setTurn(emptyTurn);
+        updateTurn(DRAFT_KEY, () => emptyTurn);
         return;
       }
       if (wanted === sessionId) return;
@@ -589,7 +640,7 @@ export function App() {
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
-  }, [openSession, sessions, sessionId]);
+  }, [openSession, sessions, sessionId, updateTurn]);
 
   /**
    * 回到**新会话页**(草稿态):只切视图,**不建会话文件**。
@@ -601,9 +652,9 @@ export function App() {
     setView("work");
     setSessionId(null);
     setTitle("");
-    setTurn(emptyTurn);
-    setSessionUsage(null);
-  }, []);
+    updateTurn(DRAFT_KEY, () => emptyTurn);
+    updateUsage(DRAFT_KEY, null);
+  }, [updateTurn, updateUsage]);
 
   /**
    * 建会话。**只有带着第一句话时才落文件** —— 不带就是 `openDraft()`(见它的注释)。
@@ -619,8 +670,8 @@ export function App() {
         await refreshSessions();
         setSessionId(created.id);
         setTitle(created.title);
-        setTurn(emptyTurn);
-        setSessionUsage(null);      // 新会话:还没有任何用量
+        updateTurn(created.id, () => emptyTurn);
+        updateUsage(created.id, null);      // 新会话:还没有任何用量
         void sendTo(created.id, first);
       } catch (err) {
         setFatal(describe(err));
@@ -629,7 +680,7 @@ export function App() {
     // `sendTo` **必须**列上:它带着「当前智能体」这个设置,而 `sendTo` 在智能体变化时
     // 会重建。漏掉它 → 在 hero 态选好智能体再发第一句时,这里调用的是**旧闭包**
     // (`agent` 还是 null),手动选择静默失效(实测踩过:分派行写的是 fallback)。
-    [openDraft, refreshSessions, sendTo],
+    [openDraft, refreshSessions, sendTo, updateTurn, updateUsage],
   );
 
   const send = useCallback(() => {
@@ -652,10 +703,11 @@ export function App() {
   );
 
   const stop = useCallback(() => {
-    abortRef.current?.();
-    abortRef.current = null;
-    setTurn((prev) => ({ ...prev, phase: "idle" }));
-  }, []);
+    const key = sessionId ?? DRAFT_KEY;
+    runsRef.current.get(key)?.abort();
+    runsRef.current.delete(key);
+    updateTurn(key, (prev) => ({ ...prev, phase: "idle" }));
+  }, [sessionId, updateTurn]);
 
   /**
    * 会话动作。
@@ -697,7 +749,7 @@ export function App() {
       setTurn((prev) => withNote(prev, "复制失败", String(err)));
       return false;
     }
-  }, []);
+  }, [setTurn]);
 
   const askRenameSession = useCallback((session: SessionSummary) => {
     setNameDraft(session.title);
@@ -716,15 +768,29 @@ export function App() {
    */
   const forgetSessions = useCallback(
     async (ids: string[]) => {
+      for (const id of ids) {
+        runsRef.current.get(id)?.abort();
+        runsRef.current.delete(id);
+      }
+      setTurns((prev) => {
+        const next = { ...prev };
+        for (const id of ids) delete next[id];
+        return next;
+      });
+      setSessionUsages((prev) => {
+        const next = { ...prev };
+        for (const id of ids) delete next[id];
+        return next;
+      });
       await refreshSessions();
       if (sessionId !== null && ids.includes(sessionId)) {
         setSessionId(null);
         setTitle("");
-        setTurn(emptyTurn);
-        setSessionUsage(null);
+        updateTurn(DRAFT_KEY, () => emptyTurn);
+        updateUsage(DRAFT_KEY, null);
       }
     },
-    [refreshSessions, sessionId],
+    [refreshSessions, sessionId, updateTurn, updateUsage],
   );
 
   /** 弹层的"确认":每个动作共用一个入口,各自只做自己那一件事。 */
@@ -750,6 +816,12 @@ export function App() {
   }, [dialog, forgetSessions, nameDraft, refreshSessions, sessionId]);
 
   const running = turn.phase === "running";
+  const localRunningIds = useMemo(
+    () => new Set(Object.entries(turns)
+      .filter(([, state]) => state.phase === "running")
+      .map(([id]) => id)),
+    [turns],
+  );
   /**
    * 哪一行的动作**常显**:最后一条"带动作的行"(提问或回答)。
    *
@@ -938,7 +1010,8 @@ export function App() {
         <Rail
           sessions={sessions}
           current={sessionId}
-          busy={running}
+          busy={false}
+          runningIds={localRunningIds}
           now={now}
           onSelect={(id) => void openSession(id)}
           onCreate={() => void createSession()}

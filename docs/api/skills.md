@@ -227,7 +227,7 @@ curl -X POST http://127.0.0.1:3456/api/skills/import \
 
 ## 写完为什么立刻生效
 
-`QiRuntime` **按 cwd 缓存**,`top_skills` 只在构造时读一次。少一次重扫就会出现最难查的
+每个会话一个 `QiRuntime`,`top_skills` 只在构造时读一次。少一次重扫就会出现最难查的
 那种不一致:
 
 * `GET /api/skills` 说它在(那是直接读磁盘),
@@ -249,7 +249,7 @@ curl -X POST http://127.0.0.1:3456/api/skills/import \
 
 返回更新后的 `SkillList`。**不改任何文件**,只让 `runtime.top_skills` 跟上磁盘。
 
-为什么需要它:`GET /api/skills` 与系统提示词读的都是 `runtime.top_skills`(按 cwd 缓存的
+为什么需要它:`GET /api/skills` 与系统提示词读的都是 `runtime.top_skills`(runtime 构造时的
 快照),而缓存只在**写端点**里重扫。于是任何"没经过本宿主"的变更 —— 手工往
 `~/.qi/agent/skills/` 拷目录、另一个进程(CLI / `qi store`)装的、编辑器改了 frontmatter
 —— 在页面上永远看不见,**刷新浏览器也没用**(那只是再发一次同一个 GET)。TUI 有

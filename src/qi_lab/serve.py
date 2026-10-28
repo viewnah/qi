@@ -143,8 +143,7 @@ def pin_role(runtime: QiRuntime, name: str | None) -> None:
 
     ## 粒度
 
-    `WebState` 按 cwd 缓存 runtime(一个 runtime 服务一个 cwd),所以钉住值就挂在这个
-    runtime 上 —— 同一个 cwd 下的多个浏览器客户端会互相覆盖(取最后一次请求)。
+    钉住值挂在**该会话自己的 runtime** 上:同一个 cwd 下不同会话互不覆盖。
     这与该功能既有的"不落盘、刷新回 auto"口径一致(见 design/web.md §18.24 的四条);
     要做得更细得给每个客户端一条独立通道,那是另一个决定。
     """

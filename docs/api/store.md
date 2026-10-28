@@ -186,7 +186,7 @@ qi-kb 自己的 `kb.json` / `kb-auth.json`，`store.json` 不变。
 | `needsConfig[]` | `string[]` | 装完还要补的环境变量 |
 
 装了 **skill** 时，端点会顺带调 `WebState.refresh_skills()`：技能落盘只解决一半，
-`/api/skills` 与提示词读的都是 `runtime.top_skills`（按 cwd 缓存）。不重扫的症状是
+`/api/skills` 与提示词读的都是 `runtime.top_skills`（runtime 构造时的快照）。不重扫的症状是
 **"商店里装好了、技能列表里没有、模型也用不上"** —— 与 `POST /api/skills` 同一条处置。
 
 > MCP / A2A 没有等价物（也没有必要）：那两节的读端点是**每次请求重新读文件**。

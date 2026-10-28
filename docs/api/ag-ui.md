@@ -131,6 +131,7 @@ data: {"type":"RUN_STARTED","timestamp":1730000000000,...}\n\n
 | `content.phase` | `stream`(本轮缓冲)/ `act`(工具行)/ `think`(思考行) |
 | `content.line` | `act`/`think` 的**整行**(`· tool …` / `✎ 第N轮: …`)—— 与结束后 `result` 段**逐字同源** |
 | `content.text` / `mode` | `stream` 的本轮缓冲(节流 `STREAM_FLUSH_INTERVAL` + 轮末强制)与种类(`think`/`text`) |
+| `content.sessionId` | 该帧属于哪个会话。多会话并行时前端先按它过滤,再按 `toolCallId` 归卡 |
 | `content.toolCallId` | **归卡**:落进哪张工具卡(嵌套子运行共用**发起方**那次调用 → 一棵树一张卡) |
 | `content.role` / `parent` / `depth` / `task` | 归因,与 TUI 卡头、结束后的横幅同源 |
 
@@ -181,5 +182,4 @@ curl -N http://127.0.0.1:3456/api/ag-ui \
 - **不**走 `stream(agent_override=…)`:那是分派器还在时的接口,core 收窄成单 agent 之后
   流水线里没人读它 —— 传了不报错、只是没生效,那是个会说谎的控件;
 - **项目级角色**(仓库控制的提示词)在项目未信任时**不注入**,与 `--ext agent=` 同一道闸;
-- 粒度是 runtime(按 cwd 缓存):同一 cwd 下多个浏览器客户端互相覆盖,取最后一次 ——
-  与该功能"不落盘、刷新回 auto"的口径一致。
+- 粒度是**会话 runtime**:同一个 cwd 下不同会话互不覆盖;刷新后仍回到 auto(不落盘)。

@@ -240,6 +240,11 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
             bundled_extensions=bundled.status(web.default_cwd),
         )
 
+    @app.get("/api/agent/running", dependencies=[Depends(guard)])
+    async def agent_running() -> dict:
+        """当前有活跃 run 的会话 id(侧栏轮询用,不拉整个会话列表)。"""
+        return {"running": sorted(web.running_sessions()), "awaiting_input": []}
+
     @app.get("/api/health")
     async def health() -> dict:
         return {"ok": True, "app": schemas.APP_NAME, "contract": schemas.CONTRACT_VERSION}
@@ -593,7 +598,7 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
     #   1. **确认头**(与写凭证、写 MCP 同一道闸):技能是**代码** —— SKILL.md 会被
     #      原样读进提示词,一次误写等于往模型上下文里塞东西,而它比 mcp.json 更容易
     #      被 `git add .` 带走(项目层就在 `.qi/skills/`);
-    #   2. **写完重扫 runtime**:runtime 按 cwd 缓存 `top_skills`,不重扫的话会出现
+    #   2. **写完重扫 runtime**:runtime 构造时读 `top_skills`,不重扫的话会出现
     #      “GET 说它在、模型却用不上”;`web.refresh_skills()` 就是干这个的;
     #   3. **回新清单**:三个端点都回 `SkillList`,界面一次往返就刷新完。
     #      (读端点不回值 —— 技能没有需要遮的东西,`path` 本来就在读端给。)
@@ -664,7 +669,7 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
 
         为什么需要它:
 
-        * `/api/skills` 读的是 `runtime.top_skills`(按 cwd 缓存的快照);
+        * `/api/skills` 读的是 `runtime.top_skills`(runtime 构造时的快照);
         * 缓存只在**写端点**里重扫 —— 于是一段"没经过本宿主"的变更(手工拷目录、
           另一个进程/CLI 装的、编辑器改了 frontmatter)在页面上永远看不见;
         * TUI 有 `/reload`,web 以前只能重启进程。
@@ -722,6 +727,7 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
             raise HTTPException(status_code=409, detail="会话正在运行,先停止再删除")
         if not web.sessions.delete(sid):
             raise HTTPException(status_code=404, detail="会话不存在")
+        web.drop_session_runtime(sid)
 
     @app.delete("/api/sessions", response_model=schemas.DeletedSessions,
                 dependencies=[Depends(guard)])
@@ -744,9 +750,10 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
                 status_code=409,
                 detail="未分组里有会话正在运行,先停止再清除",
             )
-        return schemas.DeletedSessions(
-            ids=[sid for sid in doomed if web.sessions.delete(sid)],
-        )
+        deleted = [sid for sid in doomed if web.sessions.delete(sid)]
+        for sid in deleted:
+            web.drop_session_runtime(sid)
+        return schemas.DeletedSessions(ids=deleted)
 
     @app.get("/api/sessions/{sid}/export", dependencies=[Depends(guard)])
     async def export_session(sid: str) -> Response:
@@ -839,7 +846,7 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
             raise HTTPException(status_code=404, detail="会话不存在")
         if web.is_busy(sid):
             raise HTTPException(status_code=409, detail="会话正在运行,先停止再压缩")
-        runtime = web.runtime_for(web.session_cwd(session))
+        runtime = web.runtime_for_session(session)
         entry = await runtime.compact_session(session)
         return schemas.CompactionResult(compacted=entry is not None)
 
@@ -901,6 +908,8 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
                 detail="该工作区有会话正在运行,先停止再删除工作区",
             )
         deleted = [sid for sid in doomed if web.sessions.delete(sid)]
+        for sid in deleted:
+            web.drop_session_runtime(sid)
         return schemas.WorkspaceDeleted(
             ids=deleted, names=workspaces.forget(cwd).names,
         )
@@ -1071,11 +1080,11 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
         entries = session.visible_entries()
 
         async def gen():
-            runtime = web.runtime_for(web.session_cwd(session))
+            runtime = web.runtime_for_session(session)
             # 直播队列与主流**同一个**(design/web-lab.md §5.2 通道 A):子运行期间
             # 主流是静默的(LLM 调用不产事件),活动帧如果走旁路就会抢在工具卡帧
             # 之前到 —— 同队列 FIFO 把顺序钉死。
-            feed = web.open_activity()
+            feed = web.open_activity(session.id)
             pump: asyncio.Task[None] | None = None
             try:
                 # RUN_STARTED 必须是流的第一帧(AG-UI 生命周期边界),
@@ -1090,8 +1099,8 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
                 # qi 自己的完整 entry 列表:MESSAGES_SNAPSHOT 装不下 dispatch/tool/叙述,
                 # 不给这一份,刷新后轨迹就只剩对话(直播与回放不一致)。
                 yield agui.encode(agui.history_snapshot(entries))
-                # **绑定会话**:web 是"一个 runtime 服务同一 cwd 下的多个会话",而
-                # `_active_session` 只在一个回合内有效 —— 不显式绑定,两件事同时坏掉:
+                # **绑定会话**:一个会话一个 runtime,但 `_active_session` 只在一个回合内
+                # 有效 —— 不显式绑定,两件事同时坏掉:
                 #   ① 换模型/级别的落盘(`model_change` / `thinking_level_change`)写不进
                 #      "哪个文件"(web 端此前没有任何 `/model` 落盘点);
                 #   ② 续会话不还原上次用的模型(runtime 用一个模型发请求、界面上写着另一个)。
@@ -1167,7 +1176,7 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
             finally:
                 if pump is not None:
                     pump.cancel()        # 不 cancel 会把流留在后台跑到进程结束
-                web.close_activity(feed)  # 泄漏的队列会让广播越推越多
+                web.close_activity(feed, session.id)  # 泄漏的队列会让广播越推越多
                 try:
                     kb_service, _kb_reason = _kb()
                     if kb_service is not None:
@@ -1244,7 +1253,7 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
     #   · **换模型走 `runtime.set_model()` / `set_thinking_level()`** —— 那是唯一入口,
     #     `model_select` / `thinking_level_select` 事件与 `model_change` /
     #     `thinking_level_change` 的落盘都在里面。界面层不自己拼 entry;
-    #   · **带 `session` 时先绑定** —— 一个 runtime 服务同一 cwd 下的多个会话,
+    #   · **带 `session` 时先绑定** —— 每个会话有自己的 runtime,
     #     不绑定就"不知道该写进哪个文件"(这正是本扩展此前漏掉会话绑定的那一类)。
     #     绑定同时会按会话里记的 entry 还原模型,所以先绑再设,顺序不能反。
 
@@ -1269,10 +1278,11 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
         """可选模型清单 + 当前值(与 TUI 的 `/model` 同一份口径)。
 
         `session` 给了就先绑定它 —— 当前值要反映**那条会话**的还原结果,而不是
-        runtime 上残留的上一轮状态(一个 runtime 服务多个会话)。
+        runtime 上残留的上一轮状态(每个会话一个 runtime)。
         """
         target = _session_for(session)
-        runtime = web.runtime_for(web.session_cwd(target) if target else web.default_cwd)
+        runtime = (web.runtime_for_session(target) if target is not None
+                   else web.runtime_for(web.default_cwd))
         if target is not None:
             web.bind_session(runtime, target)
         store = getattr(runtime, "_auth", None)
@@ -1307,7 +1317,8 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
                                 detail="至少要给 model 或 thinking_level 之一")
 
         target = _session_for(body.session)
-        runtime = web.runtime_for(web.session_cwd(target) if target else web.default_cwd)
+        runtime = (web.runtime_for_session(target) if target is not None
+                   else web.runtime_for(web.default_cwd))
         if target is not None:
             # 先绑:① 落盘要知道写哪个文件;② 绑定会按会话里的 entry 还原,
             # 于是"这次没传的字段"保持会话里的值,而不是被上一次绑定的残留顶掉。
@@ -1495,7 +1506,7 @@ def create_app(cwd: Path | str | None = None, password: str | None = None,
                                scope=body.scope, force=body.force,
                                allow_unsafe=body.allowUnsafe)
         if any(item.get("kind") == "skill" for item in data["installed"]):
-            # 技能落在磁盘上还不够:**runtime 按 cwd 缓存 `top_skills`**,不重扫就会出现
+            # 技能落在磁盘上还不够:**runtime 在构造时读 `top_skills`**,不重扫就会出现
             # "GET /api/skills 说它在、模型却用不上"。与 `POST /api/skills` 同一条处置。
             web.refresh_skills()
         return schemas.StoreInstallResult(**data)

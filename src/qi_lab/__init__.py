@@ -3,7 +3,7 @@
 分层:
 
 * `app.py`         —— FastAPI 应用与路由(`/api` v1)
-* `state.py`       —— 每 cwd 一个 QiRuntime + 会话串行闸门
+* `state.py`       —— 每会话一个 QiRuntime + 会话串行闸门
 * `bundled.py`     —— 内置扩展发现 / 外部覆盖 / 拓扑排序
 * `core.py`        —— `qi_agent.*` 的唯一 import 面
 * `integrations/`  —— 各内置扩展的唯一 import 面

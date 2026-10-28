@@ -4,8 +4,22 @@
 删除、导出、导入、压缩、分叉**。通用约定见 [`README.md`](README.md);跑起来见 [`ag-ui.md`](ag-ui.md)。
 
 > 共同的占用规则:**`running=true` 的会话,删 / 压缩 / 分叉一律 `409`**。
+> 不同会话可以**同时运行**(每个会话一个 runtime);同一个会话仍然串行,第二个 POST 回 `409`。
 > 它们都要动那份正在被追加的 JSONL,拷到半截回合或删掉正在写的文件都是不可逆的。
 > 停下来再操作。
+
+## `GET /api/agent/running`
+
+轻量运行快照:侧栏每 2.5 秒轮询它,不用拉整个会话列表。
+
+### 响应 (200)
+
+```json
+{ "running": ["会话 id"], "awaiting_input": [] }
+```
+
+`running` 是当前有活跃 run 的会话 id(升序)。`awaiting_input` 目前恒为空,预留给
+将来"会话停在确认框"的状态。
 
 ## `GET /api/sessions`
 

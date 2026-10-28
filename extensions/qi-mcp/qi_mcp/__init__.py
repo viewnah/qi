@@ -148,7 +148,9 @@ def register(api: Any) -> None:
         两层缓存都要收：本模块闭包里的 `managers`（每 cwd 一个）与
         `role.py` 的模块级 `_MANAGERS`（每个「角色目录」一个，只增不减）。
         """
-        await close_managers()                       # 角色私有那层
+        sid = getattr(getattr(ctx, "session_manager", None), "session_id", None) or ""
+        if sid:
+            await close_managers(str(sid))           # 角色私有那层(只关本会话)
         cached = list(managers.values())
         managers.clear()                             # 先清表：清完就没人再能拿到它了
         for manager in cached:

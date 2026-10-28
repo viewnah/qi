@@ -164,6 +164,49 @@ def _paired(events: list[dict], start: str, end: str, id_key: str) -> None:
     assert open_ids == [], f"这些 {start} 没有 {end}:{open_ids}"
 
 
+@pytest.mark.asyncio
+async def test_two_sessions_run_concurrently_on_distinct_runtimes(tmp_path, monkeypatch):
+    """两个会话可以同时跑:各自的 runtime、各自的流,互不 abort。"""
+    import asyncio
+
+    _minimal_config(tmp_path, monkeypatch)
+    sessions = SessionStore(root=tmp_path / "sessions")
+    created: list[QiRuntime] = []
+
+    class SlowStub(StreamingStub):
+        async def astream(self, messages, tools=None, temperature=None):
+            await asyncio.sleep(0.15)
+            async for delta in super().astream(messages, tools, temperature):
+                yield delta
+
+    def factory(cwd):
+        runtime = QiRuntime(cwd=Path(cwd), runtime_cfg=RuntimeConfig(workdir=Path(cwd)),
+                            session_store=sessions, llm=SlowStub())
+        created.append(runtime)
+        return runtime
+
+    state = WebState(tmp_path, runtime_factory=factory)
+    application = create_app(cwd=tmp_path, state=state,
+                             workspace_store=WorkspaceStore(tmp_path / "workspaces.json"))
+    transport = httpx.ASGITransport(app=application)
+    async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as c:
+        sid1 = (await c.post("/api/sessions", json={"title": "A"})).json()["id"]
+        sid2 = (await c.post("/api/sessions", json={"title": "B"})).json()["id"]
+        first, second = await asyncio.gather(
+            _agui(c, sid1, "A 的问题", run_id="a1"),
+            _agui(c, sid2, "B 的问题", run_id="b1"),
+        )
+
+    assert _kinds(first[0])[-1] == "RUN_FINISHED"
+    assert _kinds(second[0])[-1] == "RUN_FINISHED"
+    session1 = state.sessions.get(sid1)
+    session2 = state.sessions.get(sid2)
+    assert session1 is not None and session2 is not None
+    rt1 = state.runtime_for_session(session1)
+    rt2 = state.runtime_for_session(session2)
+    assert rt1 is not rt2, "两个会话必须各自持有 runtime"
+    assert {id(rt1), id(rt2)}.issubset({id(rt) for rt in created})
+
 # ── AG-UI:插件的 details 下行通道 ────────────────────────────
 
 def test_tool_details_survive_the_agui_layer():
@@ -350,6 +393,21 @@ async def test_busy_session_is_serialised(client, tmp_path):
     # 释放之后必须能正常跑 —— 否则一次异常就把会话永久卡住
     events, _ = await _agui(client, sid)
     assert events[-1]["type"] == "RUN_FINISHED"
+
+
+@pytest.mark.asyncio
+async def test_agent_running_endpoint_reports_busy_sessions(client, tmp_path):
+    """侧栏轮询用的轻量快照:只回正在跑的会话 id。"""
+    sid = (await client.post("/api/sessions", json={"title": "运行", "cwd": str(tmp_path)})).json()["id"]
+    web = _web(client)
+    web.begin(sid)
+    try:
+        body = (await client.get("/api/agent/running")).json()
+        assert body["running"] == [sid]
+        assert body["awaiting_input"] == []
+    finally:
+        web.end(sid)
+    assert (await client.get("/api/agent/running")).json()["running"] == []
 
 
 def test_webstate_gate_is_symmetric():

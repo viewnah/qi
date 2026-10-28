@@ -1,10 +1,14 @@
-"""宿主进程内的共享状态:**每 cwd 一个 QiRuntime** + **会话级串行闸门**。
+"""宿主进程内的共享状态:**每会话一个 QiRuntime** + **会话级串行闸门**。
 
 两条为什么需要:
 
-* `QiRuntime.__init__` 要装载 config / settings / extensions / agents / skills,代价高,
-  而且**绑定一个 cwd**(项目级 `.qi` 的发现靠它)→ 按 cwd 缓存(LRU)。
-* `QiRuntime.stream()` 会往同一个会话文件追加 → **必须每会话串行**,否则 JSONL 交错。
+* `QiRuntime` 在一个回合内把 `_active_session` 等字段挂在自己身上,所以**一个 runtime
+  只能服务一个会话**。多个会话要并行,就得一个会话一个 runtime。
+* 同一个会话仍然必须串行:`QiRuntime.stream()` 会往同一个 JSONL 追加,两个 POST
+  同时跑会把文件写成交错的两段。
+
+非执行端点(配置 / 技能 / 会话列表)仍然按 cwd 缓存一个 base runtime,避免为每次
+`/api/config` 都重新装载扩展。
 
 **与 AG-UI 改造前的变化**:宿主不再自己维护"每会话一个 run + 追加式事件日志 + seq"
 那套东西。改成 AG-UI 的**单次 POST、响应即流**之后:
@@ -32,7 +36,8 @@ from . import activity, bundled
 
 #: 建 runtime 的方式。默认就是 `QiRuntime` 本身;测试传替身工厂(接受 `cwd=` 关键字)。
 RuntimeFactory = Callable[..., Any]  # 测试替身允许鸭子类型
-MAX_RUNTIMES = 8          # 按 cwd 缓存的 runtime 上限(LRU 淘汰)
+MAX_RUNTIMES = 8          # 按 cwd 缓存的 base runtime 上限(LRU 淘汰)
+MAX_SESSION_RUNTIMES = 16 # 活跃会话 runtime 上限;正在跑的不淘汰
 
 
 def _default_runtime_factory(cwd: Path | str) -> QiRuntime:
@@ -61,14 +66,17 @@ class WebState:
         self._runtime_factory = runtime_factory or _default_runtime_factory
         # 适配层可能在第一个 runtime 建立之前就 import 内置扩展;先把生效的目录放进 path。
         bundled.ensure_sys_path(self.default_cwd)
+        #: 非执行端点用的 base runtime(key = cwd)。
         self._runtimes: dict[str, QiRuntime] = {}
+        #: 执行中的会话 runtime(key = session id)。一个 runtime 只服务一个会话。
+        self._session_runtimes: dict[str, QiRuntime] = {}
         self._busy: set[str] = set()
         # ── 委派直播(见 activity.py)──
-        # 每个 AG-UI 流开一条队列;总线 handler 把直播内容**广播**给所有活跃队列。
-        # 订了哪个 runtime 用 WeakSet 记:总线只有 `on` 没有 `off`,而 runtime 是
-        # LRU 缓存 —— 强引用会把淘汰掉的 runtime 钉住,id 又可能被复用误判已订。
-        self._activity: list[asyncio.Queue] = []
-        self._activity_subs: weakref.WeakSet = weakref.WeakSet()
+        # 每个会话的 AG-UI 流只收自己会话的队列;session_id=None 是全局队列(测试 / 旧接口)。
+        self._activity: dict[str | None, list[asyncio.Queue]] = {}
+        # 订了哪些 (runtime, session) 用 WeakKeyDictionary 记:总线只有 `on` 没有 `off`,
+        # runtime 被淘汰后条目自然消失。
+        self._activity_subs: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
     # ── runtime 缓存 ──
     def runtime_for(self, cwd: Path | str | None) -> QiRuntime:
@@ -83,50 +91,121 @@ class WebState:
         self._subscribe_activity(runtime)
         return runtime
 
+    # ── 会话 runtime ──
+    def runtime_for_session(self, session: Session) -> QiRuntime:
+        """取这个会话专属的 runtime。一个 runtime 只服务一个会话。
+
+        正在跑的 runtime 不会被淘汰;超过 `MAX_SESSION_RUNTIMES` 时只淘汰空闲的。
+        """
+        sid = session.id
+        existing = self._session_runtimes.pop(sid, None)
+        if existing is not None:
+            self._session_runtimes[sid] = existing       # 刷新 LRU 顺序
+            self._subscribe_activity(existing, session_id=sid)
+            return existing
+
+        if len(self._session_runtimes) >= MAX_SESSION_RUNTIMES:
+            for key in list(self._session_runtimes):
+                if key not in self._busy:
+                    self._shutdown_runtime(self._session_runtimes.pop(key))
+                    break
+
+        runtime = self._runtime_factory(cwd=self.session_cwd(session))
+        self._session_runtimes[sid] = runtime
+        self._subscribe_activity(runtime, session_id=sid)
+        return runtime
+
+    def running_sessions(self) -> set[str]:
+        """当前有活跃 run 的会话 id。"""
+        return set(self._busy)
+
+    def drop_session_runtime(self, session_id: str) -> None:
+        """会话被删/不再需要时丢掉它的 runtime,并尽量让扩展收到 shutdown。"""
+        self._shutdown_runtime(self._session_runtimes.pop(session_id, None))
+
+    @staticmethod
+    def _shutdown_runtime(runtime: QiRuntime | None) -> None:
+        if runtime is None:
+            return
+        emit = getattr(runtime, "emit_session_shutdown", None)
+        if not callable(emit):
+            return
+        try:
+            result = emit("quit")
+            if inspect.isawaitable(result):
+                asyncio.ensure_future(result)
+        except RuntimeError:              # 没有运行中的 loop(测试 / 同步调用)
+            pass
+
     # ── 委派直播队列 ──
-    def _subscribe_activity(self, runtime: QiRuntime) -> None:
-        """把直播 handler 挂上 runtime 的总线(每个 runtime 只挂一次)。
+    def _subscribe_activity(self, runtime: QiRuntime,
+                            session_id: str | None = None) -> None:
+        """把直播 handler 挂上 runtime 的总线(每个 runtime/session 只挂一次)。
 
         挂不上只是没有直播(读音:总线不可用、runtime 不可弱引用)—— 不影响任何
         既有能力,所以这里不往上抛。
         """
-        if runtime in self._activity_subs:
-            return
         try:
-            runtime.bus.on("tool_execution_update", self._on_activity,
-                           source="qi-lab")
+            subs = self._activity_subs.setdefault(runtime, set())
+        except TypeError:                 # 测试替身不可弱引用
+            return
+        if session_id in subs:
+            return
+        if session_id is None:
+            handler: Any = self._on_activity
+            source = "qi-lab"
+        else:
+            def session_handler(payload: Any, ctx: Any, sid: str = session_id) -> None:
+                self._on_activity(payload, ctx, session_id=sid)
+            handler = session_handler
+            source = f"qi-lab:{session_id}"
+        try:
+            runtime.bus.on("tool_execution_update", handler, source=source)
         except Exception:  # noqa: BLE001 直播是旁路:失败不该影响读接口
             return
-        self._activity_subs.add(runtime)
+        subs.add(session_id)
 
-    def _on_activity(self, payload: Any, ctx: Any) -> None:
-        """总线 handler:过滤出委派直播内容,广播给活跃流的队列。
+    def _on_activity(self, payload: Any, ctx: Any, *,
+                     session_id: str | None = None) -> None:
+        """总线 handler:过滤出委派直播内容,投给对应会话的活跃队列。
 
-        **广播而不是归因**:payload 里没有会话信息(runtime 按 cwd 缓存,同 cwd
-        的多个会话共用一个),而每个流拿到内容后按 `toolCallId` 归卡 —— 不是本流
-        的 id,前端直接丢弃,无害。没有活跃队列时连过滤都不做(零订阅零开销,
-        与宿主 `bus.has` 的护栏同向)。
+        `session_id=None` 是全局队列(测试 / 旧调用方);会话 runtime 的订阅会带
+        自己的 id,所以 A 会话的子运行帧不会进 B 会话的流。
         """
-        if not self._activity:
-            return
         content = activity.activity_content(payload)
         if content is None:
             return
-        for queue in list(self._activity):
+        if session_id is not None:
+            content = {**content, "sessionId": session_id}
+            queues = list(self._activity.get(None, ())) + list(self._activity.get(session_id, ()))
+        else:
+            # 旧调用方 / 测试直接调这个 handler 时没有会话上下文:广播给所有队列。
+            # 生产路径的 runtime 订阅总会带 session_id,所以不会串会话。
+            queues = [q for group in self._activity.values() for q in group]
+        for queue in queues:
             queue.put_nowait((activity.KIND_ACTIVITY, content))
 
-    def open_activity(self) -> asyncio.Queue:
+    def open_activity(self, session_id: str | None = None) -> asyncio.Queue:
         """开一条直播队列(每个 AG-UI 流一个);流结束必须 `close_activity`。"""
         queue: asyncio.Queue = asyncio.Queue()
-        self._activity.append(queue)
+        self._activity.setdefault(session_id, []).append(queue)
         return queue
 
-    def close_activity(self, queue: asyncio.Queue) -> None:
+    def close_activity(self, queue: asyncio.Queue,
+                       session_id: str | None = None) -> None:
         """收掉一条直播队列。必须在 finally:泄漏的队列会让广播越推越多。"""
-        try:
-            self._activity.remove(queue)
-        except ValueError:                 # 已经收过了(幂等)
-            pass
+        keys: list[str | None] = [session_id] if session_id is not None else list(self._activity)
+        for key in keys:
+            queues = self._activity.get(key)
+            if not queues:
+                continue
+            try:
+                queues.remove(queue)
+            except ValueError:
+                continue
+            if not queues:
+                self._activity.pop(key, None)
+            return
 
     @property
     def sessions(self) -> SessionStore:
@@ -137,6 +216,16 @@ class WebState:
         return Path(session.cwd) if session.cwd else self.default_cwd
 
     # ── 模型配置/凭证 ──
+    def _all_runtimes(self) -> list[QiRuntime]:
+        """base + session runtime,按对象去重(测试替身可能同一个对象)。"""
+        seen: set[int] = set()
+        out: list[QiRuntime] = []
+        for runtime in (*self._runtimes.values(), *self._session_runtimes.values()):
+            if id(runtime) not in seen:
+                seen.add(id(runtime))
+                out.append(runtime)
+        return out
+
     def refresh_config(self) -> None:
         """重读各 runtime 的 `models.json`(新建 provider 之后调)。
 
@@ -148,7 +237,7 @@ class WebState:
         """
         from .core import load_config
 
-        for runtime in list(self._runtimes.values()):
+        for runtime in self._all_runtimes():
             try:
                 runtime.cfg, runtime.config_files = load_config(
                     getattr(runtime, "cwd", self.default_cwd))
@@ -161,7 +250,7 @@ class WebState:
         `LiteLLMClient` 在构造时就把 key 解析好了 —— 不重建的话,用户以为登上了,
         请求还是拿旧 key / 空客户端去跑。与 TUI 登录后调 `reload_credentials()` 同一条。
         """
-        for runtime in list(self._runtimes.values()):
+        for runtime in self._all_runtimes():
             reload = getattr(runtime, "reload_credentials", None)
             if not callable(reload):
                 continue
@@ -173,7 +262,7 @@ class WebState:
     def refresh_skills(self) -> None:
         """技能增删导入之后重扫(runtime 缓存的那份不重扫,新技能要**重启进程**才生效)。
 
-        为什么必须做:runtime 按 cwd 缓存,`top_skills` 在 `__init__` 里读一次就不再动 ——
+        为什么必须做:runtime 在 `__init__` 里读一次 `top_skills` 就不再动 ——
         于是会出现最难查的一种不一致:*GET `/api/skills` 说它在*(那是直接读磁盘),
         *模型却用不上*(提示词取自 `runtime.top_skills`)。
 
@@ -186,7 +275,7 @@ class WebState:
         """
         from .core import load_top_level_skills
 
-        for runtime in list(self._runtimes.values()):
+        for runtime in self._all_runtimes():
             settings = getattr(runtime, "settings", None)
             if settings is None or not hasattr(runtime, "top_skills"):
                 continue
@@ -235,8 +324,8 @@ class WebState:
     async def bind(self, runtime: QiRuntime, session: Session, reason: str = "startup") -> None:
         """把会话绑到 runtime 上,**并**告知扩展"会话已绑定"(`session_start`)。
 
-        为什么 web 必须显式做这件事:一个 runtime 服务同一 cwd 下的**多个**会话
-        (`runtime_for` 按 cwd 缓存),而 `_active_session` 只在一个回合内有效 ——
+        为什么 web 必须显式做这件事:每个会话有自己的 runtime,但 `_active_session`
+        只在一个回合内有效 ——
         于是"换模型/级别该写进哪个文件"与"续会话按 entry 还原"这两件事都没有落点。
         CLI 与 TUI 各自在自己那一处调 `bind_session` + `start_session`,web 此前**一处都没有**,
         所以:web 端的 `/model` 不落盘、续会话不还原、`session_start` 从不派发 ——

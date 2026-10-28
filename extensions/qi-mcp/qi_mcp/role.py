@@ -57,14 +57,19 @@ def reset_managers() -> None:
     _MANAGERS.clear()
 
 
-async def close_managers() -> None:
-    """关掉所有角色 manager 的连接,再清表(退出 / 重载 / 换会话前调)。
+async def close_managers(session_key: str | None = None) -> None:
+    """关掉角色 manager 的连接,再清表(退出 / 重载 / 换会话前调)。
 
-    **先取出、再清表、最后逐个 await** —— 清表之后 manager 就没人引用了,
-    而 `aclose()` 是 async 的;边清边 await 会让“已经清了但还没关”这个窗口真实存在。
+    `session_key` 给了就只关这个会话的(多会话并行时不能误关别人的);
+    不给则关全部(旧调用方 / 测试)。
     """
-    managers = list(_MANAGERS.values())
-    _MANAGERS.clear()
+    if session_key is None:
+        managers = list(_MANAGERS.values())
+        _MANAGERS.clear()
+    else:
+        prefix = f"{session_key}|"
+        keys = [key for key in _MANAGERS if key.startswith(prefix)]
+        managers = [_MANAGERS.pop(key) for key in keys]
     for manager in managers:
         await manager.aclose()
 
@@ -115,7 +120,8 @@ def _split_pattern(pattern: str) -> tuple[str, str]:
 
 async def register_role_mcp(api: Any, *, role_dir: Path | None = None,
                             cwd: Path | None = None, role_tools: list[str] | None = None,
-                            on_note: Callable[[str], None] | None = None) -> list[str]:
+                            on_note: Callable[[str], None] | None = None,
+                            session_key: str = "") -> list[str]:
     """把该角色的 MCP 工具注册进 catalog,返回**该角色该用哪些工具名**。
 
     返回的名字由调用方(qi-agents)放进子运行的 `RunSpec.tools` —— 这是"只给这一次子运行"
@@ -137,7 +143,7 @@ async def register_role_mcp(api: Any, *, role_dir: Path | None = None,
         note("角色要了 MCP,但没有任何 mcp.json 声明(全局/项目/角色目录都没有)")        
         return []
 
-    key = f"{cwd}|{role_dir}"
+    key = f"{session_key}|{cwd}|{role_dir}"
     if key not in _MANAGERS:
         _MANAGERS[key] = ServerManager(specs, _default_connect(), on_note=note)
     manager = _MANAGERS[key]

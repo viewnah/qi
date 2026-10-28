@@ -13,8 +13,9 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any, Protocol, cast, runtime_checkable
 
-from .config import ResolvedModel
-from .auth import AuthStore, resolve_key
+from .config import ResolvedModel, merge_headers
+from .auth import AuthStore, resolve_key, resolve_value
+from .provider_headers import builtin_provider_headers
 
 
 @dataclass
@@ -194,7 +195,11 @@ async def stream_llm(llm: LLMClient, messages: list[ChatMessage],
 _API_PREFIX = {
     "anthropic-messages": "anthropic",
     "google-generative-ai": "gemini",
-    "openai-responses": "openai",
+    # Responses 形态靠 litellm 的 **`openai/responses/` 前缀**触发(它拆成
+    # provider=openai + `responses/<model>`,并把 mode 置为 responses,打 /v1/responses)。
+    # 之前直写 "openai" 会被当普通 chat completions 打 /v1/chat/completions ——
+    # opencode Zen 的 gpt-5.6-* 等模型要的就是 Responses 形态。
+    "openai-responses": "openai/responses",
     "openai-completions": "openai",
 }
 
@@ -413,8 +418,13 @@ class LiteLLMClient:
                  thinking_level: str = "off", retry: dict | None = None,
                  thinking_budgets: dict[str, int] | None = None,
                  bus: Any = None, extension_ctx: Any = None, *,
-                 stream: bool = True):
+                 stream: bool = True,
+                 session_id_getter: Any = None):
         self.spec = spec
+        #: 每次请求前取**当前会话 id** 的 getter(内置 provider 头用,如
+        #: OpenCode 的 `x-opencode-session`)。构造时绑定会拿不到运行期换会话后
+        #: 的值,所以必须是 getter —— 见 provider_headers.py。
+        self._session_id_getter = session_id_getter
         #: 扩展事件总线 + ctx 工厂:provider 三件套事件(`before_provider_request` /
         #: `before_provider_headers` / `after_provider_response`)靠它们派发。
         #: 没给就是**完全不派发**(测试里的假客户端不需要)。
@@ -460,9 +470,46 @@ class LiteLLMClient:
         replaced = result.payload.get("payload")
         return replaced if isinstance(replaced, dict) else kwargs
 
+    def _config_headers(self) -> dict[str, str]:
+        """配置层请求头(provider < 模型,已在 `resolve_model` 合并)。
+
+        值语法与 apiKey 相同(字面量 / `$ENV` / `!command`),**每次请求前**解析 ——
+        这样 `!command` 可以是轮换密钥的脚本。解析不了就报错,且**绝不把值打出去**
+        (与 `_resolve_key` 不泄漏 key 的理由相同)。
+        """
+        raw = self.spec.headers or {}
+        if not raw:
+            return {}
+        headers: dict[str, str] = {}
+        for name, value in raw.items():
+            if not name or any(ch.isspace() or ch in ":" for ch in name):
+                raise ProviderAuthError(
+                    f"{self.spec.provider} 的 header 名不合法: {name!r}(请改 models.json)")
+            resolved = resolve_value(str(value))
+            if resolved is None:
+                raise ProviderAuthError(
+                    f"{self.spec.provider} 的 header '{name}' 无法解析"
+                    "(值支持 字面量 / $ENV / !command,见 docs/models.md)。")
+            try:
+                resolved.encode("latin-1")
+            except UnicodeEncodeError:
+                raise ProviderAuthError(
+                    f"{self.spec.provider} 的 header '{name}' 含非 ASCII 字符(HTTP 头只许"
+                    " latin-1)—— 值多半是误粘贴的文本。") from None
+            headers[name] = resolved
+        return headers
+
     async def _prepare_headers(self, kwargs: dict) -> dict:
-        """`before_provider_headers`:handler **原地改** `headers`(值是 None 则删掉)。"""
-        headers = dict(kwargs.get("extra_headers") or {})
+        """内置头 → 配置头(provider < 模型)→ `before_provider_headers` 事件。
+
+        事件 handler **原地改** `headers`(值是 None 则删掉)—— 它看到的是已经合好的
+        完整 dict,所以扩展连内置的 session 头也能覆盖。没有事件时纯合并,不发请求。
+        """
+        config_headers = self._config_headers()          # 解析失败在这里抛(请求前)
+        session_id = self._session_id_getter() if self._session_id_getter else None
+        headers = merge_headers(kwargs.get("extra_headers"),      # 调用方已给的先留着
+                                builtin_provider_headers(self.spec, session_id),
+                                config_headers)
         if self._wants("before_provider_headers"):
             result = await self._bus.emit("before_provider_headers",
                                           {"headers": headers}, ctx=self._ctx())
@@ -471,6 +518,8 @@ class LiteLLMClient:
                 headers = {k: v for k, v in patched.items() if v is not None}
         if headers:
             kwargs["extra_headers"] = headers
+        else:
+            kwargs.pop("extra_headers", None)
         return kwargs
 
     async def _after_response(self, resp: Any) -> None:

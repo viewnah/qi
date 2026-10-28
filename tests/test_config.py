@@ -17,6 +17,7 @@ from qi_agent.config import (
     default_model_spec,
     legacy_default_keys,
     load_config,
+    merge_headers,
     resolve_default_model,
     resolve_model,
 )
@@ -59,6 +60,58 @@ def test_resolve_model_merges_provider_and_entry():
     unknown = resolve_model(cfg, "my-llm", "nope")
     assert unknown.context_window == DEFAULT_CONTEXT_WINDOW
     assert unknown.api == "openai-completions"
+
+
+def test_model_level_api_and_base_url_override_the_provider_default():
+    """模型级 `api` / `baseUrl` 覆盖 provider 级 —— opencode(模型异构)与 mimo
+    (anthropic 兼容端点)靠这条表达;provider 级从此只是**默认值**。
+    `api` 与 `baseUrl` 常常是**成对**换的(`/zen` 形态不带 `/v1`)。"""
+    cfg = QiConfig.model_validate({
+        "providers": {
+            "opencode": {
+                "baseUrl": "https://opencode.ai/zen/v1",
+                "api": "openai-completions",
+                "models": [
+                    {"id": "gpt-5.6-sol", "api": "openai-responses"},
+                    {"id": "claude-sonnet-5-5", "api": "anthropic-messages",
+                     "baseUrl": "https://opencode.ai/zen"},
+                    {"id": "deepseek-v4.1-flash"},
+                ],
+            }
+        }
+    })
+    sol = resolve_model(cfg, "opencode", "gpt-5.6-sol")
+    assert sol.api == "openai-responses"           # api 只换形态,端点共用
+    assert sol.base_url == "https://opencode.ai/zen/v1"
+    claude = resolve_model(cfg, "opencode", "claude-sonnet-5-5")
+    assert claude.api == "anthropic-messages"
+    assert claude.base_url == "https://opencode.ai/zen"   # 与 api 成对地换
+    flash = resolve_model(cfg, "opencode", "deepseek-v4.1-flash")
+    assert flash.api == "openai-completions"              # 跟随 provider 默认
+    assert flash.base_url == "https://opencode.ai/zen/v1"
+
+
+def test_headers_merge_with_the_model_over_the_provider():
+    """`headers` 分层:provider < 模型(已在 resolve_model 合并好,llm 只管发)。"""
+    cfg = QiConfig.model_validate({
+        "providers": {
+            "p": {
+                "baseUrl": "http://x/v1",
+                "headers": {"X-Trace": "prov", "X-Keep": "keep"},
+                "models": [{"id": "m", "headers": {"x-trace": "model"}}],
+            }
+        }
+    })
+    assert resolve_model(cfg, "p", "m").headers == {"x-trace": "model", "X-Keep": "keep"}
+    # 未知模型条目(走 provider 默认):拿到 provider 那层
+    assert resolve_model(cfg, "p", "nope").headers == {"X-Trace": "prov", "X-Keep": "keep"}
+
+
+def test_merge_headers_treats_names_case_insensitively():
+    """HTTP 头不区分大小写:同名不同写法算一个,后者赢(保留**它的**写法)。"""
+    assert merge_headers({"X-A": "1"}, None) == {"X-A": "1"}
+    assert merge_headers({"X-A": "1", "Y": "2"}, {"x-a": "3"}) == {"x-a": "3", "Y": "2"}
+    assert merge_headers(None, None) == {}
 
 
 def test_load_config_precedence(tmp_path, monkeypatch):

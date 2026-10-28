@@ -575,7 +575,18 @@ class QiRuntime:
                              thinking_budgets=self.settings.thinkingBudgets,
                              bus=self.bus,
                              stream=stream_enabled(),
-                             extension_ctx=lambda signal: self.extension_ctx(signal))
+                             extension_ctx=lambda signal: self.extension_ctx(signal),
+                             session_id_getter=self._builtin_session_id)
+
+    def _builtin_session_id(self) -> str | None:
+        """内置 provider 头(OpenCode 的 `x-opencode-session`)用的会话 id。
+
+        每次请求**现取**(不建客户端时绑定):会话在运行期会换(新开/切换分支),
+        绑定旧值等于把上一个会话的亲和头带给下一个会话。没会话时返回 None,
+        provider_headers 层回退字面量 `"qi"`。
+        """
+        session = self.current_session()
+        return session.id if session is not None else None
 
     def _client_for(self, model_ref: str | None) -> Any:
         """子运行用的客户端:给了 `"provider/model"` 就**另建一个**,不给就用当前的。
@@ -1270,7 +1281,7 @@ class QiRuntime:
             for entry in (prov.models or []):
                 out.append(ModelView(provider, entry.id,
                                      api=entry.api or prov.api or "",
-                                     base_url=prov.baseUrl,
+                                     base_url=entry.baseUrl or prov.baseUrl,
                                      reasoning=bool(entry.reasoning),
                                      context_window=_as_int(entry.contextWindow),
                                      max_tokens=_as_int(entry.maxTokens),

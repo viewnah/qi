@@ -35,7 +35,8 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -69,6 +70,9 @@ class ModelEntry(BaseModel):
     id: str
     name: str | None = None
     api: str | None = None
+    #: 覆盖 provider 的 endpoint —— 同一模型走不同 API 形态时与 `api` **成对**写
+    #: (实例:mimo 的 Anthropic 兼容端点是另一个 baseUrl,见 presets 的 note)。
+    baseUrl: str | None = None
     reasoning: bool = False
     input: list[str] = Field(default_factory=lambda: ["text"])
     contextWindow: int = DEFAULT_CONTEXT_WINDOW
@@ -120,6 +124,10 @@ class ResolvedModel:
     context_window: int
     max_tokens: int
     entry: ModelEntry | None = None
+    #: 配置的自定义请求头(provider 层 < 模型层,后者赢);值语法与 apiKey 相同
+    #: (字面量 / `$ENV` / `!command`),在请求前由 llm 解析。不含内置头 ——
+    #: 内置头见 provider_headers.py,优先级更低。
+    headers: dict[str, str] = field(default_factory=dict)
 
     @property
     def label(self) -> str:
@@ -244,7 +252,7 @@ def with_preset_providers(raw: dict[str, Any]) -> set[str]:
         if isinstance(providers.get(name), dict):
             continue                       # 用户写了这个 provider —— 以他为准
         entry = provider_entry(preset)
-        entry["models"] = [model_entry(model) for model in preset.models]
+        entry["models"] = [model_entry(model, preset) for model in preset.models]
         providers[name] = entry
         added.add(name)
     return added
@@ -335,8 +343,28 @@ def selectable_models(cfg: QiConfig, *, store: Any = None) -> list[tuple[str, st
     return out
 
 
+def merge_headers(*layers: Mapping[str, str] | None) -> dict[str, str]:
+    """分层合并请求头:后层覆盖前层。同名不同大小写算同一个 key(HTTP 头语义),
+    覆盖时**保留最后那层的写法**(如 provider 写 `X-Foo`、模型写 `x-foo`,结果是后者)。"""
+    merged: dict[str, str] = {}
+    spelling: dict[str, str] = {}          # lower → 最后一次出现的原写法
+    for layer in layers:
+        for key, value in (layer or {}).items():
+            low = key.lower()
+            previous = spelling.get(low)
+            if previous is not None and previous != key:
+                merged.pop(previous, None)
+            merged[key] = value
+            spelling[low] = key
+    return merged
+
+
 def resolve_model(cfg: QiConfig, provider: str, model: str) -> ResolvedModel:
-    """按 provider 默认 + 模型条目合并出运行期模型(模型条目可缺省)。"""
+    """按 provider 默认 + 模型条目合并出运行期模型(模型条目可缺省)。
+
+    模型级字段一旦写了就**覆盖 provider 级**(`api` / `baseUrl` / `headers` 同规则)
+    —— 这是 opencode(不同模型走不同 API 形态)与 mimo(同一模型多个端点)的表达方式。
+    """
     prov = cfg.providers.get(provider)
     entry: ModelEntry | None = None
     if prov is not None:
@@ -345,16 +373,20 @@ def resolve_model(cfg: QiConfig, provider: str, model: str) -> ResolvedModel:
                 entry = m
                 break
     api = (entry.api if entry and entry.api else None) or (prov.api if prov else None) or DEFAULT_API
+    base_url = (entry.baseUrl if entry and entry.baseUrl else None) or (
+        prov.baseUrl if prov else None)
     return ResolvedModel(
         provider=provider,
         model=model,
         api=api,
-        base_url=prov.baseUrl if prov else None,
+        base_url=base_url,
         api_key_ref=prov.apiKey if prov else None,
         reasoning=entry.reasoning if entry else False,
         context_window=entry.contextWindow if entry else DEFAULT_CONTEXT_WINDOW,
         max_tokens=entry.maxTokens if entry else DEFAULT_MAX_TOKENS,
         entry=entry,
+        headers=merge_headers(prov.headers if prov else None,
+                              entry.headers if entry else None),
     )
 
 

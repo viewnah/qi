@@ -25,3 +25,8 @@ ui/.vitest/
 # 本地数据 / 参照仓库(deepseek-harness 等)
 data/
 sdk/
+
+# 本地环境变量(示例见 .env.example)
+.env
+.env.local
+.env.*.local

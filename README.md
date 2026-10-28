@@ -23,6 +23,34 @@ uv run qi-lab --cwd ~/your/project  # 指定工作目录
 `qi-lab` 是独立命令,不再注册成 core 的 `qi lab` 子命令。core 的 `qi` CLI 仍然由
 `qi-coding-agent` 提供,二者可以各自使用。
 
+## Docker
+
+镜像基于 **Ubuntu 24.04**(Python 3.12 独立 venv),内置扩展随 wheel 一起打进镜像。
+
+```bash
+docker compose up --build -d          # 构建并后台启动
+docker compose logs -f qi-lab         # 看日志
+docker compose down                   # 停止
+```
+
+默认访问 `http://127.0.0.1:3456`。容器把当前仓库挂到 `/workspace`,配置/会话/凭证放在命名卷
+`qi-lab-home`(对应容器里的 `~/.qi`),不会写进仓库。
+
+常用操作:
+
+```bash
+# 配置模型(在运行中的容器里执行 core 的 qi 命令)
+docker compose exec qi-lab qi init
+
+# 对外暴露时设口令
+QI_LAB_PASSWORD=change-me docker compose up -d
+
+# 宿主机 UID/GID 不是 1000 时,重建镜像以对齐文件权限
+UID=$(id -u) GID=$(id -g) docker compose build
+```
+
+环境变量可写进 `.env`(参考 `.env.example`)。
+
 ## 结构
 
 ```text

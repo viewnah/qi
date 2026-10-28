@@ -1,0 +1,39 @@
+services:
+  qi-lab:
+    build:
+      context: .
+      args:
+        # 宿主机 UID/GID 与容器用户对齐:
+        #   UID=$(id -u) GID=$(id -g) docker compose build
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+    image: qi-lab:local
+    init: true
+    restart: unless-stopped
+    ports:
+      - "${QI_LAB_PORT:-3456}:3456"
+    environment:
+      # 不设 = 不校验口令。对外暴露时强烈建议设置。
+      QI_LAB_PASSWORD: ${QI_LAB_PASSWORD:-}
+      # 反代 / 局域网域名白名单(逗号分隔)。留空 = 只放行回环与绑定地址。
+      QI_LAB_ALLOWED_HOSTS: ${QI_LAB_ALLOWED_HOSTS:-}
+    volumes:
+      # 工作区:容器里的 agent 直接读写当前仓库。
+      - .:/workspace
+      # 配置/会话/凭证:独立命名卷,避免写进仓库。
+      - qi-lab-home:/home/qilab/.qi
+    working_dir: /workspace
+    command: ["--cwd", "/workspace", "--hostname", "0.0.0.0", "--no-open"]
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3456/api/health', timeout=3)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  qi-lab-home:

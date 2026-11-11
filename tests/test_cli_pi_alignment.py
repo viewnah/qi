@@ -175,6 +175,7 @@ def test_session_accepts_a_file_path(tmp_path, monkeypatch):
 
 def test_parse_model_flag():
     assert parse_model_flag("beta/m3:high") == ("beta/m3", "high")
+    assert parse_model_flag("beta/m3:default") == ("beta/m3", "default")
     assert parse_model_flag("beta/m3") == ("beta/m3", None)
     # 模型 id 自带的冒号不是思考级别 —— 只有已知级别才切
     assert parse_model_flag("openrouter/x:free") == ("openrouter/x:free", None)

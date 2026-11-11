@@ -144,11 +144,11 @@ def parse_model_flag(spec: str) -> tuple[str, str | None]:
     → `("provider/模型", 思考级别或 None)`。**只有后缀是已知的思考级别才算** ——
     否则模型 id 自带的冒号会被误切(如 `openrouter/x:free` 里的 `:free` 不是级别)。
     """
-    from .llm import THINKING_LEVELS
+    from .llm import THINKING_LEVEL_CHOICES
 
     text = spec.strip()
     head, sep, tail = text.rpartition(":")
-    if sep and "/" in head and tail.strip().lower() in THINKING_LEVELS:
+    if sep and "/" in head and tail.strip().lower() in THINKING_LEVEL_CHOICES:
         return head, tail.strip().lower()
     if "/" not in text:
         raise ValueError(f'`--model` 要写成 "provider/模型"(可带 ":<思考级别>"):收到 {spec!r}')

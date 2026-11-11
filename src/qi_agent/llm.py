@@ -107,7 +107,21 @@ class LLMDelta:
 
 
 THINKING_LEVELS: tuple[str, ...] = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
-"""思考级别(对齐 pi 的 thinkingLevel)。`off` = 不请求思考。"""
+"""思考级别(对齐 pi 的 thinkingLevel)。`off` = 不请求思考。
+
+这里只列**具体档位**;`default`(不指定档位,由 provider 决定)是另一个哨兵值,
+见 `THINKING_LEVEL_DEFAULT`。把两者分开,是为了不改变 pi 的档位顺序与语义。
+"""
+
+THINKING_LEVEL_DEFAULT = "default"
+"""不指定思考档位:请求里**不带** reasoning 参数,由 provider / 账号自己的默认值决定。
+
+与 `off` 的区别:`off` 是"明确要求不思考"(qi-lab 会发 `reasoning_effort="none"`),
+`default` 是"这一项不设置"。对默认就会思考的模型,前者真的关,后者仍会思考。
+"""
+
+THINKING_LEVEL_CHOICES: tuple[str, ...] = (THINKING_LEVEL_DEFAULT, *THINKING_LEVELS)
+"""界面上可选的档位(Default 在首位)。API / 设置 / `--thinking` 都接受这一组。"""
 
 DEFAULT_THINKING_LEVEL = "medium"
 """没配任何级别时的默认档(pi `core/defaults.js` 的 `DEFAULT_THINKING_LEVEL`)。
@@ -128,6 +142,8 @@ def normalize_thinking_level(value: str | None) -> str:
     `DEFAULT_THINKING_LEVEL` 的事,由 runtime 装配时决定)。
     """
     level = (value or "").strip().lower()
+    if level == THINKING_LEVEL_DEFAULT:
+        return level
     return level if level in THINKING_LEVELS else "off"
 
 
@@ -567,6 +583,8 @@ class LiteLLMClient:
         (litellm 在 Anthropic 形态上有对应参数);OpenAI 兼容那半不做 —— qi 没有 compat 层,
         而加那层是独立的一件事(见 design/pi-alignment.md)。
         """
+        if self.thinking_level == THINKING_LEVEL_DEFAULT:
+            return {}
         effort = _EFFORT_MAP.get(self.thinking_level)
         if not (effort and self.spec.reasoning and not self._no_reasoning_effort):
             return {}

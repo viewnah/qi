@@ -64,8 +64,8 @@
 | `theme` | 主题名(dark/light/auto) | TUI 已接:自动探测终端背景(OSC 11),失败落 dark;`QI_THEME` 可覆盖。见 [usage.md](usage.md) |
 | `branchSummary` | 分支摘要:/tree 跳转时被放弃那段要不要压成摘要;`skipPrompt: true` = **不问也不摘要** | **已接**(`skipPrompt`):默认**先问一句**,默认答案「不摘要」;无前端时同样不摘要。`reserveTokens` **未接** —— qi 的摘要预算固定,不加不生效的旋钮 |
 | `thinkingBudgets` | 每个思考级别的 token 预算;Anthropic/Google/Bedrock 原生用,OpenAI 兼容形态要靠每模型的 `compat.thinkingTokenBudgetField` | **部分已接**:**只对 Anthropic 形态**生效(litellm 只在那里有对应参数),且**不配就不带**;钳制到至少留 1024 token 给答案。OpenAI 兼容那半不做 —— qi 没有 compat 层 |
-| `modelThinkingLevels` | `{}` | 按模型的思考级别:`{"provider/模型": "high"}`(也认裸模型 id)。四级优先:`--thinking` > `--model provider/id:<级别>` > 这里 > `defaultThinkingLevel`;换模型时自动采纳,但本会话显式设过(`/thinking`)就不覆盖 |
-| `defaultThinkingLevel` | 默认思考级别 | 已接:`off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`;**不配默认 `medium`**;TUI `shift+tab` 可运行时切换(`--thinking` 可覆盖)。见 [slash-commands.md](slash-commands.md) |
+| `modelThinkingLevels` | `{}` | 按模型的思考级别:`{"provider/模型": "high"}`(也认裸模型 id;值同样接受 `default`)。四级优先:`--thinking` > `--model provider/id:<级别>` > 这里 > `defaultThinkingLevel`;换模型时自动采纳,但本会话显式设过(`/thinking`)就不覆盖 |
+| `defaultThinkingLevel` | 默认思考级别 | 已接:`default`/`off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`;**不配默认 `medium`**;`default` = 不指定档位、请求里不带 reasoning 参数(与显式关思考的 `off` 不同);TUI `shift+tab` 可运行时切换(`--thinking` 可覆盖)。见 [slash-commands.md](slash-commands.md) |
 | `enabledModels` | 模型轮换(Ctrl+P) | 已接:`/scoped-models` 勾选后写回（全局设置）；空 = 轮换 models.json 里全部。已记进 settings 但**现已不可用**的条目(provider 删了 / 凭证没了)在面板里画成删除线 + `[unavailable]`,取消勾选才移出 |
 | `quietStartup` | 隐藏启动头 | 已接:不写 banner(含快捷键提示);启动提示(会话不存在之类)仍会出 |
 | `defaultTools` | 初始内置工具集 | **已接**:只挑**内置**那一档,扩展装的工具照旧全留 —— 所以 `[]` = "不要内置、只留扩展"(与"没配"是两件事)。`--tools` / `-t` 等 CLI 旗标**压过**它 |

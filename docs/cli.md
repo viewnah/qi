@@ -70,7 +70,7 @@ qi --model sonnet:high
 - `--provider <名>`:把 `--model` 的查找限制在一家。
 - `--model <模式>`:写 `provider/模型`,可带 `:<思考级别>` 后缀(**只认已知级别**,所以 `openrouter/x:free` 不会被误切);只给 `--provider` 时用它 `models.json` 里的第一个模型。
 - `--api-key <键>`:**按次**覆盖密钥,不落盘(优先于 auth store / 环境变量 / `models.json`)。
-- `--thinking <级别>`:`off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`(非法值退出码 2;不传用 settings 的 `defaultThinkingLevel`,没配就 `medium`)。
+- `--thinking <级别>`:`default` / `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`(非法值退出码 2;不传用 settings 的 `defaultThinkingLevel`,没配就 `medium`)。`default` = 不指定档位、请求里不带 reasoning 参数。
 - `--models <清单>`:本次运行 `ctrl+p` 的轮换清单(逗号分隔),**不回写** settings。
 - `--list-models [搜索词]`:列出模型后退出(每行带 `credential` 列;缺密钥的也列,这是诊断面)。
 

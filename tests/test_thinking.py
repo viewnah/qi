@@ -23,6 +23,8 @@ from qi_agent.auth import AuthStore
 from qi_agent.cli import app as cli_app
 from qi_agent.config import ResolvedModel
 from qi_agent.llm import (
+    THINKING_LEVEL_CHOICES,
+    THINKING_LEVEL_DEFAULT,
     THINKING_LEVELS,
     ChatResponse,
     LiteLLMClient,
@@ -59,6 +61,7 @@ def _client(tmp_path: Path, level: str, reasoning: bool = True) -> LiteLLMClient
 @pytest.mark.parametrize("raw,expected", [
     ("off", "off"), ("LOW", "low"), (" high ", "high"), ("xhigh", "xhigh"),
     ("max", "max"), ("minimal", "minimal"), ("medium", "medium"),
+    ("default", "default"), ("DEFAULT", "default"),
     ("bogus", "off"), ("", "off"), (None, "off"),
 ])
 def test_normalize_thinking_level(raw, expected):
@@ -67,6 +70,19 @@ def test_normalize_thinking_level(raw, expected):
 
 def test_thinking_levels_match_pi_order():
     assert THINKING_LEVELS == ("off", "minimal", "low", "medium", "high", "xhigh", "max")
+
+
+def test_default_is_a_choice_but_not_a_concrete_level():
+    """Default 是"不指定",不进 THINKING_LEVELS,避免打乱 pi 的档位语义。"""
+    assert THINKING_LEVEL_DEFAULT == "default"
+    assert THINKING_LEVEL_CHOICES == ("default", *THINKING_LEVELS)
+    assert "default" not in THINKING_LEVELS
+
+
+def test_default_omits_reasoning_effort(tmp_path):
+    """Default 不设置这一项,由 provider / 账号决定;与 off 的显式关闭不同。"""
+    assert "reasoning_effort" not in _client(
+        tmp_path, "default")._base_kwargs([], None, None)
 
 
 def test_reasoning_effort_only_when_needed(tmp_path):
@@ -420,6 +436,10 @@ def test_cli_passes_thinking_level_to_runtime(tmp_path, monkeypatch):
     result = CliRunner().invoke(cli_app, ["-p", "--thinking", "high", "hi"])
     assert result.exit_code == 0, result.output
     assert seen.get("thinking_level") == "high"
+
+    result = CliRunner().invoke(cli_app, ["-p", "--thinking", "default", "hi"])
+    assert result.exit_code == 0, result.output
+    assert seen.get("thinking_level") == "default"
 
 
 # ── 6. provider 拒绝 reasoning_effort 时优雅降级 ────────────

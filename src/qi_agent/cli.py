@@ -42,7 +42,7 @@ from .config import (
     resolve_router_model,
     save_models_file,
 )
-from .llm import THINKING_LEVELS, ThinkingLLMClient
+from .llm import THINKING_LEVEL_CHOICES, ThinkingLLMClient
 from .extensions import ExtensionBus, CliCommandRegistry
 from .loader import (
     LoadError,
@@ -215,7 +215,7 @@ def root_callback(
                                   help="扩展旗标:name=value(可重复;由扩展 registerFlag 声明。"
                                        "已声明的旗标也可直接写 --name 或 --name=value)"),    approve: bool = typer.Option(False, "--approve", "-a", help="信任项目 .qi(加载项目级扩展)"),
     no_approve: bool = typer.Option(False, "--no-approve", "-na", help="不信任项目 .qi(显式拒绝)"),
-    thinking: str | None = typer.Option(None, "--thinking", help="思考级别: " + "/".join(THINKING_LEVELS)),
+    thinking: str | None = typer.Option(None, "--thinking", help="思考级别: " + "/".join(THINKING_LEVEL_CHOICES)),
     tools: str | None = typer.Option(None, "--tools",
                                      help="工具白名单(严格;逗号/空格分隔。对齐 pi 的 --tools,可写 -t)"),
     exclude_tools: str | None = typer.Option(None, "--exclude-tools",
@@ -372,8 +372,8 @@ def root_callback(
         )
         console.print(f"[red]需要消息内容: {usage}[/red]")
         raise typer.Exit(code=2)
-    if thinking is not None and thinking.strip().lower() not in THINKING_LEVELS:
-        console.print(f"[red]未知思考级别: {thinking}(可选 {"/".join(THINKING_LEVELS)}）[/red]")
+    if thinking is not None and thinking.strip().lower() not in THINKING_LEVEL_CHOICES:
+        console.print(f"[red]未知思考级别: {thinking}(可选 {"/".join(THINKING_LEVEL_CHOICES)}）[/red]")
         raise typer.Exit(code=2)
     from .runtime import QiRuntime
     from .config import ConfigError as _CfgErr

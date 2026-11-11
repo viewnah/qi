@@ -507,6 +507,113 @@ def test_astream_open_falls_back_without_reasoning(tmp_path, monkeypatch):
     assert client.reasoning_dropped is True
 
 
+def _plain_response(text: str = "ok"):
+    return SimpleNamespace(choices=[SimpleNamespace(
+        message=SimpleNamespace(content=text, tool_calls=None, reasoning_content=None))],
+        usage=None)
+
+
+def test_concurrent_chat_and_stream_both_get_their_retry(tmp_path, monkeypatch):
+    """并发竞争:主流式先撞上参数拒绝,不该让标题那次 `chat()` 丢掉唯一的重试。
+
+    判据曾是**共享粘性标志** `_no_reasoning_effort`:谁先置位,另一个虽然自己的请求体里
+    确实带着 `reasoning_effort`,也被直接抛 → 首轮会话没有标题,第二轮才有。
+    """
+    calls: list[dict] = []
+
+    async def fake_acompletion(**kwargs):
+        calls.append(kwargs)
+        if "reasoning_effort" in kwargs:
+            # 主流式先失败、标题那侧请求已在飞,稍后才拿到拒绝
+            await asyncio.sleep(0.01 if kwargs.get("stream") else 0.05)
+            raise _ReasoningRejected(
+                "openai does not support parameters: ['reasoning_effort']")
+        if kwargs.get("stream"):
+            async def gen():
+                yield _chunk(text="答")
+            return gen()
+        return _plain_response("标题")
+
+    import litellm
+
+    monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
+
+    async def scenario():
+        client = _client(tmp_path, "medium")
+        title = asyncio.create_task(client.chat([]))
+
+        async def drain():
+            return [d async for d in client.astream([])]
+
+        return client, await asyncio.gather(title, asyncio.create_task(drain()),
+                                            return_exceptions=True)
+
+    client, results = asyncio.run(scenario())
+    assert not isinstance(results[0], BaseException), results[0]   # ← 0.4.0 上这条会失败
+    assert results[0].text == "标题"
+    assert client.reasoning_dropped is True
+    assert len([k for k in calls if "reasoning_effort" not in k]) == 2   # 两边各重试一次
+
+
+def test_reasoning_rejection_does_not_loop(tmp_path, monkeypatch):
+    """不带 `reasoning_effort` 也被拒:每次 chat() 只发 2 次(with → without),不循环。"""
+    calls: list[dict] = []
+
+    async def fake_acompletion(**kwargs):
+        calls.append(kwargs)
+        raise _ReasoningRejected("unsupported parameters: ['reasoning_effort']")
+
+    import litellm
+
+    monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
+    client = _client(tmp_path, "high")
+    with pytest.raises(_ReasoningRejected):
+        asyncio.run(client.chat([]))
+    assert len(calls) == 2
+
+
+def test_accepted_request_sends_once(tmp_path, monkeypatch):
+    """回归:provider 不拒绝 → 只发 1 次,`reasoning_dropped` 保持 False。"""
+    calls: list[dict] = []
+
+    async def fake_acompletion(**kwargs):
+        calls.append(kwargs)
+        return _plain_response()
+
+    import litellm
+
+    monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
+    client = _client(tmp_path, "high")
+    assert asyncio.run(client.chat([])).text == "ok"
+    assert len(calls) == 1
+    assert "reasoning_effort" in calls[0]
+    assert client.reasoning_dropped is False
+
+
+def test_reasoning_drop_stays_sticky(tmp_path, monkeypatch):
+    """降级后:后续请求不再带该参数,且不再走重试(一次成功)。"""
+    calls: list[dict] = []
+
+    async def fake_acompletion(**kwargs):
+        calls.append(kwargs)
+        if "reasoning_effort" in kwargs:
+            raise _ReasoningRejected("unsupported parameters: ['reasoning_effort']")
+        return _plain_response()
+
+    import litellm
+
+    monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
+    client = _client(tmp_path, "high")
+    asyncio.run(client.chat([]))
+    assert len(calls) == 2
+
+    calls.clear()
+    client.thinking_level = "max"          # 换级别也要记住降级
+    asyncio.run(client.chat([]))
+    assert len(calls) == 1
+    assert "reasoning_effort" not in calls[0]
+
+
 @pytest.mark.asyncio
 async def test_tui_reports_reasoning_drop_once(tmp_path, monkeypatch):
     """provider 拒了思考参数:TUI 用状态行提示一次,不静默。"""

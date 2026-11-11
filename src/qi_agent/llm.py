@@ -596,13 +596,18 @@ class LiteLLMClient:
             return max(1024, min(raw, self.spec.max_tokens - 1024))
         return raw
 
-    def _consider_reasoning_rejection(self, exc: BaseException) -> bool:
+    def _consider_reasoning_rejection(self, exc: BaseException, *, sent: bool) -> bool:
         """看这次失败是不是「provider 不接受 reasoning_effort」;是则降级并返回 True。
 
         真实场景:自建 LiteLLM 代理默认 `drop_params` 会把未知参数丢掉并**直接报错**。
         用户只是想调思考级别,不应该因此整轮失败——所以丢掉参数重试一次并记下来。
+
+        `sent` = **这次请求**到底有没有带 `reasoning_effort`。判据必须用它,不能用共享的
+        粘性标志:同一个 client 上并发的两个调用(主流式 + `titling.suggest_title`)会同时
+        撞上这条参数拒绝,谁先置位标志,另一个就永远拿不到重试 —— 而它自己的请求体里
+        确实带着那个参数(实测症状:会话首轮可能没有标题,第二轮才有)。
         """
-        if self._no_reasoning_effort or "reasoning_effort" not in str(exc):
+        if not sent or "reasoning_effort" not in str(exc):
             return False
         self._no_reasoning_effort = True
         self.reasoning_dropped = True
@@ -614,10 +619,11 @@ class LiteLLMClient:
 
         kwargs = await self._prepare_headers(
             await self._prepare_request(self._base_kwargs(messages, tools, temperature)))
+        sent_effort = "reasoning_effort" in kwargs   # 「这次请求带没带」——见判定函数
         try:
             resp = await litellm.acompletion(**kwargs)
         except Exception as exc:
-            if not self._consider_reasoning_rejection(exc):
+            if not self._consider_reasoning_rejection(exc, sent=sent_effort):
                 raise friendly_provider_error(exc) from exc
             # 去掉 reasoning_effort 重试一次(用户只想调级别,不该因此整轮失败)
             kwargs = await self._prepare_headers(
@@ -645,15 +651,24 @@ class LiteLLMClient:
                             usage=usage_to_dict(getattr(resp, "usage", None)),
                             reasoning=reasoning_text_of(msg))
 
-    async def _open_stream(self, messages: list[ChatMessage], tools: list[dict] | None,
-                           temperature: float | None, with_usage: bool) -> AsyncIterator[Any]:
-        litellm = await litellm_module()
+    async def _stream_kwargs(self, messages: list[ChatMessage], tools: list[dict] | None,
+                             temperature: float | None, with_usage: bool) -> dict:
+        """拼好一次流式请求的参数。
 
+        与“开流”分成两步(`_open_stream` 只收 kwargs),是为了让调用方在异常处理里能
+        判“**这次**请求到底带了什么”——见 `_consider_reasoning_rejection` 的 `sent`。
+        """
         kwargs = await self._prepare_headers(
             await self._prepare_request(self._base_kwargs(messages, tools, temperature)))
         kwargs["stream"] = True
         if with_usage:
             kwargs["stream_options"] = {"include_usage": True}
+        return kwargs
+
+    async def _open_stream(self, kwargs: dict) -> AsyncIterator[Any]:
+        """按**已经拼好**的参数开流(拼参数见 `_stream_kwargs`)。"""
+        litellm = await litellm_module()
+
         # litellm 的返回类型是 "流式包装器 | 补全对象" 的联合:这里只走流式分支,
         # 按实际形状收窄(与 chat() 的处理对称)。
         stream = cast(AsyncIterator[Any], await litellm.acompletion(**kwargs))
@@ -670,13 +685,15 @@ class LiteLLMClient:
         """
         for _ in range(3):
             with_usage = not self._no_usage_opt
+            kwargs = await self._stream_kwargs(messages, tools, temperature, with_usage)
             try:
-                return await self._open_stream(messages, tools, temperature, with_usage)
+                return await self._open_stream(kwargs)
             except Exception as exc:  # noqa: BLE001 打开流失败:逐项降级
                 friendly = friendly_provider_error(exc)
                 if isinstance(friendly, ProviderAuthError):
                     raise friendly from exc      # 凭证问题不该被当成“参数不被接受”吞掉
-                if self._consider_reasoning_rejection(exc):
+                if self._consider_reasoning_rejection(
+                        exc, sent="reasoning_effort" in kwargs):
                     continue
                 if with_usage:
                     self._no_usage_opt = True     # 某些 provider 不认 stream_options
